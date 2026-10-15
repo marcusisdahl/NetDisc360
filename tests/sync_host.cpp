@@ -34,6 +34,7 @@ public:
         for(int i=0;i<3;++i) { char path[nia::PathMax]; snprintf(path,sizeof(path),"%s/%s",folder,files[i]); unlink(path); }
         return rmdir(folder)==0;
     }
+    unsigned long LastError() { return (unsigned long)errno; }
 };
 
 static void Print(const char* text) { printf("%s\n",text); fflush(stdout); }

@@ -58,9 +58,13 @@ void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCou
     size_t stem=dot ? size_t(dot-isoName) : strlen(isoName);
     size_t start=0;
     while(start<stem && (isoName[start]==' ' || isoName[start]=='.')) ++start;
+    // FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names.
+    // Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
     for(size_t i=start;i<stem && length<FolderNameMax;++i) {
-        unsigned char c=static_cast<unsigned char>(isoName[i]);
-        name[length++]=(c<32 || c>126 || strchr("<>:\"/\\|?*",c)) ? '_' : char(c);
+        char c=isoName[i];
+        if(c==',') continue;
+        bool ok=(c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || (c && strchr(" !#$%&'()-.@[]^_`{}~",c));
+        name[length++]=ok ? c : '_';
     }
     while(length && (name[length-1]==' ' || name[length-1]=='.')) --length;
     name[length]=0;
@@ -195,7 +199,14 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         free(copy);
         Join(path,folder,GameIni);
         written=written && storage.WriteFile(path,text,DWORD(strlen(text)));
-        if(!written) { Say(note,"Couldn't write %s.",folder); return false; }
+        if(!written) {
+            // One bad name shouldn't stop the rest; the next sync tries it again.
+            Say(note,"Skipped %s: couldn't write %s (error %lu).",isos[i],folder,storage.LastError());
+            storage.RemoveGame(folder);
+            folders[--folderCount].game=false;
+            ++result.skipped;
+            continue;
+        }
         Say(note,"Added %s as %s (Title ID %08X, Media ID %08X).",isos[i],f.name,Read32(info+12),Read32(info));
         ++result.added;
     }

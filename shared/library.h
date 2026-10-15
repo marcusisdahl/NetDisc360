@@ -26,6 +26,8 @@ public:
     // Deletes default.xex, netiso.ini and netiso.log in folder, then the folder
     // if it is empty. Anything else in it is left alone.
     virtual bool RemoveGame(const char* folder) = 0;
+    // Error code of the last call that failed, for the log.
+    virtual unsigned long LastError() = 0;
 };
 
 struct SyncResult { int added, kept, removed, skipped; };

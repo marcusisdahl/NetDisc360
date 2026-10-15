@@ -266,6 +266,7 @@ public:
         }
         return RemoveDirectory(folder)!=FALSE;
     }
+    unsigned long LastError() { return GetLastError(); }
 };
 
 // "192.168.1.20" or "192.168.1.20:4323".

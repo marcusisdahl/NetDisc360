@@ -124,6 +124,9 @@ class Generator(unittest.TestCase):
         name = netiso_aurora.folder_name("A very long game name: with bad*chars? that keeps going.iso", used)
         self.assertEqual(name, "A very long game name_ with bad_chars_ tha")
         self.assertEqual(netiso_aurora.folder_name("Trailing dots. .iso", used), "Trailing dots")
+        # FATX has no commas or plus signs; commas are dropped, others replaced.
+        self.assertEqual(netiso_aurora.folder_name("Call of Duty - Black Ops (USA, Europe).iso", used), "Call of Duty - Black Ops (USA Europe)")
+        self.assertEqual(netiso_aurora.folder_name("Halo+ ;Reach=.iso", used), "Halo_ _Reach_")
 
     def test_unique_folder_names(self):
         long_name = "A very long game name that keeps going and going and going.iso"

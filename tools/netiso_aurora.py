@@ -30,7 +30,8 @@ PARTITIONS = ((0xFDA0000, 0xFD90000), (0x2090000, 0x2080000), (0x10000, 0))
 EXECUTION_INFO = 0x40006
 EXECUTION_INFO_SIZE = 24
 FATX_NAME_MAX = 42
-FATX_BAD = set('<>:"/\\|?*')
+# FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names.
+FATX_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-.@[]^_`{}~")
 DEFAULT_LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "xbox", "NetIsoLauncher.xex")
 
 
@@ -114,7 +115,8 @@ def launcher_info_offset(launcher):
 
 def folder_name(iso_name, used):
     stem = os.path.splitext(iso_name)[0]
-    name = "".join("_" if c in FATX_BAD or ord(c) < 32 or ord(c) > 126 else c for c in stem)
+    # Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
+    name = "".join(c if c in FATX_OK else "_" for c in stem.replace(",", ""))
     name = name.strip(" .")[:FATX_NAME_MAX].rstrip(" .") or "Game"
     candidate, n = name, 2
     while candidate.lower() in used:

@@ -157,6 +157,23 @@ class Sync(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.games)), ["Halo", "Halo (2)"])
         self.assertEqual(os.listdir(os.path.join(self.games, "Halo")), [])
 
+    def test_fatx_names_match_the_pc_tool(self):
+        self.add_iso("Call of Duty - Black Ops (USA, Europe).iso", 1, 0x41560855)
+        self.add_iso("Halo+ ;Reach=.iso", 2, 0x4D53085B)
+        self.sync()
+        self.assertEqual(sorted(os.listdir(self.games)), ["Call of Duty - Black Ops (USA Europe)", "Halo_ _Reach_"])
+
+    def test_a_folder_it_cannot_write_is_skipped(self):
+        self.add_iso("a.iso", 1, 0x11111111)
+        self.add_iso("b.iso", 2, 0x22222222)
+        os.makedirs(self.games)
+        open(os.path.join(self.games, "a"), "w").close()  # A file where a's folder would go.
+        out = self.sync()
+        self.assertIn("added=1 kept=0 removed=0 skipped=1", out)
+        self.assertIn("couldn't write", out)
+        self.assertTrue(os.path.isfile(os.path.join(self.games, "a")))
+        self.assertTrue(os.path.isfile(os.path.join(self.games, "b", "default.xex")))
+
     def test_no_server(self):
         result = subprocess.run([SYNC_HOST, str(free_port()), self.games, self.launcher], capture_output=True, text=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
