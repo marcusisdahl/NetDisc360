@@ -356,7 +356,8 @@ void __cdecl main() {
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
-    if(nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0]) LaunchGame(ini);
+    bool game=nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0];
+    if(game) LaunchGame(ini);
     else {
         Note("NetISO Sync");
         Sync(ini);
@@ -364,5 +365,8 @@ void __cdecl main() {
     }
     UnlinkDrives();
     if(Log) fclose(Log);
-    XLaunchNewImage(XLAUNCH_KEYWORD_DASH,0);
+    // A game that didn't start goes back to the default app, which DashLaunch
+    // points at its Default (Aurora). Sync goes to the dashboard: it may be
+    // the Default itself, and would start again.
+    XLaunchNewImage(game ? XLAUNCH_KEYWORD_DEFAULT_APP : XLAUNCH_KEYWORD_DASH,0);
 }
