@@ -6,20 +6,23 @@ Each game gets a small launcher (`default.xex` plus `netiso.ini`) carrying the g
 
 ## What you need
 
-- The NetISO plugin (`NetISO.xex`) loaded by DashLaunch, and a NetISO server (`server.exe`, [netiso-srv](https://github.com/tuxuser/netiso-srv) or Docker) with your ISOs. The modified `Nova.xex` is not needed for the launchers.
-- To build the launcher: Visual Studio with the Xbox 360 SDK (the same setup as FastFTP). To make the launchers: Python 3.
+- The NetISO plugin (`NetISO.xex`) loaded by DashLaunch, and a NetISO server (`server.exe`, [netiso-srv](https://github.com/tuxuser/netiso-srv) or Docker) with your ISOs. The modified `Nova.xex` is not needed.
+- To build: Visual Studio with the Xbox 360 SDK (the same setup as FastFTP).
 
 ## Use
 
-1. Build: `.\build.ps1 -Tests` makes `build\xbox\NetIsoLauncher.xex`.
-2. Make the launchers from the folder your server serves:
-   `python tools\netiso_aurora.py D:\ISOs D:\NetISO-Aurora` (add `--recursive` if the server runs with `-r`).
-3. Copy the output folder to the console, for example to `Hdd1:\NetISO`.
-4. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1, and scan.
+1. Build: `.\build.ps1 -Tests` makes `build\NetISO Sync\` (`default.xex` and `netiso.ini`).
+2. Edit `netiso.ini` there if needed (`server=` if the plugin's `netiso.xex.txt` isn't at the root of Hdd1:), and copy the folder to the console as `Hdd1:\NetISO\NetISO Sync`.
+3. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1, and scan. NetISO Sync appears as a tile (Title ID FFFF4E49).
+4. Start NetISO Sync. It asks the server for its ISOs, makes a folder in `Hdd1:\NetISO` for each one it hasn't seen (a copy of itself carrying that game's Title ID and Media ID, plus `netiso.ini`), removes the folders of ISOs that are gone, and returns to Aurora. Scan again (or let Aurora scan at startup) and the games are there.
 
-Run step 2 again after adding ISOs. It rewrites the game folders it makes and leaves everything else alone.
+After that, add ISOs to the server's folder and start NetISO Sync again. To have it run at every boot, make it DashLaunch's Default and set `after=` in its `netiso.ini` to Aurora's XEX.
 
-If a game goes back to Aurora instead of starting, read `netiso.log` in its folder. It records each folder the launcher listed and why it stopped.
+Sync reads only a few sectors of each new ISO over its own server connection, so it never changes the disc the plugin has mounted. ISOs it already has folders for are not read at all. Folders are removed only if they hold nothing but the launcher's own files, and nothing is removed when the server lists no ISOs.
+
+`tools\netiso_aurora.py` does the same job on a PC, for when you'd rather copy the folders yourself.
+
+If something goes wrong, read `netiso.log`: Sync writes one in its folder, and each game writes one in its own folder (each folder it listed, and why it stopped).
 
 ## How the mount works
 
@@ -34,10 +37,13 @@ The launcher walks those folders by name (root, the ISO, `Mount`) rather than as
 ## Not verified on a console yet
 
 - Mounting from the launcher, and launching the disc with `XLaunchNewImage`.
+- Sync on the console: network startup, the server connection, and writing to Hdd1:.
 - That the kernel loads the launcher after its execution info header is rewritten. RGH/JTAG kernels accept edited headers in general; BadUpdate/XeUnshackle is untested.
 - How Aurora names the games: it takes the Title ID from the header, but the launcher has no title name resource, so names come from Aurora's online lookup.
 - Multi-disc games: each disc's ISO gets its own launcher; swapping discs mid-game is not handled.
 
 ## Tests
+
+`python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`: it checks that Sync writes exactly what the PC tool writes, adds only new ISOs, removes folders of ISOs that are gone (and keeps folders with other files in them), removes nothing when the server lists nothing, skips bad ISOs, and keeps clear of folders it didn't make.
 
 `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the generator: execution info copied exactly and nothing else changed, the ini, FATX-safe unique folder names, bad ISOs skipped, recursive search and duplicate file names.

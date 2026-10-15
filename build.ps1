@@ -9,9 +9,14 @@ try {
     $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
     & $msbuild launcher\NetIsoLauncher.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation failed. Check the SDK and RXDK integration.' }
+    # The folder to copy to the console: Sync is the launcher XEX with a netiso.ini that has no iso=.
+    $sync = 'build\NetISO Sync'
+    New-Item -ItemType Directory -Force $sync | Out-Null
+    Copy-Item -LiteralPath build\xbox\NetIsoLauncher.xex -Destination "$sync\default.xex" -Force
+    Copy-Item -LiteralPath launcher\sync.ini -Destination "$sync\netiso.ini" -Force
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
-    Write-Host 'Built build\xbox\NetIsoLauncher.xex. Next: python tools\netiso_aurora.py <ISO folder> <output folder>'
+    Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
 } finally { Pop-Location }

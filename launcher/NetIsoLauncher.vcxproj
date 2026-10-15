@@ -18,7 +18,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking><StringPooling>true</StringPooling>
     </ClCompile>
     <Link><OutputFile>$(OutDir)NetIsoLauncher.exe</OutputFile><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ImageXex>
       <!-- A placeholder: tools/netiso_aurora.py overwrites the execution info
@@ -30,6 +30,7 @@
     </ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><None Include="xex.xml" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /><None Include="xex.xml" /><None Include="sync.ini" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
