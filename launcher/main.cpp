@@ -173,9 +173,9 @@ void __cdecl main() {
     if(mounted) {
         Note("Launching %s",LaunchXex);
         if(Log) { fclose(Log); Log=NULL; }
-        DWORD result=XLaunchNewImage(LaunchXex,0);
+        XLaunchNewImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
         if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-        Note("XLaunchNewImage failed (%lu).",result);
+        Note("XLaunchNewImage failed (%lu).",GetLastError());
     }
     if(Log) fclose(Log);
     XLaunchNewImage(XLAUNCH_KEYWORD_DASH,0);

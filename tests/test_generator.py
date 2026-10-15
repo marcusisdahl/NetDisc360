@@ -117,16 +117,23 @@ class Generator(unittest.TestCase):
         self.assertEqual(self.run_tool(), 0)
         self.assertEqual(sorted(os.listdir(self.out)), ["good"])
 
-    def test_fatx_safe_unique_folder_names(self):
-        long_name = "A very long game name: with bad*chars? that keeps going and going.iso"
+    def test_fatx_safe_folder_names(self):
+        # Windows can't name a file with these characters, so this calls the
+        # naming function directly.
+        used = set()
+        name = netiso_aurora.folder_name("A very long game name: with bad*chars? that keeps going.iso", used)
+        self.assertEqual(name, "A very long game name_ with bad_chars_ tha")
+        self.assertEqual(netiso_aurora.folder_name("Trailing dots. .iso", used), "Trailing dots")
+
+    def test_unique_folder_names(self):
+        long_name = "A very long game name that keeps going and going and going.iso"
         write_iso(os.path.join(self.isos, long_name), {"default.xex": xex(execution_info(4, 0x44444444))})
-        write_iso(os.path.join(self.isos, long_name[:-4] + " .iso"), {"default.xex": xex(execution_info(5, 0x55555555))})
+        write_iso(os.path.join(self.isos, long_name[:-4] + " again.iso"), {"default.xex": xex(execution_info(5, 0x55555555))})
         self.assertEqual(self.run_tool(), 0)
         folders = sorted(os.listdir(self.out))
         self.assertEqual(len(folders), 2)
         for folder in folders:
             self.assertLessEqual(len(folder), 42)
-            self.assertFalse(set(folder) & netiso_aurora.FATX_BAD)
 
     def test_recursive_and_duplicate_names(self):
         os.makedirs(os.path.join(self.isos, "x"))
