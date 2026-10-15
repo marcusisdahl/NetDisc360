@@ -36,7 +36,7 @@ The launcher walks those folders by name (root, the ISO, `Mount`) rather than as
 
 ## Not verified on a console yet
 
-- Mounting from the launcher, and launching the disc with `XLaunchNewImage`.
+- Launching the disc with XamLoaderLaunchTitleEx(default.xex, \Device\Cdrom0, flags 0x10), the call Aurora uses. Mounting from the launcher works on the console; `XLaunchNewImage` on the disc ended on the Xbox dashboard.
 - Sync on the console: network startup, the server connection, and writing to Hdd1:.
 - That the kernel loads the launcher after its execution info header is rewritten. Sync and the PC tool recompute the header digest (SHA-1 at security info + 0x164) so it matches the edited header; only the RSA signature over it is left stale, which a patched kernel skips. BadUpdate/XeUnshackle is untested.
 - How Aurora names the games: it takes the Title ID from the header, but the launcher has no title name resource, so names come from Aurora's online lookup.

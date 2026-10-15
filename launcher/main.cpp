@@ -31,11 +31,18 @@
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
+// xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
+// XLaunchNewImageEx): starts xexName from mountPath. This is how Aurora 0.7b
+// starts titles, discs included, with flags 0x10 (read from its Nova.xex).
+// XLaunchNewImage on \Device\Cdrom0\default.xex ended on the Xbox dashboard
+// with the Guide dead instead.
+extern "C" DWORD __stdcall XLaunchNewImageEx(LPCSTR xexName,LPCSTR mountPath,LPCSTR commandLine,DWORD flags);
 
 static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
 static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
-static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex";
+static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
+static const DWORD AuroraLaunchFlags=0x10;
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close. The new disc reads
@@ -197,7 +204,11 @@ static void LaunchGame(const char* ini) {
     bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
     if(!mounted) return;
-    Note("Launching %s",LaunchXex);
+    Note("Launching %s from %s, as Aurora does",DiscXexName,DiscMount);
+    if(Log) { fclose(Log); Log=NULL; }
+    DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,AuroraLaunchFlags);
+    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    Note("XamLoaderLaunchTitleEx returned %08X (%lu); trying XLaunchNewImage(%s).",result,GetLastError(),LaunchXex);
     if(Log) { fclose(Log); Log=NULL; }
     XLaunchNewImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
     if(fopen_s(&Log,LogFile,"a")) Log=NULL;
