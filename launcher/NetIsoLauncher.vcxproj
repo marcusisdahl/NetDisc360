@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|Xbox 360"><Configuration>Release</Configuration><Platform>Xbox 360</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{6E2B1C4A-4E49-4C61-9A15-0D15C0360150}</ProjectGuid><Keyword>Xbox360Proj</Keyword><ProjectName>NetIsoLauncher</ProjectName></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><CharacterSet>MultiByte</CharacterSet><PlatformToolset>2010-01</PlatformToolset></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\xbox\</OutDir><IntDir>$(OutDir)obj\</IntDir>
+    <TargetName>NetIsoLauncher</TargetName><TargetExt>.exe</TargetExt>
+    <TargetPath>$(OutDir)NetIsoLauncher.exe</TargetPath><OutputFile>$(OutDir)NetIsoLauncher.exe</OutputFile>
+    <ImageXexOutput>$(OutDir)NetIsoLauncher.xex</ImageXexOutput>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><Optimization>MinSpace</Optimization><WarningLevel>Level4</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader><RuntimeLibrary>MultiThreaded</RuntimeLibrary><ExceptionHandling>false</ExceptionHandling>
+      <PreprocessorDefinitions>NDEBUG;_XBOX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <FunctionLevelLinking>true</FunctionLevelLinking><StringPooling>true</StringPooling>
+    </ClCompile>
+    <Link><OutputFile>$(OutDir)NetIsoLauncher.exe</OutputFile><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ImageXex>
+      <!-- A placeholder: tools/netiso_aurora.py overwrites the execution info
+           (Title ID, Media ID, versions, disc number) with each game's own.
+           It needs this header to exist, which a Title ID guarantees.
+           The 0x prefix matters: imagexex reads the value as decimal without it. -->
+      <TitleID>0xFFFF4E49</TitleID>
+      <ConfigurationFile>$(ProjectDir)xex.xml</ConfigurationFile>
+    </ImageXex>
+    <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><None Include="xex.xml" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
