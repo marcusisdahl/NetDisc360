@@ -204,7 +204,7 @@ static bool MountGame(const char* ini) {
 // NetISO Sync's default.xex as a device path, from this launcher's own path
 // (<games folder>\<game>\default.xex), if it is there.
 static bool SyncXex(char* path,size_t capacity) {
-    const LoaderEntry* self=static_cast<const LoaderEntry*>(GetModuleHandle(NULL));
+    const LoaderEntry* self=reinterpret_cast<const LoaderEntry*>(GetModuleHandle(NULL));
     if(!self || !self->fullName.text || !self->fullName.length) { Note("Can't find this launcher's path."); return false; }
     char own[MAX_PATH]; size_t length=self->fullName.length/2;
     if(length>=sizeof(own)) return false;
