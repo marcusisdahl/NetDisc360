@@ -38,6 +38,10 @@ static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",Disc
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex";
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
+// After the mount the plugin fakes a tray open and close. The new disc reads
+// before that settles, and a game started in between gets the tray event and
+// exits to the dashboard, so the disc must read as the game this long first.
+static const int SettleMs=5000;
 
 static FILE* Log=NULL;
 static void Note(const char* format,...) {
@@ -170,10 +174,19 @@ static bool MountGame(const char* ini) {
     bool asked=RequestMount(settings);
     UnlinkDrive(IsoLink);
     if(!asked) return false;
-    for(int waited=0;waited<MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("Mounted after %d ms.",waited); return true; }
+    int settled=-1; // ms the disc has read as the game, or -1.
+    for(int waited=0;waited<MountWaitMs+SettleMs;waited+=PollMs) {
+        if(DiscIsGame(settings)) {
+            if(settled<0) Note("Mounted after %d ms.",waited);
+            settled=settled<0 ? 0 : settled+PollMs;
+            if(settled>=SettleMs) { Note("Settled after %d ms.",waited); return true; }
+        } else if(settled>=0) {
+            Note("The disc changed again after %d ms.",waited);
+            settled=-1;
+        } else if(waited>=MountWaitMs) break;
         Sleep(PollMs);
     }
+    if(settled>=0) { Note("Launching without the disc settling."); return true; }
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,MountWaitMs);
     else Note("No readable disc after %d ms.",MountWaitMs);
