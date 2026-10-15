@@ -18,7 +18,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking><StringPooling>true</StringPooling>
     </ClCompile>
     <Link><OutputFile>$(OutDir)NetIsoLauncher.exe</OutputFile><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;xav.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ImageXex>
       <!-- A placeholder: tools/netiso_aurora.py overwrites the execution info
