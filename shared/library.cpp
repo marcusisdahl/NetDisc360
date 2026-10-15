@@ -190,6 +190,28 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
 
 struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; bool game, keep; };
 
+// Rewrites a game folder's default.xex when it was made from an older
+// launcher, keeping its game's execution info. 1 if rewritten, 0 if it was
+// current, -1 if it couldn't be read or written.
+static int RefreshLauncher(Storage& storage, const char* folder, const unsigned char* launcher, DWORD launcherSize, DWORD infoAt) {
+    char path[PathMax]; Join(path,folder,GameXex);
+    DWORD capacity=launcherSize+0x100000,size=0;
+    unsigned char* old=static_cast<unsigned char*>(malloc(capacity));
+    unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
+    int result=-1;
+    if(old && copy && storage.ReadFile(path,old,capacity,size)) {
+        DWORD oldInfo=ExecutionInfoOffset(old,size);
+        if(oldInfo) {
+            memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,old+oldInfo,ExecutionInfoSize);
+            FixHeaderDigest(copy,launcherSize);
+            if(size==launcherSize && !memcmp(old,copy,size)) result=0;
+            else if(storage.WriteFile(path,copy,launcherSize)) result=1;
+        }
+    }
+    free(old); free(copy);
+    return result;
+}
+
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           Note note, SyncResult& result) {
     memset(&result,0,sizeof(result));
@@ -224,7 +246,18 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     for(int i=0;i<isoCount;++i) {
         bool have=false;
         for(int k=0;k<folderCount;++k) if(folders[k].game && !_stricmp(folders[k].iso,isos[i])) { folders[k].keep=true; have=true; }
-        if(have) { ++result.kept; continue; }
+        if(have) {
+            ++result.kept;
+            // Folders made by an older Sync get this version's launcher.
+            for(int k=0;k<folderCount;++k) {
+                if(!folders[k].keep || _stricmp(folders[k].iso,isos[i])) continue;
+                char folder[PathMax]; Join(folder,root,folders[k].name);
+                int refreshed=RefreshLauncher(storage,folder,launcher,launcherSize,infoAt);
+                if(refreshed>0) { Say(note,"Updated the launcher in %s.",folders[k].name); ++result.updated; }
+                else if(refreshed<0) Say(note,"Couldn't update the launcher in %s (error %lu).",folders[k].name,storage.LastError());
+            }
+            continue;
+        }
         if(!client.Mount(isos[i])) {
             Say(note,"Skipped %s: %s",isos[i],client.Error()); ++result.skipped;
             if(!client.Connected()) return false;

@@ -111,8 +111,29 @@ class Sync(unittest.TestCase):
         self.add_iso("b.iso", 2, 0x22222222)
         out = self.sync()
         self.assertIn("added=1 kept=1 removed=0", out)
+        self.assertIn("updated=0", out)  # Same launcher: nothing rewritten.
         self.assertTrue(os.path.exists(marker))  # The existing folder was not rewritten.
         self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+
+    def test_updates_launchers_made_by_an_older_sync(self):
+        self.add_iso("a.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.sync()
+        path = os.path.join(self.games, "a", "default.xex")
+        with open(path, "rb") as f:
+            before = f.read()
+        with open(self.launcher, "wb") as f:  # A new version of the launcher.
+            f.write(xex(execution_info(0, 0xFFFF4E49), filler=b"NEWER CODE" * 150))
+        out = self.sync()
+        self.assertIn("kept=1", out)
+        self.assertIn("updated=1", out)
+        with open(path, "rb") as f:
+            after = f.read()
+        self.assertIn(b"NEWER CODE", after)
+        at = netiso_aurora.xex_headers(after)[0x40006]
+        self.assertEqual(after[at:at + 24], before[at:at + 24])  # Still the game's IDs.
+        stored, computed = header_digest(after)
+        self.assertEqual(stored, computed)
+        self.assertIn("updated=0", self.sync())  # Current now.
 
     def test_removes_folders_of_isos_that_are_gone(self):
         self.add_iso("a.iso", 1, 0x11111111)

@@ -332,7 +332,7 @@ static void Sync(const char* ini) {
     if(!connected) return;
     nia::SyncResult result;
     bool ok=nia::Sync(client,storage,games,Launcher,size,NoteText,result);
-    Note("%s: %d added, %d kept, %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.removed,result.skipped);
+    Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
 }
 

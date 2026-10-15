@@ -18,7 +18,7 @@ Each game gets a small launcher (`default.xex` plus `netiso.ini`) carrying the g
 
 After that, add ISOs to the server's folder and start NetISO Sync again. To have it run at every boot, make it DashLaunch's Default and set `after=` in its `netiso.ini` to Aurora's XEX.
 
-Sync reads only a few sectors of each new ISO over its own server connection, so it never changes the disc the plugin has mounted. ISOs it already has folders for are not read at all. Folders are removed only if they hold nothing but the launcher's own files, and nothing is removed when the server lists no ISOs.
+Sync reads only a few sectors of each new ISO over its own server connection, so it never changes the disc the plugin has mounted. ISOs it already has folders for are not read at all; if their launcher came from an older NetISO Sync, it is replaced with this version's, keeping the game's IDs, so updating NetISO Sync's own default.xex and running it updates every game. Folders are removed only if they hold nothing but the launcher's own files, and nothing is removed when the server lists no ISOs.
 
 `tools\netiso_aurora.py` does the same job on a PC, for when you'd rather copy the folders yourself.
 

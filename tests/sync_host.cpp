@@ -48,6 +48,6 @@ int main(int argc, char** argv) {
     if(!client.Connect(inet_addr("127.0.0.1"),atoi(argv[1]),5) || !client.Ping()) { printf("CONNECT FAILED %s\n",client.Error()); return 1; }
     PosixStorage storage; nia::SyncResult result;
     bool ok=nia::Sync(client,storage,argv[2],launcher,size,Print,result);
-    printf("RESULT %d added=%d kept=%d removed=%d skipped=%d\n",ok,result.added,result.kept,result.removed,result.skipped);
+    printf("RESULT %d added=%d kept=%d removed=%d skipped=%d updated=%d\n",ok,result.added,result.kept,result.removed,result.skipped,result.updated);
     return ok ? 0 : 1;
 }
