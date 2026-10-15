@@ -29,9 +29,6 @@
 #include "../shared/library.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
-// The start of the kernel's LDR_DATA_TABLE_ENTRY, which a module handle points at.
-struct WideString { USHORT length,capacity; wchar_t* text; };
-struct LoaderEntry { void* links[6]; void* ntHeaders; void* imageBase; DWORD imageSize; WideString fullName; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
 
@@ -40,11 +37,6 @@ static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Dev
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex";
 static const char MountFolder[]="Mount";
-// The launcher hands the disc launch to NetISO Sync with this launch data.
-// Started from a copy carrying the game's own Title ID, the disc ends on the
-// dashboard instead (seen on the console), so it is started from a title
-// with an ID of its own. SyncFolder is NetISO Sync's folder in the games folder.
-static const char BootData[]="NetISO boot",SyncFolder[]="NetISO Sync",BootLog[]="game:\\netiso-boot.log";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close. The new disc reads
 // before that settles, and a game started in between gets the tray event and
@@ -201,45 +193,10 @@ static bool MountGame(const char* ini) {
     return false;
 }
 
-// NetISO Sync's default.xex as a device path, from this launcher's own path
-// (<games folder>\<game>\default.xex), if it is there.
-static bool SyncXex(char* path,size_t capacity) {
-    const LoaderEntry* self=static_cast<const LoaderEntry*>(GetModuleHandle(NULL));
-    if(!self || !self->fullName.text || !self->fullName.length) { Note("Can't find this launcher's path."); return false; }
-    char own[MAX_PATH]; size_t length=self->fullName.length/2;
-    if(length>=sizeof(own)) return false;
-    for(size_t i=0;i<length;++i) own[i]=char(self->fullName.text[i]);
-    own[length]=0;
-    Note("Launcher %s",own);
-    for(int up=0;up<2;++up) { char* slash=strrchr(own,'\\'); if(!slash || slash==own) return false; *slash=0; }
-    char folder[MAX_PATH]; sprintf_s(folder,"%s\\%s",own,SyncFolder);
-    static const char SyncLink[]="\\??\\NIsoS:";
-    bool there=false;
-    if(LinkDrive(SyncLink,folder)>=0) {
-        HANDLE file=CreateFile("NIsoS:\\default.xex",GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-        if(file!=INVALID_HANDLE_VALUE) { CloseHandle(file); there=true; }
-        UnlinkDrive(SyncLink);
-    }
-    if(!there) { Note("No %s\\default.xex.",folder); return false; }
-    sprintf_s(path,capacity,"%s\\default.xex",folder);
-    return true;
-}
-
 static void LaunchGame(const char* ini) {
     bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
     if(!mounted) return;
-    char sync[MAX_PATH];
-    if(SyncXex(sync,sizeof(sync))) {
-        DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
-        if(set==ERROR_SUCCESS) {
-            Note("Handing the launch to %s",sync);
-            if(Log) { fclose(Log); Log=NULL; }
-            XLaunchNewImage(sync,0);
-            if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-            Note("Couldn't start %s (%lu); launching the disc directly.",sync,GetLastError());
-        } else Note("XSetLaunchData failed (%lu); launching the disc directly.",set);
-    }
     Note("Launching %s",LaunchXex);
     if(Log) { fclose(Log); Log=NULL; }
     XLaunchNewImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
@@ -407,25 +364,7 @@ static void LaunchAfterSync(const char* ini) {
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
-// Started by a game launcher (BootData as launch data): start the disc.
-static bool BootRequested() {
-    char data[sizeof(BootData)]; DWORD size=0;
-    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size!=sizeof(BootData)) return false;
-    return XGetLaunchData(data,sizeof(data))==ERROR_SUCCESS && !memcmp(data,BootData,sizeof(BootData));
-}
-static void BootDisc() {
-    if(fopen_s(&Log,BootLog,"w")) Log=NULL;
-    Note("Launching %s for a game launcher",LaunchXex);
-    if(Log) { fclose(Log); Log=NULL; }
-    XLaunchNewImage(LaunchXex,0);
-    if(fopen_s(&Log,BootLog,"a")) Log=NULL;
-    Note("XLaunchNewImage failed (%lu).",GetLastError());
-    if(Log) fclose(Log);
-    XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
-}
-
 void __cdecl main() {
-    if(BootRequested()) { BootDisc(); return; }
     if(fopen_s(&Log,LogFile,"w")) Log=NULL;
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);

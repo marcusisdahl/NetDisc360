@@ -22,9 +22,7 @@ Sync reads only a few sectors of each new ISO over its own server connection, so
 
 `tools\netiso_aurora.py` does the same job on a PC, for when you'd rather copy the folders yourself.
 
-Starting a game: its launcher mounts the ISO through the plugin, waits until the disc has been the game for 5 s, then starts NetISO Sync with a request to boot the disc, and Sync starts it. On the console, a disc started straight from the launcher (which carries the game's Title ID) ended on the Xbox dashboard, while the same disc started from Aurora worked. So NetISO Sync must stay at `<games folder>\NetISO Sync`; without it, the launcher starts the disc itself. If the start fails, it returns to DashLaunch's Default.
-
-If something goes wrong, read `netiso.log`: Sync writes one in its folder (and `netiso-boot.log` when it boots a disc), and each game writes one in its own folder (each folder it listed, and why it stopped).
+If something goes wrong, read `netiso.log`: Sync writes one in its folder, and each game writes one in its own folder (each folder it listed, and why it stopped).
 
 ## How the mount works
 
@@ -38,7 +36,7 @@ The launcher walks those folders by name (root, the ISO, `Mount`) rather than as
 
 ## Not verified on a console yet
 
-- Booting the disc from NetISO Sync. Mounting from the launcher works on the console.
+- Mounting from the launcher, and launching the disc with `XLaunchNewImage`.
 - Sync on the console: network startup, the server connection, and writing to Hdd1:.
 - That the kernel loads the launcher after its execution info header is rewritten. Sync and the PC tool recompute the header digest (SHA-1 at security info + 0x164) so it matches the edited header; only the RSA signature over it is left stale, which a patched kernel skips. BadUpdate/XeUnshackle is untested.
 - How Aurora names the games: it takes the Title ID from the header, but the launcher has no title name resource, so names come from Aurora's online lookup.
