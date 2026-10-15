@@ -19,6 +19,7 @@ Only reads the ISOs. Game folders that already exist in the output folder
 are rewritten, and nothing else there is touched.
 """
 import argparse
+import hashlib
 import os
 import struct
 import sys
@@ -30,6 +31,8 @@ PARTITIONS = ((0xFDA0000, 0xFD90000), (0x2090000, 0x2080000), (0x10000, 0))
 EXECUTION_INFO = 0x40006
 EXECUTION_INFO_SIZE = 24
 FATX_NAME_MAX = 42
+# Header digest in the security info, and where the part it skips ends.
+XEX_DIGEST_AT, XEX_DIGEST_END = 0x164, 0x17C
 # FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names.
 FATX_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-.@[]^_`{}~")
 DEFAULT_LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "xbox", "NetIsoLauncher.xex")
@@ -104,6 +107,21 @@ def game_execution_info(iso_path):
         return read_at(f, offset + at, EXECUTION_INFO_SIZE)
 
 
+def fix_header_digest(xex):
+    """Recomputes the header digest of a XEX whose header was edited.
+
+    The digest covers the header from the end of the security info's fixed
+    part to the end of the header, then everything before the RSA signature.
+    The loader checks it even when the signature check is patched out.
+    """
+    header_size, security = struct.unpack_from(">I", xex, 8)[0], struct.unpack_from(">I", xex, 16)[0]
+    if header_size > len(xex) or security < 24 or security + XEX_DIGEST_END > header_size:
+        return False
+    digest = hashlib.sha1(bytes(xex[security + XEX_DIGEST_END:header_size]) + bytes(xex[:security + 8])).digest()
+    xex[security + XEX_DIGEST_AT:security + XEX_DIGEST_AT + 20] = digest
+    return True
+
+
 def launcher_info_offset(launcher):
     headers = xex_headers(launcher)
     at = headers.get(EXECUTION_INFO)
@@ -176,6 +194,7 @@ def main(argv=None):
         os.makedirs(folder, exist_ok=True)
         patched = bytearray(launcher)
         patched[info_at:info_at + EXECUTION_INFO_SIZE] = info
+        fix_header_digest(patched)
         with open(os.path.join(folder, "default.xex"), "wb") as f:
             f.write(patched)
         with open(os.path.join(folder, "netiso.ini"), "w", newline="\r\n") as f:

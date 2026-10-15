@@ -38,7 +38,7 @@ The launcher walks those folders by name (root, the ISO, `Mount`) rather than as
 
 - Mounting from the launcher, and launching the disc with `XLaunchNewImage`.
 - Sync on the console: network startup, the server connection, and writing to Hdd1:.
-- That the kernel loads the launcher after its execution info header is rewritten. RGH/JTAG kernels accept edited headers in general; BadUpdate/XeUnshackle is untested.
+- That the kernel loads the launcher after its execution info header is rewritten. Sync and the PC tool recompute the header digest (SHA-1 at security info + 0x164) so it matches the edited header; only the RSA signature over it is left stale, which a patched kernel skips. BadUpdate/XeUnshackle is untested.
 - How Aurora names the games: it takes the Title ID from the header, but the launcher has no title name resource, so names come from Aurora's online lookup.
 - Multi-disc games: each disc's ISO gets its own launcher; swapping discs mid-game is not handled.
 

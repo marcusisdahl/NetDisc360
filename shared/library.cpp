@@ -12,7 +12,7 @@ static const char GameIni[] = "netiso.ini", GameXex[] = "default.xex";
 // (where the magic is, where the game partition starts), as netiso-srv checks.
 static const U64 Partitions[][2] = { { 0xFDA0000, 0xFD90000 }, { 0x2090000, 0x2080000 }, { 0x10000, 0 } };
 static const char XgdMagic[] = "MICROSOFT*XBOX*MEDIA";
-enum { XgdMagicSize = 20, DirectoryMax = 1048576 };
+enum { XgdMagicSize = 20, DirectoryMax = 1048576, XexDigestAt = 0x164, XexDigestEnd = 0x17C };
 
 static void Say(Note note, const char* format, ...) {
     if(!note) return;
@@ -50,6 +50,59 @@ DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size) {
         return at>=24 && at+ExecutionInfoSize<=headerSize ? at : 0;
     }
     return 0;
+}
+
+// SHA-1, for the XEX header digest (the Xbox build could use XeCryptSha, but
+// the host tests need it too).
+struct Sha1 {
+    DWORD h[5]; unsigned char block[64]; DWORD used; U64 total;
+    Sha1() : used(0), total(0) { h[0]=0x67452301; h[1]=0xEFCDAB89; h[2]=0x98BADCFE; h[3]=0x10325476; h[4]=0xC3D2E1F0; }
+    static DWORD Rotate(DWORD v, int n) { return (v<<n)|(v>>(32-n)); }
+    void Compress() {
+        DWORD w[80];
+        for(int i=0;i<16;++i) w[i]=Read32(block+i*4);
+        for(int i=16;i<80;++i) w[i]=Rotate(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+        DWORD a=h[0],b=h[1],c=h[2],d=h[3],e=h[4];
+        for(int i=0;i<80;++i) {
+            DWORD f,k;
+            if(i<20) { f=(b&c)|(~b&d); k=0x5A827999; }
+            else if(i<40) { f=b^c^d; k=0x6ED9EBA1; }
+            else if(i<60) { f=(b&c)|(b&d)|(c&d); k=0x8F1BBCDC; }
+            else { f=b^c^d; k=0xCA62C1D6; }
+            DWORD t=Rotate(a,5)+f+e+k+w[i];
+            e=d; d=c; c=Rotate(b,30); b=a; a=t;
+        }
+        h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d; h[4]+=e;
+    }
+    void Add(const unsigned char* data, DWORD size) {
+        total+=size;
+        while(size--) { block[used++]=*data++; if(used==64) { Compress(); used=0; } }
+    }
+    void Finish(unsigned char* digest) {
+        U64 bits=total*8;
+        unsigned char one=0x80,zero=0;
+        Add(&one,1);
+        while(used!=56) Add(&zero,1);
+        for(int i=7;i>=0;--i) { block[used++]=(unsigned char)(bits>>(i*8)); }
+        Compress();
+        for(int i=0;i<5;++i) Write32(digest+i*4,h[i]);
+    }
+};
+
+bool FixHeaderDigest(unsigned char* xex, DWORD size) {
+    if(size<24 || memcmp(xex,"XEX2",4)) return false;
+    DWORD headerSize=Read32(xex+8),security=Read32(xex+16);
+    if(headerSize>size || security<24 || security+XexDigestEnd>headerSize) return false;
+    // The header digest (security info + 0x164) covers the header from the
+    // end of the security info's fixed part to the end of the header, then
+    // everything before the security info's RSA signature. It is what the
+    // signature signs, and the loader checks it even when the signature check
+    // is patched out, so a copy with edited execution info needs a new one.
+    Sha1 sha;
+    sha.Add(xex+security+XexDigestEnd,headerSize-security-XexDigestEnd);
+    sha.Add(xex,security+8);
+    sha.Finish(xex+security+XexDigestAt);
+    return true;
 }
 
 void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out) {
@@ -191,6 +244,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
         if(!copy) { Say(note,"Out of memory."); return false; }
         memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info,ExecutionInfoSize);
+        FixHeaderDigest(copy,launcherSize);
         char text[IsvrNameBytes+160];
         _snprintf_s(text,sizeof(text),_TRUNCATE,"; Written by NetISO Sync. iso is the file name the NetISO server lists.\r\niso=%s\r\ntitle_id=%08X\r\nmedia_id=%08X\r\n",
             isos[i],Read32(info+12),Read32(info));

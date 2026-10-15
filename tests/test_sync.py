@@ -20,7 +20,7 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import netiso_aurora  # noqa: E402
-from test_generator import execution_info, write_iso, xex  # noqa: E402
+from test_generator import execution_info, header_digest, write_iso, xex  # noqa: E402
 
 SYNC_HOST = os.environ.get("SYNC_HOST") or os.path.join(ROOT, "build", "host", "sync-host")
 
@@ -99,6 +99,9 @@ class Sync(unittest.TestCase):
                 if name == "netiso.ini":  # Only the comment line differs.
                     left, right = left.split(b"\n", 1)[1], right.split(b"\n", 1)[1]
                 self.assertEqual(left, right, "%s/%s" % (game, name))
+                if name == "default.xex":
+                    stored, computed = header_digest(right)
+                    self.assertEqual(stored, computed, game)
 
     def test_adds_new_isos_and_keeps_existing(self):
         self.add_iso("a.iso", 1, 0x11111111)

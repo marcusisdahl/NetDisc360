@@ -3,6 +3,7 @@
     python tests/test_generator.py
 """
 import os
+import hashlib
 import struct
 import subprocess
 import sys
@@ -16,18 +17,33 @@ import netiso_aurora  # noqa: E402
 SECTOR = 2048
 
 
+SECURITY_SIZE = 0x180
+
+
+def header_digest(data):
+    """(stored, computed) XEX header digest, as the loader checks it."""
+    header_size, security = struct.unpack_from(">I", data, 8)[0], struct.unpack_from(">I", data, 16)[0]
+    computed = hashlib.sha1(bytes(data[security + 0x17C:header_size]) + bytes(data[:security + 8])).digest()
+    return bytes(data[security + 0x164:security + 0x178]), computed
+
+
 def xex(execution_info, filler=b""):
-    """A XEX2 header with an execution info header and one other header."""
+    """A XEX2 header with an execution info header, one other header and a
+    security info with a valid header digest."""
     headers = [(0x10001, 0x82000000), (0x40006, 0)]
     table_end = 24 + 8 * len(headers)
     info_at = table_end + 8
     headers[1] = (0x40006, info_at)
-    header_size = info_at + len(execution_info) + 40
+    security = info_at + len(execution_info) + 40
+    header_size = security + SECURITY_SIZE + 64
     data = bytearray(header_size)
-    data[0:24] = struct.pack(">4sIIIII", b"XEX2", 0, header_size, 0, 0, len(headers))
+    data[0:24] = struct.pack(">4sIIIII", b"XEX2", 0, header_size, 0, security, len(headers))
     for i, (key, value) in enumerate(headers):
         struct.pack_into(">II", data, 24 + 8 * i, key, value)
     data[info_at:info_at + len(execution_info)] = execution_info
+    for i in range(security + 8, header_size):  # Stand-in signature, keys and imports.
+        data[i] = (i * 7) & 0xFF
+    data[security + 0x164:security + 0x178] = header_digest(data)[1]
     return bytes(data) + filler
 
 
@@ -96,7 +112,15 @@ class Generator(unittest.TestCase):
             original = f.read()
         at = netiso_aurora.xex_headers(original)[0x40006]
         self.assertEqual(made[at:at + 24], info)
-        self.assertEqual(made[:at] + made[at + 24:], original[:at] + original[at + 24:])
+        # Only the execution info and the header digest change, and the new
+        # digest is valid.
+        digest_at = struct.unpack_from(">I", original, 16)[0] + 0x164
+        def rest(data):
+            return data[:at] + data[at + 24:digest_at] + data[digest_at + 20:]
+        self.assertEqual(rest(made), rest(original))
+        stored, computed = header_digest(made)
+        self.assertEqual(stored, computed)
+        self.assertNotEqual(stored, header_digest(original)[0])
         ini = self.read_out("Halo 3", "netiso.ini").decode()
         self.assertIn("iso=Halo 3.iso\r\n", ini)
         self.assertIn("title_id=4D5307E6\r\n", ini)

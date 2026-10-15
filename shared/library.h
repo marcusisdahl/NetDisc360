@@ -36,6 +36,9 @@ struct SyncResult { int added, kept, removed, skipped; };
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);
 // Offset of the execution info (0x40006) in a XEX header, or 0.
 DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size);
+// Recomputes the header digest after the header was edited; false if the
+// header is too short to have one.
+bool FixHeaderDigest(unsigned char* xex, DWORD size);
 // FATX-safe folder name for an ISO, unique among used (case-insensitive).
 void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out);
 // Reads the execution info of default.xex on the ISO mounted on client.
