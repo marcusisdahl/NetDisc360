@@ -29,6 +29,9 @@
 #include "../shared/library.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
+// The start of the kernel's LDR_DATA_TABLE_ENTRY, which a module handle points at.
+struct WideString { USHORT length,capacity; wchar_t* text; };
+struct LoaderEntry { void* links[6]; void* ntHeaders; void* imageBase; DWORD imageSize; WideString fullName; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
@@ -37,12 +40,24 @@ extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
 // XLaunchNewImage on \Device\Cdrom0\default.xex ended on the Xbox dashboard
 // with the Guide dead instead.
 extern "C" DWORD __stdcall XLaunchNewImageEx(LPCSTR xexName,LPCSTR mountPath,LPCSTR commandLine,DWORD flags);
+// XLaunchNewImage is declared DECLSPEC_NORETURN, so the compiler drops the
+// code after a call, but it does return when the launch fails. Calling it
+// through this pointer keeps that code.
+typedef VOID (WINAPI* LaunchFunction)(LPCSTR,DWORD);
+static LaunchFunction volatile LaunchImage=XLaunchNewImage;
 
 static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
 static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
+// The game launcher hands the disc start to NetISO Sync with this launch data.
+// Started from the launcher, which carries the game's own Title ID, the game
+// ran but without the Guide, and crashed at its storage/profile prompt (seen
+// on the console); from Aurora, which has no Title ID, both work. So the game
+// is started from a title with an ID of its own. SyncFolder is NetISO Sync's
+// folder in the games folder.
+static const char BootData[]="NetISO boot",SyncFolder[]="NetISO Sync",BootLog[]="game:\\netiso-boot.log";
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close. The new disc reads
@@ -200,19 +215,60 @@ static bool MountGame(const char* ini) {
     return false;
 }
 
+// Starts default.xex on the disc the way Aurora does, then the plain way if
+// that returns. Returns only if both failed. The log is closed meanwhile.
+static void StartDisc(const char* logFile) {
+    Note("Launching %s from %s, as Aurora does",DiscXexName,DiscMount);
+    if(Log) { fclose(Log); Log=NULL; }
+    DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,AuroraLaunchFlags);
+    if(fopen_s(&Log,logFile,"a")) Log=NULL;
+    Note("XamLoaderLaunchTitleEx returned %08X (%lu); trying XLaunchNewImage(%s).",result,GetLastError(),LaunchXex);
+    if(Log) { fclose(Log); Log=NULL; }
+    LaunchImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
+    if(fopen_s(&Log,logFile,"a")) Log=NULL;
+    Note("XLaunchNewImage failed (%lu).",GetLastError());
+}
+
+// NetISO Sync's default.xex as a device path, from this launcher's own path
+// (<games folder>\<game>\default.xex), if it is there.
+static bool SyncXex(char* path,size_t capacity) {
+    const LoaderEntry* self=reinterpret_cast<const LoaderEntry*>(GetModuleHandle(NULL));
+    if(!self || !self->fullName.text || !self->fullName.length) { Note("Can't find this launcher's path."); return false; }
+    char own[MAX_PATH]; size_t length=self->fullName.length/2;
+    if(length>=sizeof(own)) return false;
+    for(size_t i=0;i<length;++i) own[i]=char(self->fullName.text[i]);
+    own[length]=0;
+    Note("Launcher %s",own);
+    for(int up=0;up<2;++up) { char* slash=strrchr(own,'\\'); if(!slash || slash==own) return false; *slash=0; }
+    char folder[MAX_PATH]; sprintf_s(folder,"%s\\%s",own,SyncFolder);
+    static const char SyncLink[]="\\??\\NIsoS:";
+    bool there=false;
+    if(LinkDrive(SyncLink,folder)>=0) {
+        HANDLE file=CreateFile("NIsoS:\\default.xex",GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+        if(file!=INVALID_HANDLE_VALUE) { CloseHandle(file); there=true; }
+        UnlinkDrive(SyncLink);
+    }
+    if(!there) { Note("No %s\\default.xex.",folder); return false; }
+    sprintf_s(path,capacity,"%s\\default.xex",folder);
+    return true;
+}
+
 static void LaunchGame(const char* ini) {
     bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
     if(!mounted) return;
-    Note("Launching %s from %s, as Aurora does",DiscXexName,DiscMount);
-    if(Log) { fclose(Log); Log=NULL; }
-    DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,AuroraLaunchFlags);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-    Note("XamLoaderLaunchTitleEx returned %08X (%lu); trying XLaunchNewImage(%s).",result,GetLastError(),LaunchXex);
-    if(Log) { fclose(Log); Log=NULL; }
-    XLaunchNewImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-    Note("XLaunchNewImage failed (%lu).",GetLastError());
+    char sync[MAX_PATH];
+    if(SyncXex(sync,sizeof(sync))) {
+        DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
+        if(set==ERROR_SUCCESS) {
+            Note("Handing the disc start to %s",sync);
+            if(Log) { fclose(Log); Log=NULL; }
+            LaunchImage(sync,0);
+            if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+            Note("Couldn't start %s (%lu); starting the disc here.",sync,GetLastError());
+        } else Note("XSetLaunchData failed (%lu); starting the disc here.",set);
+    }
+    StartDisc(LogFile);
 }
 
 // ---- NetISO Sync ----
@@ -370,12 +426,25 @@ static void LaunchAfterSync(const char* ini) {
     Note("Starting %s",path);
     if(Log) { fclose(Log); Log=NULL; }
     UnlinkDrives();
-    XLaunchNewImage(path,0);
+    LaunchImage(path,0);
     if(fopen_s(&Log,LogFile,"a")) Log=NULL;
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
+// Started by a game launcher (BootData as launch data): start the disc.
+static bool BootRequested() {
+    char data[sizeof(BootData)]; DWORD size=0;
+    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size!=sizeof(BootData)) return false;
+    return XGetLaunchData(data,sizeof(data))==ERROR_SUCCESS && !memcmp(data,BootData,sizeof(BootData));
+}
+
 void __cdecl main() {
+    if(BootRequested()) {
+        if(fopen_s(&Log,BootLog,"w")) Log=NULL;
+        StartDisc(BootLog);
+        if(Log) fclose(Log);
+        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+    }
     if(fopen_s(&Log,LogFile,"w")) Log=NULL;
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
@@ -392,5 +461,5 @@ void __cdecl main() {
     // A game that didn't start goes back to the default app, which DashLaunch
     // points at its Default (Aurora). Sync goes to the dashboard: it may be
     // the Default itself, and would start again.
-    XLaunchNewImage(game ? XLAUNCH_KEYWORD_DEFAULT_APP : XLAUNCH_KEYWORD_DASH,0);
+    LaunchImage(game ? XLAUNCH_KEYWORD_DEFAULT_APP : XLAUNCH_KEYWORD_DASH,0);
 }

@@ -22,7 +22,9 @@ Sync reads only a few sectors of each new ISO over its own server connection, so
 
 `tools\netiso_aurora.py` does the same job on a PC, for when you'd rather copy the folders yourself.
 
-If something goes wrong, read `netiso.log`: Sync writes one in its folder, and each game writes one in its own folder (each folder it listed, and why it stopped).
+Starting a game: its launcher mounts the ISO through the plugin, waits until the disc has been the game for 5 s, then starts NetISO Sync with a request to boot the disc, and Sync starts it the way Aurora does. A game started straight from its launcher (which carries the game's Title ID) ran without the Guide and crashed at its storage/profile prompt, so NetISO Sync must stay at `<games folder>\NetISO Sync`; without it, the launcher starts the disc itself.
+
+If something goes wrong, read `netiso.log`: Sync writes one in its folder (and `netiso-boot.log` when it starts a disc), and each game writes one in its own folder (each folder it listed, and why it stopped).
 
 ## How the mount works
 
