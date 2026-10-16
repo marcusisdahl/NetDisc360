@@ -58,7 +58,14 @@ static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // prompt, while the same mount from Aurora's file browser, which leaves the
 // disc alone, was fine (seen on the console). So the launcher keeps off the
 // disc this long after the mount before it checks it.
+// quiet_ms= in netiso.ini overrides it.
 static const int QuietMs=5000;
+// Whole number from netiso.ini, or fallback.
+static int IniNumber(const char* ini,const char* key,int fallback) {
+    char value[16];
+    if(!nia::IniValue(ini,key,value,sizeof(value)) || !value[0]) return fallback;
+    return atoi(value);
+}
 
 // A plain screen with a progress bar, drawn while the launcher works. A title
 // that never draws left the Guide dead, in the game it started too (seen on
@@ -283,13 +290,15 @@ static bool MountGame(const char* ini) {
     bool asked=FindMountFolder(settings,folder,sizeof(folder)) && ListMountFolder(folder);
     UnlinkDrive(IsoLink);
     if(!asked) { Failed=true; Wait(5000); return false; }
-    for(int waited=0;waited<QuietMs;waited+=PollMs) {
-        Progress=10+60*waited/QuietMs;
+    int quiet=IniNumber(ini,"quiet_ms",QuietMs);
+    if(quiet!=QuietMs) Note("Leaving the disc alone for %d ms (quiet_ms).",quiet);
+    for(int waited=0;waited<quiet;waited+=PollMs) {
+        Progress=10+60*waited/quiet;
         Wait(PollMs);
     }
-    for(int waited=QuietMs;waited<MountWaitMs;waited+=PollMs) {
+    for(int waited=quiet;waited<quiet+MountWaitMs;waited+=PollMs) {
         if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return true; }
-        Progress=70+20*waited/MountWaitMs;
+        Progress=70+20*(waited-quiet)/MountWaitMs;
         Wait(PollMs);
     }
     DWORD titleId=0,mediaId=0;
@@ -314,10 +323,13 @@ static void StartDisc(const char* logFile) {
     Note("XLaunchNewImage failed (%lu).",GetLastError());
 }
 
+// mount_only=1 in netiso.ini mounts and goes back to Aurora without starting
+// the game, to tell whether the mount or the start breaks something.
 static void LaunchGame(const char* ini) {
     bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
     if(!mounted) return;
+    if(IniNumber(ini,"mount_only",0)) { Note("mount_only=1: back to Aurora without starting the game."); return; }
     StartDisc(LogFile);
 }
 
