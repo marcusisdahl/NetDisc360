@@ -29,9 +29,6 @@
 #include "../shared/library.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
-// The start of the kernel's LDR_DATA_TABLE_ENTRY, which a module handle points at.
-struct WideString { USHORT length,capacity; wchar_t* text; };
-struct LoaderEntry { void* links[6]; void* ntHeaders; void* imageBase; DWORD imageSize; WideString fullName; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
@@ -51,13 +48,6 @@ static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Dev
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
-// The game launcher hands the disc start to NetISO Sync with this launch data.
-// Started from the launcher, which carries the game's own Title ID, the game
-// ran but without the Guide, and crashed at its storage/profile prompt (seen
-// on the console); from Aurora, which has no Title ID, both work. So the game
-// is started from a title with an ID of its own. SyncFolder is NetISO Sync's
-// folder in the games folder.
-static const char BootData[]="NetISO boot",SyncFolder[]="NetISO Sync",BootLog[]="game:\\netiso-boot.log";
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close. The new disc reads
@@ -65,8 +55,41 @@ static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // exits to the dashboard, so the disc must read as the game this long first.
 static const int SettleMs=5000;
 
+// A plain screen with a progress bar, drawn while the launcher works. A title
+// that never draws left the Guide dead, in the game it started too (seen on
+// the console), so the launcher keeps presenting frames until it launches.
+static IDirect3DDevice9* Screen=NULL;
+static int Progress=0; // 0 to 100
+static void ScreenStart() {
+    IDirect3D9* d3d=Direct3DCreate9(D3D_SDK_VERSION);
+    if(!d3d) return;
+    D3DPRESENT_PARAMETERS pp; ZeroMemory(&pp,sizeof(pp));
+    pp.BackBufferWidth=1280; pp.BackBufferHeight=720; pp.BackBufferFormat=D3DFMT_X8R8G8B8; pp.BackBufferCount=1;
+    pp.MultiSampleType=D3DMULTISAMPLE_NONE; pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
+    pp.PresentationInterval=D3DPRESENT_INTERVAL_ONE;
+    if(FAILED(d3d->CreateDevice(0,D3DDEVTYPE_HAL,NULL,D3DCREATE_HARDWARE_VERTEXPROCESSING,&pp,&Screen))) Screen=NULL;
+    d3d->Release();
+}
+static void ScreenDraw() {
+    if(!Screen) return;
+    Screen->Clear(0,NULL,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,16,16),1.0f,0);
+    D3DRECT track={340,500,940,510},bar={340,500,340+6*Progress,510};
+    Screen->Clear(1,&track,D3DCLEAR_TARGET,D3DCOLOR_XRGB(48,48,48),1.0f,0);
+    if(Progress>0) Screen->Clear(1,&bar,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,124,16),1.0f,0);
+    Screen->Present(NULL,NULL,NULL,NULL);
+}
+// Before launching anything.
+static void ScreenStop() {
+    if(Screen) { Screen->Release(); Screen=NULL; }
+}
+// Sleep that keeps drawing.
+static void Wait(int ms) {
+    for(int waited=0;waited<ms;waited+=20) { ScreenDraw(); Sleep(20); }
+}
+
 static FILE* Log=NULL;
 static void Note(const char* format,...) {
+    ScreenDraw();
     if(!Log) return;
     va_list args; va_start(args,format); vfprintf(Log,format,args); va_end(args);
     fputc('\n',Log); fflush(Log);
@@ -206,7 +229,9 @@ static bool MountGame(const char* ini) {
             Note("The disc changed again after %d ms.",waited);
             settled=-1;
         } else if(waited>=MountWaitMs) break;
-        Sleep(PollMs);
+        Progress=10+80*waited/(MountWaitMs+SettleMs);
+        if(settled>=0) Progress=10+80*settled/SettleMs;
+        Wait(PollMs);
     }
     if(settled>=0) { Note("Launching without the disc settling."); return true; }
     DWORD titleId=0,mediaId=0;
@@ -219,6 +244,7 @@ static bool MountGame(const char* ini) {
 // that returns. Returns only if both failed. The log is closed meanwhile.
 static void StartDisc(const char* logFile) {
     Note("Launching %s from %s, as Aurora does",DiscXexName,DiscMount);
+    Progress=100; ScreenDraw(); ScreenStop();
     if(Log) { fclose(Log); Log=NULL; }
     DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,AuroraLaunchFlags);
     if(fopen_s(&Log,logFile,"a")) Log=NULL;
@@ -229,45 +255,10 @@ static void StartDisc(const char* logFile) {
     Note("XLaunchNewImage failed (%lu).",GetLastError());
 }
 
-// NetISO Sync's default.xex as a device path, from this launcher's own path
-// (<games folder>\<game>\default.xex), if it is there.
-static bool SyncXex(char* path,size_t capacity) {
-    const LoaderEntry* self=reinterpret_cast<const LoaderEntry*>(GetModuleHandle(NULL));
-    if(!self || !self->fullName.text || !self->fullName.length) { Note("Can't find this launcher's path."); return false; }
-    char own[MAX_PATH]; size_t length=self->fullName.length/2;
-    if(length>=sizeof(own)) return false;
-    for(size_t i=0;i<length;++i) own[i]=char(self->fullName.text[i]);
-    own[length]=0;
-    Note("Launcher %s",own);
-    for(int up=0;up<2;++up) { char* slash=strrchr(own,'\\'); if(!slash || slash==own) return false; *slash=0; }
-    char folder[MAX_PATH]; sprintf_s(folder,"%s\\%s",own,SyncFolder);
-    static const char SyncLink[]="\\??\\NIsoS:";
-    bool there=false;
-    if(LinkDrive(SyncLink,folder)>=0) {
-        HANDLE file=CreateFile("NIsoS:\\default.xex",GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-        if(file!=INVALID_HANDLE_VALUE) { CloseHandle(file); there=true; }
-        UnlinkDrive(SyncLink);
-    }
-    if(!there) { Note("No %s\\default.xex.",folder); return false; }
-    sprintf_s(path,capacity,"%s\\default.xex",folder);
-    return true;
-}
-
 static void LaunchGame(const char* ini) {
     bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
     if(!mounted) return;
-    char sync[MAX_PATH];
-    if(SyncXex(sync,sizeof(sync))) {
-        DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
-        if(set==ERROR_SUCCESS) {
-            Note("Handing the disc start to %s",sync);
-            if(Log) { fclose(Log); Log=NULL; }
-            LaunchImage(sync,0);
-            if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-            Note("Couldn't start %s (%lu); starting the disc here.",sync,GetLastError());
-        } else Note("XSetLaunchData failed (%lu); starting the disc here.",set);
-    }
     StartDisc(LogFile);
 }
 
@@ -386,7 +377,7 @@ static bool StartNetwork() {
     XNADDR address;
     for(int waited=0;waited<10000;waited+=250) {
         if(XNetGetTitleXnAddr(&address)!=XNET_GET_XNADDR_PENDING) return true;
-        Sleep(250);
+        Wait(250);
     }
     Note("No network address after 10 s.");
     return false;
@@ -407,7 +398,7 @@ static void Sync(const char* ini) {
     bool connected=false;
     for(int attempt=0;attempt<3 && !connected;++attempt) {
         connected=client.Connect(address,port,3) && client.Ping();
-        if(!connected) { Note("Server: %s",client.Error()); Sleep(1000); }
+        if(!connected) { Note("Server: %s",client.Error()); Wait(1000); }
     }
     if(!connected) return;
     nia::SyncResult result;
@@ -426,25 +417,15 @@ static void LaunchAfterSync(const char* ini) {
     Note("Starting %s",path);
     if(Log) { fclose(Log); Log=NULL; }
     UnlinkDrives();
+    ScreenStop();
     LaunchImage(path,0);
     if(fopen_s(&Log,LogFile,"a")) Log=NULL;
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
-// Started by a game launcher (BootData as launch data): start the disc.
-static bool BootRequested() {
-    char data[sizeof(BootData)]; DWORD size=0;
-    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size!=sizeof(BootData)) return false;
-    return XGetLaunchData(data,sizeof(data))==ERROR_SUCCESS && !memcmp(data,BootData,sizeof(BootData));
-}
-
 void __cdecl main() {
-    if(BootRequested()) {
-        if(fopen_s(&Log,BootLog,"w")) Log=NULL;
-        StartDisc(BootLog);
-        if(Log) fclose(Log);
-        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
-    }
+    ScreenStart();
+    ScreenDraw();
     if(fopen_s(&Log,LogFile,"w")) Log=NULL;
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
@@ -458,6 +439,7 @@ void __cdecl main() {
     }
     UnlinkDrives();
     if(Log) fclose(Log);
+    ScreenStop();
     // A game that didn't start goes back to the default app, which DashLaunch
     // points at its Default (Aurora). Sync goes to the dashboard: it may be
     // the Default itself, and would start again.
