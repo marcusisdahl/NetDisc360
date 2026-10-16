@@ -16,7 +16,8 @@ try {
     Copy-Item -LiteralPath launcher\sync.ini -Destination "$sync\netiso.ini" -Force
     # boot.xex: the same program without execution info (no Title ID), which
     # mounts and starts the disc for each game's launcher. See launcher/main.cpp.
-    $imagexex = Get-ChildItem -Recurse -Filter imagexex.exe -Path $env:XEDK, $env:RXDK, 'C:\Program Files (x86)\Microsoft Xbox 360 SDK' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $sdks = @($env:XEDK, $env:RXDK, 'C:\Program Files (x86)\Microsoft Xbox 360 SDK', 'C:\Program Files\RXDK-360\bin') | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $imagexex = Get-ChildItem -Recurse -Filter imagexex.exe -Path $sdks -ErrorAction SilentlyContinue | Select-Object -First 1
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
