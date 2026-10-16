@@ -31,6 +31,12 @@
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
+// Creates a thread; flags 2 puts it in the system process (as DashLaunch
+// plugins and Aurora's Nova.xex do), with XapiThreadStartup as its start-up.
+extern "C" DWORD __stdcall ExCreateThread(PHANDLE handle,DWORD stackSize,LPDWORD threadId,PVOID apiStartup,
+                                          LPTHREAD_START_ROUTINE start,LPVOID parameter,DWORD flags);
+extern "C" VOID __cdecl XapiThreadStartup(VOID (__cdecl* start)(VOID*),VOID* context);
+static const DWORD SystemThreadFlag=2;
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
 // XLaunchNewImageEx): starts xexName from mountPath. This is how Aurora 0.7b
 // starts titles, discs included, with flags 0x10 (read from its Nova.xex).
@@ -44,7 +50,7 @@ typedef VOID (WINAPI* LaunchFunction)(LPCSTR,DWORD);
 static LaunchFunction volatile LaunchImage=XLaunchNewImage;
 
 static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
-static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
+static const char IsoLink[]="\\??\\NIsoL:",SystemIsoLink[]="\\System??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
@@ -61,6 +67,7 @@ static const int SettleMs=5000;
 // the console), so the launcher keeps presenting frames until it launches.
 static IDirect3DDevice9* Screen=NULL;
 static int Progress=0; // 0 to 100
+static bool Failed=false; // Draws the bar red.
 static void ScreenStart() {
     IDirect3D9* d3d=Direct3DCreate9(D3D_SDK_VERSION);
     if(!d3d) return;
@@ -76,7 +83,8 @@ static void ScreenDraw() {
     Screen->Clear(0,NULL,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,16,16),1.0f,0);
     D3DRECT track={340,500,940,510},bar={340,500,340+6*Progress,510};
     Screen->Clear(1,&track,D3DCLEAR_TARGET,D3DCOLOR_XRGB(48,48,48),1.0f,0);
-    if(Progress>0) Screen->Clear(1,&bar,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,124,16),1.0f,0);
+    if(Failed) Screen->Clear(1,&track,D3DCLEAR_TARGET,D3DCOLOR_XRGB(180,32,32),1.0f,0);
+    else if(Progress>0) Screen->Clear(1,&bar,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,124,16),1.0f,0);
     Screen->Present(NULL,NULL,NULL,NULL);
 }
 // Before launching anything.
@@ -91,11 +99,16 @@ static FILE* Log=NULL;
 // the console). Aurora reads its notifications; the launcher didn't. Each one
 // is logged, to see what the swap sends.
 static HANDLE Notifications=NULL;
+// The log is also written from the mount thread; only the main thread draws.
+static CRITICAL_SECTION LogLock;
+static DWORD MainThread=0;
 static void ReadNotifications() {
     if(!Notifications) return;
     DWORD id; ULONG_PTR param;
     while(XNotifyGetNext(Notifications,0,&id,&param)) {
+        EnterCriticalSection(&LogLock);
         if(Log) { fprintf(Log,"  notification %08X, %08X\n",id,(DWORD)param); fflush(Log); }
+        LeaveCriticalSection(&LogLock);
     }
 }
 
@@ -105,11 +118,13 @@ static void Wait(int ms) {
 }
 
 static void Note(const char* format,...) {
-    ReadNotifications();
-    ScreenDraw();
-    if(!Log) return;
-    va_list args; va_start(args,format); vfprintf(Log,format,args); va_end(args);
-    fputc('\n',Log); fflush(Log);
+    if(GetCurrentThreadId()==MainThread) { ReadNotifications(); ScreenDraw(); }
+    EnterCriticalSection(&LogLock);
+    if(Log) {
+        va_list args; va_start(args,format); vfprintf(Log,format,args); va_end(args);
+        fputc('\n',Log); fflush(Log);
+    }
+    LeaveCriticalSection(&LogLock);
 }
 static void NoteText(const char* text) { Note("%s",text); }
 
@@ -225,15 +240,64 @@ static bool RequestMount(const Settings& settings) {
     return false;
 }
 
+// The mount request runs on a system thread. Listing the Mount folder makes
+// the plugin fake a tray open and close right there, by calling the SMC
+// notification handlers (XAM's among them) on the listing thread. Real tray
+// notifications never arrive on a title's thread; done from the launcher's
+// own thread, the Guide stayed dead until reboot and games crashed at their
+// storage/profile prompt (seen on the console), while the same mount done
+// from Aurora was fine. Aurora's Nova.xex runs its work on system threads.
+static bool FindServer(const char* ini,DWORD& address,int& port);
+static bool StartNetwork();
+// Whether the NetISO server answers, before asking the plugin to mount. Not
+// knowing the server isn't fatal: the plugin may still have one.
+static bool ServerAnswers(const char* ini) {
+    DWORD address=0; int port=nia::IsvrPort;
+    if(!FindServer(ini,address,port)) { Note("Not checking the server."); return true; }
+    if(!StartNetwork()) return false;
+    nia::IsvrClient client(5);
+    bool ok=client.Connect(address,port,3) && client.Ping();
+    if(ok) Note("The server answers.");
+    else Note("Can't reach the NetISO server: %s",client.Error());
+    client.Close();
+    return ok;
+}
+
+struct MountJob { const Settings* settings; volatile bool asked,done; };
+static DWORD WINAPI MountThread(LPVOID parameter) {
+    MountJob* job=static_cast<MountJob*>(parameter);
+    // A system thread resolves drive letters under \System??, not the title's \??.
+    LONG status=LinkDrive(SystemIsoLink,IsoDevice);
+    if(status<0) Note("Can't link %s on the system thread (status %08X).",SystemIsoLink,status);
+    job->asked=RequestMount(*job->settings);
+    UnlinkDrive(SystemIsoLink);
+    job->done=true;
+    return 0;
+}
+static bool MountFromSystemThread(const Settings& settings) {
+    MountJob job={&settings,false,false};
+    HANDLE thread=NULL; DWORD id=0;
+    DWORD status=ExCreateThread(&thread,0,&id,(PVOID)XapiThreadStartup,MountThread,&job,SystemThreadFlag);
+    if(status!=0 || !thread) {
+        Note("Can't start a system thread (status %08X); mounting from this one.",status);
+        return RequestMount(settings);
+    }
+    Note("Mounting from system thread %08X.",id);
+    while(!job.done) Wait(50);
+    CloseHandle(thread);
+    return job.asked;
+}
+
 static bool MountGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) return false;
     if(LinkDrive(DiscLink,DiscDevice)<0) { Note("Can't link %s.",DiscDevice); return false; }
     if(DiscIsGame(settings)) { Note("The game is already mounted."); return true; }
+    if(!ServerAnswers(ini)) { Failed=true; Wait(5000); return false; }
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded. Add it as a DashLaunch plugin.");
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
-    bool asked=RequestMount(settings);
+    bool asked=MountFromSystemThread(settings);
     UnlinkDrive(IsoLink);
     if(!asked) return false;
     int settled=-1; // ms the disc has read as the game, or -1.
@@ -472,6 +536,8 @@ static void HandToHelper() {
 }
 
 void __cdecl main() {
+    InitializeCriticalSection(&LogLock);
+    MainThread=GetCurrentThreadId();
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     ScreenStart();
     ScreenDraw();
