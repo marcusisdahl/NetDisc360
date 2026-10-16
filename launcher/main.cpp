@@ -31,13 +31,6 @@
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
-// Creates a thread; flags 2 puts it in the system process (as DashLaunch
-// plugins and Aurora's Nova.xex do), with XapiThreadStartup as its start-up.
-// Plugins resume it afterwards; created this way it didn't run on its own.
-extern "C" DWORD __stdcall ExCreateThread(PHANDLE handle,DWORD stackSize,LPDWORD threadId,PVOID apiStartup,
-                                          LPTHREAD_START_ROUTINE start,LPVOID parameter,DWORD flags);
-extern "C" VOID __cdecl XapiThreadStartup(VOID (__cdecl* start)(VOID*),VOID* context);
-static const DWORD SystemThreadFlag=2;
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
 // XLaunchNewImageEx): starts xexName from mountPath. This is how Aurora 0.7b
 // starts titles, discs included, with flags 0x10 (read from its Nova.xex).
@@ -51,12 +44,11 @@ typedef VOID (WINAPI* LaunchFunction)(LPCSTR,DWORD);
 static LaunchFunction volatile LaunchImage=XLaunchNewImage;
 
 static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
-static const char IsoLink[]="\\??\\NIsoL:",SystemIsoLink[]="\\System??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
+static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
 static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
-static const char LauncherXex[]="game:\\default.xex",MountedData[]="NetISO mounted";
 static const int ThreadWaitMs=15000;
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
@@ -272,84 +264,53 @@ static bool ServerAnswers(const char* ini) {
     return ok;
 }
 
-// The mount request runs on a system thread. Listing the Mount folder makes
-// the plugin fake a tray open and close right there, by calling the SMC
-// notification handlers (XAM's among them) on the listing thread. Real tray
-// notifications never arrive on a title's thread; done from the launcher's
-// own thread, the Guide stayed dead until reboot and games crashed at their
-// storage/profile prompt (seen on the console), while the same mount done
-// from Aurora was fine. Aurora's Nova.xex runs its work on system threads.
-// The thread writes nothing to the log (its file handle belongs to the
-// title); it records what it did, and the main thread logs that.
-struct MountJob {
-    char folder[MAX_PATH],device[MAX_PATH]; // NIsoL:\...\Mount, and the same under \Device\NetIso
-    volatile bool started,done;
-    volatile LONG linkStatus;
-    volatile DWORD listError,deviceError;
-};
+// The Mount folder is listed on a second thread while the main thread keeps
+// drawing. Listing it makes the plugin fake a tray open and close right
+// there (0.2 s apart), on the listing thread. Done on the launcher's only
+// thread, the screen stood still meanwhile, and the Guide stayed dead until
+// reboot and games crashed at their storage/profile prompt (seen on the
+// console). Mounted from Aurora's file browser, whose screen keeps drawing,
+// the same game was fine.
+struct MountJob { char folder[MAX_PATH]; volatile bool done; volatile DWORD error; };
 static DWORD WINAPI MountThread(LPVOID parameter) {
     MountJob* job=static_cast<MountJob*>(parameter);
-    job->started=true;
-    // A system thread resolves drive letters under \System??, not the title's \??.
-    job->linkStatus=LinkDrive(SystemIsoLink,IsoDevice);
-    job->listError=ListMountFolder(job->folder);
-    // The drive letter not found there: try the device path itself.
-    if(job->listError==ERROR_PATH_NOT_FOUND||job->listError==ERROR_FILE_NOT_FOUND||job->listError==ERROR_INVALID_NAME)
-        job->deviceError=ListMountFolder(job->device);
-    UnlinkDrive(SystemIsoLink);
+    job->error=ListMountFolder(job->folder);
     job->done=true;
     return 0;
 }
 static bool MountListed(DWORD error) { return error==ERROR_NO_MORE_FILES||error==ERROR_SUCCESS; }
-static bool MountFromSystemThread(const char* folder) {
+static bool MountWhileDrawing(const char* folder) {
     static MountJob job; // Outlives this call if the thread hangs.
     memset((void*)&job,0,sizeof(job));
-    job.deviceError=MAXDWORD;
     strcpy_s(job.folder,folder);
-    sprintf_s(job.device,"%s%s",IsoDevice,folder+strlen(IsoRoot));
-    HANDLE thread=NULL; DWORD id=0;
-    DWORD status=ExCreateThread(&thread,0,&id,(PVOID)XapiThreadStartup,MountThread,&job,SystemThreadFlag);
-    if(status!=0 || !thread) {
-        Note("Can't start a system thread (status %08X); mounting from this one.",status);
-        DWORD error=ListMountFolder(folder);
-        Note("%s: error %lu",folder,error);
-        return MountListed(error);
+    HANDLE thread=CreateThread(NULL,0,MountThread,&job,0,NULL);
+    if(!thread) {
+        Note("Can't start a thread (%lu); mounting without drawing.",GetLastError());
+        job.error=ListMountFolder(folder);
+    } else {
+        int waited=0;
+        for(;!job.done && waited<ThreadWaitMs;waited+=20) Wait(20);
+        if(job.done) WaitForSingleObject(thread,2000);
+        CloseHandle(thread);
+        if(!job.done) { Note("Listing %s didn't finish in %d ms.",folder,ThreadWaitMs); return false; }
+        Note("Listed %s in %d ms while drawing.",folder,waited);
     }
-    ResumeThread(thread);
-    Note("Mounting from system thread %08X.",id);
-    int waited=0;
-    for(;!job.done && waited<ThreadWaitMs;waited+=50) Wait(50);
-    // The thread runs this program's code until it ends; wait for that too.
-    if(job.done) WaitForSingleObject(thread,2000);
-    CloseHandle(thread);
-    if(!job.started) {
-        Note("The system thread never ran; mounting from this one.");
-        DWORD error=ListMountFolder(folder);
-        Note("%s: error %lu",folder,error);
-        return MountListed(error);
-    }
-    if(!job.done) { Note("The system thread didn't finish in %d ms.",ThreadWaitMs); return false; }
-    Note("System thread: link %08X, %s: error %lu",job.linkStatus,job.folder,job.listError);
-    if(job.deviceError!=MAXDWORD) Note("System thread: %s: error %lu",job.device,job.deviceError);
-    return MountListed(job.listError) || MountListed(job.deviceError);
+    Note("%s: error %lu",folder,job.error);
+    return MountListed(job.error);
 }
 
-// mounted is set when this call mounted the game (rather than finding it).
-// With mayMount false, the game must already be mounted.
-static bool MountGame(const char* ini,bool mayMount,bool& mounted) {
-    mounted=false;
+static bool MountGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) return false;
     if(LinkDrive(DiscLink,DiscDevice)<0) { Note("Can't link %s.",DiscDevice); return false; }
     if(DiscIsGame(settings)) { Note("The game is already mounted."); return true; }
-    if(!mayMount) { Note("The game should be mounted by now, but the disc isn't it."); Failed=true; Wait(5000); return false; }
     if(!ServerAnswers(ini)) { Failed=true; Wait(5000); return false; }
     Progress=5; ScreenDraw();
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded. Add it as a DashLaunch plugin.");
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
     char folder[MAX_PATH];
-    bool asked=FindMountFolder(settings,folder,sizeof(folder)) && MountFromSystemThread(folder);
+    bool asked=FindMountFolder(settings,folder,sizeof(folder)) && MountWhileDrawing(folder);
     UnlinkDrive(IsoLink);
     if(!asked) { Failed=true; Wait(5000); return false; }
     int settled=-1; // ms the disc has read as the game, or -1.
@@ -357,7 +318,7 @@ static bool MountGame(const char* ini,bool mayMount,bool& mounted) {
         if(DiscIsGame(settings)) {
             if(settled<0) Note("Mounted after %d ms.",waited);
             settled=settled<0 ? 0 : settled+PollMs;
-            if(settled>=SettleMs) { Note("Settled after %d ms.",waited); mounted=true; return true; }
+            if(settled>=SettleMs) { Note("Settled after %d ms.",waited); return true; }
         } else if(settled>=0) {
             Note("The disc changed again after %d ms.",waited);
             settled=-1;
@@ -366,7 +327,7 @@ static bool MountGame(const char* ini,bool mayMount,bool& mounted) {
         if(settled>=0) Progress=10+80*settled/SettleMs;
         Wait(PollMs);
     }
-    if(settled>=0) { Note("Launching without the disc settling."); mounted=true; return true; }
+    if(settled>=0) { Note("Launching without the disc settling."); return true; }
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,MountWaitMs);
     else Note("No readable disc after %d ms.",MountWaitMs);
@@ -389,28 +350,10 @@ static void StartDisc(const char* logFile) {
     Note("XLaunchNewImage failed (%lu).",GetLastError());
 }
 
-// After mounting, the launcher starts again, finds the game mounted and
-// starts the disc. That is the order that kept the Guide working on the
-// console: mounted while Aurora ran, then the game's tile started. Mounted
-// and started by the same program, the Guide stayed dead in the game.
-static void StartLauncherAgain() {
-    DWORD set=XSetLaunchData((PVOID)MountedData,sizeof(MountedData));
-    if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); starting the disc from here.",set); return; }
-    Note("Mounted; starting %s again to start the disc.",LauncherXex);
-    Progress=100; ScreenDraw();
-    if(Log) { fclose(Log); Log=NULL; }
-    ScreenStop();
-    LaunchImage(LauncherXex,0);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
-    Note("Couldn't start %s (%lu); starting the disc from here.",LauncherXex,GetLastError());
-    ScreenStart();
-}
-static void LaunchGame(const char* ini,bool mayMount) {
-    bool mountedNow=false;
-    bool ready=MountGame(ini,mayMount,mountedNow);
+static void LaunchGame(const char* ini) {
+    bool mounted=MountGame(ini);
     UnlinkDrive(DiscLink);
-    if(!ready) return;
-    if(mountedNow) StartLauncherAgain(); // Returns only if that failed.
+    if(!mounted) return;
     StartDisc(LogFile);
 }
 
@@ -613,18 +556,17 @@ void __cdecl main() {
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     ScreenStart();
     ScreenDraw();
-    bool helper=LaunchedWith(BootData),again=!helper && LaunchedWith(MountedData);
-    // The helper and the second start append to the launcher's log.
-    if(fopen_s(&Log,LogFile,helper||again ? "a" : "w")) Log=NULL;
+    bool helper=LaunchedWith(BootData);
+    // The helper appends to the launcher's log.
+    if(fopen_s(&Log,LogFile,helper ? "a" : "w")) Log=NULL;
     if(helper) Note("Started as the helper.");
-    if(again) Note("Started again to start the mounted game.");
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
     bool game=nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0];
     if(game) {
-        if(!helper && !again) HandToHelper();
-        LaunchGame(ini,!again);
+        if(!helper) HandToHelper();
+        LaunchGame(ini);
     } else {
         Note("NetISO Sync");
         Sync(ini);
