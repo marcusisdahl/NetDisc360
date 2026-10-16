@@ -82,13 +82,29 @@ static void ScreenDraw() {
 static void ScreenStop() {
     if(Screen) { Screen->Release(); Screen=NULL; }
 }
-// Sleep that keeps drawing.
-static void Wait(int ms) {
-    for(int waited=0;waited<ms;waited+=20) { ScreenDraw(); Sleep(20); }
+static FILE* Log=NULL;
+
+// System notifications, read the way a game reads them. The plugin's fake
+// disc swap while the launcher ran left the Guide dead in the game it then
+// started; mounted from Aurora first, the same launch kept the Guide (seen on
+// the console). Aurora reads its notifications; the launcher didn't. Each one
+// is logged, to see what the swap sends.
+static HANDLE Notifications=NULL;
+static void ReadNotifications() {
+    if(!Notifications) return;
+    DWORD id; ULONG_PTR param;
+    while(XNotifyGetNext(Notifications,0,&id,&param)) {
+        if(Log) { fprintf(Log,"  notification %08X, %08X\n",id,(DWORD)param); fflush(Log); }
+    }
 }
 
-static FILE* Log=NULL;
+// Sleep that keeps drawing and reading notifications.
+static void Wait(int ms) {
+    for(int waited=0;waited<ms;waited+=20) { ReadNotifications(); ScreenDraw(); Sleep(20); }
+}
+
 static void Note(const char* format,...) {
+    ReadNotifications();
     ScreenDraw();
     if(!Log) return;
     va_list args; va_start(args,format); vfprintf(Log,format,args); va_end(args);
@@ -424,6 +440,7 @@ static void LaunchAfterSync(const char* ini) {
 }
 
 void __cdecl main() {
+    Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     ScreenStart();
     ScreenDraw();
     if(fopen_s(&Log,LogFile,"w")) Log=NULL;
