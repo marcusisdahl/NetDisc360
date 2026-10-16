@@ -22,7 +22,7 @@ Sync reads only a few sectors of each new ISO over its own server connection, so
 
 `tools\netiso_aurora.py` does the same job on a PC, for when you'd rather copy the folders yourself.
 
-Starting a game: its launcher mounts the ISO through the plugin, waits until the disc has been the game for 5 s, then starts the disc the way Aurora does. While it works it shows a plain screen with a progress bar: a launcher that drew nothing left the Guide dead, in the game it started too.
+Starting a game: the game's launcher (which carries the game's Title ID for Aurora's tile) starts `boot.xex` next to it, a copy of the same program built without a Title ID. That helper mounts the ISO through the plugin, waits until the disc has been the game for 5 s, and starts the disc the way Aurora does. The plugin fakes a disc tray open and close when it mounts; when that happened while a program with a Title ID was running, the Guide stayed dead until reboot and games crashed at their storage/profile prompt. Aurora has no Title ID, and neither does the helper. Both show a plain screen with a progress bar while they work. Sync copies `boot.xex` from its own folder into every game folder; without it, the launcher mounts by itself as before.
 
 If something goes wrong, read `netiso.log`: Sync writes one in its folder, and each game writes one in its own folder (each folder it listed, and why it stopped).
 

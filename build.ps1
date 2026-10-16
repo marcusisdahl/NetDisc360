@@ -14,6 +14,12 @@ try {
     New-Item -ItemType Directory -Force $sync | Out-Null
     Copy-Item -LiteralPath build\xbox\NetIsoLauncher.xex -Destination "$sync\default.xex" -Force
     Copy-Item -LiteralPath launcher\sync.ini -Destination "$sync\netiso.ini" -Force
+    # boot.xex: the same program without execution info (no Title ID), which
+    # mounts and starts the disc for each game's launcher. See launcher/main.cpp.
+    $imagexex = Get-ChildItem -Recurse -Filter imagexex.exe -Path $env:XEDK, $env:RXDK, 'C:\Program Files (x86)\Microsoft Xbox 360 SDK' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
+    & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
+    if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }

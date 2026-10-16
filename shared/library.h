@@ -23,7 +23,7 @@ public:
     virtual bool ReadFile(const char* path, unsigned char* data, DWORD capacity, DWORD& size) = 0;
     virtual bool WriteFile(const char* path, const void* data, DWORD size) = 0;
     virtual bool MakeFolder(const char* path) = 0;
-    // Deletes default.xex, netiso.ini and netiso.log in folder, then the folder
+    // Deletes default.xex, boot.xex, netiso.ini and netiso.log in folder, then the folder
     // if it is empty. Anything else in it is left alone.
     virtual bool RemoveGame(const char* folder) = 0;
     // Error code of the last call that failed, for the log.
@@ -47,6 +47,8 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
 
 typedef void (*Note)(const char* text);
 // launcher is a launcher XEX (any copy; its execution info is overwritten).
+// boot, if not NULL, is the helper XEX without execution info that each game
+// folder gets as boot.xex (see launcher/main.cpp).
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          Note note, SyncResult& result);
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result);
 }

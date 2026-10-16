@@ -73,10 +73,11 @@ class Sync(unittest.TestCase):
             self.server.stdout.close()
             self.server = None
 
-    def sync(self, expect_ok=True):
+    def sync(self, expect_ok=True, boot=None):
         # The test server reads its ISO list at start, like netiso-srv per connection.
         self.start_server()
-        result = subprocess.run([SYNC_HOST, str(self.port), self.games, self.launcher], capture_output=True, text=True, timeout=60)
+        result = subprocess.run([SYNC_HOST, str(self.port), self.games, self.launcher] + ([boot] if boot else []),
+                                capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode == 0, expect_ok, result.stdout + result.stderr)
         return result.stdout
 
@@ -134,6 +135,30 @@ class Sync(unittest.TestCase):
         stored, computed = header_digest(after)
         self.assertEqual(stored, computed)
         self.assertIn("updated=0", self.sync())  # Current now.
+
+    def test_boot_helper_is_copied_kept_current_and_removed(self):
+        boot = os.path.join(self.tmp.name, "boot.xex")
+        with open(boot, "wb") as f:
+            f.write(b"BOOT HELPER 1")
+        self.add_iso("a.iso", 1, 0x11111111)
+        self.sync()  # Made without the helper, as by an older Sync.
+        self.assertFalse(os.path.exists(os.path.join(self.games, "a", "boot.xex")))
+        self.add_iso("b.iso", 2, 0x22222222)
+        out = self.sync(boot=boot)
+        self.assertIn("added=1 kept=1", out)
+        self.assertIn("updated=1", out)  # a got the helper.
+        for game in ("a", "b"):
+            with open(os.path.join(self.games, game, "boot.xex"), "rb") as f:
+                self.assertEqual(f.read(), b"BOOT HELPER 1")
+        self.assertIn("updated=0", self.sync(boot=boot))
+        with open(boot, "wb") as f:
+            f.write(b"BOOT HELPER 2, longer")
+        self.assertIn("updated=2", self.sync(boot=boot))
+        with open(os.path.join(self.games, "b", "boot.xex"), "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER 2, longer")
+        os.remove(os.path.join(self.isos, "b.iso"))
+        self.assertIn("removed=1", self.sync(boot=boot))
+        self.assertEqual(os.listdir(self.games), ["a"])
 
     def test_removes_folders_of_isos_that_are_gone(self):
         self.add_iso("a.iso", 1, 0x11111111)

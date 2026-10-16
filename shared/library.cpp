@@ -8,7 +8,7 @@
 
 namespace nia {
 static const DWORD ExecutionInfo = 0x40006;
-static const char GameIni[] = "netiso.ini", GameXex[] = "default.xex";
+static const char GameIni[] = "netiso.ini", GameXex[] = "default.xex", GameBoot[] = "boot.xex";
 // (where the magic is, where the game partition starts), as netiso-srv checks.
 static const U64 Partitions[][2] = { { 0xFDA0000, 0xFD90000 }, { 0x2090000, 0x2080000 }, { 0x10000, 0 } };
 static const char XgdMagic[] = "MICROSOFT*XBOX*MEDIA";
@@ -212,8 +212,20 @@ static int RefreshLauncher(Storage& storage, const char* folder, const unsigned 
     return result;
 }
 
+// Writes data as folder\name unless the file already holds exactly that.
+// 1 if written, 0 if it was current, -1 on failure.
+static int RefreshFile(Storage& storage, const char* folder, const char* name, const unsigned char* data, DWORD size) {
+    char path[PathMax]; Join(path,folder,name);
+    unsigned char* old=static_cast<unsigned char*>(malloc(size+1));
+    DWORD oldSize=0;
+    bool same=old && storage.ReadFile(path,old,size+1,oldSize) && oldSize==size && !memcmp(old,data,size);
+    free(old);
+    if(same) return 0;
+    return storage.WriteFile(path,data,size) ? 1 : -1;
+}
+
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          Note note, SyncResult& result) {
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -253,6 +265,10 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
                 if(!folders[k].keep || _stricmp(folders[k].iso,isos[i])) continue;
                 char folder[PathMax]; Join(folder,root,folders[k].name);
                 int refreshed=RefreshLauncher(storage,folder,launcher,launcherSize,infoAt);
+                if(boot && refreshed>=0) {
+                    int helper=RefreshFile(storage,folder,GameBoot,boot,bootSize);
+                    refreshed=helper<0 ? -1 : refreshed|helper;
+                }
                 if(refreshed>0) { Say(note,"Updated the launcher in %s.",folders[k].name); ++result.updated; }
                 else if(refreshed<0) Say(note,"Couldn't update the launcher in %s (error %lu).",folders[k].name,storage.LastError());
             }
@@ -286,6 +302,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         free(copy);
         Join(path,folder,GameIni);
         written=written && storage.WriteFile(path,text,DWORD(strlen(text)));
+        if(boot) { Join(path,folder,GameBoot); written=written && storage.WriteFile(path,boot,bootSize); }
         if(!written) {
             // One bad name shouldn't stop the rest; the next sync tries it again.
             Say(note,"Skipped %s: couldn't write %s (error %lu).",isos[i],folder,storage.LastError());

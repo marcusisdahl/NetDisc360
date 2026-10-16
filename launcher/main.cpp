@@ -48,6 +48,7 @@ static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Dev
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
+static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close. The new disc reads
@@ -346,8 +347,8 @@ public:
     }
     bool MakeFolder(const char* path) { return CreateDirectory(path,NULL) || GetLastError()==ERROR_ALREADY_EXISTS; }
     bool RemoveGame(const char* folder) {
-        static const char* files[]={"default.xex","netiso.ini","netiso.log"};
-        for(int i=0;i<3;++i) {
+        static const char* files[]={"default.xex","boot.xex","netiso.ini","netiso.log"};
+        for(int i=0;i<4;++i) {
             char path[nia::PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s\\%s",folder,files[i]);
             DeleteFile(path);
         }
@@ -399,7 +400,7 @@ static bool StartNetwork() {
     return false;
 }
 
-static unsigned char Launcher[4<<20];
+static unsigned char Launcher[4<<20],Boot[4<<20];
 static void Sync(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     char value[nia::PathMax],games[nia::PathMax];
@@ -409,6 +410,10 @@ static void Sync(const char* ini) {
     // This XEX is the template; its execution info is overwritten per game.
     XboxStorage storage; DWORD size=0;
     if(!storage.ReadFile("game:\\default.xex",Launcher,sizeof(Launcher),size)) { Note("Can't read game:\\default.xex."); return; }
+    // The helper each game folder gets (see BootRequested), if it's here.
+    DWORD bootSize=0;
+    bool boot=storage.ReadFile(BootXex,Boot,sizeof(Boot),bootSize);
+    if(!boot) Note("No %s; games will mount from their own launcher.",BootXex);
     if(!FindServer(ini,address,port) || !StartNetwork()) return;
     nia::IsvrClient client(10);
     bool connected=false;
@@ -418,7 +423,7 @@ static void Sync(const char* ini) {
     }
     if(!connected) return;
     nia::SyncResult result;
-    bool ok=nia::Sync(client,storage,games,Launcher,size,NoteText,result);
+    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result);
     Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
 }
@@ -439,17 +444,49 @@ static void LaunchAfterSync(const char* ini) {
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
+// The game's launcher hands the whole start to boot.xex in its folder, a copy
+// of this program built without execution info (no Title ID), like Aurora.
+// The plugin's fake tray cycle, run while the launcher (with the game's Title
+// ID) was the running title, left the Guide dead until reboot, and the game
+// crashed at its storage/profile prompt; mounted while Aurora ran, the same
+// game was fine (seen on the console). The launcher needs the Title ID for
+// Aurora's tile, so the mount happens in the helper instead.
+static bool BootRequested() {
+    char data[sizeof(BootData)]; DWORD size=0;
+    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size!=sizeof(BootData)) return false;
+    return XGetLaunchData(data,sizeof(data))==ERROR_SUCCESS && !memcmp(data,BootData,sizeof(BootData));
+}
+static void HandToHelper() {
+    HANDLE file=CreateFile(BootXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) { Note("No %s; mounting from the launcher.",BootXex); return; }
+    CloseHandle(file);
+    DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
+    if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); mounting from the launcher.",set); return; }
+    Note("Handing the start to %s",BootXex);
+    if(Log) { fclose(Log); Log=NULL; }
+    ScreenStop();
+    LaunchImage(BootXex,0);
+    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    Note("Couldn't start %s (%lu); mounting from the launcher.",BootXex,GetLastError());
+    ScreenStart();
+}
+
 void __cdecl main() {
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     ScreenStart();
     ScreenDraw();
-    if(fopen_s(&Log,LogFile,"w")) Log=NULL;
+    bool helper=BootRequested();
+    // The helper appends to the launcher's log.
+    if(fopen_s(&Log,LogFile,helper ? "a" : "w")) Log=NULL;
+    if(helper) Note("Started as the helper.");
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
     bool game=nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0];
-    if(game) LaunchGame(ini);
-    else {
+    if(game) {
+        if(!helper) HandToHelper();
+        LaunchGame(ini);
+    } else {
         Note("NetISO Sync");
         Sync(ini);
         LaunchAfterSync(ini);
