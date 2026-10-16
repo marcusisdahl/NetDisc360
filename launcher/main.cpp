@@ -49,13 +49,16 @@ static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",Disc
 static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
 static const DWORD AuroraLaunchFlags=0x10;
 static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
-static const int ThreadWaitMs=15000;
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
-// After the mount the plugin fakes a tray open and close. The new disc reads
-// before that settles, and a game started in between gets the tray event and
-// exits to the dashboard, so the disc must read as the game this long first.
-static const int SettleMs=5000;
+// After the mount the plugin fakes a tray open and close on its own thread
+// (0.2 s apart), and the console then reads the new disc. The launcher used
+// to read the disc right away and every 0.5 s while that went on; the game
+// it started then had the Guide dead and crashed at its storage/profile
+// prompt, while the same mount from Aurora's file browser, which leaves the
+// disc alone, was fine (seen on the console). So the launcher keeps off the
+// disc this long after the mount before it checks it.
+static const int QuietMs=5000;
 
 // A plain screen with a progress bar, drawn while the launcher works. A title
 // that never draws left the Guide dead, in the game it started too (seen on
@@ -237,15 +240,17 @@ static bool FindMountFolder(const Settings& settings,char* folder,size_t capacit
     Note("Gave up after %d folders without a Mount folder.",MaxDepth);
     return false;
 }
-// Lists a Mount folder, which mounts. It comes back empty (error 18, no more
-// files) when the plugin took it.
-static DWORD ListMountFolder(const char* folder) {
+// Lists a Mount folder, which mounts: the plugin swaps the disc before the
+// listing returns (empty, error 18 no more files), then fakes the tray open
+// and close on its own thread (read from NetISO.xex).
+static bool ListMountFolder(const char* folder) {
     char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
     WIN32_FIND_DATA found;
     HANDLE find=FindFirstFile(pattern,&found);
-    if(find==INVALID_HANDLE_VALUE) return GetLastError();
-    FindClose(find);
-    return ERROR_SUCCESS;
+    DWORD error=ERROR_SUCCESS;
+    if(find==INVALID_HANDLE_VALUE) error=GetLastError(); else FindClose(find);
+    Note("%s: error %lu",folder,error);
+    return error==ERROR_NO_MORE_FILES||error==ERROR_SUCCESS;
 }
 
 static bool FindServer(const char* ini,DWORD& address,int& port);
@@ -264,41 +269,6 @@ static bool ServerAnswers(const char* ini) {
     return ok;
 }
 
-// The Mount folder is listed on a second thread while the main thread keeps
-// drawing. Listing it makes the plugin fake a tray open and close right
-// there (0.2 s apart), on the listing thread. Done on the launcher's only
-// thread, the screen stood still meanwhile, and the Guide stayed dead until
-// reboot and games crashed at their storage/profile prompt (seen on the
-// console). Mounted from Aurora's file browser, whose screen keeps drawing,
-// the same game was fine.
-struct MountJob { char folder[MAX_PATH]; volatile bool done; volatile DWORD error; };
-static DWORD WINAPI MountThread(LPVOID parameter) {
-    MountJob* job=static_cast<MountJob*>(parameter);
-    job->error=ListMountFolder(job->folder);
-    job->done=true;
-    return 0;
-}
-static bool MountListed(DWORD error) { return error==ERROR_NO_MORE_FILES||error==ERROR_SUCCESS; }
-static bool MountWhileDrawing(const char* folder) {
-    static MountJob job; // Outlives this call if the thread hangs.
-    memset((void*)&job,0,sizeof(job));
-    strcpy_s(job.folder,folder);
-    HANDLE thread=CreateThread(NULL,0,MountThread,&job,0,NULL);
-    if(!thread) {
-        Note("Can't start a thread (%lu); mounting without drawing.",GetLastError());
-        job.error=ListMountFolder(folder);
-    } else {
-        int waited=0;
-        for(;!job.done && waited<ThreadWaitMs;waited+=20) Wait(20);
-        if(job.done) WaitForSingleObject(thread,2000);
-        CloseHandle(thread);
-        if(!job.done) { Note("Listing %s didn't finish in %d ms.",folder,ThreadWaitMs); return false; }
-        Note("Listed %s in %d ms while drawing.",folder,waited);
-    }
-    Note("%s: error %lu",folder,job.error);
-    return MountListed(job.error);
-}
-
 static bool MountGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) return false;
@@ -310,24 +280,18 @@ static bool MountGame(const char* ini) {
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
     char folder[MAX_PATH];
-    bool asked=FindMountFolder(settings,folder,sizeof(folder)) && MountWhileDrawing(folder);
+    bool asked=FindMountFolder(settings,folder,sizeof(folder)) && ListMountFolder(folder);
     UnlinkDrive(IsoLink);
     if(!asked) { Failed=true; Wait(5000); return false; }
-    int settled=-1; // ms the disc has read as the game, or -1.
-    for(int waited=0;waited<MountWaitMs+SettleMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) {
-            if(settled<0) Note("Mounted after %d ms.",waited);
-            settled=settled<0 ? 0 : settled+PollMs;
-            if(settled>=SettleMs) { Note("Settled after %d ms.",waited); return true; }
-        } else if(settled>=0) {
-            Note("The disc changed again after %d ms.",waited);
-            settled=-1;
-        } else if(waited>=MountWaitMs) break;
-        Progress=10+80*waited/(MountWaitMs+SettleMs);
-        if(settled>=0) Progress=10+80*settled/SettleMs;
+    for(int waited=0;waited<QuietMs;waited+=PollMs) {
+        Progress=10+60*waited/QuietMs;
         Wait(PollMs);
     }
-    if(settled>=0) { Note("Launching without the disc settling."); return true; }
+    for(int waited=QuietMs;waited<MountWaitMs;waited+=PollMs) {
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return true; }
+        Progress=70+20*waited/MountWaitMs;
+        Wait(PollMs);
+    }
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,MountWaitMs);
     else Note("No readable disc after %d ms.",MountWaitMs);
@@ -559,6 +523,7 @@ void __cdecl main() {
     bool helper=LaunchedWith(BootData);
     // The helper appends to the launcher's log.
     if(fopen_s(&Log,LogFile,helper ? "a" : "w")) Log=NULL;
+    Note("NetISO launcher built %s %s",__DATE__,__TIME__);
     if(helper) Note("Started as the helper.");
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
