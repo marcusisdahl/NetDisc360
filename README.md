@@ -2,8 +2,8 @@
 
 Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360 is a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora: every game it serves shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
 
-- **One small program on the PC.** Double-click `NetDisc.exe`, pick your game folders, and minimize it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker.
-- **Any number of consoles.** Several consoles can play from one server at once, each with its own game list in Aurora. The window's dashboard shows what each one plays and how fast its game streams.
+- **One small program on the PC.** Double-click `NetDisc.exe`, pick your game folders on its dashboard in your web browser, and forget about it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker, with the same dashboard.
+- **Any number of consoles.** Several consoles can play from one server at once, each with its own game list in Aurora. The dashboard shows what each one plays and how fast its game streams.
 - **ISOs, extracted games and Games on Demand**, from as many folders as you like. Nothing is converted or copied.
 - **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
 - **The Guide keeps working** in games started this way.
@@ -32,7 +32,7 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360
      CUsbEnet.xex        <- optional, see Recommended extras
    ```
 
-2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The Windows app shows this address on its dashboard and at the bottom of its window. Give your PC a fixed address in your router, so it doesn't change.
+2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The server's dashboard shows this address. Give your PC a fixed address in your router, so it doesn't change.
 
 3. **Load the plugins in DashLaunch.** Open `launch.ini` and set its `[Plugins]` section like this (leave the rest of the file as it is):
 
@@ -54,17 +54,18 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360
 
 ### 2. Start the server
 
-**On Windows:** put `NetDisc.exe` anywhere, for example in the folder with your games, and double-click it.
+**On Windows:** put `NetDisc.exe` anywhere, for example in the folder with your games, and double-click it. It opens its dashboard in your web browser (`http://127.0.0.1:8360`) and keeps running behind its icon in the notification area, by the clock.
 
-- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with the round **+** button (or drop them on the window). Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
-- The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows whether the server runs, this PC's address, each console that uses it (what it plays, how fast the game streams, whether its Aurora answers and when its game folders were updated), and what happened lately.
-- The **Games** page lists every game it serves, with its cover, format, Title ID and size, and which console is playing it. Click a game for its details.
-- The **Consoles** page lists the consoles that have used the server. Enter **Aurora's FTP login** there if you changed it. Leave **Only these consoles** empty to keep every console that connects up to date.
-- On the **Settings** page, turn on **Start with Windows** to have it start, hidden, every time you sign in.
-- **Minimize or close the window and forget about it.** The server keeps running behind its icon in the notification area (by the clock). Click the icon to open the window again; right-click it and pick **Quit** to stop the server.
+- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with **Add a folder**. Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
+- The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
+- The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details.
+- The **Consoles** page lists every console that has used the server: what it plays, what it was sent, whether its Aurora answers and when its game folders were updated. Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
+- The **Settings** page has **Aurora's FTP login** (enter it if you changed it in Aurora) and **Start with Windows**, to have the server start, hidden, every time you sign in.
+- **Close the browser tab and forget about it.** The server keeps running. Click its icon to open the dashboard again (starting `NetDisc.exe` again does the same); right-click it and pick **Quit NetDisc 360** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
+- **From your phone or another computer:** on the **Settings** page, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
 
-Settings are saved in `%APPDATA%\NetDisc 360\netdisc.ini`, with the FTP password encrypted for your Windows user. The **Log** page shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), as before.
+Settings are saved in `%APPDATA%\NetDisc 360\netdisc.ini`, with the FTP password encrypted for your Windows user. The **Log** page shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), with the same dashboard.
 
 **With Docker** (Linux, a NAS, a Raspberry Pi): see [Docker](#docker) below.
 
@@ -76,18 +77,23 @@ For more consoles, repeat step 1 on each one (their `NetISO.xex.txt` holds the s
 
 ## Docker
 
-The same server runs in Docker on Linux, a NAS or anything else with Docker. Put [`docker-compose.yml`](docker-compose.yml) in a folder, set the path to your games in it, then:
+The same server runs in Docker on Linux, a NAS or anything else with Docker, with the same dashboard. Put [`docker-compose.yml`](docker-compose.yml) in a folder, set the path to your games in it, then:
 
 ```
+mkdir config && sudo chown 1000:1000 config
 docker compose up -d
-docker compose logs -f
 ```
+
+and open the dashboard at `http://<the machine's address>:8360`. Set a password for it on its **Settings** page (or with `NETDISC_WEB_PASSWORD`): without one, anyone on your network can open it and change its settings. `docker compose logs -f` shows the server's log too.
 
 It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker compose up -d --build`.
 
 | Setting | Default | |
 |---|---|---|
-| volume `/games` | | Your games (read-only is fine). Mount more folders under it, like `/games/isos`. |
+| volume `/games` | | Your games (read-only is fine). Mount more folders under it, like `/games/isos`, or anywhere else and add them on the dashboard. |
+| volume `/config` | | The dashboard's settings (`netdisc.ini`). It must be writable by user 1000:1000. |
+| `NETDISC_WEB_PASSWORD` | | The dashboard's password. Or `NETDISC_WEB_PASSWORD_FILE` with the path of a Docker secret. Set this way, it can't be changed on the dashboard. |
+| `NETDISC_WEB_PORT` | 8360 | The dashboard's port. `0`: no dashboard. |
 | `NETDISC_XBOX` | every console that connects | Only these consoles' game folders are kept up to date: IP addresses, separated by commas. Needed on Docker Desktop (Windows, macOS), where the server doesn't see the consoles' own addresses. |
 | `NETDISC_FTP_USER` | `xboxftp` | Aurora's FTP login. |
 | `NETDISC_FTP_PASSWORD` | `xboxftp` | Or `NETDISC_FTP_PASSWORD_FILE` with the path of a Docker secret. |
@@ -99,9 +105,10 @@ It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each releas
 | `NETDISC_VERBOSE` | | `true`: log every request. |
 | `TZ` | UTC | Your time zone, for the log's times. |
 
-- The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports: - "4323:4323"`, as on Docker Desktop), set `NETDISC_XBOX`.
-- The server runs as user 1000:1000. If it can't read your games, set `user:` in the compose file to an ID that can.
-- Without Docker Compose: `docker run -d --name netdisc --network host --restart unless-stopped -v /path/to/games:/games:ro -e NETDISC_FTP_PASSWORD=xboxftp ghcr.io/marcusisdahl/netdisc-360`.
+- The variables from `NETDISC_XBOX` down are only the first start's settings. Once the server has saved its settings in `/config`, what's saved there wins, and you change them on the dashboard. (`NETDISC_WEB_PASSWORD`, the ports and `NETDISC_VERBOSE` always apply.)
+- The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports:` with `4323:4323` and `8360:8360`, as on Docker Desktop), set `NETDISC_XBOX`.
+- The server runs as user 1000:1000. If it can't read your games, set `user:` in the compose file to an ID that can (and give `config` to that ID).
+- Without Docker Compose: `docker run -d --name netdisc --network host --restart unless-stopped -v /path/to/games:/games:ro -v /path/to/config:/config -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc-360`.
 
 ## Playing
 
@@ -122,11 +129,12 @@ Both are separate homebrew projects that work well alongside NetISO.
 
 ## Troubleshooting
 
-- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login in the window (or `--ftp-user`/`--ftp-password`) matches Aurora's. The server's log says what it is waiting for.
-- **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the window shows, and that Windows Firewall allows `NetDisc.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
+- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login on the dashboard's **Settings** page matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
+- **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the dashboard shows, and that Windows Firewall allows `NetDisc.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
 - **A game has no cover art.** Rename its folder in `Hdd1:\NetISO` (for example over FTP); at the next scan Aurora looks it up again. See [Cover art](#cover-art).
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
-- **A game is listed twice in the server's log as an extra copy.** The same game is in your folders more than once; the log shows where, so you can remove the copy you don't need.
+- **A game is listed under Extra copies on the Games page.** The same game is in your folders more than once; the page shows where, so you can remove the copy you don't need.
+- **The dashboard doesn't open.** Another program may be using port 8360; the log says so. Start the server with `--web-port` and another port. Opened from another device by a name rather than an address, it says to use the address until it has a password.
 
 ## Updating
 
@@ -140,12 +148,15 @@ What `NetDisc.exe` does, all from one file:
 - **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
-- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the window's **Games** page lists the other copies with their paths so you can remove them.
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the dashboard's **Games** page lists the other copies with their paths so you can remove them.
 - **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
 
 | Option | Default | |
 |---|---|---|
 | `<folder> ...` | the current folder | Folders with your games. |
+| `--config <file>` | | Keep the settings in this file. What's saved there (the dashboard's changes) wins over these options. The Windows app uses `%APPDATA%\NetDisc 360\netdisc.ini`, the Docker image `/config/netdisc.ini`. |
+| `--web-port <n>` | 8360 | The dashboard's port. `0`: no dashboard. |
+| `--web-bind <address>` | 127.0.0.1 | Where the dashboard listens: `127.0.0.1` for this computer only, `0.0.0.0` for the network too (the Docker image's default). Set a password for it on the dashboard or with `NETDISC_WEB_PASSWORD`. |
 | `--xbox <address>` | every console that connects | Keep only this console's game folders up to date. Give it once for each console. |
 | `--ftp-user`, `--ftp-password` | `xboxftp` | Aurora's FTP login. |
 | `--xbox-folder <path>` | `/Hdd1/NetISO` | The game folder on the console, as an FTP path. |
@@ -154,7 +165,7 @@ What `NetDisc.exe` does, all from one file:
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--online-wait <s>` | 120 | After Aurora's FTP comes back, the longest wait for the console to come online before writing game folders (see below). |
-| `--remove-wait <s>` | 60 | How long after the server starts a game folder whose game is gone stays on the console, so a games folder or drive that isn't there yet (or isn't added in the window yet) doesn't drop its games from Aurora. |
+| `--remove-wait <s>` | 60 | How long after the server starts a game folder whose game is gone stays on the console, so a games folder or drive that isn't there yet (or isn't added on the dashboard yet) doesn't drop its games from Aurora. |
 | `--port`, `--ftp-port` | 4323, 21 | |
 | `-v` | | Log every request. |
 
@@ -179,9 +190,10 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 
 ## Security
 
-- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it in the server's window (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. The window keeps the password encrypted for your Windows user and hands it to the server outside its command line; the server never writes it to its log.
+- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
-- **Covers in the window.** To show covers, the Windows window downloads them from GitHub (the XboxUnity-Scraper archive) or xboxunity.net, asking only for each game's Title ID, and keeps them in `%LOCALAPPDATA%\NetDisc 360\Covers`. Turn it off under **Settings > Covers**. The server itself never goes online.
+- **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and settings only change from its own page. Don't forward port 8360 from the internet either.
+- **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn it off under **Settings > Cover art**. The server itself never goes online.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
 
 ## Limitations
@@ -211,7 +223,7 @@ To make a release, see [RELEASING.md](RELEASING.md).
 
 ## Logs
 
-Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc 360 logs to its window.
+Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc 360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
 
 ### Troubleshooting switches
 
@@ -249,7 +261,7 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 
 ## Tests
 
-- `python tests\test_server.py` builds `netdisc` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end) and the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server: folders, removal, repair, and the category edit.
+- `python tests\test_server.py` builds `netdisc` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end), the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server (folders, removal, repair, and the category edit), and the dashboard's web API (games, consoles and bandwidth, settings kept in the settings file, the password, and changes only from its own page).
 - `python tests\test_discs.py` checks extracted folders and GOD packages: every file of a folder's disc reads back as it is on disk, walked as the console walks it; GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files; duplicates are served once and reported once; original Xbox folders are skipped; a file over 4 GB is refused.
 - `python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`.
 - `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the launcher folders made from them.
@@ -261,7 +273,7 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 - [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
 - [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
-- Dear ImGui 1.92 (MIT, `third_party/imgui-1.92/LICENSE.txt`) and [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the Windows window. Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
+- [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the dashboard. Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
 

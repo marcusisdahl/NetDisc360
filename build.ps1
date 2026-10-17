@@ -26,7 +26,10 @@ try {
     Compress-Archive -Path $sync -DestinationPath build\NetISO-Sync.zip -Force
     # NetDisc.exe (NetDisc 360): the PC server that replaces netiso-srv and keeps the
     # Xbox's game folders current, with default.xex and boot.xex built in
-    # (server/). Rebuilt every time so it carries the XEXs just made.
+    # (server/). Rebuilt every time so it carries the XEXs just made, and the
+    # dashboard page (web/index.html, made into server/web_page.h).
+    & python tools\make_web.py
+    if ($LASTEXITCODE) { throw 'make_web.py failed.' }
     & $msbuild server\NetIsoServer.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
@@ -48,5 +51,5 @@ try {
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
     Write-Host 'Built build\NetIsoTiles.xex. Add it as a DashLaunch plugin, next to NetISO.xex.'
-    Write-Host 'Built build\NetDisc.exe (NetDisc 360). Start it and add your game folders, or run NetDisc.exe -h in a command prompt.'
+    Write-Host 'Built build\NetDisc.exe (NetDisc 360). Start it: it opens its dashboard in your browser. NetDisc.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }

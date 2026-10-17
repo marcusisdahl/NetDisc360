@@ -29,6 +29,8 @@ void ReadTitles(std::vector<IsoFile>& discs);
 // over a GOD package over a folder, and moves the others to dropped, with
 // kept naming the one kept for each.
 void DropDuplicates(std::vector<IsoFile>& discs, std::vector<IsoFile>& dropped, std::vector<IsoFile>& kept);
+// The bytes of the files in folder and its subfolders (an extracted game's size, for the dashboard).
+U64 FolderBytes(const std::string& folder);
 
 class DiscImage {
 public:

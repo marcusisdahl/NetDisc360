@@ -1,11 +1,14 @@
 """Tests the PC server (server/) on Linux: the NetISO protocol as the plugin
-and NetISO Sync use it, and pushing game folders to tests/aurora_ftp.py, a
-stand-in for Aurora's FTP server.
+and NetISO Sync use it, pushing game folders to tests/aurora_ftp.py, a
+stand-in for Aurora's FTP server, and the dashboard's web API.
 
 Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 
     python tests/test_server.py
 """
+import gzip
+import http.client
+import json
 import os
 import shutil
 import socket
@@ -43,7 +46,8 @@ def build_server():
     if os.environ.get("NETDISC_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
-    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/ftp.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/ftp.cpp", "server/web.cpp",
+                                               "server/config.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -154,7 +158,7 @@ class ServerTest(unittest.TestCase):
 
     def start(self, *extra):
         self.port = free_port()
-        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push"] + list(extra),
+        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + list(extra),
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         deadline = time.time() + 10
         while time.time() < deadline:
@@ -257,7 +261,7 @@ class Push(ServerTest):
 
     def push(self, expect=0, ftp_port=None, extra=()):
         result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
-                                 "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
+                                 "--web-port", "0", "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
                                  "--launcher", self.launcher, "--boot", self.boot] + list(extra),
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
@@ -286,7 +290,7 @@ class Push(ServerTest):
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
 
     def test_takes_the_ftp_password_from_the_environment(self):
-        # The window and the Docker image pass the password this way.
+        # The Docker image passes the password this way.
         self.ftp.password = "s3cret pass"
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         os.environ["NETDISC_FTP_PASSWORD"] = "s3cret pass"
@@ -299,7 +303,7 @@ class Push(ServerTest):
         os.environ["NETDISC_FTP_PASSWORD"] = "wrong"
         try:
             result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
-                                     "--ftp-port", str(self.ftp.server_address[1]), "--ftp-password", "s3cret pass",
+                                     "--web-port", "0", "--ftp-port", str(self.ftp.server_address[1]), "--ftp-password", "s3cret pass",
                                      "--launcher", self.launcher, "--boot", self.boot],
                                     capture_output=True, text=True, timeout=60)
         finally:
@@ -321,7 +325,7 @@ class Push(ServerTest):
 
     def run_server(self, *options, xbox="127.0.0.1", ftp_port=None):
         port = free_port()
-        server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox,
+        server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox, "--web-port", "0",
                                    "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
                                    "--launcher", self.launcher, "--boot", self.boot] + list(options),
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -401,24 +405,6 @@ class Push(ServerTest):
         self.assertIn("Xbox 127.0.0.2: game folders up to date: 1 added", out)
         self.assertTrue(os.path.isfile(os.path.join(self.games, "Halo 3", "default.xex")))
         self.assertTrue(os.path.isfile(os.path.join(other, "Hdd1", "NetISO", "Halo 3", "default.xex")))
-
-    def test_reports_each_console_for_the_window(self):
-        # --stats: a line per console with what it was sent and its disc.
-        iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
-        server, port = self.run_server("--stats", "--no-push", xbox="127.0.0.2")
-        try:
-            with connect_from("127.0.0.2", port) as plugin:
-                c = Client.__new__(Client)
-                c.conn = plugin
-                self.assertEqual(c.mount("Halo 3.iso"), 1)
-                c.read(0, 65536)
-                time.sleep(2.5)
-        finally:
-            server.kill()
-            out = server.communicate()[0]
-        stats = [line for line in out.splitlines() if line.startswith("@stats 127.0.0.2 ")]
-        self.assertTrue(stats, out)
-        self.assertRegex(stats[-1], r"^@stats 127\.0\.0\.2 at=\d+ connections=1 sent=65536 ftp=0 synced=0 mounted=Halo 3\.iso$")
 
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
@@ -536,6 +522,172 @@ class Push(ServerTest):
         out = self.push(expect=1, ftp_port=free_port())
         self.assertIn("waiting for its FTP server", out)
         self.assertFalse(os.path.exists(self.games))
+
+
+class Dashboard(ServerTest):
+    """The dashboard's web API, as web/index.html uses it."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = os.path.join(self.tmp.name, "netdisc.ini")
+
+    def start(self, *extra):
+        self.web = free_port()
+        super().start("--web-port", str(self.web), "--config", self.config, *extra)
+
+    def restart(self, *extra):
+        self.server.kill()
+        self.server.wait()
+        self.server.stdout.close()
+        self.start(*extra)
+
+    def call(self, method, path, body=None, page=True, cookie=None, headers=None):
+        """(status, response, data); a POST comes from the page unless page is False."""
+        sent = {"Host": "127.0.0.1:%d" % self.web}
+        if method == "POST":
+            sent["Content-Type"] = "application/json"
+            if page:
+                sent["X-NetDisc"] = "1"
+        if cookie:
+            sent["Cookie"] = cookie
+        sent.update(headers or {})
+        data = None if body is None else json.dumps(body)
+        deadline = time.time() + 10
+        while True:  # The dashboard starts just after the NetISO port.
+            conn = http.client.HTTPConnection("127.0.0.1", self.web, timeout=10)
+            try:
+                conn.request(method, path, data, sent)
+                response = conn.getresponse()
+                return response.status, response, response.read()
+            except ConnectionRefusedError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.2)
+            finally:
+                conn.close()
+
+    def json(self, method, path, body=None, **options):
+        status, _, data = self.call(method, path, body, **options)
+        self.assertEqual(status, 200, data)
+        return json.loads(data)
+
+    def state_when(self, condition, seconds=10):
+        deadline = time.time() + seconds
+        while True:
+            state = self.json("GET", "/api/state")
+            if condition(state) or time.time() > deadline:
+                return state
+            time.sleep(0.2)
+
+    def test_serves_the_page_and_the_games(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start()
+        status, response, data = self.call("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertEqual(response.getheader("Content-Encoding"), "gzip")
+        self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+        self.assertIn(b"<title>NetDisc 360</title>", gzip.decompress(data))
+        state = self.state_when(lambda s: s["library"]["games"] == 1)
+        self.assertEqual(state["library"]["games"], 1)
+        self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True}])
+        self.assertTrue(state["settings"]["saved"])
+        self.assertTrue(state["settings"]["ftpPasswordSet"])
+        games = self.json("GET", "/api/games")["games"]
+        self.assertEqual([(g["name"], g["kind"], g["titleId"]) for g in games], [("Halo 3", "iso", "4D5307E6")])
+        self.assertEqual(self.call("GET", "/api/nothing")[0], 404)
+
+    def test_reports_each_console(self):
+        # What each console was sent, second by second, and its disc.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start("--xbox", "127.0.0.2", "-v")  # -v: connections from this computer count too.
+        with connect_from("127.0.0.2", self.port) as plugin:
+            c = Client.__new__(Client)
+            c.conn = plugin
+            self.assertEqual(c.mount("Halo 3.iso"), 1)
+            c.read(0, 65536)
+            state = self.state_when(lambda s: any(sum(x["rate"]) for x in s["consoles"]))
+        console = [x for x in state["consoles"] if x["address"] == "127.0.0.2"][0]
+        self.assertEqual((console["connections"], console["sent"], console["mounted"]), (1, 65536, "Halo 3"))
+        self.assertEqual(sum(console["rate"]), 65536)
+        self.assertGreaterEqual(state["totals"]["peak"], 65536)
+        self.assertIn("Halo 3 started on 127.0.0.2", [e["text"] for e in state["events"]])
+
+    def test_changes_come_only_from_the_page(self):
+        self.start()
+        # Another site's page can't send the header, or claim this origin.
+        self.assertEqual(self.call("POST", "/api/settings", {"scan": False}, page=False)[0], 403)
+        self.assertEqual(self.call("POST", "/api/settings", {"scan": False}, headers={"Origin": "http://evil.example"})[0], 403)
+        # Without a password, only names a site can't point here (DNS rebinding).
+        self.assertEqual(self.call("GET", "/api/state", headers={"Host": "evil.example:%d" % self.web})[0], 403)
+        self.assertEqual(self.call("GET", "/api/state", headers={"Host": "nas.local:%d" % self.web})[0], 200)
+        status, _, data = self.call("POST", "/api/settings", {"xboxes": "192.168.1.20, xbox"})
+        self.assertEqual(status, 400)
+        self.assertIn("isn't an IPv4 address", json.loads(data)["error"])
+        self.json("POST", "/api/settings", {"scan": False, "xboxes": "192.168.1.20 192.168.1.21", "ftpPassword": "s3cret"})
+        settings = self.json("GET", "/api/state")["settings"]
+        self.assertEqual((settings["scan"], settings["xboxes"]), (False, ["192.168.1.20", "192.168.1.21"]))
+        self.assertNotIn("s3cret", json.dumps(settings))
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("scan=0\n", saved)
+        self.assertIn("xbox=192.168.1.20, 192.168.1.21\n", saved)
+
+    def test_saved_settings_win_over_the_command_line(self):
+        os.makedirs(os.path.join(self.tmp.name, "more"))
+        self.start("--xbox", "192.168.1.20")
+        more = os.path.join(self.tmp.name, "more")
+        self.json("POST", "/api/settings", {"xboxes": "192.168.1.30", "folders": [self.isos, more]})
+        status, _, data = self.call("POST", "/api/settings", {"folders": [os.path.join(self.tmp.name, "none")]})
+        self.assertEqual(status, 400)
+        self.restart("--xbox", "192.168.1.20")
+        state = self.json("GET", "/api/state")
+        self.assertEqual(state["settings"]["xboxes"], ["192.168.1.30"])
+        self.assertEqual([f["path"] for f in state["folders"]], [self.isos, more])
+
+    def test_a_password_locks_it(self):
+        self.start()
+        status, response, _ = self.call("POST", "/api/password", {"password": "hunter2 x"})
+        self.assertEqual(status, 200)
+        self.assertIn("HttpOnly", response.getheader("Set-Cookie"))
+        cookie = response.getheader("Set-Cookie").split(";")[0]
+        # Without the cookie: only the login page.
+        self.assertEqual(self.call("GET", "/api/state")[0], 401)
+        self.assertEqual(self.json("GET", "/api/auth"), {"password": True, "loggedIn": False})
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
+        # With a password, any name for this computer works.
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie, headers={"Host": "netdisc.example.com"})[0], 200)
+        started = time.time()
+        self.assertEqual(self.call("POST", "/api/login", {"password": "hunter2"})[0], 401)
+        self.assertGreaterEqual(time.time() - started, 0.9)
+        status, response, _ = self.call("POST", "/api/login", {"password": "hunter2 x"})
+        self.assertEqual(status, 200)
+        self.assertTrue(response.getheader("Set-Cookie").startswith("netdisc_session="))
+        # Kept in the settings file, hashed; sessions last across a restart.
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("web_password=", saved)
+        self.assertNotIn("hunter2", saved)
+        self.restart()
+        self.assertEqual(self.call("GET", "/api/state")[0], 401)
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
+        # A new password ends the old sessions.
+        status, response, _ = self.call("POST", "/api/password", {"password": "other"}, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 401)
+        self.assertEqual(self.call("GET", "/api/state", cookie=response.getheader("Set-Cookie").split(";")[0])[0], 200)
+
+    def test_takes_the_password_from_the_environment(self):
+        os.environ["NETDISC_WEB_PASSWORD"] = "from docker"
+        try:
+            self.start()
+        finally:
+            del os.environ["NETDISC_WEB_PASSWORD"]
+        self.assertEqual(self.call("GET", "/api/state")[0], 401)
+        status, response, _ = self.call("POST", "/api/login", {"password": "from docker"})
+        self.assertEqual(status, 200)
+        cookie = response.getheader("Set-Cookie").split(";")[0]
+        self.assertEqual(self.call("POST", "/api/password", {"password": "x"}, cookie=cookie)[0], 400)
+        self.assertTrue(self.json("GET", "/api/state", cookie=cookie)["settings"]["passwordFixed"])
 
 
 if __name__ == "__main__":

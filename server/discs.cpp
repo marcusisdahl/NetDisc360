@@ -617,6 +617,21 @@ void FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
     });
 }
 
+U64 FolderBytes(const std::string& folder) {
+    U64 total=0;
+    std::vector<std::string> pending(1,folder);
+    std::vector<Entry> entries;
+    while(!pending.empty()) {
+        std::string at=pending.back(); pending.pop_back();
+        if(!List(at,entries)) continue;
+        for(size_t i=0;i<entries.size();++i) {
+            if(entries[i].folder) pending.push_back(Join(at,entries[i].name));
+            else total+=entries[i].size;
+        }
+    }
+    return total;
+}
+
 void UniqueNames(std::vector<IsoFile>& discs) {
     // An ISO keeps its name over a folder or GOD package, and otherwise the
     // first in order keeps it. ISOs are named first; a numbered name
