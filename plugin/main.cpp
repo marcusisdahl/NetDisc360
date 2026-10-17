@@ -10,10 +10,10 @@
 // Aurora.xex 0.7b.2 starts tiles with (XamLoaderLaunchTitle, ordinal 420,
 // through XLaunchNewImage, and XamLoaderLaunchTitleEx, 421). When the XEX to
 // start is default.xex in a folder whose netiso.ini names an ISO, it mounts
-// that ISO from a system thread while Aurora waits, as the Guide's file
-// browser should ask from the system process, reaching the plugin's folders by
-// their device path, waits until the disc is the game, and starts
-// Dvd:\default.xex the way Aurora's disc entry does. Every other launch, and
+// that ISO on Aurora's thread, reaching the plugin's folders by their device
+// path, waits until the disc is the game, and starts Dvd:\default.xex the way
+// Aurora's disc entry does. It also keeps NetISO from calling
+// XamAppUnloadSelf for mounts that don't come from the Guide (see below). Every other launch, and
 // a tile it can't mount, goes on to xam unchanged, so the tile's launcher
 // still runs as before when the plugin can't help.
 #include <xtl.h>
@@ -40,6 +40,9 @@ static const LONG NoMoreFiles=LONG(0x80000006);
 extern "C" LONG __stdcall ExCreateThread(HANDLE* handle,DWORD stackSize,DWORD* threadId,void* apiStartup,LPTHREAD_START_ROUTINE start,void* parameter,DWORD flags);
 static const DWORD SystemThread=2; // ExCreateThread: run in the system process
 extern "C" LONG __stdcall XexGetModuleHandle(const char* name,HANDLE* module);
+extern "C" UCHAR __stdcall KeGetCurrentProcessType();
+extern "C" BOOLEAN __stdcall MmIsAddressValid(void* address);
+static const UCHAR SystemProcess=2;
 extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,void** address);
 
 typedef DWORD (*LaunchTitle)(const char* path,DWORD flags);
@@ -278,6 +281,57 @@ static char Pending[128];
 static void Tell(const char* text) {
     Note("Notice: %s",text);
     if(Deferring()) strcpy_s(Pending,text); else Show(text);
+}
+
+// ---- NetISO's unload call ----
+
+// Right after every mount request, NetISO.xex 1.0 calls XamAppUnloadSelf
+// (xam 581) on the thread that asked (0x91104dc4, read from the binary).
+// Asked from the file browser opened from the Guide, that closes the Guide,
+// as NetISO's readme describes. Every mount asked from anywhere else (the
+// launcher, the helper, this plugin on Aurora's thread) left the Guide dead
+// until reboot, and so did a failed one (seen on the console); that this
+// call is why is inferred, since there is no Guide app to close there. So
+// NetISO's import of it is pointed here: the plugin's own mount thread and
+// title threads skip it, and system threads such as the Guide's still get it.
+static const DWORD AppUnloadSelfOrdinal=581;
+static DWORD* const UnloadThunk=(DWORD*)0x9110c12c;
+static const DWORD* const UnloadCall=(const DWORD*)0x91104dc0;
+static DWORD UnloadThunkCode[4];
+typedef DWORD (*AppUnload)(DWORD,DWORD,DWORD,DWORD);
+static AppUnload AppUnloadSelf=NULL;
+static volatile LONG UnloadsSkipped=0;
+static DWORD UnloadHooked(DWORD a,DWORD b,DWORD c,DWORD d) {
+    if(KeGetCurrentProcessType()!=SystemProcess || Deferring()) { InterlockedIncrement(&UnloadsSkipped); return 0; }
+    return AppUnloadSelf(a,b,c,d);
+}
+// Points NetISO's import of XamAppUnloadSelf at UnloadHooked, once. Checks
+// that NetISO 1.0 is where it was read: the mount call and the unload call
+// in its directory handler, and a thunk that jumps to xam's export.
+static const char* PatchUnload() {
+    if(AppUnloadSelf) return NULL;
+    HANDLE module=NULL; void* target=NULL;
+    if(XexGetModuleHandle("NetISO.xex",&module)<0) return "NetISO.xex isn't loaded";
+    if(XexGetModuleHandle("xam.xex",&module)<0 || XexGetProcedureAddress(module,AppUnloadSelfOrdinal,&target)<0) return "no XamAppUnloadSelf in xam";
+    if(!MmIsAddressValid((void*)UnloadCall) || !MmIsAddressValid(UnloadThunk)) return "NetISO isn't at 0x91100000";
+    if(UnloadCall[0]!=0x4BFFFDC1 || UnloadCall[1]!=0x48007369) return "NetISO's mount code isn't 1.0's";
+    const DWORD* t=UnloadThunk;
+    if((t[0]&0xFFFF0000)!=0x3D600000 || t[2]!=0x7D6903A6 || t[3]!=0x4E800420) return "NetISO's import isn't a thunk";
+    DWORD high=(t[0]&0xFFFF)<<16,low=t[1]&0xFFFF,jump=0;
+    if((t[1]>>16)==0x616B) jump=high|low; // ori r11,r11,low
+    else if((t[1]>>16)==0x396B) jump=high+DWORD(int(short(low))); // addi r11,r11,low
+    if(jump!=DWORD(target)) return "NetISO's import doesn't lead to XamAppUnloadSelf";
+    memcpy(UnloadThunkCode,UnloadThunk,sizeof(UnloadThunkCode));
+    AppUnloadSelf=(AppUnload)target;
+    WriteJump(UnloadThunk,DWORD(UnloadHooked));
+    FlushCode(UnloadThunk,sizeof(UnloadThunkCode));
+    return NULL;
+}
+static void UnpatchUnload() {
+    if(!AppUnloadSelf) return;
+    memcpy(UnloadThunk,UnloadThunkCode,sizeof(UnloadThunkCode));
+    FlushCode(UnloadThunk,sizeof(UnloadThunkCode));
+    AppUnloadSelf=NULL;
 }
 
 // ---- Mounting ----
@@ -563,7 +617,9 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
     if(!found) { Tell("NetISO: the server doesn't list this game. Is it running?"); return Fallback; }
     if(stop==StepIso) return Cancelled;
+    LONG skipped=UnloadsSkipped;
     if(!ListMountFolder(folder,hold)) { Tell("NetISO couldn't mount this game."); return Fallback; }
+    Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
     if(relist) {
         Note("Listing the ISO's folder and the root again (relist).");
         if(isoFolder[0]) ListFolder(isoFolder);
@@ -582,13 +638,11 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     return Fallback;
 }
 
-// The mount that keeps the Guide is the one made from the file browser opened
-// from the Guide (seen on the console), which, as part of the Guide, should
-// ask from the system process rather than Aurora's. NetISO picks its drive
-// links by the requester's process type (KeGetCurrentProcessType, read from
-// NetISO.xex). So the drive steps run on a system thread, while Aurora's
-// thread waits; tiles_thread=aurora in netiso.ini runs them on Aurora's
-// thread instead, as before, to compare.
+// tiles_thread=system in netiso.ini runs the drive steps on a system thread
+// while Aurora's thread waits, as a request from the Guide comes from the
+// system process. NetISO doesn't look at the requester's process in its
+// mount path apart from the unload call above (read from the binary), so
+// this is only a test switch.
 struct MountJob { const Settings* settings; int stop; Outcome outcome; };
 static MountJob Job;
 static DWORD WINAPI MountThread(void* job) {
@@ -632,12 +686,11 @@ static Outcome Mount(const Settings& settings) {
         return Cancelled;
     }
     if(stop==StepServer) return Cancelled;
+    const char* unpatched=PatchUnload();
+    if(unpatched) Note("Can't skip NetISO's unload call: %s.",unpatched);
     char thread[16];
-    if(IniValue(Ini,"tiles_thread",thread,sizeof(thread)) && !_stricmp(thread,"aurora")) {
-        Note("Mounting from Aurora's thread (tiles_thread=aurora).");
-        return MountSteps(settings,stop);
-    }
-    return MountOnSystemThread(settings,stop);
+    if(IniValue(Ini,"tiles_thread",thread,sizeof(thread)) && !_stricmp(thread,"system")) return MountOnSystemThread(settings,stop);
+    return MountSteps(settings,stop);
 }
 
 // ---- Tiles ----
@@ -747,7 +800,11 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         if(HookStart(LaunchTitleHook,LaunchTitleOrdinal,LaunchTitleHooked,LaunchTitleStub)
            && !HookStart(LaunchTitleExHook,LaunchTitleExOrdinal,LaunchTitleExHooked,LaunchTitleExStub))
             Unhook(LaunchTitleHook);
+        // NetISO.xex is loaded before this plugin in launch.ini; if not, the
+        // first tile patches it.
+        PatchUnload();
     } else if(reason==DLL_PROCESS_DETACH) {
+        UnpatchUnload();
         Unhook(LaunchTitleExHook);
         Unhook(LaunchTitleHook);
     }
