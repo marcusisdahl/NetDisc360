@@ -57,7 +57,10 @@ def build():
     missing = [n for n in icon_names(page) if 'id="i-%s"' % n not in icons]
     if missing:
         sys.exit("web/icons.svg lacks %s; run with --icons <lucide-static>/icons" % ", ".join(missing))
-    html = page.replace("<!--icons-->", icons.strip()).encode("utf-8")
+    return page.replace("<!--icons-->", icons.strip()).encode("utf-8")
+
+
+def header(html):
     data = gzip.compress(html, compresslevel=9, mtime=0)
     lines = []
     for i in range(0, len(data), 24):
@@ -75,14 +78,20 @@ def main():
         with open(PAGE, encoding="utf-8") as f:
             make_icons(f.read(), args[1])
         args = args[2:]
-    header = build()
+    html = build()
     if args[:1] == ["--check"]:
+        # Compares the page, not the gzip bytes, which differ between zlib builds.
         with open(HEADER, encoding="utf-8") as f:
-            if f.read() != header:
-                sys.exit("server/web_page.h is out of date: run python tools/make_web.py")
+            data = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-f]{2})", f.read()))
+        try:
+            same = gzip.decompress(data) == html
+        except (OSError, EOFError):
+            same = False
+        if not same:
+            sys.exit("server/web_page.h is out of date: run python tools/make_web.py")
         return
     with open(HEADER, "w", encoding="utf-8", newline="\n") as f:
-        f.write(header)
+        f.write(header(html))
 
 
 if __name__ == "__main__":
