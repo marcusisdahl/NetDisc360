@@ -9,7 +9,7 @@ enum LoadStep { StepServer, StepMount, StepDisc, StepStart, StepCount };
 struct LoadScreen {
     char game[96];      // The game's name, from the ISO's.
     char iso[256];      // The ISO's file name on the server.
-    char server[32];    // "10.10.1.56", or empty when unknown.
+    char server[32];    // "192.168.1.20", or empty when unknown.
     unsigned titleId;
     int step;           // The step under way (or that failed).
     double fraction;    // Overall progress, 0 to 1.
