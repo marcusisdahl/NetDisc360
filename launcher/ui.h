@@ -20,6 +20,7 @@ struct LoadScreen {
     bool canRetry;
     int countdown;      // Seconds until it goes back to Aurora by itself; 0 hides it.
     double time;        // Seconds since start, for the animation.
+    double elapsed;     // Seconds since the tile was pressed, shown at the top; below 0 hides it.
     LoadScreen();
 };
 // Creates the Dear ImGui context, style and fonts.

@@ -10,7 +10,7 @@
 #include <string.h>
 
 namespace nia {
-LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), countdown(0), time(0) {
+LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), countdown(0), time(0), elapsed(-1) {
     game[0]=iso[0]=server[0]=status[0]=errorTitle[0]=0;
     for(int i=0;i<3;++i) errorLines[i][0]=0;
 }
@@ -130,12 +130,23 @@ void DrawLoadUi(const LoadScreen& s) {
     Box(Left,Top+6,6,40,Hex(Green),3);
     Text(Heading,Left+20,Top,Hex(White),"NetISO");
     Text(Small,Left+20+Width(Heading,"NetISO")+16,Top+15,Hex(Muted),"Playing from your NetISO server");
+    float headerRight=Right;
     if(s.server[0]) {
         TextRight(Heading,Right,Top,Hex(White),s.server);
         const char* label="NetISO server  /  port 4323";
         float lx=Right-Width(Small,label);
         List->AddCircleFilled(ImVec2(lx-14,Top+57),5,Hex(failed && s.step==StepServer ? ErrorStrong : Green),16);
         Text(Small,lx,Top+46,Hex(Muted),label);
+        float sx=Right-Width(Heading,s.server);
+        headerRight=(sx<lx-19 ? sx : lx-19)-56;
+    }
+    // How long since the tile was pressed, left of the server.
+    if(s.elapsed>=0) {
+        int seconds=int(s.elapsed);
+        if(seconds>=3600) _snprintf_s(text,sizeof(text),_TRUNCATE,"%d:%02d:%02d",seconds/3600,seconds/60%60,seconds%60);
+        else _snprintf_s(text,sizeof(text),_TRUNCATE,"%d:%02d",seconds/60,seconds%60);
+        TextRight(Heading,headerRight,Top,Hex(White),text);
+        TextRight(Small,headerRight,Top+46,Hex(Muted),"Elapsed");
     }
 
     // The game.
@@ -160,7 +171,9 @@ void DrawLoadUi(const LoadScreen& s) {
         for(int i=0;i<3;++i) if(s.errorLines[i][0]) { TextFit(Body,x+56,ly,w-64,Hex(i ? Muted : White),s.errorLines[i]); ly+=34; }
     } else {
         Progress(x,y+6,w,s.fraction,s.time);
-        TextFit(Body,x,y+34,w,Hex(White),s.status);
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"%d%%",int(s.fraction>=1 ? 100 : s.fraction<0 ? 0 : s.fraction*100));
+        TextRight(Body,x+w,y+34,Hex(Muted),text);
+        TextFit(Body,x,y+34,w-96,Hex(White),s.status);
     }
 
     // Footer: what the buttons do.

@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "../shared/library.h"
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
@@ -60,6 +61,11 @@ static const char AuroraDiscLink[]="\\??\\Dvd:",AuroraDiscXex[]="Dvd:\\default.x
 // the Xbox dashboard does (read from Aurora's copy of XLaunchNewImage).
 static const char DetectMedia[]="XLNI_DET_MEDIA";
 static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
+// The launch data the tile's launcher hands the helper: BootData, then when
+// the tile was pressed, so the helper's timer counts from there.
+struct BootLaunch { char text[sizeof(BootData)]; DWORD started; };
+// GetTickCount when the tile was pressed, for the timer at the top.
+static DWORD Started=0;
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
 // After the mount the plugin fakes a tray open and close on its own thread
@@ -116,12 +122,32 @@ static void ScreenStart() {
     // The A that started the tile may still be down.
     Held=Buttons();
 }
+// The bar glides to the fraction the steps set instead of jumping: quickly
+// while it's far behind, never slower than BarMinSpeed a second, so it gets
+// there. A smaller fraction is a new attempt (X), and the bar starts over.
+static double Bar=0;
+static DWORD BarAt=0;
+static const double BarRate=5,BarMinSpeed=0.6;
+static void Glide(double target) {
+    DWORD now=GetTickCount();
+    double seconds=BarAt ? (now-BarAt)/1000.0 : 0;
+    BarAt=now;
+    if(seconds>0.1) seconds=0.1;
+    if(target<Bar) { Bar=target; return; }
+    double speed=(target-Bar)*BarRate;
+    if(speed<BarMinSpeed) speed=BarMinSpeed;
+    Bar+=speed*seconds;
+    if(Bar>target) Bar=target;
+}
 static void ScreenDraw() {
     if(!Screen) return;
     EnterCriticalSection(&ShownLock);
     nia::LoadScreen frame=Shown;
     LeaveCriticalSection(&ShownLock);
+    Glide(frame.fraction);
+    frame.fraction=Bar;
     frame.time=GetTickCount()/1000.0;
+    frame.elapsed=(GetTickCount()-Started)/1000.0;
     ImGui::GetIO().DeltaTime=1.0f/60;
     nia::DrawLoadUi(frame);
     Screen->Clear(0,NULL,D3DCLEAR_TARGET,0xFF0F1725,1.0f,0);
@@ -396,8 +422,8 @@ static Result WaitForServer(const char* ini) {
         DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
         bool booting=up<BootSeconds;
         if(!booting && waited>=RetrySeconds) break;
-        if(booting) ShowStep(nia::StepServer,0.04,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
-        else ShowStep(nia::StepServer,0.04,"Waiting for the NetISO server at %s... %lu s",where,waited);
+        if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
+        else ShowStep(nia::StepServer,0.05,"Waiting for the NetISO server at %s... %lu s",where,waited);
         if(!Pause(1000)) return Cancelled;
     }
     Note("Can't reach the NetISO server: %s",error);
@@ -446,7 +472,7 @@ static Result Mount(const char* ini,const Settings& settings) {
     Result server=WaitForServer(ini);
     if(server!=Mounted) return server;
 
-    ShowStep(nia::StepMount,0.15,"Asking the server for the disc");
+    ShowStep(nia::StepMount,0.1,"Asking the server for the disc");
     if(!GetModuleHandle("NetISO.xex"))
         return Fail(nia::StepMount,false,"The NetISO plugin isn't running","NetISO.xex isn't loaded, so there is no NetISO drive to mount from.",
                     "Add it to DashLaunch's plugins in launch.ini and reboot the Xbox.");
@@ -497,7 +523,9 @@ static Result Mount(const char* ini,const Settings& settings) {
     }
     for(int waited=quiet;waited<quiet+MountWaitMs;waited+=PollMs) {
         if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return Mounted; }
-        ShowStep(nia::StepDisc,0.7+0.25*(waited-quiet)/MountWaitMs,"Reading the disc");
+        // Usually a second or two, at most MountWaitMs: the bar keeps creeping
+        // toward 95% rather than crawling along the whole timeout.
+        ShowStep(nia::StepDisc,0.95-0.25*exp(-(waited-quiet)/3000.0),"Reading the disc");
         if(!Pause(PollMs)) return Cancelled;
     }
     DWORD titleId=0,mediaId=0;
@@ -539,6 +567,24 @@ static Result RunMount(const char* ini,const Settings& settings) {
     }
     CloseHandle(thread);
     return CancelAsked ? Cancelled : Job.result;
+}
+
+// Draws until the bar has reached 100%, then keeps the finished screen up
+// for holdMs, so the player sees it fill and can read it before the game
+// takes over the screen. False if B was pressed meanwhile.
+static const int HoldMs=1000;
+static bool FinishBar(int holdMs) {
+    const DWORD start=GetTickCount();
+    DWORD full=0;
+    while(Screen) {
+        ReadNotifications();
+        if(Pressed()&XINPUT_GAMEPAD_B) return false;
+        ScreenDraw();
+        if(Bar<1 && GetTickCount()-start<2000) continue;
+        if(!full) full=GetTickCount();
+        else if(GetTickCount()-full>=DWORD(holdMs)) break;
+    }
+    return true;
 }
 
 // Shows Problem until A or B (back to Aurora), X (try again, when that could
@@ -632,7 +678,7 @@ static void LaunchGame(const char* ini) {
         if(result==Mounted) {
             if(IniNumber(ini,"mount_only",0)) { Note("mount_only=1: back to Aurora without starting the game."); break; }
             ShowStep(nia::StepStart,1,"Starting %s",Shown.game);
-            Wait(300);
+            if(!FinishBar(IniNumber(ini,"hold_ms",HoldMs))) { Note("B pressed: back to Aurora."); break; }
             UnlinkDrive(DiscLink);
             StartDisc(ini);
             char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting the disc failed (error %lu).",GetLastError());
@@ -796,6 +842,9 @@ static void Sync(const char* ini) {
     bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result);
     Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
+    if(!ok) return;
+    ShowStep(nia::StepServer,1,"Done: %d added, %d removed",result.added,result.removed);
+    FinishBar(HoldMs);
 }
 
 // Where Sync goes when it's done: after= in netiso.ini, or the dashboard.
@@ -822,16 +871,21 @@ static void LaunchAfterSync(const char* ini) {
 // game was fine (seen on the console). The launcher needs the Title ID for
 // Aurora's tile, so the mount happens in the helper instead.
 // Whether this start came with the launch data text given.
-static bool LaunchedWith(const char* text) {
-    char data[32]; DWORD size=0,length=DWORD(strlen(text)+1);
-    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size!=length || size>sizeof(data)) return false;
-    return XGetLaunchData(data,size)==ERROR_SUCCESS && !memcmp(data,text,length);
+// Whether this start is the helper's, and if so when the tile was pressed
+// (a launcher from before the timer sends no time; then it's now).
+static bool StartedAsHelper(DWORD& started) {
+    BootLaunch data; DWORD size=0;
+    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || (size!=sizeof(BootData) && size!=sizeof(data))) return false;
+    if(XGetLaunchData(&data,size)!=ERROR_SUCCESS || memcmp(data.text,BootData,sizeof(BootData))) return false;
+    if(size==sizeof(data) && GetTickCount()-data.started<60000) started=data.started;
+    return true;
 }
 static void HandToHelper() {
     HANDLE file=CreateFile(BootXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     if(file==INVALID_HANDLE_VALUE) { Note("No %s; mounting from the launcher.",BootXex); return; }
     CloseHandle(file);
-    DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
+    BootLaunch data; memcpy(data.text,BootData,sizeof(BootData)); data.started=Started;
+    DWORD set=XSetLaunchData(&data,sizeof(data));
     if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); mounting from the launcher.",set); return; }
     Note("Handing the start to %s",BootXex);
     CloseLog();
@@ -845,7 +899,8 @@ void __cdecl main() {
     InitializeCriticalSection(&ShownLock);
     MainThread=GetCurrentThreadId();
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
-    bool helper=LaunchedWith(BootData);
+    Started=GetTickCount();
+    bool helper=StartedAsHelper(Started);
     OpenLog(true);
     NoteRun();
     if(helper) Note("Started as the helper.");

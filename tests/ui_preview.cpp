@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     unsigned char* alpha=NULL; ImGui::GetIO().Fonts->GetTexDataAsAlpha8(&alpha,&TextureWidth,&TextureHeight); Texture=alpha;
     nia::LoadScreen s; const char* scene=argc>2 ? argv[2] : "mount";
     strcpy(s.iso,"Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl).iso"); nia::GameName(s.iso,s.game,sizeof(s.game));
-    strcpy(s.server,"10.10.1.56"); s.titleId=0x454108E6; s.time=0.3;
+    strcpy(s.server,"10.10.1.56"); s.titleId=0x454108E6; s.time=0.3; s.elapsed=12.4;
     if(!strcmp(scene,"server")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"Checking the NetISO server at 10.10.1.56"); }
     else if(!strcmp(scene,"network")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"The Xbox's network is still starting after the reboot. Waiting for the server... 42 s"); }
     else if(!strcmp(scene,"mount")) { s.step=nia::StepMount; s.fraction=0.2; strcpy(s.status,"Asking the server for the disc"); }
