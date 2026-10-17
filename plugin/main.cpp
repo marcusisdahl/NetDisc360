@@ -768,7 +768,18 @@ static Handling Handled(const char* path,const char* mountPath) {
     if(Skipping() || InterlockedCompareExchange(&Busy,1,0)) return NotTile;
     Settings settings;
     Handling handling=NotTile;
-    if(IsTile(path,mountPath,settings)) handling=StartTile(settings)==Cancelled ? TileCancelled : TileFallback;
+    if(IsTile(path,mountPath,settings)) {
+        // tiles=launcher in netiso.ini leaves the tile to its own launcher
+        // (with NetISO's unload call still skipped), to test whether the
+        // launcher's mount keeps the Guide now.
+        char value[16];
+        if(IniValue(Ini,"tiles",value,sizeof(value)) && !_stricmp(value,"launcher")) {
+            Note("tiles=launcher: the tile's own launcher starts it.");
+            CloseLog();
+            UnlinkDrive(TileLink);
+            handling=TileFallback;
+        } else handling=StartTile(settings)==Cancelled ? TileCancelled : TileFallback;
+    }
     InterlockedExchange(&Busy,0);
     if(handling==TileFallback) Skip(true);
     return handling;
