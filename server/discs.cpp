@@ -618,13 +618,21 @@ void FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
 }
 
 void UniqueNames(std::vector<IsoFile>& discs) {
-    for(size_t i=0;i<discs.size();++i) {
-        if(discs[i].kind==DiscIso) continue;
+    // An ISO keeps its name over a folder or GOD package, and otherwise the
+    // first in order keeps it. ISOs are named first; a numbered name
+    // ("Game 2.iso") sorts before "Game.iso", so a real one is named already.
+    for(int pass=0;pass<2;++pass) for(size_t i=0;i<discs.size();++i) {
+        bool iso=discs[i].kind==DiscIso;
+        if(iso!=(pass==0)) continue;
         std::string name=discs[i].name;
         size_t cut=name.size()-4;  // Before ".iso".
         for(int n=2;;++n) {
             bool taken=false;
-            for(size_t k=0;k<discs.size() && !taken;++k) taken=k!=i && !_stricmp(discs[k].name.c_str(),discs[i].name.c_str()) && (k<i || discs[k].kind==DiscIso);
+            for(size_t k=0;k<discs.size() && !taken;++k) {
+                if(k==i || _stricmp(discs[k].name.c_str(),discs[i].name.c_str())) continue;
+                bool other=discs[k].kind==DiscIso;
+                taken=other==iso ? k<i : other;
+            }
             if(!taken) break;
             char number[16]; _snprintf_s(number,sizeof(number),_TRUNCATE," %d",n);
             discs[i].name=name.substr(0,cut)+number+name.substr(cut);

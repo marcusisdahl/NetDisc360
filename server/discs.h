@@ -20,7 +20,8 @@ struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind 
 
 // The discs in folder and its subfolders, sorted by name, added to out.
 void FindIsos(const std::string& folder, std::vector<IsoFile>& out);
-// Gives a folder or GOD package whose listed name is taken (ignoring case) a number.
+// Gives a disc whose listed name is taken (ignoring case) a number: an ISO
+// keeps its name over a folder or GOD package, otherwise the first one does.
 void UniqueNames(std::vector<IsoFile>& discs);
 // Reads each disc's Title ID and disc number (remembered between calls).
 void ReadTitles(std::vector<IsoFile>& discs);

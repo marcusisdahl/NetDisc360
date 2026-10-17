@@ -399,6 +399,25 @@ class Discs(ServerTest):
         self.assertEqual(c.size()[0] * 2048, os.path.getsize(iso))
         c.close()
 
+    def test_isos_with_the_same_name_in_two_folders(self):
+        os.makedirs(os.path.join(self.isos, "a"))
+        os.makedirs(os.path.join(self.isos, "b"))
+        first = self.add_iso("Game.iso", 1, 0x11111111, os.path.join(self.isos, "a"))
+        second = self.add_iso("Game.iso", 2, 0x22222222, os.path.join(self.isos, "b"))
+        with open(second, "r+b") as f:  # A different size, to tell them apart.
+            f.truncate(os.path.getsize(first) + 5 * SECTOR)
+        self.make_game("Game", 0x33333333)  # A third game with that name.
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(sorted(c.names()), ["Game 2.iso", "Game 3.iso", "Game.iso"])
+        self.assertEqual(c.mount("Game.iso"), 1)
+        self.assertEqual(c.size()[0] * 2048, os.path.getsize(first))
+        self.assertEqual(c.mount("Game 2.iso"), 1)
+        self.assertEqual(c.size()[0] * 2048, os.path.getsize(second))
+        self.assertEqual(c.mount("Game 3.iso"), 1)
+        self.assertEqual(Gdf(c).start, XGD2)  # The folder.
+        c.close()
+
     def test_a_file_too_big_for_a_disc(self):
         game = self.make_game("Huge", 0x44444444)
         with open(os.path.join(game, "big.bin"), "wb") as f:
