@@ -54,7 +54,7 @@ Aurora files the launchers under Unsigned, because they aren't retail-signed, so
 
 ## Playing
 
-Pick the game's tile. The loading screen shows four steps: Server, Mount, Disc and Start.
+Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills smoothly to 100%, and at the top how long it has been since you pressed the tile. Once the bar is full the screen stays up for a second, then the game starts.
 
 - **B cancels at any step** and goes back to Aurora at once, even while the network or the server is slow.
 - Right after a reboot the Xbox can't reach the server for a minute or two, and the NetISO plugin takes a little longer still (it lists only "No Server!" until then). For the first 4 minutes after boot the screen waits for both instead of failing.
@@ -95,6 +95,7 @@ These go in a game folder's `netiso.ini` and help find out what breaks on the co
 
 - `stop_after=link|root|iso` stops short of the mount and goes back to Aurora: after linking the NetISO drive, listing its root, or listing the ISO's folder.
 - `quiet_ms=` sets how long the launcher leaves the disc alone after the mount (5000).
+- `hold_ms=` sets how long the full bar stays up before the game starts (1000).
 - `mount_only=1` mounts the game and goes back to Aurora without starting it.
 - `start=aurora|nova|media` picks how the disc is started: as Aurora's disc entry does (the default), as Nova's file browser does, or whatever disc is in the drive, as the dashboard does. If the chosen start fails, the launcher tries `nova`.
 - With `tiles=aurora`: `hold_mount=1`, `relist=1`, `tiles_stop=server|disc|root|iso|mount` and `tiles_thread=system` change how the plugin mounts.
