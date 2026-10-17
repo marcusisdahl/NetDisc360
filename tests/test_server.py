@@ -68,6 +68,23 @@ def free_port():
         return s.getsockname()[1]
 
 
+def connect_from(address, port):
+    """A connection to the server on port from address, once it listens."""
+    deadline = time.time() + 10
+    while True:
+        conn = socket.socket()
+        conn.bind((address, 0))
+        try:
+            conn.connect(("127.0.0.1", port))
+            conn.settimeout(10)
+            return conn
+        except ConnectionRefusedError:
+            conn.close()
+            if time.time() > deadline:
+                raise
+            time.sleep(0.2)
+
+
 def exact(conn, count):
     data = b""
     while len(data) < count:
@@ -238,10 +255,10 @@ class Push(ServerTest):
         self.ftp.server_close()
         super().tearDown()
 
-    def push(self, expect=0, ftp_port=None):
+    def push(self, expect=0, ftp_port=None, extra=()):
         result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
                                  "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
-                                 "--launcher", self.launcher, "--boot", self.boot],
+                                 "--launcher", self.launcher, "--boot", self.boot] + list(extra),
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
         return result.stdout
@@ -294,7 +311,7 @@ class Push(ServerTest):
         path = self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
         out = self.push()
         self.assertEqual(self.ftp.scans, ["/Hdd1/NetISO"])
-        self.assertIn("Asked Aurora to scan /Hdd1/NetISO", out)
+        self.assertIn("asked Aurora to scan /Hdd1/NetISO", out)
         # Nothing added or removed: no scan.
         self.push()
         self.assertEqual(len(self.ftp.scans), 1)
@@ -366,7 +383,42 @@ class Push(ServerTest):
             if ftp:
                 ftp.shutdown()
                 ftp.server_close()
-        self.assertIn("Waiting for the Xbox to come online", out)
+        self.assertIn("waiting for it to come online", out)
+
+    def test_keeps_every_console_up_to_date(self):
+        # Two consoles, each with its own Aurora: both get the game folders.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other = os.path.join(self.tmp.name, "xbox2")
+        os.makedirs(os.path.join(other, "Hdd1", "Apps", "Aurora", "Media", "Scripts", "Content"))
+        ftp2 = aurora_ftp.Server(other, self.ftp.server_address[1], host="127.0.0.2")
+        threading.Thread(target=ftp2.serve_forever, daemon=True).start()
+        try:
+            out = self.push(extra=["--xbox", "127.0.0.2"])
+        finally:
+            ftp2.shutdown()
+            ftp2.server_close()
+        self.assertIn("Xbox 127.0.0.1: game folders up to date: 1 added", out)
+        self.assertIn("Xbox 127.0.0.2: game folders up to date: 1 added", out)
+        self.assertTrue(os.path.isfile(os.path.join(self.games, "Halo 3", "default.xex")))
+        self.assertTrue(os.path.isfile(os.path.join(other, "Hdd1", "NetISO", "Halo 3", "default.xex")))
+
+    def test_reports_each_console_for_the_window(self):
+        # --stats: a line per console with what it was sent and its disc.
+        iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        server, port = self.run_server("--stats", "--no-push", xbox="127.0.0.2")
+        try:
+            with connect_from("127.0.0.2", port) as plugin:
+                c = Client.__new__(Client)
+                c.conn = plugin
+                self.assertEqual(c.mount("Halo 3.iso"), 1)
+                c.read(0, 65536)
+                time.sleep(2.5)
+        finally:
+            server.kill()
+            out = server.communicate()[0]
+        stats = [line for line in out.splitlines() if line.startswith("@stats 127.0.0.2 ")]
+        self.assertTrue(stats, out)
+        self.assertRegex(stats[-1], r"^@stats 127\.0\.0\.2 at=\d+ connections=1 sent=65536 ftp=0 synced=0 mounted=Halo 3\.iso$")
 
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
@@ -377,7 +429,7 @@ class Push(ServerTest):
             f.write("after=Hdd1:\\Apps\\Aurora\\Aurora.xex\n")
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         out = self.push()
-        self.assertIn("Updated /Hdd1/NetISO/NetISO Sync on the Xbox to this build.", out)
+        self.assertIn("updated /Hdd1/NetISO/NetISO Sync to this build.", out)
         for name, path in (("default.xex", self.launcher), ("boot.xex", self.boot)):
             with open(os.path.join(sync, name), "rb") as f, open(path, "rb") as built:
                 self.assertEqual(f.read(), built.read())
@@ -387,7 +439,7 @@ class Push(ServerTest):
         # Current: not written again.
         self.ftp.stored.clear()
         out = self.push()
-        self.assertNotIn("NetISO Sync on the Xbox", out)
+        self.assertNotIn("NetISO Sync to this build", out)
         self.assertEqual([p for p in self.ftp.stored if "Sync" in p], [])
 
     def test_removes_games_whose_iso_is_gone_and_keeps_other_folders(self):
@@ -424,7 +476,7 @@ class Push(ServerTest):
         finally:
             server.kill()
             out = server.communicate()[0]
-        self.assertIn("1 game folder(s) on the Xbox have no game here yet", out)
+        self.assertIn("1 game folder(s) have no game here yet", out)
         self.assertIn("0 added, 1 removed", out)
 
     def test_repairs_a_launcher_with_another_titles_ids(self):
@@ -442,7 +494,7 @@ class Push(ServerTest):
     def test_adds_the_games_to_aurora_s_xbox_360_category_once(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push()
-        self.assertIn("Added the NetISO games to Aurora's Xbox 360 category", out)
+        self.assertIn("added the NetISO games to Aurora's Xbox 360 category", out)
         script = os.path.join(self.aurora, "FilterFunctions.lua")
         with open(script, "rb") as f:
             edited = f.read()
@@ -482,7 +534,7 @@ class Push(ServerTest):
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push(expect=1, ftp_port=free_port())
-        self.assertIn("Waiting for the Xbox's FTP server", out)
+        self.assertIn("waiting for its FTP server", out)
         self.assertFalse(os.path.exists(self.games))
 
 

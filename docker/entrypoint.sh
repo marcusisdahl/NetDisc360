@@ -8,7 +8,8 @@ options=()
 value() { [ -n "$2" ] && options+=("$1" "$2"); return 0; }
 switch() { case "$2" in 1|[Tt]rue|[Yy]es|[Oo]n) options+=("$1");; esac; return 0; }
 
-value --xbox "$NETDISC_XBOX"
+# Several consoles: addresses separated by commas or spaces.
+for xbox in ${NETDISC_XBOX//,/ }; do options+=(--xbox "$xbox"); done
 value --ftp-user "$NETDISC_FTP_USER"
 value --xbox-folder "$NETDISC_XBOX_FOLDER"
 value --aurora "$NETDISC_AURORA"

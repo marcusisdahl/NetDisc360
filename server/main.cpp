@@ -12,6 +12,7 @@
 #include "ftp.h"
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,13 +42,13 @@ struct Options {
     std::vector<std::string> folders;
     std::string ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
     int port, ftpPort;
-    DWORD xbox;
-    bool push, filter, scan, verbose, pushOnce;
+    std::vector<DWORD> xboxes;  // --xbox: the consoles to update; none: every console that connects.
+    bool push, filter, scan, verbose, pushOnce, stats;
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see PushLoop).
     double onlineWait, removeWait;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
-                port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
+                port(IsvrPort), ftpPort(21), push(true), filter(true), scan(true), verbose(false), pushOnce(false), stats(false),
                 onlineWait(120), removeWait(60) {}
 };
 Options Settings;
@@ -119,13 +120,85 @@ std::string Fingerprint(const std::vector<IsoFile>& isos) {
 
 // The NetISO server ----------------------------------------------------------
 
-std::atomic<DWORD> XboxAddress(0);
 bool Loopback(DWORD address) { return (ntohl(address)>>24)==127; }
-// When the Xbox last connected or sent a NetISO request (its plugin or a
-// launcher), in Now() milliseconds. Those connections start on the Xbox, so
-// they show its own network is up (see PushLoop).
-std::atomic<long long> XboxSeenAt(-1);
-bool FromXbox(DWORD address) { return Settings.xbox ? address==Settings.xbox : !Loopback(address); }
+// Whether the game folders of the console at address are kept up to date.
+bool FromXbox(DWORD address) {
+    if(Settings.xboxes.empty()) return !Loopback(address);
+    return std::find(Settings.xboxes.begin(),Settings.xboxes.end(),address)!=Settings.xboxes.end();
+}
+
+// A console that uses this server: one given with --xbox, or any that
+// connects. Several can play at once, each with its own disc; each gets its
+// game folders kept up to date (PushLoop) and its numbers shown in the window
+// (--stats).
+struct Console {
+    DWORD address;
+    char text[16];
+    bool push;                         // FromXbox.
+    // When it last connected or sent a NetISO request (its plugin or a
+    // launcher), in Now() milliseconds. Those connections start on the Xbox,
+    // so they show its own network is up (see PushLoop).
+    std::atomic<long long> seenAt;
+    std::atomic<int> connections;
+    std::atomic<U64> sent;             // Bytes of game data sent to it.
+    std::atomic<int> ftp;              // Its Aurora's FTP server: 0 not tried, 1 not answering, 2 answers.
+    std::atomic<long long> synced;     // When its game folders were last brought up to date (time()).
+    std::string mounted;               // Under ConsoleLock.
+    explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0) {
+        AddressText(at,text,sizeof(text));
+    }
+};
+std::mutex ConsoleLock;
+std::vector<Console*> Consoles;  // Never removed, so a Console* stays valid.
+
+// The console at address, added the first time it shows up; NULL for this PC
+// (the push's own connections), unless it was given with --xbox (the tests).
+Console* ConsoleAt(DWORD address, bool* added=NULL) {
+    if(added) *added=false;
+    if(Loopback(address) && !FromXbox(address)) return NULL;
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t i=0;i<Consoles.size();++i) if(Consoles[i]->address==address) return Consoles[i];
+    Consoles.push_back(new Console(address));
+    if(added) *added=true;
+    return Consoles.back();
+}
+
+std::vector<Console*> AllConsoles() {
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    return Consoles;
+}
+
+// A line about one console: "Xbox 192.168.1.30: ...".
+void XboxLog(const Console& console, const char* format, ...) {
+    char text[2048];
+    va_list a; va_start(a,format); _vsnprintf_s(text,sizeof(text),_TRUNCATE,format,a); va_end(a);
+    Log("Xbox %s: %s",console.text,text);
+}
+
+// With --stats, one line per console each second that something changed (and
+// every 5 s anyway), for the window's dashboard. Not part of the log:
+//   @stats <address> at=<ms> connections=<n> sent=<bytes> ftp=<0|1|2> synced=<time> mounted=<name>
+void StatsLoop() {
+    std::vector<std::string> last;
+    for(int tick=0;;++tick) {
+        std::vector<Console*> consoles=AllConsoles();
+        last.resize(consoles.size());
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            std::string mounted;
+            { std::lock_guard<std::mutex> hold(ConsoleLock); mounted=c.mounted; }
+            char line[512];
+            _snprintf_s(line,sizeof(line),_TRUNCATE,"%s connections=%d sent=%llu ftp=%d synced=%lld mounted=%s",c.text,c.connections.load(),
+                        (unsigned long long)c.sent.load(),c.ftp.load(),c.synced.load(),mounted.c_str());
+            if(line==last[i] && tick%5) continue;
+            last[i]=line;
+            std::lock_guard<std::mutex> hold(LogLock);
+            printf("@stats %s at=%lld %s\n",c.text,(long long)(Now()*1000),line+strlen(c.text)+1);
+            fflush(stdout);
+        }
+        Sleep(1000);
+    }
+}
 
 // One client connection, speaking the protocol as tuxuser/netiso-srv does
 // (src/main.rs), except that every request and reply is read and sent whole,
@@ -133,11 +206,15 @@ bool FromXbox(DWORD address) { return Settings.xbox ? address==Settings.xbox : !
 // new ISOs show up without a restart, and an empty mount name mounts nothing.
 class Connection {
 public:
-    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address) {
+    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(ConsoleAt(address)) {
         AddressText(address,peer_,sizeof(peer_));
         quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
+        if(console_) ++console_->connections;
     }
-    ~Connection() { closesocket(socket_); }
+    ~Connection() {
+        closesocket(socket_);
+        if(console_) --console_->connections;
+    }
     void Run() {
         if(!quiet_) Log("%s connected.",peer_);
         unsigned char request[Header];
@@ -148,7 +225,7 @@ public:
             U64 offset=(U64(Read32(request+8))<<32)|Read32(request+12);
             DWORD length=Read32(request+16);
             if(Settings.verbose) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
-            if(FromXbox(address_)) XboxSeenAt=(long long)(Now()*1000);
+            if(console_) console_->seenAt=(long long)(Now()*1000);
             if(!Handle(command,index,offset,length)) break;
         }
         if(!quiet_) Log("%s disconnected.",peer_);
@@ -191,7 +268,9 @@ private:
             }
             buffer_.resize(length);
             if(length && !iso_.Read(offset,buffer_.data(),length)) { Log("Reading %s failed; closing %s.",mounted_.c_str(),peer_); return false; }
-            return SendAll(buffer_.data(),length);
+            if(!SendAll(buffer_.data(),length)) return false;
+            if(console_) console_->sent+=length;
+            return true;
         case GetIsoName: {
             if(length>MaxNameBytes) return false;
             if(!index || index>listing_.size()) listing_=Isos();
@@ -221,6 +300,7 @@ private:
         if(name=="[Disable Current ISO]") {
             if(!quiet_) Log("%s: unmounting %s.",peer_,mounted_.empty() ? "nothing" : mounted_.c_str());
             iso_.Close(); mounted_.clear();
+            Mounted();
             return 0;
         }
         std::vector<IsoFile> isos=Isos();
@@ -230,16 +310,24 @@ private:
         for(size_t i=0;i<isos.size() && !found && !name.empty();++i)
             if(isos[i].name.size()>=name.size() && !_stricmp(isos[i].name.c_str()+isos[i].name.size()-name.size(),name.c_str())) found=&isos[i];
         if(!found) { Log("%s asked to mount \"%s\", which isn't here.",peer_,name.c_str()); return 0; }
-        if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); return 0; }
+        if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); Mounted(); return 0; }
         mounted_=found->name;
+        Mounted();
         if(!quiet_) {
             if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
             else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
         }
         return 1;
     }
+    // The console's disc is the one its latest mount asked for.
+    void Mounted() {
+        if(!console_) return;
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        console_->mounted=mounted_;
+    }
     SOCKET socket_;
     DWORD address_;
+    Console* console_;
     char peer_[16];
     bool quiet_;
     std::vector<IsoFile> listing_;
@@ -257,11 +345,10 @@ void Serve(SOCKET listener) {
         setsockopt(client,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<const char*>(&on),sizeof(on));
         setsockopt(client,SOL_SOCKET,SO_KEEPALIVE,reinterpret_cast<const char*>(&on),sizeof(on));
         DWORD address=from.sin_addr.s_addr;
-        if(FromXbox(address)) XboxSeenAt=(long long)(Now()*1000);
-        if(!Loopback(address) && !Settings.xbox && XboxAddress.exchange(address)!=address) {
-            char where[16]; AddressText(address,where,sizeof(where));
-            if(Settings.push) Log("The Xbox is at %s; game folders go there.",where);
-        }
+        bool added;
+        Console* console=ConsoleAt(address,&added);
+        if(console) console->seenAt=(long long)(Now()*1000);
+        if(added && Settings.push && console->push) Log("Found an Xbox at %s; its game folders are kept up to date.",console->text);
         std::thread([client,address]() { Connection(client,address).Run(); }).detach();
     }
 }
@@ -299,37 +386,38 @@ std::string Lines(const char* text, bool crlf) {
     return out;
 }
 
-void GuardFilter(FtpClient& ftp, bool announce) {
+void GuardFilter(const Console& console, FtpClient& ftp, bool announce) {
     std::string path=Settings.aurora+FilterScript;
     std::vector<unsigned char> data;
     if(!ftp.Retrieve(path.c_str(),data,1<<20)) {
-        if(announce) Log("Couldn't read Aurora's %s (%s); the Xbox 360 category is left alone. --aurora names Aurora's folder.",path.c_str(),ftp.Error());
+        if(announce) XboxLog(console,"couldn't read Aurora's %s (%s); the Xbox 360 category is left alone. --aurora names Aurora's folder.",path.c_str(),ftp.Error());
         return;
     }
     std::string text(data.begin(),data.end());
     if(text.find("GameListFilterNetIso")!=std::string::npos) {
-        if(announce) Log("Aurora's Xbox 360 category includes the NetISO games.");
+        if(announce) XboxLog(console,"Aurora's Xbox 360 category includes the NetISO games.");
         return;
     }
     bool crlf=text.find("\r\n")!=std::string::npos;
     std::string original=Lines(FilterOriginal,crlf);
     size_t at=text.find(original);
     if(at==std::string::npos) {
-        if(announce) Log("Aurora's Xbox 360 filter isn't the one this program knows, so it is left alone; the NetISO games show under All.");
+        if(announce) XboxLog(console,"Aurora's Xbox 360 filter isn't the one this program knows, so it is left alone; the NetISO games show under All.");
         return;
     }
     std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+original.size());
     std::string backup=path+".before-netiso";
     if(!ftp.Store(backup.c_str(),text.data(),text.size()) || !ftp.Store(path.c_str(),edited.data(),edited.size())) {
-        Log("Couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
+        XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
         return;
     }
-    Log("Added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
+    XboxLog(console,"added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
 }
 
 // Pushing the game folders ---------------------------------------------------
 
-void PushNote(const char* text) { Log("Xbox: %s",text); }
+const Console* Pushing;  // The console Push is writing to, for PushNote (PushLoop's thread).
+void PushNote(const char* text) { XboxLog(*Pushing,"%s",text); }
 
 // Writes data to path on the Xbox unless it already holds exactly that.
 // 1 if written, 0 if current, -1 on failure.
@@ -344,31 +432,32 @@ const char SyncFolder[]="NetISO Sync";
 // helper as they are (the launcher keeps its own Title ID, FFFF4E49): an
 // older Sync can't read the launchers this server writes, and would only
 // log errors.
-void RefreshSyncApp(FtpClient& ftp, const std::vector<FtpEntry>& entries) {
+void RefreshSyncApp(const Console& console, FtpClient& ftp, const std::vector<FtpEntry>& entries) {
     for(size_t i=0;i<entries.size();++i) {
         if(!entries[i].folder || _stricmp(entries[i].name.c_str(),SyncFolder)) continue;
         std::string folder=Settings.xboxFolder+"/"+entries[i].name;
         int launcher=RefreshRemote(ftp,folder+"/default.xex",Launcher);
         int boot=Boot.empty() ? 0 : RefreshRemote(ftp,folder+"/boot.xex",Boot);
-        if(launcher<0 || boot<0) Log("Couldn't update %s on the Xbox: %s",folder.c_str(),ftp.Error());
-        else if(launcher || boot) Log("Updated %s on the Xbox to this build.",folder.c_str());
+        if(launcher<0 || boot<0) XboxLog(console,"couldn't update %s: %s",folder.c_str(),ftp.Error());
+        else if(launcher || boot) XboxLog(console,"updated %s to this build.",folder.c_str());
         return;
     }
 }
 
-bool Push(FtpClient& ftp, SyncResult& result, bool removeGone) {
+bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool removeGone) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(Settings.xboxFolder.c_str());
-    if(!ftp.List(Settings.xboxFolder.c_str(),entries)) { Log("Couldn't list %s on the Xbox: %s",Settings.xboxFolder.c_str(),ftp.Error()); return false; }
-    RefreshSyncApp(ftp,entries);
+    if(!ftp.List(Settings.xboxFolder.c_str(),entries)) { XboxLog(console,"couldn't list %s: %s",Settings.xboxFolder.c_str(),ftp.Error()); return false; }
+    RefreshSyncApp(console,ftp,entries);
     IsvrClient client(30);
     if(!client.Connect(htonl(0x7F000001),Settings.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
+    Pushing=&console;
     bool ok=Sync(client,storage,Settings.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
                  Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
-    if(ok) Log("The Xbox is up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
-    if(ok && result.held) Log("%d game folder(s) on the Xbox have no game here yet; they're removed if that's still so %.0f s after the start.",result.held,Settings.removeWait);
-    else Log("Updating the Xbox's game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
+    if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
+    if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start.",result.held,Settings.removeWait);
+    else if(!ok) XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
     return ok;
 }
 
@@ -376,18 +465,80 @@ bool Push(FtpClient& ftp, SyncResult& result, bool removeGone) {
 // so new games show up at once and Aurora looks them up online. A game its own
 // scan finds while Aurora is starting never gets its name or art (see
 // PushLoop). False when Aurora didn't start one (its scanner may be busy).
-bool StartScan(FtpClient& ftp) {
+bool StartScan(const Console& console, FtpClient& ftp) {
     std::string reply;
     bool ok=ftp.Site(("INITIATESCAN "+Settings.xboxFolder).c_str(),reply) && reply.find("Unable")==std::string::npos;
-    if(ok) Log("Asked Aurora to scan %s, so it lists the changes now and downloads the new games' art.",Settings.xboxFolder.c_str());
-    else Log("Aurora didn't start a scan: %s",reply.empty() ? ftp.Error() : reply.c_str());
+    if(ok) XboxLog(console,"asked Aurora to scan %s, so it lists the changes now and downloads the new games' art.",Settings.xboxFolder.c_str());
+    else XboxLog(console,"Aurora didn't start a scan: %s",reply.empty() ? ftp.Error() : reply.c_str());
     return ok;
 }
 
-// Watches the ISO folder and keeps the Xbox's game folders in step with it.
-// The Xbox is only contacted when there is something to do: the ISOs changed
-// (and have settled), or a scan or a skipped ISO is still due. Until its FTP
-// server (Aurora) answers, it's tried every ProbeDownSeconds.
+// What PushLoop knows about one console.
+struct PushState {
+    std::string pushed;  // The games when its folders were last written.
+    double nextProbe, retryAt, scanAt, downSince, upSince;
+    int scanTries;
+    bool attempted, everPushed, reachable, toldDown, toldWaiting;
+    bool finished;  // --push-once: done with this console.
+    PushState() : nextProbe(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
+                  attempted(false), everPushed(false), reachable(false), toldDown(false), toldWaiting(false), finished(false) {}
+};
+
+void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
+    if(s.finished) return;
+    bool pushDue=settled && (!s.everPushed || state!=s.pushed || (s.retryAt && Now()>=s.retryAt));
+    bool scanDue=s.scanTries && Now()>=s.scanAt;
+    bool online=Settings.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=Settings.onlineWait;
+    if(!(pushDue || scanDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
+    FtpClient ftp(console.address,Settings.ftpPort,Settings.ftpUser.c_str(),Settings.ftpPassword.c_str(),15);
+    if(!ftp.Open()) {
+        if(s.reachable || !s.toldDown) XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
+        if(s.reachable || !s.downSince) s.downSince=Now();
+        s.reachable=false; s.toldDown=true; s.toldWaiting=false; s.nextProbe=Now()+ProbeDownSeconds;
+        console.ftp=1;
+        s.finished=Settings.pushOnce;
+        return;
+    }
+    bool back=!s.reachable;
+    s.reachable=true; s.toldDown=false;
+    console.ftp=2;
+    if(back) {
+        XboxLog(console,"its FTP server answers.");
+        s.upSince=Now();
+        online=Settings.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Settings.onlineWait<=0;
+    }
+    if(Settings.filter && (back || pushDue)) GuardFilter(console,ftp,back);
+    if(pushDue && !online && !s.toldWaiting) {
+        XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",Settings.onlineWait);
+        s.toldWaiting=true;
+    }
+    if(pushDue && online) {
+        SyncResult result;
+        s.attempted=true; s.toldWaiting=false;
+        if(Push(console,ftp,result,Settings.pushOnce || Now()-startedAt>=Settings.removeWait)) {
+            s.everPushed=true; s.pushed=state;
+            console.synced=(long long)time(NULL);
+            s.retryAt=result.held ? startedAt+Settings.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
+            if(result.added || result.removed) {
+                if(Settings.scan) { s.scanTries=Settings.pushOnce ? 1 : ScanTries; s.scanAt=Now(); scanDue=true; }
+                else XboxLog(console,"Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
+            }
+        } else s.nextProbe=Now()+30;
+    }
+    if(scanDue) {
+        if(StartScan(console,ftp)) s.scanTries=0;
+        else if(--s.scanTries) s.scanAt=Now()+ScanRetrySeconds;
+        else XboxLog(console,"Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
+    }
+    if(Settings.pushOnce && s.attempted && !s.scanTries) s.finished=true;
+    ftp.Close();
+}
+
+// Watches the game folders and keeps each console's game folders in step with
+// them, each console on its own. A console is only contacted when there is
+// something to do: the games changed (and have settled), or a scan or a
+// skipped game is still due. Until its FTP server (Aurora) answers, it's tried
+// every ProbeDownSeconds.
 //
 // A game folder that Aurora finds while the Xbox is still coming online gets
 // no online lookup, so no name or art, ever: Banjo 38 s after a boot, and 17
@@ -404,63 +555,25 @@ bool StartScan(FtpClient& ftp) {
 // a games drive can come up after a server started with Windows. Removing
 // them early would drop the games from Aurora, with their art and stats.
 void PushLoop() {
-    std::string previous,pushed;
+    std::string previous;
     const double startedAt=Now();
-    double changedAt=-1e9,nextProbe=0,retryAt=0,scanAt=0,downSince=0,upSince=0;
-    int scanTries=0;
-    bool attempted=false,everPushed=false,reachable=false,toldDown=false,toldWaiting=false;
-    DWORD target=0;
+    double changedAt=-1e9;
+    std::map<DWORD,PushState> states;
     for(;;) {
         std::string state=Fingerprint(Isos());
         if(state!=previous) { if(!previous.empty() || changedAt>-1e9) changedAt=Now(); previous=state; }
-        DWORD xbox=Settings.xbox ? Settings.xbox : XboxAddress.load();
-        if(xbox && xbox!=target) { target=xbox; reachable=false; toldDown=false; nextProbe=0; downSince=0; }
         bool settled=Now()-changedAt>=SettleSeconds;
-        bool pushDue=settled && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt));
-        bool scanDue=scanTries && Now()>=scanAt;
-        bool online=Settings.pushOnce || !downSince || XboxSeenAt.load()/1000.0>=downSince || Now()-upSince>=Settings.onlineWait;
-        if(target && (pushDue || scanDue) && Now()>=nextProbe && (!reachable || online || scanDue)) {
-            FtpClient ftp(target,Settings.ftpPort,Settings.ftpUser.c_str(),Settings.ftpPassword.c_str(),15);
-            if(!ftp.Open()) {
-                if(reachable || !toldDown) Log("Waiting for the Xbox's FTP server: %s",ftp.Error());
-                if(reachable || !downSince) downSince=Now();
-                reachable=false; toldDown=true; toldWaiting=false; nextProbe=Now()+ProbeDownSeconds;
-            } else {
-                bool back=!reachable;
-                reachable=true; toldDown=false;
-                if(back) {
-                    char where[16]; AddressText(target,where,sizeof(where));
-                    Log("The Xbox's FTP server at %s answers.",where);
-                    upSince=Now();
-                    online=Settings.pushOnce || !downSince || XboxSeenAt.load()/1000.0>=downSince || Settings.onlineWait<=0;
-                }
-                if(Settings.filter && (back || pushDue)) GuardFilter(ftp,back);
-                if(pushDue && !online && !toldWaiting) {
-                    Log("Waiting for the Xbox to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",Settings.onlineWait);
-                    toldWaiting=true;
-                }
-                if(pushDue && online) {
-                    SyncResult result;
-                    attempted=true; toldWaiting=false;
-                    if(Push(ftp,result,Settings.pushOnce || Now()-startedAt>=Settings.removeWait)) {
-                        everPushed=true; pushed=state;
-                        retryAt=result.held ? startedAt+Settings.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
-                        if(result.added || result.removed) {
-                            if(Settings.scan) { scanTries=Settings.pushOnce ? 1 : ScanTries; scanAt=Now(); scanDue=true; }
-                            else Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
-                        }
-                    } else nextProbe=Now()+30;
-                }
-                if(scanDue) {
-                    if(StartScan(ftp)) scanTries=0;
-                    else if(--scanTries) scanAt=Now()+ScanRetrySeconds;
-                    else Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
-                }
-                if(Settings.pushOnce && attempted && !scanTries) exit(everPushed ? 0 : 1);
-                ftp.Close();
-            }
+        std::vector<Console*> consoles=AllConsoles();
+        bool finished=true,failed=false;
+        for(size_t i=0;i<consoles.size();++i) {
+            if(!consoles[i]->push) continue;
+            PushState& s=states[consoles[i]->address];
+            PushTo(*consoles[i],s,state,settled,startedAt);
+            finished&=s.finished;
+            failed|=!s.everPushed;
         }
-        if(Settings.pushOnce && !reachable && toldDown) exit(1);
+        // --push-once (the tests): ends when every console given is done.
+        if(Settings.pushOnce && finished) exit(failed ? 1 : 0);
         Sleep(1000);
     }
 }
@@ -498,7 +611,8 @@ void Usage() {
         "folder inside is a disc of its own), or Games on Demand packages. Each game is\n"
         "served once; extra copies are listed so they can be removed.\n\n"
         "  netdisc [options] [folder ...]   (default: the current folder)\n\n"
-        "  --xbox <address>        the Xbox to update (default: the console that connects)\n"
+        "  --xbox <address>        a console to update; give it once for each (default: every\n"
+        "                          console that connects)\n"
         "  --ftp-user <name>       Aurora's FTP login (xboxftp)\n"
         "  --ftp-password <text>   (xboxftp)\n"
         "  --xbox-folder <path>    the game folder on the Xbox, as an FTP path (/Hdd1/NetISO)\n"
@@ -526,9 +640,11 @@ bool ParseArguments(int argc, char** argv) {
         else if(a=="--no-category") Settings.filter=false;
         else if(a=="--no-scan") Settings.scan=false;
         else if(a=="--push-once") Settings.pushOnce=true;  // For the tests.
+        else if(a=="--stats") Settings.stats=true;  // For the window.
         else if(hasValue && a=="--xbox") {
-            Settings.xbox=inet_addr(argv[++i]);
-            if(Settings.xbox==INADDR_NONE || !Settings.xbox) { fprintf(stderr,"--xbox needs an IPv4 address like 192.168.1.20.\n"); return false; }
+            DWORD xbox=inet_addr(argv[++i]);
+            if(xbox==INADDR_NONE || !xbox) { fprintf(stderr,"--xbox needs an IPv4 address like 192.168.1.20.\n"); return false; }
+            Settings.xboxes.push_back(xbox);
         }
         else if(hasValue && a=="--ftp-user") Settings.ftpUser=argv[++i];
         else if(hasValue && a=="--ftp-password") Settings.ftpPassword=argv[++i];
@@ -596,11 +712,15 @@ int Run(int argc, char** argv) {
     }
     (void)on;
     Log("Listening on port %d.",Settings.port);
+    for(size_t i=0;i<Settings.xboxes.size();++i) {
+        Console* console=ConsoleAt(Settings.xboxes[i]);
+        if(console && Settings.push) Log("Keeping %s on the Xbox at %s up to date.",Settings.xboxFolder.c_str(),console->text);
+    }
     if(Settings.push) {
-        if(Settings.xbox) { char where[16]; AddressText(Settings.xbox,where,sizeof(where)); Log("Keeping %s on the Xbox at %s up to date.",Settings.xboxFolder.c_str(),where); }
-        else Log("Keeping %s on the Xbox up to date once the Xbox connects (or give --xbox).",Settings.xboxFolder.c_str());
+        if(Settings.xboxes.empty()) Log("Keeping %s up to date on every Xbox that connects (or give --xbox).",Settings.xboxFolder.c_str());
         std::thread(PushLoop).detach();
     }
+    if(Settings.stats) std::thread(StatsLoop).detach();
     Serve(listener);
     return 0;
 }
