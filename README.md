@@ -55,14 +55,14 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. Every game 
 
 **On Windows:** put `netiso-server.exe` anywhere, for example in the folder with your games, and double-click it.
 
-- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with **Add folder...** (or drop them on the window), and remove any you don't want. Subfolders count too.
-- Leave **Xbox IP address** empty: the server finds the console when it connects. Fill it in only if the console isn't found.
-- Enter **Aurora's FTP login** if you changed it.
-- Tick **Start with Windows** to have it start, minimized, every time you sign in.
+- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with the round **+** button (or drop them on the window). Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
+- The **Games** page shows every game it serves, with its cover, as a grid or a list. Click a game for its details.
+- On the **Xbox 360** page, leave **IP address** empty: the server finds the console when it connects. Fill it in only if the console isn't found. Enter **Aurora's FTP login** there if you changed it.
+- On the **Settings** page, turn on **Start with Windows** to have it start, hidden, every time you sign in.
 - **Minimize or close the window and forget about it.** The server keeps running behind its icon in the notification area (by the clock). Click the icon to open the window again; right-click it and pick **Quit** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
 
-Settings are saved in `%APPDATA%\NetISO for Aurora\netiso-server.ini`, with the FTP password encrypted for your Windows user. The window's log shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), as before.
+Settings are saved in `%APPDATA%\NetISO for Aurora\netiso-server.ini`, with the FTP password encrypted for your Windows user. The **Log** page shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), as before.
 
 **With Docker** (Linux, a NAS, a Raspberry Pi): see [Docker](#docker) below.
 
@@ -136,7 +136,7 @@ What `netiso-server.exe` does, all from one file:
 - **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
-- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the server window lists the other copies with their paths so you can remove them.
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the window's **Game folders** page lists the other copies with their paths so you can remove them.
 
 | Option | Default | |
 |---|---|---|
@@ -176,6 +176,7 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it in the server's window (or `NETISO_FTP_USER`/`NETISO_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. The window keeps the password encrypted for your Windows user and hands it to the server outside its command line; the server never writes it to its log.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `netiso-server.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
+- **Covers in the window.** To show covers, the Windows window downloads them from GitHub (the XboxUnity-Scraper archive) or xboxunity.net, asking only for each game's Title ID, and keeps them in `%LOCALAPPDATA%\NetISO for Aurora\Covers`. Turn it off under **Settings > Covers**. The server itself never goes online.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
 
 ## Limitations
@@ -255,6 +256,7 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 - [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
 - [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
+- Dear ImGui 1.92 (MIT, `third_party/imgui-1.92/LICENSE.txt`) and [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the Windows window, whose look follows [TinyXbox360BackupManager](https://github.com/jeanmatthieud/TinyXbox360BackupManager). Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
 

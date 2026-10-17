@@ -1,33 +1,38 @@
 // SPDX-License-Identifier: MIT
 // The window of netiso-server.exe on Windows. Started with no options (from
-// Explorer, a shortcut, or at sign-in with --tray), the exe shows a small
-// window: the game folders, the Xbox's address and Aurora's FTP login, a
-// "Start with Windows" box and the server's log. The settings are kept in
-// %APPDATA%\NetISO for Aurora\netiso-server.ini (the password encrypted for
-// this Windows user), and the server itself runs as a second copy of this exe
-// with those settings as options, its output shown in the log. Minimizing or
-// closing the window leaves the server running behind an icon in the
-// notification area.
+// Explorer, a shortcut, or at sign-in with --tray), the exe shows a window
+// with the games it serves, the game folders, the Xbox's connection and the
+// server's log, drawn with Dear ImGui over Direct3D 11 (gui_view.cpp). The
+// settings are kept in %APPDATA%\NetISO for Aurora\netiso-server.ini (the
+// password encrypted for this Windows user), and the server itself runs as a
+// second copy of this exe with those settings as options, its output shown
+// in the log. Minimizing or closing the window leaves the server running
+// behind an icon in the notification area.
 //
 // Started with options, the exe is the command-line server as before; this
 // file then only connects it to the console it was started from.
 #ifdef _WIN32
-#include <winsock2.h>
-#include <windows.h>
-#include <windowsx.h>
-#include <commctrl.h>
+#include "gui.h"
+#include "../third_party/imgui-1.92/imgui.h"
+#include "../third_party/imgui-1.92/backends/imgui_impl_dx11.h"
+#include "../third_party/imgui-1.92/backends/imgui_impl_win32.h"
+#include "../third_party/fonts/roboto_medium.h"
+#include "../third_party/lucide/lucide_icons.h"
+#include <d3d11.h>
+#include <dwmapi.h>
 #include <iphlpapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <wincrypt.h>
+#include <windowsx.h>
 #include <stdio.h>
 #include <string.h>
-#include <string>
+#include <functional>
 #include <thread>
-#include <vector>
 
-#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ole32.lib")
@@ -35,39 +40,66 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
-#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#pragma comment(lib, "imm32.lib")
+
+IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+namespace gui {
+Config Saved;
+Library Games;
+ServerState Server;
+std::string ThisPc;
+float Scale = 1;
+bool Dark;
+ImFont *FontText, *FontBold, *FontMono, *FontIcons;
+ID3D11Device* Device;
+ID3D11DeviceContext* Context;
 
 namespace {
-const wchar_t AppName[] = L"NetISO server for Aurora";
+const wchar_t AppName[] = L"NetISO for Aurora";
 const wchar_t WindowClass[] = L"NetIsoAuroraServer";
 const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t RunValue[] = L"NetISO server for Aurora";
 const wchar_t Section[] = L"Server";
 const int IconId = 1;  // server.rc
-enum { WM_TRAY = WM_APP + 1, WM_LOGLINE, WM_STOPPED, WM_SHOWMAIN };
-enum { IdFolders = 100, IdAdd, IdRemove, IdXbox, IdUser, IdPassword, IdBoot, IdStart, IdQuit, IdLog,
-       IdMenuOpen = 200, IdMenuStart, IdMenuBoot, IdMenuQuit };
+const size_t LogLines = 5000;
+enum { WM_TRAY = WM_APP + 1, WM_LOGLINE, WM_STOPPED, WM_SHOWMAIN, WM_LIBRARY, WM_COVER };
+enum { IdMenuOpen = 200, IdMenuStart, IdMenuBoot, IdMenuQuit };
 
-struct Config {
-    std::vector<std::wstring> folders;
-    std::wstring xbox, user, password, options;
-    bool toldTray;
-    Config() : user(L"xboxftp"), password(L"xboxftp"), toldTray(false) {}
-};
-Config Saved;
-
-HWND Window, FolderList, AddButton, RemoveButton, XboxEdit, UserEdit, PasswordEdit, BootBox, StartButton, QuitButton, LogEdit;
-HWND FoldersLabel, FoldersHint, XboxLabel, XboxIpLabel, XboxHint, LoginLabel, StatusText, PcText, LogLabel;
-HFONT Font, Bold, Mono;
-HBRUSH Background;
+HWND Window;
 HICON BigIcon, SmallIcon;
-UINT Dpi = 96, TaskbarCreated;
+UINT TaskbarCreated;
 NOTIFYICONDATAW Tray;
 HANDLE Job, Child;
-bool Running, Quitting;
 unsigned Generation;
-int Games = -1;
-std::wstring LastLine;
+IDXGISwapChain* SwapChain;
+ID3D11RenderTargetView* Target;
+int FramesWanted;
+DWORD WakeAt;  // GetTickCount() of a frame asked for later; 0: none.
+bool InFrame, Quitting;
+std::vector<std::function<void()>> AfterFrame;
+
+// Runs what would interrupt a frame (a dialog, closing the window) after it.
+void Later(const std::function<void()>& work) {
+    if (InFrame) AfterFrame.push_back(work);
+    else work();
+}
+
+// Text --------------------------------------------------------------------------
+
+std::string Narrow(const std::wstring& text, UINT page) {
+    int n = WideCharToMultiByte(page, 0, text.data(), int(text.size()), NULL, 0, NULL, NULL);
+    std::string out(n, '\0');
+    if (n) WideCharToMultiByte(page, 0, text.data(), int(text.size()), &out[0], n, NULL, NULL);
+    return out;
+}
+
+std::wstring Widen(const std::string& text, UINT page) {
+    int n = MultiByteToWideChar(page, 0, text.data(), int(text.size()), NULL, 0);
+    std::wstring out(n, L'\0');
+    if (n) MultiByteToWideChar(page, 0, text.data(), int(text.size()), &out[0], n);
+    return out;
+}
 
 // Paths and settings -----------------------------------------------------
 
@@ -81,17 +113,6 @@ std::wstring ExeFolder() {
     std::wstring path = ExePath();
     size_t at = path.find_last_of(L"\\/");
     return at == std::wstring::npos ? L"." : path.substr(0, at);
-}
-
-std::wstring IniPath() {
-    PWSTR roaming = NULL;
-    std::wstring folder;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &roaming))) folder = roaming;
-    CoTaskMemFree(roaming);
-    if (folder.empty()) folder = ExeFolder();
-    folder += L"\\NetISO for Aurora";
-    CreateDirectoryW(folder.c_str(), NULL);
-    return folder + L"\\netiso-server.ini";
 }
 
 // The FTP password is kept encrypted for this Windows user (DPAPI).
@@ -147,6 +168,14 @@ std::wstring ReadSetting(const std::wstring& ini, const wchar_t* key, const wcha
     return value.data();
 }
 
+bool ReadFlag(const std::wstring& ini, const wchar_t* key, bool fallback) {
+    return GetPrivateProfileIntW(Section, key, fallback ? 1 : 0, ini.c_str()) != 0;
+}
+
+void WriteFlag(const std::wstring& ini, const wchar_t* key, bool on) {
+    WritePrivateProfileStringW(Section, key, on ? L"1" : L"0", ini.c_str());
+}
+
 void LoadConfig() {
     std::wstring ini = IniPath();
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -166,30 +195,15 @@ void LoadConfig() {
     std::wstring password;
     if (Unprotect(ReadSetting(ini, L"ftp_password", L""), password)) Saved.password = password;
     Saved.options = ReadSetting(ini, L"options", L"");
-    Saved.toldTray = GetPrivateProfileIntW(Section, L"told_tray", 0, ini.c_str()) != 0;
-}
-
-void SaveConfig() {
-    std::wstring ini = IniPath();
-    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        // A UTF-16 file, so folder names keep every character.
-        HANDLE f = CreateFileW(ini.c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (f != INVALID_HANDLE_VALUE) {
-            static const unsigned char bom[2] = {0xFF, 0xFE};
-            DWORD written;
-            WriteFile(f, bom, 2, &written, NULL);
-            CloseHandle(f);
-        }
-    }
-    WritePrivateProfileStringW(Section, NULL, NULL, ini.c_str());
-    WritePrivateProfileStringW(Section, L"folders", std::to_wstring(Saved.folders.size()).c_str(), ini.c_str());
-    for (size_t i = 0; i < Saved.folders.size(); ++i)
-        WritePrivateProfileStringW(Section, (L"folder" + std::to_wstring(i + 1)).c_str(), Saved.folders[i].c_str(), ini.c_str());
-    WritePrivateProfileStringW(Section, L"xbox", Saved.xbox.c_str(), ini.c_str());
-    WritePrivateProfileStringW(Section, L"ftp_user", Saved.user.c_str(), ini.c_str());
-    WritePrivateProfileStringW(Section, L"ftp_password", Protect(Saved.password).c_str(), ini.c_str());
-    WritePrivateProfileStringW(Section, L"options", Saved.options.c_str(), ini.c_str());
-    WritePrivateProfileStringW(Section, L"told_tray", Saved.toldTray ? L"1" : L"0", ini.c_str());
+    Saved.theme = GetPrivateProfileIntW(Section, L"theme", ThemeSystem, ini.c_str());
+    if (Saved.theme < ThemeSystem || Saved.theme > ThemeDark) Saved.theme = ThemeSystem;
+    Saved.covers = ReadFlag(ini, L"covers", true);
+    Saved.listView = ReadFlag(ini, L"list_view", false);
+    Saved.sortBySize = ReadFlag(ini, L"sort_by_size", false);
+    Saved.showIso = ReadFlag(ini, L"show_iso", true);
+    Saved.showGod = ReadFlag(ini, L"show_god", true);
+    Saved.showFolder = ReadFlag(ini, L"show_folder", true);
+    Saved.toldTray = ReadFlag(ini, L"told_tray", false);
 }
 
 // Start with Windows: a value under HKCU\...\Run that starts the exe in the tray.
@@ -202,17 +216,8 @@ std::wstring StartupEntry() {
     return value;
 }
 
-void SetStartWithWindows(bool on) {
-    if (on) {
-        std::wstring command = RunCommand();
-        RegSetKeyValueW(HKEY_CURRENT_USER, RunKey, RunValue, REG_SZ, command.c_str(), DWORD((command.size() + 1) * sizeof(wchar_t)));
-    } else {
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, RunKey, RunValue);
-    }
-}
-
 // The PC's IPv4 addresses on networks with a gateway: what netiso.xex.txt needs.
-std::wstring PcAddresses() {
+std::string PcAddresses() {
     ULONG size = 16384;
     std::vector<BYTE> buffer(size);
     IP_ADAPTER_ADDRESSES* list = (IP_ADAPTER_ADDRESSES*)buffer.data();
@@ -221,16 +226,16 @@ std::wstring PcAddresses() {
         buffer.resize(size);
         list = (IP_ADAPTER_ADDRESSES*)buffer.data();
     }
-    if (GetAdaptersAddresses(AF_INET, flags, NULL, list, &size) != NO_ERROR) return L"";
-    std::wstring result;
+    if (GetAdaptersAddresses(AF_INET, flags, NULL, list, &size) != NO_ERROR) return "";
+    std::string result;
     for (IP_ADAPTER_ADDRESSES* a = list; a; a = a->Next) {
         if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || !a->FirstGatewayAddress) continue;
         for (IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u; u = u->Next) {
             sockaddr_in* at = (sockaddr_in*)u->Address.lpSockaddr;
             const BYTE* b = (const BYTE*)&at->sin_addr;
-            wchar_t text[20];
-            swprintf(text, 20, L"%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
-            if (!result.empty()) result += L", ";
+            char text[20];
+            _snprintf_s(text, sizeof(text), _TRUNCATE, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+            if (!result.empty()) result += ", ";
             result += text;
         }
     }
@@ -280,9 +285,7 @@ void ReadOutput(HANDLE pipe, unsigned generation) {
             std::string line = pending.substr(0, end);
             pending.erase(0, end + 1);
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            int n = MultiByteToWideChar(CP_ACP, 0, line.data(), int(line.size()), NULL, 0);
-            std::wstring* text = new std::wstring(n, L'\0');
-            if (n) MultiByteToWideChar(CP_ACP, 0, line.data(), int(line.size()), &(*text)[0], n);
+            std::string* text = new std::string(AnsiToUtf8(line));
             if (!PostMessageW(Window, WM_LOGLINE, generation, (LPARAM)text)) delete text;
         }
     }
@@ -290,233 +293,174 @@ void ReadOutput(HANDLE pipe, unsigned generation) {
     PostMessageW(Window, WM_STOPPED, generation, 0);
 }
 
-void UpdateStatus();
-void AppendLog(const std::wstring& line);
-
-void StartServer() {
-    if (Running) return;
-    Games = -1;
-    LastLine.clear();
-    if (Saved.folders.empty()) {
-        AppendLog(L"Add a folder with your games to start the server.");
-        UpdateStatus();
-        return;
-    }
-    SECURITY_ATTRIBUTES inherit = {sizeof(inherit), NULL, TRUE};
-    HANDLE readEnd, writeEnd;
-    if (!CreatePipe(&readEnd, &writeEnd, &inherit, 0)) return;
-    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, NULL);
-    STARTUPINFOW start = {sizeof(start)};
-    start.dwFlags = STARTF_USESTDHANDLES;
-    start.hStdInput = nul;
-    start.hStdOutput = start.hStdError = writeEnd;
-    PROCESS_INFORMATION process;
-    std::wstring command = ServerCommandLine();
-    std::wstring folder = ExeFolder();
-    // The password travels in the server's environment, not on its command line.
-    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", Saved.password.c_str());
-    BOOL started = CreateProcessW(ExePath().c_str(), &command[0], NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED,
-                                  NULL, folder.c_str(), &start, &process);
-    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", NULL);
-    CloseHandle(writeEnd);
-    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
-    if (!started) {
-        CloseHandle(readEnd);
-        AppendLog(L"Couldn't start the server (error " + std::to_wstring(GetLastError()) + L").");
-        UpdateStatus();
-        return;
-    }
-    // In a job, so the server ends with this window, even if it crashes.
-    AssignProcessToJobObject(Job, process.hProcess);
-    ResumeThread(process.hThread);
-    CloseHandle(process.hThread);
-    Child = process.hProcess;
-    Running = true;
-    std::thread(ReadOutput, readEnd, ++Generation).detach();
-    UpdateStatus();
-}
-
-void StopServer(bool say) {
-    if (!Running) return;
-    ++Generation;  // Its last lines and its end are no longer news.
-    TerminateProcess(Child, 0);
-    WaitForSingleObject(Child, 5000);
-    CloseHandle(Child);
-    Child = NULL;
-    Running = false;
-    if (say) AppendLog(L"Server stopped.");
-    UpdateStatus();
-}
-
-void RestartServer() {
-    bool was = Running;
-    StopServer(false);
-    if (was) AppendLog(L"Settings changed; restarting the server.");
-    StartServer();
-}
-
-// The window -------------------------------------------------------------------
-
-int Px(int dips) { return MulDiv(dips, Dpi, 96); }
-
-void MakeFonts() {
-    if (Font) DeleteObject(Font);
-    if (Bold) DeleteObject(Bold);
-    if (Mono) DeleteObject(Mono);
-    NONCLIENTMETRICSW metrics = {sizeof(metrics)};
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
-    LOGFONTW face = metrics.lfMessageFont;
-    face.lfHeight = -MulDiv(9, Dpi, 72);
-    Font = CreateFontIndirectW(&face);
-    face.lfWeight = FW_SEMIBOLD;
-    face.lfHeight = -MulDiv(10, Dpi, 72);
-    Bold = CreateFontIndirectW(&face);
-    Mono = CreateFontW(-MulDiv(9, Dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
-}
-
-void LoadIcons() {
-    HINSTANCE self = GetModuleHandleW(NULL);
-    BigIcon = (HICON)LoadImageW(self, MAKEINTRESOURCEW(IconId), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
-    SmallIcon = (HICON)LoadImageW(self, MAKEINTRESOURCEW(IconId), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
-    if (!BigIcon) BigIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
-    if (!SmallIcon) SmallIcon = BigIcon;
-}
-
-void ApplyFonts() {
-    HWND normal[] = {FolderList, AddButton, RemoveButton, XboxEdit, UserEdit, PasswordEdit, BootBox, StartButton, QuitButton,
-                     FoldersHint, XboxIpLabel, XboxHint, LoginLabel, PcText};
-    for (HWND h : normal) SendMessageW(h, WM_SETFONT, (WPARAM)Font, TRUE);
-    HWND bold[] = {FoldersLabel, XboxLabel, LogLabel, StatusText};
-    for (HWND h : bold) SendMessageW(h, WM_SETFONT, (WPARAM)Bold, TRUE);
-    SendMessageW(LogEdit, WM_SETFONT, (WPARAM)Mono, TRUE);
-}
-
-void Layout() {
-    RECT client;
-    GetClientRect(Window, &client);
-    int w = client.right, h = client.bottom, m = Px(16), button = Px(120), row = Px(26), gap = Px(8);
-    int y = m;
-    MoveWindow(FoldersLabel, m, y, w - 2 * m, Px(20), TRUE);
-    y += Px(24);
-    int listW = w - 2 * m - button - gap;
-    MoveWindow(FolderList, m, y, listW, Px(92), TRUE);
-    MoveWindow(AddButton, w - m - button, y, button, Px(28), TRUE);
-    MoveWindow(RemoveButton, w - m - button, y + Px(34), button, Px(28), TRUE);
-    y += Px(96);
-    MoveWindow(FoldersHint, m, y, w - 2 * m, Px(18), TRUE);
-    y += Px(30);
-    MoveWindow(XboxLabel, m, y, w - 2 * m, Px(20), TRUE);
-    y += Px(26);
-    int labelW = Px(130), editW = Px(150);
-    MoveWindow(XboxIpLabel, m, y + Px(4), labelW, Px(18), TRUE);
-    MoveWindow(XboxEdit, m + labelW, y, editW, Px(24), TRUE);
-    MoveWindow(XboxHint, m + labelW + editW + gap, y + Px(4), w - m - (m + labelW + editW + gap), Px(18), TRUE);
-    y += Px(32);
-    MoveWindow(LoginLabel, m, y + Px(4), labelW, Px(18), TRUE);
-    MoveWindow(UserEdit, m + labelW, y, editW, Px(24), TRUE);
-    MoveWindow(PasswordEdit, m + labelW + editW + gap, y, editW, Px(24), TRUE);
-    y += Px(34);
-    MoveWindow(BootBox, m, y, w - 2 * m, Px(22), TRUE);
-    y += Px(36);
-    MoveWindow(StatusText, m, y + Px(2), w - 2 * m - 2 * button - gap, Px(22), TRUE);
-    MoveWindow(StartButton, w - m - 2 * button - gap, y, button, Px(28), TRUE);
-    MoveWindow(QuitButton, w - m - button, y, button, Px(28), TRUE);
-    y += Px(30);
-    MoveWindow(PcText, m, y, w - 2 * m, Px(18), TRUE);
-    y += Px(30);
-    MoveWindow(LogLabel, m, y, w - 2 * m, Px(20), TRUE);
-    y += Px(24);
-    MoveWindow(LogEdit, m, y, w - 2 * m, h - y - m > row ? h - y - m : row, TRUE);
-}
-
-HWND Make(const wchar_t* kind, const wchar_t* text, DWORD style, int id, DWORD exStyle = 0) {
-    return CreateWindowExW(exStyle, kind, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, Window, (HMENU)(INT_PTR)id,
-                           GetModuleHandleW(NULL), NULL);
-}
-
-void FillFolders() {
-    SendMessageW(FolderList, LB_RESETCONTENT, 0, 0);
-    for (const std::wstring& folder : Saved.folders) SendMessageW(FolderList, LB_ADDSTRING, 0, (LPARAM)folder.c_str());
-    EnableWindow(RemoveButton, FALSE);
-}
-
-void CreateControls() {
-    FoldersLabel = Make(L"STATIC", L"Game folders", SS_LEFT, -1);
-    FolderList = Make(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, IdFolders);
-    AddButton = Make(L"BUTTON", L"Add folder...", BS_PUSHBUTTON | WS_TABSTOP, IdAdd);
-    RemoveButton = Make(L"BUTTON", L"Remove", BS_PUSHBUTTON | WS_TABSTOP, IdRemove);
-    FoldersHint = Make(L"STATIC", L"ISOs, extracted games and Games on Demand, in these folders and their subfolders. You can also drop folders here.",
-                       SS_LEFT | SS_ENDELLIPSIS, -1);
-    XboxLabel = Make(L"STATIC", L"Xbox", SS_LEFT, -1);
-    XboxIpLabel = Make(L"STATIC", L"Xbox IP address", SS_LEFT, -1);
-    XboxEdit = Make(L"EDIT", Saved.xbox.c_str(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IdXbox);
-    XboxHint = Make(L"STATIC", L"Empty: the Xbox that connects", SS_LEFT | SS_ENDELLIPSIS, -1);
-    LoginLabel = Make(L"STATIC", L"Aurora FTP login", SS_LEFT, -1);
-    UserEdit = Make(L"EDIT", Saved.user.c_str(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, IdUser);
-    PasswordEdit = Make(L"EDIT", Saved.password.c_str(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, IdPassword);
-    SendMessageW(XboxEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"automatic");
-    SendMessageW(UserEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"user name");
-    SendMessageW(PasswordEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"password");
-    BootBox = Make(L"BUTTON", L"Start with Windows (in the notification area)", BS_AUTOCHECKBOX | WS_TABSTOP, IdBoot);
-    Button_SetCheck(BootBox, StartupEntry().empty() ? BST_UNCHECKED : BST_CHECKED);
-    StatusText = Make(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, -1);
-    StartButton = Make(L"BUTTON", L"Stop server", BS_PUSHBUTTON | WS_TABSTOP, IdStart);
-    QuitButton = Make(L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, IdQuit);
-    PcText = Make(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, -1);
-    LogLabel = Make(L"STATIC", L"Log", SS_LEFT, -1);
-    LogEdit = Make(L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_TABSTOP, IdLog);
-    SendMessageW(LogEdit, EM_SETLIMITTEXT, 0, 0);
-    FillFolders();
-    ApplyFonts();
-}
-
-void AppendLog(const std::wstring& line) {
-    int length = GetWindowTextLengthW(LogEdit);
-    if (length > 500000) {
-        // Drop the older half, at a line break.
-        int first = int(SendMessageW(LogEdit, EM_LINEFROMCHAR, length / 2, 0));
-        int cut = int(SendMessageW(LogEdit, EM_LINEINDEX, first + 1, 0));
-        SendMessageW(LogEdit, EM_SETSEL, 0, cut);
-        SendMessageW(LogEdit, EM_REPLACESEL, FALSE, (LPARAM)L"");
-        length = GetWindowTextLengthW(LogEdit);
-    }
-    std::wstring text = line + L"\r\n";
-    SendMessageW(LogEdit, EM_SETSEL, length, length);
-    SendMessageW(LogEdit, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());
-}
-
-void SetTrayTip(const std::wstring& tip) {
+void SetTrayTip() {
+    std::wstring tip = std::wstring(L"NetISO for Aurora: ") + (Server.running ? L"running" : L"stopped");
+    if (Server.running && Server.games >= 0) tip += L", " + std::to_wstring(Server.games) + (Server.games == 1 ? L" game" : L" games");
     wcsncpy_s(Tray.szTip, tip.c_str(), _TRUNCATE);
     Tray.uFlags = NIF_TIP | NIF_SHOWTIP;
     Shell_NotifyIconW(NIM_MODIFY, &Tray);
 }
 
-void UpdateStatus() {
-    std::wstring status;
-    if (Running) {
-        status = L"\x25CF  Running";
-        if (Games >= 0) status += L", serving " + std::to_wstring(Games) + (Games == 1 ? L" game" : L" games");
-    } else {
-        status = L"\x25CB  Stopped";
-    }
-    SetWindowTextW(StatusText, status.c_str());
-    SetWindowTextW(StartButton, Running ? L"Stop server" : L"Start server");
-    std::wstring pc = PcAddresses();
-    SetWindowTextW(PcText, pc.empty() ? L"This PC has no network connection."
-                                      : (L"This PC: " + pc + L"  (the address for netiso.xex.txt on the console)").c_str());
-    SetTrayTip(std::wstring(L"NetISO server: ") + (Running ? L"running" : L"stopped") +
-               (Running && Games >= 0 ? L", " + std::to_wstring(Games) + L" games" : L""));
-    InvalidateRect(StatusText, NULL, TRUE);
+void ServerChanged() {
+    ThisPc = PcAddresses();
+    SetTrayTip();
+    WantFrames(2);
 }
 
-// The server's own lines (after its "hh:mm:ss " time) that change the status.
-void ReadLine(const std::wstring& line) {
-    std::wstring text = line.size() > 9 ? line.substr(9) : line;
+bool StartsWith(const std::string& text, const char* start) { return !text.compare(0, strlen(start), start); }
+
+// The server's own lines (after its "hh:mm:ss " time) that say how things are.
+void ReadLine(const std::string& line) {
+    if (line.size() < 9 || line[2] != ':' || line[5] != ':') return;
+    std::string time = line.substr(0, 5), text = line.substr(9);
     int count;
-    if (swscanf_s(text.c_str(), L"%d game(s) in", &count) == 1 && text.find(L" game(s) in ") != std::wstring::npos) Games = count;
-    LastLine = text;
-    UpdateStatus();
+    size_t at;
+    if (sscanf_s(text.c_str(), "%d game(s) in", &count) == 1 && text.find(" game(s) in ") != std::string::npos) {
+        Server.games = count;
+    } else if (StartsWith(text, "The Xbox is at ") && (at = text.find(';')) != std::string::npos) {
+        Server.xbox = text.substr(15, at - 15);
+    } else if (text.size() > 11 && text.compare(text.size() - 11, 11, " connected.") == 0 && text.find(' ') == text.size() - 11 &&
+               !StartsWith(text, "127.")) {
+        Server.xbox = text.substr(0, text.size() - 11);
+    } else if ((at = text.find(": mounted ")) != std::string::npos && text.find(' ') == at + 1) {
+        std::string name = text.substr(at + 10);
+        size_t iso = name.rfind(".iso");
+        Server.playing = iso == std::string::npos ? name : name.substr(0, iso);
+    } else if ((at = text.find(": unmounting ")) != std::string::npos && text.find(' ') == at + 1) {
+        Server.playing.clear();
+    } else if (StartsWith(text, "Waiting for the Xbox's FTP server: ")) {
+        Server.ftp = 1;
+        Server.ftpNote = text.substr(35);
+    } else if (StartsWith(text, "The Xbox's FTP server at ") && (at = text.find(" answers.")) != std::string::npos) {
+        Server.ftp = 2;
+        Server.ftpNote = text.substr(25, at - 25);
+    } else if (StartsWith(text, "The Xbox is up to date: ")) {
+        Server.update = time + "  " + text.substr(24);
+        if (!Server.update.empty() && Server.update.back() == '.') Server.update.pop_back();
+    } else if (StartsWith(text, "Updating the Xbox's game folders stopped: ") || StartsWith(text, "Couldn't list ")) {
+        Server.update = time + "  " + text;
+    }
+}
+
+void RestartServer() {
+    bool was = Server.running;
+    StopServer(false);
+    if (was) Log("Settings changed; restarting the server.");
+    StartServer();
+}
+
+// Fonts, style and drawing ------------------------------------------------------
+
+std::wstring FontsFolder() {
+    PWSTR fonts = NULL;
+    std::wstring folder;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Fonts, 0, NULL, &fonts))) folder = fonts;
+    CoTaskMemFree(fonts);
+    return folder;
+}
+
+ImFont* SystemFont(const wchar_t* const* files, float size) {
+    std::wstring folder = FontsFolder();
+    for (; *files; ++files) {
+        std::string path = Narrow(folder + L"\\" + *files, CP_UTF8);
+        if (GetFileAttributesW((folder + L"\\" + *files).c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+        if (ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), size)) return font;
+    }
+    return NULL;
+}
+
+void LoadFonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    static const wchar_t* text[] = {L"segoeui.ttf", L"tahoma.ttf", NULL};
+    static const wchar_t* bold[] = {L"seguisb.ttf", L"segoeuib.ttf", L"tahomabd.ttf", NULL};
+    static const wchar_t* mono[] = {L"consola.ttf", L"cour.ttf", NULL};
+    ImFontConfig embedded;
+    embedded.FontDataOwnedByAtlas = false;
+    FontText = SystemFont(text, 14);
+    if (!FontText) FontText = io.Fonts->AddFontFromMemoryTTF((void*)RobotoMedium, sizeof(RobotoMedium), 14, &embedded);
+    FontBold = SystemFont(bold, 14);
+    if (!FontBold) FontBold = FontText;
+    FontMono = SystemFont(mono, 13);
+    if (!FontMono) FontMono = FontText;
+    FontIcons = io.Fonts->AddFontFromMemoryTTF((void*)LucideIcons, sizeof(LucideIcons), 16, &embedded);
+    io.FontDefault = FontText;
+}
+
+bool SystemIsDark() {
+    DWORD light = 1, size = sizeof(light);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+                 RRF_RT_REG_DWORD, NULL, &light, &size);
+    return light == 0;
+}
+
+void UpdateTheme() {
+    Dark = Saved.theme == ThemeDark || (Saved.theme == ThemeSystem && SystemIsDark());
+    BOOL dark = Dark;
+    DwmSetWindowAttribute(Window, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
+    ApplyStyle();
+    WantFrames(2);
+}
+
+void MakeTarget() {
+    ID3D11Texture2D* back = NULL;
+    if (SUCCEEDED(SwapChain->GetBuffer(0, IID_PPV_ARGS(&back)))) {
+        Device->CreateRenderTargetView(back, NULL, &Target);
+        back->Release();
+    }
+}
+
+bool MakeDevice() {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    desc.BufferCount = 2;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = Window;
+    desc.SampleDesc.Count = 1;
+    desc.Windowed = TRUE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
+    D3D_FEATURE_LEVEL got;
+    HRESULT result = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, levels, 2, D3D11_SDK_VERSION, &desc, &SwapChain,
+                                                   &Device, &got, &Context);
+    if (result == DXGI_ERROR_UNSUPPORTED)  // No usable graphics card: drawn by the processor.
+        result = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_WARP, NULL, 0, levels, 2, D3D11_SDK_VERSION, &desc, &SwapChain,
+                                               &Device, &got, &Context);
+    if (FAILED(result)) return false;
+    MakeTarget();
+    return true;
+}
+
+void Resize(UINT width, UINT height) {
+    if (!SwapChain || !width || !height) return;
+    if (Target) Target->Release();
+    Target = NULL;
+    SwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    MakeTarget();
+}
+
+void Frame() {
+    if (InFrame || !Device || !IsWindowVisible(Window) || IsIconic(Window)) return;
+    InFrame = true;
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    Draw();
+    ImGui::Render();
+    ImVec4 back = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    const float clear[4] = {back.x, back.y, back.z, 1};
+    Context->OMSetRenderTargets(1, &Target, NULL);
+    Context->ClearRenderTargetView(Target, clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    SwapChain->Present(1, 0);
+    InFrame = false;
+    std::vector<std::function<void()>> work;
+    work.swap(AfterFrame);
+    for (const auto& w : work) w();
+}
+
+void ApplyScale(UINT dpi) {
+    Scale = dpi / 96.0f;
+    ApplyStyle();
 }
 
 // The notification area -------------------------------------------------------
@@ -538,6 +482,8 @@ void AddTray() {
 void ShowMain() {
     ShowWindow(Window, IsIconic(Window) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(Window);
+    Rescan();
+    WantFrames(3);
 }
 
 void HideToTray() {
@@ -546,7 +492,7 @@ void HideToTray() {
         Saved.toldTray = true;
         SaveConfig();
         Tray.uFlags = NIF_INFO;
-        wcsncpy_s(Tray.szInfoTitle, L"NetISO server keeps running", _TRUNCATE);
+        wcsncpy_s(Tray.szInfoTitle, L"NetISO for Aurora keeps serving your games", _TRUNCATE);
         wcsncpy_s(Tray.szInfo, L"It's here in the notification area. Click the icon to open it, or right-click it to quit.", _TRUNCATE);
         Tray.dwInfoFlags = NIIF_INFO;
         Shell_NotifyIconW(NIM_MODIFY, &Tray);
@@ -556,8 +502,8 @@ void HideToTray() {
 void TrayMenu(int x, int y) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, IdMenuOpen, L"Open");
-    AppendMenuW(menu, MF_STRING, IdMenuStart, Running ? L"Stop server" : L"Start server");
-    AppendMenuW(menu, MF_STRING | (StartupEntry().empty() ? 0 : MF_CHECKED), IdMenuBoot, L"Start with Windows");
+    AppendMenuW(menu, MF_STRING, IdMenuStart, Server.running ? L"Stop the server" : L"Start the server");
+    AppendMenuW(menu, MF_STRING | (StartsWithWindows() ? MF_CHECKED : 0), IdMenuBoot, L"Start with Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IdMenuQuit, L"Quit");
     SetMenuDefaultItem(menu, IdMenuOpen, FALSE);
@@ -567,40 +513,6 @@ void TrayMenu(int x, int y) {
     DestroyMenu(menu);
 }
 
-// Settings changes -------------------------------------------------------------
-
-std::wstring Text(HWND edit) {
-    std::wstring text(GetWindowTextLengthW(edit) + 1, L'\0');
-    text.resize(GetWindowTextW(edit, &text[0], int(text.size())));
-    size_t a = text.find_first_not_of(L" \t"), b = text.find_last_not_of(L" \t");
-    return a == std::wstring::npos ? L"" : text.substr(a, b - a + 1);
-}
-
-void ReadEdits() {
-    std::wstring xbox = Text(XboxEdit), user = Text(UserEdit), password = Text(PasswordEdit);
-    if (xbox == Saved.xbox && user == Saved.user && password == Saved.password) return;
-    Saved.xbox = xbox;
-    Saved.user = user;
-    Saved.password = password;
-    SaveConfig();
-    RestartServer();
-}
-
-void AddFolder(const std::wstring& folder) {
-    for (const std::wstring& f : Saved.folders)
-        if (!_wcsicmp(f.c_str(), folder.c_str())) return;
-    Saved.folders.push_back(folder);
-}
-
-void FoldersChanged() {
-    FillFolders();
-    SaveConfig();
-    if (Running || !Saved.folders.empty()) {
-        StopServer(false);
-        StartServer();
-    }
-}
-
 void PickFolders() {
     IFileOpenDialog* dialog = NULL;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
@@ -608,7 +520,6 @@ void PickFolders() {
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_ALLOWMULTISELECT | FOS_PATHMUSTEXIST);
     dialog->SetTitle(L"Folders with your Xbox 360 games");
-    bool added = false;
     if (SUCCEEDED(dialog->Show(Window))) {
         IShellItemArray* items = NULL;
         DWORD count = 0;
@@ -616,10 +527,7 @@ void PickFolders() {
             for (DWORD i = 0; i < count; ++i) {
                 IShellItem* item = NULL;
                 PWSTR path = NULL;
-                if (SUCCEEDED(items->GetItemAt(i, &item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                    AddFolder(path);
-                    added = true;
-                }
+                if (SUCCEEDED(items->GetItemAt(i, &item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) AddFolder(path);
                 CoTaskMemFree(path);
                 if (item) item->Release();
             }
@@ -627,101 +535,91 @@ void PickFolders() {
         if (items) items->Release();
     }
     dialog->Release();
-    if (added) FoldersChanged();
 }
 
 void DropFolders(HDROP drop) {
     UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
-    bool added = false;
+    std::vector<std::wstring> folders;
     for (UINT i = 0; i < count; ++i) {
         std::wstring path(DragQueryFileW(drop, i, NULL, 0) + 1, L'\0');
         path.resize(DragQueryFileW(drop, i, &path[0], UINT(path.size())));
         DWORD attributes = GetFileAttributesW(path.c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            AddFolder(path);
-            added = true;
-        }
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) folders.push_back(path);
     }
     DragFinish(drop);
-    if (added) FoldersChanged();
+    for (const std::wstring& f : folders) AddFolder(f);
 }
 
-void Quit() {
-    Quitting = true;
-    ReadEdits();
-    StopServer(false);
-    Shell_NotifyIconW(NIM_DELETE, &Tray);
-    DestroyWindow(Window);
+void FoldersChanged() {
+    SaveConfig();
+    Rescan();
+    if (Server.running || !Saved.folders.empty()) {
+        StopServer(false);
+        StartServer();
+    }
+}
+
+bool InputMessage(UINT message) {
+    return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) || (message >= WM_KEYFIRST && message <= WM_KEYLAST) ||
+           message == WM_MOUSELEAVE || message == WM_SETFOCUS || message == WM_KILLFOCUS || message == WM_SETCURSOR ||
+           message == WM_IME_COMPOSITION || message == WM_ACTIVATE || message == WM_ACTIVATEAPP;
 }
 
 LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == TaskbarCreated && TaskbarCreated) {  // Explorer restarted.
         AddTray();
-        UpdateStatus();
+        SetTrayTip();
         return 0;
     }
+    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, message, wParam, lParam)) {
+        WantFrames(3);
+        return 1;
+    }
+    if (InputMessage(message)) WantFrames(3);
     switch (message) {
-    case WM_CREATE:
-        Window = hwnd;
-        CreateControls();
-        DragAcceptFiles(hwnd, TRUE);
-        return 0;
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) {
             HideToTray();
             return 0;
         }
-        Layout();
+        Resize(LOWORD(lParam), HIWORD(lParam));
+        Frame();  // Also while the edge is being dragged.
         return 0;
+    case WM_PAINT:
+        ValidateRect(hwnd, NULL);
+        WantFrames(1);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_GETMINMAXINFO: {
         MINMAXINFO* info = (MINMAXINFO*)lParam;
-        info->ptMinTrackSize.x = Px(560);
-        info->ptMinTrackSize.y = Px(520);
+        RECT size = {0, 0, LONG(720 * Scale), LONG(520 * Scale)};
+        AdjustWindowRectEx(&size, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        info->ptMinTrackSize.x = size.right - size.left;
+        info->ptMinTrackSize.y = size.bottom - size.top;
         return 0;
     }
     case WM_DPICHANGED: {
-        Dpi = HIWORD(wParam);
-        MakeFonts();
-        ApplyFonts();
+        ApplyScale(HIWORD(wParam));
         RECT* suggested = (RECT*)lParam;
         SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left,
                      suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
-        Layout();
         return 0;
     }
-    case WM_CTLCOLORSTATIC: {
-        HDC dc = (HDC)wParam;
-        HWND control = (HWND)lParam;
-        SetBkColor(dc, GetSysColor(COLOR_WINDOW));
-        if (control == StatusText) SetTextColor(dc, Running ? RGB(0x1B, 0x7F, 0x3B) : RGB(0x9A, 0x3B, 0x26));
-        else if (control == FoldersHint || control == XboxHint || control == PcText) SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
-        else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-        return (LRESULT)Background;
-    }
-    case WM_COMMAND: {
-        int id = LOWORD(wParam), code = HIWORD(wParam);
-        if (id == IdFolders && code == LBN_SELCHANGE)
-            EnableWindow(RemoveButton, SendMessageW(FolderList, LB_GETCURSEL, 0, 0) != LB_ERR);
-        else if (id == IdAdd) PickFolders();
-        else if (id == IdRemove) {
-            LRESULT at = SendMessageW(FolderList, LB_GETCURSEL, 0, 0);
-            if (at != LB_ERR && size_t(at) < Saved.folders.size()) {
-                Saved.folders.erase(Saved.folders.begin() + at);
-                FoldersChanged();
-            }
-        } else if (((id == IdXbox || id == IdUser || id == IdPassword) && code == EN_KILLFOCUS) || id == IDOK) ReadEdits();
-        else if (id == IdBoot || id == IdMenuBoot) {
-            bool on = StartupEntry().empty();
-            SetStartWithWindows(on);
-            Button_SetCheck(BootBox, on ? BST_CHECKED : BST_UNCHECKED);
-        } else if (id == IdStart || id == IdMenuStart) {
-            ReadEdits();
-            if (Running) StopServer(true);
+    case WM_SETTINGCHANGE:
+        if (lParam && !wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet")) UpdateTheme();
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IdMenuOpen: ShowMain(); break;
+        case IdMenuStart:
+            if (Server.running) StopServer(true);
             else StartServer();
-        } else if (id == IdQuit || id == IdMenuQuit) Quit();
-        else if (id == IdMenuOpen) ShowMain();
+            break;
+        case IdMenuBoot: SetStartWithWindows(!StartsWithWindows()); break;
+        case IdMenuQuit: Quit(); break;
+        }
         return 0;
-    }
     case WM_DROPFILES:
         DropFolders((HDROP)wParam);
         return 0;
@@ -737,27 +635,33 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         ShowMain();
         return 0;
     case WM_LOGLINE: {
-        std::wstring* line = (std::wstring*)lParam;
-        AppendLog(*line);
+        std::string* line = (std::string*)lParam;
+        Log(*line);
         if (wParam == Generation) ReadLine(*line);
         delete line;
+        ServerChanged();
         return 0;
     }
     case WM_STOPPED:
-        if (wParam == Generation && Running) {
+        if (wParam == Generation && Server.running) {
             DWORD code = 0;
             WaitForSingleObject(Child, 2000);
             GetExitCodeProcess(Child, &code);
             CloseHandle(Child);
             Child = NULL;
-            Running = false;
-            AppendLog(L"The server stopped" + (code ? L" (exit code " + std::to_wstring(code) + L")." : std::wstring(L".")));
-            UpdateStatus();
+            Server.running = false;
+            Log("The server stopped" + (code ? " (exit code " + std::to_string(code) + ")." : std::string(".")));
+            ServerChanged();
         }
+        return 0;
+    case WM_LIBRARY:
+        TakeLibrary((void*)lParam);
+        return 0;
+    case WM_COVER:
+        TakeCover((void*)lParam);
         return 0;
     case WM_CLOSE:
         // Closing keeps the server running in the notification area; Quit ends it.
-        ReadEdits();
         HideToTray();
         return 0;
     case WM_QUERYENDSESSION:
@@ -790,6 +694,39 @@ UINT WindowDpi(HWND hwnd) {
     return dpi;
 }
 
+// Waits for messages, drawing only when something changed: the window
+// costs nothing while it sits there, or hides in the notification area.
+void Loop() {
+    for (;;) {
+        bool visible = IsWindowVisible(Window) && !IsIconic(Window);
+        if (!visible || FramesWanted <= 0) {
+            DWORD wait = INFINITE;
+            if (visible && WakeAt) wait = LONG(WakeAt - GetTickCount()) > 0 ? WakeAt - GetTickCount() : 0;
+            if (visible && ImGui::GetIO().WantTextInput && wait > 500) wait = 500;  // The caret blinks.
+            if (MsgWaitForMultipleObjects(0, NULL, FALSE, wait, QS_ALLINPUT) == WAIT_TIMEOUT) {
+                WakeAt = 0;
+                WantFrames(1);
+            }
+        }
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) return;
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (WakeAt && LONG(WakeAt - GetTickCount()) <= 0) {
+            WakeAt = 0;
+            WantFrames(1);
+        }
+        if (FramesWanted > 0 && IsWindowVisible(Window) && !IsIconic(Window)) {
+            --FramesWanted;
+            Frame();
+        } else if (!IsWindowVisible(Window)) {
+            FramesWanted = 0;
+        }
+    }
+}
+
 int RunWindow(bool tray) {
     HANDLE once = CreateMutexW(NULL, FALSE, L"Local\\NetIsoAuroraServerWindow");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -800,8 +737,6 @@ int RunWindow(bool tray) {
     }
     HighDpi();
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_STANDARD_CLASSES};
-    InitCommonControlsEx(&controls);
     LoadConfig();
     // Keep "Start with Windows" pointing at this exe if it was moved.
     std::wstring entry = StartupEntry();
@@ -812,44 +747,62 @@ int RunWindow(bool tray) {
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     SetInformationJobObject(Job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
 
-    LoadIcons();
-    Background = GetSysColorBrush(COLOR_WINDOW);
+    HINSTANCE self = GetModuleHandleW(NULL);
+    BigIcon = (HICON)LoadImageW(self, MAKEINTRESOURCEW(IconId), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    SmallIcon = (HICON)LoadImageW(self, MAKEINTRESOURCEW(IconId), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (!BigIcon) BigIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    if (!SmallIcon) SmallIcon = BigIcon;
     WNDCLASSEXW kind = {sizeof(kind)};
+    kind.style = CS_HREDRAW | CS_VREDRAW;
     kind.lpfnWndProc = Procedure;
-    kind.hInstance = GetModuleHandleW(NULL);
+    kind.hInstance = self;
     kind.hIcon = BigIcon;
     kind.hIconSm = SmallIcon;
     kind.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    kind.hbrBackground = Background;
     kind.lpszClassName = WindowClass;
     RegisterClassExW(&kind);
     TaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
     // Created at the primary monitor's DPI, then sized for the one it's on.
-    HWND hwnd = CreateWindowExW(WS_EX_CONTROLPARENT, WindowClass, AppName, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
-                                CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL, GetModuleHandleW(NULL), NULL);
-    if (!hwnd) return 1;
-    Dpi = WindowDpi(hwnd);
-    MakeFonts();
-    ApplyFonts();
-    RECT size = {0, 0, Px(680), Px(640)};
+    Window = CreateWindowExW(0, WindowClass, AppName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                             NULL, NULL, self, NULL);
+    if (!Window) return 1;
+    Scale = WindowDpi(Window) / 96.0f;
+    RECT size = {0, 0, LONG(1060 * Scale), LONG(720 * Scale)};
     AdjustWindowRectEx(&size, WS_OVERLAPPEDWINDOW, FALSE, 0);
-    SetWindowPos(hwnd, NULL, 0, 0, size.right - size.left, size.bottom - size.top, SWP_NOMOVE | SWP_NOZORDER);
-    Layout();
+    SetWindowPos(Window, NULL, 0, 0, size.right - size.left, size.bottom - size.top, SWP_NOMOVE | SWP_NOZORDER);
+    if (!MakeDevice()) {
+        MessageBoxW(NULL, L"Direct3D 11 isn't available, so the window can't be shown. The server also runs from a command prompt: netiso-server.exe -h",
+                    AppName, MB_ICONERROR);
+        return 1;
+    }
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = NULL;
+    ImGui_ImplWin32_Init(Window);
+    ImGui_ImplDX11_Init(Device, Context);
+    LoadFonts();
+    UpdateTheme();
+    DragAcceptFiles(Window, TRUE);
     AddTray();
-    AppendLog(L"Settings: " + IniPath());
+    StartLibrary(Window, WM_LIBRARY, WM_COVER);
+    Log("Settings: " + Utf8(IniPath()));
     StartServer();
     if (!tray) {
-        ShowWindow(hwnd, SW_SHOWNORMAL);
-        UpdateWindow(hwnd);
+        ShowWindow(Window, SW_SHOWNORMAL);
+        UpdateWindow(Window);
     }
+    WantFrames(3);
+    Loop();
 
-    MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-        if (IsDialogMessageW(hwnd, &msg)) continue;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    StopLibrary();
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    if (Target) Target->Release();
+    if (SwapChain) SwapChain->Release();
+    if (Context) Context->Release();
+    if (Device) Device->Release();
     CloseHandle(Job);
     CloseHandle(once);
     CoUninitialize();
@@ -870,12 +823,215 @@ void UseConsole() {
 }
 }  // namespace
 
+// What the pages can do --------------------------------------------------------
+
+std::string Utf8(const std::wstring& text) { return Narrow(text, CP_UTF8); }
+std::wstring Wide(const std::string& utf8) { return Widen(utf8, CP_UTF8); }
+std::string AnsiToUtf8(const std::string& text) { return Narrow(Widen(text, CP_ACP), CP_UTF8); }
+std::string Utf8ToAnsi(const std::string& text) { return Narrow(Widen(text, CP_UTF8), CP_ACP); }
+
+std::wstring IniPath() {
+    PWSTR roaming = NULL;
+    std::wstring folder;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &roaming))) folder = roaming;
+    CoTaskMemFree(roaming);
+    if (folder.empty()) folder = ExeFolder();
+    folder += L"\\NetISO for Aurora";
+    CreateDirectoryW(folder.c_str(), NULL);
+    return folder + L"\\netiso-server.ini";
+}
+
+void SaveConfig() {
+    std::wstring ini = IniPath();
+    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        // A UTF-16 file, so folder names keep every character.
+        HANDLE f = CreateFileW(ini.c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE) {
+            static const unsigned char bom[2] = {0xFF, 0xFE};
+            DWORD written;
+            WriteFile(f, bom, 2, &written, NULL);
+            CloseHandle(f);
+        }
+    }
+    WritePrivateProfileStringW(Section, NULL, NULL, ini.c_str());
+    WritePrivateProfileStringW(Section, L"folders", std::to_wstring(Saved.folders.size()).c_str(), ini.c_str());
+    for (size_t i = 0; i < Saved.folders.size(); ++i)
+        WritePrivateProfileStringW(Section, (L"folder" + std::to_wstring(i + 1)).c_str(), Saved.folders[i].c_str(), ini.c_str());
+    WritePrivateProfileStringW(Section, L"xbox", Saved.xbox.c_str(), ini.c_str());
+    WritePrivateProfileStringW(Section, L"ftp_user", Saved.user.c_str(), ini.c_str());
+    WritePrivateProfileStringW(Section, L"ftp_password", Protect(Saved.password).c_str(), ini.c_str());
+    WritePrivateProfileStringW(Section, L"options", Saved.options.c_str(), ini.c_str());
+    WritePrivateProfileStringW(Section, L"theme", std::to_wstring(Saved.theme).c_str(), ini.c_str());
+    WriteFlag(ini, L"covers", Saved.covers);
+    WriteFlag(ini, L"list_view", Saved.listView);
+    WriteFlag(ini, L"sort_by_size", Saved.sortBySize);
+    WriteFlag(ini, L"show_iso", Saved.showIso);
+    WriteFlag(ini, L"show_god", Saved.showGod);
+    WriteFlag(ini, L"show_folder", Saved.showFolder);
+    WriteFlag(ini, L"told_tray", Saved.toldTray);
+}
+
+void WantFrames(int count) {
+    if (FramesWanted < count) FramesWanted = count;
+}
+
+void WantFrameAfter(int milliseconds) {
+    DWORD at = GetTickCount() + DWORD(milliseconds);
+    if (!at) at = 1;
+    if (!WakeAt || LONG(at - WakeAt) < 0) WakeAt = at;
+}
+
+void Log(const std::string& line) {
+    Server.log.push_back(line);
+    if (Server.log.size() > LogLines) Server.log.erase(Server.log.begin(), Server.log.begin() + LogLines / 5);
+    WantFrames(1);
+}
+
+void StartServer() {
+    if (Server.running) return;
+    Server.games = -1;
+    Server.ftp = 0;
+    Server.ftpNote.clear();
+    Server.playing.clear();
+    if (Saved.folders.empty()) {
+        Log("Add a folder with your games to start the server.");
+        ServerChanged();
+        return;
+    }
+    SECURITY_ATTRIBUTES inherit = {sizeof(inherit), NULL, TRUE};
+    HANDLE readEnd, writeEnd;
+    if (!CreatePipe(&readEnd, &writeEnd, &inherit, 0)) return;
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, NULL);
+    STARTUPINFOW start = {sizeof(start)};
+    start.dwFlags = STARTF_USESTDHANDLES;
+    start.hStdInput = nul;
+    start.hStdOutput = start.hStdError = writeEnd;
+    PROCESS_INFORMATION process;
+    std::wstring command = ServerCommandLine();
+    std::wstring folder = ExeFolder();
+    // The password travels in the server's environment, not on its command line.
+    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", Saved.password.c_str());
+    BOOL started = CreateProcessW(ExePath().c_str(), &command[0], NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                                  NULL, folder.c_str(), &start, &process);
+    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", NULL);
+    CloseHandle(writeEnd);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!started) {
+        CloseHandle(readEnd);
+        Log("Couldn't start the server (error " + std::to_string(GetLastError()) + ").");
+        ServerChanged();
+        return;
+    }
+    // In a job, so the server ends with this window, even if it crashes.
+    AssignProcessToJobObject(Job, process.hProcess);
+    ResumeThread(process.hThread);
+    CloseHandle(process.hThread);
+    Child = process.hProcess;
+    Server.running = true;
+    std::thread(ReadOutput, readEnd, ++Generation).detach();
+    ServerChanged();
+}
+
+void StopServer(bool say) {
+    if (!Server.running) return;
+    ++Generation;  // Its last lines and its end are no longer news.
+    TerminateProcess(Child, 0);
+    WaitForSingleObject(Child, 5000);
+    CloseHandle(Child);
+    Child = NULL;
+    Server.running = false;
+    Server.playing.clear();
+    if (say) Log("Server stopped.");
+    ServerChanged();
+}
+
+void Quit() {
+    Later([] {
+        if (Quitting) return;
+        Quitting = true;
+        StopServer(false);
+        Shell_NotifyIconW(NIM_DELETE, &Tray);
+        DestroyWindow(Window);
+    });
+}
+
+void AddFolders() {
+    Later(PickFolders);
+}
+
+void AddFolder(const std::wstring& path) {
+    std::wstring folder = path;
+    while (folder.size() > 3 && (folder.back() == L'\\' || folder.back() == L'/')) folder.pop_back();
+    for (const std::wstring& f : Saved.folders)
+        if (!_wcsicmp(f.c_str(), folder.c_str())) return;
+    Saved.folders.push_back(folder);
+    Later(FoldersChanged);
+}
+
+void RemoveFolder(size_t index) {
+    if (index >= Saved.folders.size()) return;
+    Saved.folders.erase(Saved.folders.begin() + index);
+    Later(FoldersChanged);
+}
+
+void ShowInExplorer(const std::string& path) {
+    std::wstring wide = Wide(path);
+    DWORD attributes = GetFileAttributesW(wide.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) return;
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+        ShellExecuteW(Window, L"open", wide.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return;
+    }
+    PIDLIST_ABSOLUTE item = NULL;
+    if (SUCCEEDED(SHParseDisplayName(wide.c_str(), NULL, &item, 0, NULL))) {
+        SHOpenFolderAndSelectItems(item, 0, NULL, 0);
+        CoTaskMemFree(item);
+    }
+}
+
+void OpenUrl(const char* url) { ShellExecuteW(Window, L"open", Wide(url).c_str(), NULL, NULL, SW_SHOWNORMAL); }
+
+void SetConnection(const std::wstring& xbox, const std::wstring& user, const std::wstring& password) {
+    if (xbox == Saved.xbox && user == Saved.user && password == Saved.password) return;
+    Saved.xbox = xbox;
+    Saved.user = user;
+    Saved.password = password;
+    SaveConfig();
+    Later(RestartServer);
+}
+
+void SetOptions(const std::wstring& options) {
+    if (options == Saved.options) return;
+    Saved.options = options;
+    SaveConfig();
+    Later(RestartServer);
+}
+
+bool StartsWithWindows() { return !StartupEntry().empty(); }
+
+void SetStartWithWindows(bool on) {
+    if (on) {
+        std::wstring command = RunCommand();
+        RegSetKeyValueW(HKEY_CURRENT_USER, RunKey, RunValue, REG_SZ, command.c_str(), DWORD((command.size() + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, RunKey, RunValue);
+    }
+}
+
+void SetTheme(int theme) {
+    Saved.theme = theme;
+    SaveConfig();
+    UpdateTheme();
+}
+}  // namespace gui
+
 // Runs the window and returns its exit code, or returns -1 when the exe was
 // started with options and should run as the command-line server.
 int GuiMain(int argc, char** argv) {
     bool tray = argc == 2 && !strcmp(argv[1], "--tray");
-    if (argc == 1 || tray) return RunWindow(tray);
-    UseConsole();
+    if (argc == 1 || tray) return gui::RunWindow(tray);
+    gui::UseConsole();
     return -1;
 }
 #endif
