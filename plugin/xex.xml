@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- A system DLL, like NetISO.xex (module flags 0xA, base 0x91100000), so
+     DashLaunch can load it as a plugin. The base sits between NetISO.xex
+     and Aurora's Nova.xex (0x91A00000). -->
+<xex>
+  <baseaddr addr="0x91380000"/>
+  <sysdll/>
+</xex>

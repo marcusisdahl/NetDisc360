@@ -21,9 +21,14 @@ try {
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
+    # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
+    & $msbuild plugin\NetIsoTiles.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Plugin compilation failed.' }
+    Copy-Item -LiteralPath build\xbox\NetIsoTiles.xex -Destination build\NetIsoTiles.xex -Force
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
+    Write-Host 'Built build\NetIsoTiles.xex. Add it as a DashLaunch plugin, next to NetISO.xex.'
 } finally { Pop-Location }

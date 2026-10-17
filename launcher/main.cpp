@@ -341,6 +341,10 @@ static bool MountGame(const char* ini) {
     if(!ServerAnswers(ini)) { Failed=true; Wait(5000); return false; }
     Progress=5; ScreenDraw();
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded. Add it as a DashLaunch plugin.");
+    // With the plugin (plugin/main.cpp) loaded, it starts the tile from Aurora
+    // instead, and runs the launcher only when it couldn't.
+    Note(GetModuleHandle("NetIsoTiles.xex") ? "NetIsoTiles.xex is loaded and passed this tile on."
+                                            : "NetIsoTiles.xex isn't loaded.");
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
     int stop=StopAfter(ini);
