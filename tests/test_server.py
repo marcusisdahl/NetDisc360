@@ -465,6 +465,39 @@ class Push(ServerTest):
         self.assertIn("1 game folder(s) have no game here yet", out)
         self.assertIn("0 added, 1 removed", out)
 
+    def test_keeps_a_gone_game_for_a_while_after_a_folder_change(self):
+        # Changing the game folders on the dashboard holds removals back like
+        # a start does, so folders can be added or swapped one at a time.
+        self.add_iso("a.iso", 1, 0x11111111)
+        more = os.path.join(self.tmp.name, "more")
+        os.makedirs(more)
+        self.add_iso("b.iso", 2, 0x22222222, more)
+        web = free_port()
+        started = time.time()
+        server, _ = self.run_server("--remove-wait", "15", "--web-port", str(web),
+                                    "--config", os.path.join(self.tmp.name, "netdisc.ini"), more)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            time.sleep(max(0, started + 16 - time.time()))  # The start's hold is over.
+            before = self.logins()
+            conn = http.client.HTTPConnection("127.0.0.1", web, timeout=10)
+            conn.request("POST", "/api/settings", json.dumps({"folders": [self.isos]}),
+                         {"Content-Type": "application/json", "X-NetDisc": "1", "Host": "127.0.0.1:%d" % web})
+            self.assertEqual(conn.getresponse().status, 200)
+            conn.close()
+            changed = time.time()
+            self.assertTrue(self.wait_for(lambda: self.logins() > before, 20))  # Once the games settled.
+            time.sleep(1)
+            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
+            self.assertGreaterEqual(time.time() - changed, 14)
+        finally:
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("1 game folder(s) have no game here yet", out)
+        self.assertIn("0 added, 1 removed", out)
+
     def test_repairs_a_launcher_with_another_titles_ids(self):
         self.add_iso("a.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.push()

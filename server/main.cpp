@@ -83,6 +83,9 @@ bool PasswordFixed;   // The dashboard's password comes from NETDISC_WEB_PASSWOR
 double StartedAt;
 // Raised by a settings change that needs every console's game folders checked again.
 std::atomic<int> PushGeneration(0);
+// When the game folders were last changed on the dashboard, in Now() ms: like
+// a start, it holds back removals for removeWait (see WatchLoop).
+std::atomic<long long> FoldersChangedAt(0);
 
 // The log, and what the dashboard shows of it --------------------------------
 
@@ -604,7 +607,7 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
     }
     if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
-    if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start.",result.held,o.removeWait);
+    if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
         XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
         Event(EventWarning,"Updating the game folders on %s stopped; the log says why",console.text);
@@ -684,10 +687,11 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     if(pushDue && online) {
         SyncResult result;
         s.attempted=true; s.toldWaiting=false;
-        if(Push(console,ftp,result,o.pushOnce || Now()-startedAt>=o.removeWait,o)) {
+        double holdFrom=std::max(startedAt,FoldersChangedAt.load()/1000.0);
+        if(Push(console,ftp,result,o.pushOnce || Now()-holdFrom>=o.removeWait,o)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
-            s.retryAt=result.held ? startedAt+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
+            s.retryAt=result.held ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
             if(result.added || result.removed) {
                 if(o.scan) { s.scanTries=o.pushOnce ? 1 : ScanTries; s.scanAt=Now(); scanDue=true; }
                 else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());
@@ -771,9 +775,10 @@ void RememberConsoles() {
 // keeps sending requests, so there's no wait after it.
 //
 // Game folders whose game is gone are only removed removeWait seconds after
-// the start: a games drive can come up after a server started with Windows.
-// Removing them early would drop the games from Aurora, with their art and
-// stats. With no game folders set at all (a new install), nothing is written.
+// the start, or after the game folders were last changed on the dashboard: a
+// games drive can come up after a server started with Windows, and folders
+// get added one at a time. Removing them early would drop the games from
+// Aurora, with their art and stats. With no game folders set at all (a new install), nothing is written.
 void WatchLoop() {
     std::string previous;
     const double startedAt=Now();
@@ -1368,6 +1373,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
 #endif
     bool folders=next.folders.size()!=was.folders.size();
     for(size_t i=0;i<next.folders.size() && !folders;++i) folders=next.folders[i]!=was.folders[i];
+    if(folders) FoldersChangedAt=(long long)(Now()*1000);
     if(folders) changed.push_back("game folders: "+(next.folders.empty() ? std::string("none") : Count(int(next.folders.size()),"folder","folders")));
     if(next.xboxes!=was.xboxes) changed.push_back("consoles to update: "+(next.xboxes.empty() ? std::string("every console that connects") : AddressList(next.xboxes)));
     bool login=next.ftpUser!=was.ftpUser || next.ftpPassword!=was.ftpPassword;
@@ -1513,8 +1519,8 @@ void Usage() {
         "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
         "  --online-wait <s>       after the Xbox's FTP comes back, the longest wait for the Xbox\n"
         "                          to come online before writing game folders (120)\n"
-        "  --remove-wait <s>       how long after the start game folders whose game is gone\n"
-        "                          are kept on the Xbox (60)\n"
+        "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
+        "                          folders whose game is gone are kept on the Xbox (60)\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
         "  --web-port <n>          the dashboard's port (8360); 0: no dashboard\n"
         "  --web-bind <address>    where the dashboard listens: 127.0.0.1, this computer only\n"
