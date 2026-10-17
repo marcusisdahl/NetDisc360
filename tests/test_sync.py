@@ -136,6 +136,21 @@ class Sync(unittest.TestCase):
         self.assertEqual(stored, computed)
         self.assertIn("updated=0", self.sync())  # Current now.
 
+    def test_repairs_a_launcher_with_another_titles_ids(self):
+        self.add_iso("a.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.sync()
+        path = os.path.join(self.games, "a", "default.xex")
+        with open(path, "rb") as f:
+            good = f.read()
+        shutil.copyfile(self.launcher, path)  # The template copied over the game's launcher.
+        out = self.sync()
+        self.assertIn("rebuilt it from a.iso", out)
+        self.assertIn("kept=1", out)
+        self.assertIn("updated=1", out)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), good)
+        self.assertIn("updated=0", self.sync())
+
     def test_boot_helper_is_copied_kept_current_and_removed(self):
         boot = os.path.join(self.tmp.name, "boot.xex")
         with open(boot, "wb") as f:

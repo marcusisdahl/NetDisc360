@@ -1,0 +1,6 @@
+// The launcher XEXs the server writes into each game folder, from build.ps1's
+// build\NetISO Sync (built just before the server).
+#include "resource.h"
+
+IDR_LAUNCHER RCDATA "..\\build\\NetISO Sync\\default.xex"
+IDR_BOOT RCDATA "..\\build\\NetISO Sync\\boot.xex"

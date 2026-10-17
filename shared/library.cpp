@@ -188,23 +188,29 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
     return Fail(error,capacity,"default.xex has no execution info");
 }
 
-struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; bool game, keep; };
+struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId; bool game, keep; };
 
 // Rewrites a game folder's default.xex when it was made from an older
-// launcher, keeping its game's execution info. 1 if rewritten, 0 if it was
-// current, -1 if it couldn't be read or written.
-static int RefreshLauncher(Storage& storage, const char* folder, const unsigned char* launcher, DWORD launcherSize, DWORD infoAt) {
+// launcher, keeping its game's execution info, or putting in info if given.
+// 1 if rewritten, 0 if it was current, -1 if it couldn't be read or written,
+// -2 if its execution info is for another title than titleId (0: any title),
+// so the game's own has to be read from the ISO. That happened when the
+// template's default.xex was copied over a game's.
+static int RefreshLauncher(Storage& storage, const char* folder, const unsigned char* launcher, DWORD launcherSize, DWORD infoAt,
+                           DWORD titleId, const unsigned char* info) {
     char path[PathMax]; Join(path,folder,GameXex);
     DWORD capacity=launcherSize+0x100000,size=0;
     unsigned char* old=static_cast<unsigned char*>(malloc(capacity));
     unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
     int result=-1;
-    if(old && copy && storage.ReadFile(path,old,capacity,size)) {
-        DWORD oldInfo=ExecutionInfoOffset(old,size);
-        if(oldInfo) {
-            memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,old+oldInfo,ExecutionInfoSize);
+    if(old && copy) {
+        bool read=storage.ReadFile(path,old,capacity,size);
+        DWORD oldInfo=read ? ExecutionInfoOffset(old,size) : 0;
+        if(!info && oldInfo && titleId && Read32(old+oldInfo+12)!=titleId) result=-2;
+        else if(info || oldInfo) {
+            memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info ? info : old+oldInfo,ExecutionInfoSize);
             FixHeaderDigest(copy,launcherSize);
-            if(size==launcherSize && !memcmp(old,copy,size)) result=0;
+            if(read && size==launcherSize && !memcmp(old,copy,size)) result=0;
             else if(storage.WriteFile(path,copy,launcherSize)) result=1;
         }
     }
@@ -252,6 +258,8 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(storage.ReadFile(path,reinterpret_cast<unsigned char*>(ini),IniMax,size)) {
             ini[size]=0;
             f.game=IniValue(ini,"iso",f.iso,sizeof(f.iso)) && f.iso[0];
+            char title[16];
+            if(IniValue(ini,"title_id",title,sizeof(title))) f.titleId=DWORD(strtoul(title,NULL,16));
         }
     }
 
@@ -264,7 +272,20 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             for(int k=0;k<folderCount;++k) {
                 if(!folders[k].keep || _stricmp(folders[k].iso,isos[i])) continue;
                 char folder[PathMax]; Join(folder,root,folders[k].name);
-                int refreshed=RefreshLauncher(storage,folder,launcher,launcherSize,infoAt);
+                int refreshed=RefreshLauncher(storage,folder,launcher,launcherSize,infoAt,folders[k].titleId,NULL);
+                if(refreshed==-2) {
+                    unsigned char info[ExecutionInfoSize]; char error[160];
+                    if(!client.Mount(isos[i])) _snprintf_s(error,sizeof(error),_TRUNCATE,"%s",client.Error());
+                    else if(GameInfo(client,info,error,sizeof(error))) {
+                        refreshed=RefreshLauncher(storage,folder,launcher,launcherSize,infoAt,0,info);
+                        if(refreshed>0) Say(note,"The launcher in %s had another title's IDs; rebuilt it from %s.",folders[k].name,isos[i]);
+                    }
+                    if(refreshed==-2) {
+                        Say(note,"The launcher in %s has another title's IDs, and %s couldn't be read to repair it: %s",folders[k].name,isos[i],error);
+                        if(!client.Connected()) return false;
+                        continue;
+                    }
+                }
                 if(boot && refreshed>=0) {
                     int helper=RefreshFile(storage,folder,GameBoot,boot,bootSize);
                     refreshed=helper<0 ? -1 : refreshed|helper;

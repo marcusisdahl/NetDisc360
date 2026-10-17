@@ -21,6 +21,11 @@ try {
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
+    # netiso-server.exe: the PC server that replaces netiso-srv and keeps the
+    # Xbox's game folders current, with default.xex and boot.xex built in
+    # (server/). Rebuilt every time so it carries the XEXs just made.
+    & $msbuild server\NetIsoServer.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
     # It is linked at its system base (0x91380000), which the public imagexex
     # refuses, so its PE header is patched to a title base for imagexex and
@@ -40,4 +45,5 @@ try {
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
     Write-Host 'Built build\NetIsoTiles.xex. Add it as a DashLaunch plugin, next to NetISO.xex.'
+    Write-Host 'Built build\netiso-server.exe. Run it in the folder with your ISOs instead of netiso-srv.'
 } finally { Pop-Location }
