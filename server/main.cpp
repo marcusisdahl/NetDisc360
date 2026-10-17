@@ -44,10 +44,10 @@ struct Options {
     bool push, filter, scan, verbose, pushOnce;
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see PushLoop).
-    double onlineWait;
+    double onlineWait, removeWait;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
                 port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                onlineWait(120) {}
+                onlineWait(120), removeWait(60) {}
 };
 Options Settings;
 std::vector<unsigned char> Launcher, Boot;
@@ -355,7 +355,7 @@ void RefreshSyncApp(FtpClient& ftp, const std::vector<FtpEntry>& entries) {
     }
 }
 
-bool Push(FtpClient& ftp, SyncResult& result) {
+bool Push(FtpClient& ftp, SyncResult& result, bool removeGone) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(Settings.xboxFolder.c_str());
     if(!ftp.List(Settings.xboxFolder.c_str(),entries)) { Log("Couldn't list %s on the Xbox: %s",Settings.xboxFolder.c_str(),ftp.Error()); return false; }
@@ -364,8 +364,9 @@ bool Push(FtpClient& ftp, SyncResult& result) {
     if(!client.Connect(htonl(0x7F000001),Settings.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
     bool ok=Sync(client,storage,Settings.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result);
+                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
     if(ok) Log("The Xbox is up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
+    if(ok && result.held) Log("%d game folder(s) on the Xbox have no game here yet; they're removed if that's still so %.0f s after the start.",result.held,Settings.removeWait);
     else Log("Updating the Xbox's game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
     return ok;
 }
@@ -396,8 +397,14 @@ bool StartScan(FtpClient& ftp) {
 // connected to this server, which only a working network can, or after
 // onlineWait seconds at most. A game run over NetISO while Aurora was away
 // keeps sending requests, so there's no wait after it.
+//
+// Game folders whose game is gone are only removed removeWait seconds after
+// the start: the window restarts the server for each folder added in it, and
+// a games drive can come up after a server started with Windows. Removing
+// them early would drop the games from Aurora, with their art and stats.
 void PushLoop() {
     std::string previous,pushed;
+    const double startedAt=Now();
     double changedAt=-1e9,nextProbe=0,retryAt=0,scanAt=0,downSince=0,upSince=0;
     int scanTries=0;
     bool attempted=false,everPushed=false,reachable=false,toldDown=false,toldWaiting=false;
@@ -434,9 +441,9 @@ void PushLoop() {
                 if(pushDue && online) {
                     SyncResult result;
                     attempted=true; toldWaiting=false;
-                    if(Push(ftp,result)) {
+                    if(Push(ftp,result,Settings.pushOnce || Now()-startedAt>=Settings.removeWait)) {
                         everPushed=true; pushed=state;
-                        retryAt=result.skipped ? Now()+RetrySkippedSeconds : 0;
+                        retryAt=result.held ? startedAt+Settings.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
                         if(result.added || result.removed) {
                             if(Settings.scan) { scanTries=Settings.pushOnce ? 1 : ScanTries; scanAt=Now(); scanDue=true; }
                             else Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
@@ -499,6 +506,8 @@ void Usage() {
         "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
         "  --online-wait <s>       after the Xbox's FTP comes back, the longest wait for the Xbox\n"
         "                          to come online before writing game folders (120)\n"
+        "  --remove-wait <s>       how long after the start game folders whose game is gone\n"
+        "                          are kept on the Xbox (60)\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
         "  -v                      log every request\n"
         "  -r, -b                  accepted for netiso-srv's command line; subfolders are always searched\n");
@@ -528,6 +537,7 @@ bool ParseArguments(int argc, char** argv) {
         else if(hasValue && a=="--launcher") Settings.launcherPath=argv[++i];
         else if(hasValue && a=="--boot") Settings.bootPath=argv[++i];
         else if(hasValue && a=="--online-wait") Settings.onlineWait=atof(argv[++i]);
+        else if(hasValue && a=="--remove-wait") Settings.removeWait=atof(argv[++i]);
         else if(a[0]!='-') {
             while(a.size()>1 && (a[a.size()-1]=='/' || a[a.size()-1]=='\\')) a.erase(a.size()-1);
             Settings.folders.push_back(a);

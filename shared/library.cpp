@@ -316,7 +316,7 @@ static int RefreshFile(Storage& storage, const char* folder, const char* name, c
 }
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result) {
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -425,6 +425,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     // so nothing is removed then.
     for(int k=0;k<folderCount && isoCount;++k) {
         if(!folders[k].game || folders[k].keep) continue;
+        if(!removeGone) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
         if(storage.RemoveGame(folder)) { Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso); ++result.removed; }
         else Say(note,"Couldn't remove %s.",folder);

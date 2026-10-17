@@ -402,6 +402,31 @@ class Push(ServerTest):
         self.assertIn("0 added, 1 removed", out)
         self.assertEqual(sorted(os.listdir(self.games)), ["NetISO Sync", "a"])
 
+    def test_keeps_a_gone_game_for_a_while_after_starting(self):
+        # The window restarts the server for each folder added; a game from a
+        # folder not added yet mustn't be dropped from Aurora meanwhile.
+        self.add_iso("a.iso", 1, 0x11111111)
+        path = self.add_iso("b.iso", 2, 0x22222222)
+        self.push()
+        os.remove(path)
+        scans = len(self.ftp.scans)
+        started = time.time()
+        server, _ = self.run_server("--remove-wait", "6")
+        try:
+            before = self.logins()
+            self.assertTrue(self.wait_for(lambda: self.logins() > before, 10))
+            time.sleep(1)
+            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            self.assertEqual(len(self.ftp.scans), scans)
+            self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
+            self.assertGreaterEqual(time.time() - started, 6)
+            self.assertTrue(self.wait_for(lambda: len(self.ftp.scans) == scans + 1, 10))
+        finally:
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("1 game folder(s) on the Xbox have no game here yet", out)
+        self.assertIn("0 added, 1 removed", out)
+
     def test_repairs_a_launcher_with_another_titles_ids(self):
         self.add_iso("a.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.push()

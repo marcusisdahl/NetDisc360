@@ -149,6 +149,7 @@ What `netiso-server.exe` does, all from one file:
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--online-wait <s>` | 120 | After Aurora's FTP comes back, the longest wait for the console to come online before writing game folders (see below). |
+| `--remove-wait <s>` | 60 | How long after the server starts a game folder whose game is gone stays on the console, so a games folder or drive that isn't there yet (or isn't added in the window yet) doesn't drop its games from Aurora. |
 | `--port`, `--ftp-port` | 4323, 21 | |
 | `-v` | | Log every request. |
 

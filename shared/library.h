@@ -31,7 +31,7 @@ public:
 };
 
 // updated counts kept folders whose launcher was rewritten with this version.
-struct SyncResult { int added, kept, updated, removed, skipped; };
+struct SyncResult { int added, kept, updated, removed, skipped, held; };
 
 // Value of key in an ini text ("key=value" lines), or false.
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);
@@ -49,6 +49,7 @@ typedef void (*Note)(const char* text);
 // launcher is a launcher XEX (any copy; its execution info is overwritten).
 // boot, if not NULL, is the helper XEX without execution info that each game
 // folder gets as boot.xex (see launcher/main.cpp).
+// With removeGone false, folders whose ISO is gone are left and counted in held.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result);
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true);
 }
