@@ -149,8 +149,31 @@ class Generator(unittest.TestCase):
         self.assertEqual(name, "A very long game name_ with bad_chars_ tha")
         self.assertEqual(netiso_aurora.folder_name("Trailing dots. .iso", used), "Trailing dots")
         # FATX has no commas or plus signs; commas are dropped, others replaced.
-        self.assertEqual(netiso_aurora.folder_name("Call of Duty - Black Ops (USA, Europe).iso", used), "Call of Duty - Black Ops (USA Europe)")
+        self.assertEqual(netiso_aurora.folder_name("Call of Duty - Black Ops (Demo, Kiosk).iso", used), "Call of Duty - Black Ops (Demo Kiosk)")
         self.assertEqual(netiso_aurora.folder_name("Halo+ ;Reach=.iso", used), "Halo_ _Reach_")
+
+    def test_friendly_folder_names(self):
+        # Region, language and revision tags go; tags that tell games or discs apart stay.
+        cases = {
+            "Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso": "Banjo-Kazooie - Nuts & Bolts",
+            "Call of Duty - Black Ops (USA, Europe).iso": "Call of Duty - Black Ops",
+            "Quake 4 (USA) (Bonus Disc).iso": "Quake 4 (Bonus Disc)",
+            "Lost Odyssey (USA) (En,Ja,Fr,De,Es,It) (Disc 2).iso": "Lost Odyssey (Disc 2)",
+            "Forza Motorsport 2 (Europe) (Rev 1) [!].iso": "Forza Motorsport 2",
+            "Halo 3 (Hong Kong) (v1.02) (Zh-Hant).iso": "Halo 3",
+            "Ghost Recon (Legendary Edition) (USA).iso": "Ghost Recon (Legendary Edition)",
+            "[RF] Some Game (Europe).iso": "[RF] Some Game",
+            "Game (Demo) (Japan).iso": "Game (Demo)",
+            "(USA) (En,Fr).iso": "(USA)",
+            "Grand Theft Auto IV (USA) (En,Fr,De,Es,It) (Platinum Hits).iso": "Grand Theft Auto IV (Platinum Hits)",
+        }
+        for iso, expected in cases.items():
+            self.assertEqual(netiso_aurora.folder_name(iso, set()), expected, iso)
+        # Another release of the same game keeps its tags, and after that gets a number.
+        used = set()
+        self.assertEqual(netiso_aurora.folder_name("Halo 3 (USA).iso", used), "Halo 3")
+        self.assertEqual(netiso_aurora.folder_name("Halo 3 (Europe) (En,Fr,De).iso", used), "Halo 3 (Europe) (EnFrDe)")
+        self.assertEqual(netiso_aurora.folder_name("Halo 3.iso", used), "Halo 3 (2)")
 
     def test_unique_folder_names(self):
         long_name = "A very long game name that keeps going and going and going.iso"

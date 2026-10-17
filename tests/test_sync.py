@@ -221,11 +221,29 @@ class Sync(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.games)), ["Halo", "Halo (2)"])
         self.assertEqual(os.listdir(os.path.join(self.games, "Halo")), [])
 
-    def test_fatx_names_match_the_pc_tool(self):
-        self.add_iso("Call of Duty - Black Ops (USA, Europe).iso", 1, 0x41560855)
-        self.add_iso("Halo+ ;Reach=.iso", 2, 0x4D53085B)
+    def test_folder_names_match_the_pc_tool(self):
+        isos = ["Call of Duty - Black Ops (USA, Europe).iso", "Halo+ ;Reach=.iso",
+                "Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso", "Quake 4 (USA) (Bonus Disc).iso",
+                "Lost Odyssey (USA) (En,Ja,Fr,De,Es,It) (Disc 2).iso", "Forza Motorsport 2 (Europe) (Rev 1) [!].iso",
+                "Halo 3 (USA).iso", "Halo 3 (Europe) (En,Fr,De).iso", "Halo 3 (Japan).iso", "(USA) (En,Fr).iso"]
+        for n, name in enumerate(isos):
+            self.add_iso(name, n + 1, 0x4D530000 + n)
         self.sync()
-        self.assertEqual(sorted(os.listdir(self.games)), ["Call of Duty - Black Ops (USA Europe)", "Halo_ _Reach_"])
+        used = set()
+        expected = [netiso_aurora.folder_name(name, used) for name in sorted(isos)]
+        self.assertIn("Banjo-Kazooie - Nuts & Bolts", expected)
+        self.assertIn("Halo 3 (USA)", expected)  # Europe sorts first and is plain "Halo 3".
+        self.assertEqual(sorted(os.listdir(self.games)), sorted(expected))
+
+    def test_keeps_a_renamed_folder(self):
+        # Folders are matched to ISOs by netiso.ini, so a folder renamed on the
+        # Xbox (or named by an older version) stays as it is.
+        self.add_iso("Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso", 1, 0x4D5307ED)
+        self.sync()
+        os.rename(os.path.join(self.games, "Banjo-Kazooie - Nuts & Bolts"), os.path.join(self.games, "Banjo (USA)"))
+        out = self.sync()
+        self.assertIn("added=0 kept=1 removed=0", out)
+        self.assertEqual(os.listdir(self.games), ["Banjo (USA)"])
 
     def test_a_folder_it_cannot_write_is_skipped(self):
         self.add_iso("a.iso", 1, 0x11111111)

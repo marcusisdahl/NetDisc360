@@ -105,28 +105,113 @@ bool FixHeaderDigest(unsigned char* xex, DWORD size) {
     return true;
 }
 
-void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out) {
-    char name[FolderNameMax+1]; size_t length=0;
-    const char* dot=strrchr(isoName,'.');
-    size_t stem=dot ? size_t(dot-isoName) : strlen(isoName);
-    size_t start=0;
-    while(start<stem && (isoName[start]==' ' || isoName[start]=='.')) ++start;
-    // FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names.
-    // Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
-    for(size_t i=start;i<stem && length<FolderNameMax;++i) {
-        char c=isoName[i];
+// Release tags in No-Intro and Redump names say which release an ISO is, not
+// which game: "(USA, Europe)", "(En,Ja,Fr,De)", "(Rev 1)", "(v1.02)", "[!]".
+// Folders leave them out, so Aurora shows a clean name until its lookup
+// names the game. Other tags stay: "(Disc 1)", "(Bonus Disc)", "(Demo)".
+static const char* const Regions[] = { "USA", "Europe", "Japan", "World", "Asia", "Australia", "Austria", "Belgium", "Brazil",
+    "Canada", "China", "Czech", "Denmark", "Finland", "France", "Germany", "Greece", "Hong Kong", "India", "Ireland", "Israel",
+    "Italy", "Korea", "Latin America", "Mexico", "Netherlands", "New Zealand", "Norway", "Poland", "Portugal", "Russia",
+    "Scandinavia", "South Africa", "Spain", "Sweden", "Switzerland", "Taiwan", "Turkey", "UK", "Unknown" };
+
+static bool ReleaseItem(const char* item, size_t length) {
+    while(length && *item==' ') { ++item; --length; }
+    while(length && item[length-1]==' ') --length;
+    if(!length) return false;
+    for(size_t i=0;i<sizeof(Regions)/sizeof(Regions[0]);++i)
+        if(strlen(Regions[i])==length && !_strnicmp(Regions[i],item,length)) return true;
+    // A language: En, Ja, Zh-Hant, Pt-BR.
+    if(length>=2 && item[0]>='A' && item[0]<='Z' && item[1]>='a' && item[1]<='z') {
+        if(length==2) return true;
+        bool letters=length>3 && item[2]=='-';
+        for(size_t i=3;i<length && letters;++i) letters=isalpha(static_cast<unsigned char>(item[i]))!=0;
+        if(letters) return true;
+    }
+    // A revision or version: Rev 1, Rev A, v1.02.
+    if(length>4 && !_strnicmp(item,"Rev ",4)) return true;
+    if(length>=2 && (item[0]=='v' || item[0]=='V') && isdigit(static_cast<unsigned char>(item[1]))) {
+        bool digits=true;
+        for(size_t i=2;i<length && digits;++i) digits=isdigit(static_cast<unsigned char>(item[i])) || item[i]=='.';
+        if(digits) return true;
+    }
+    return length==1 && *item=='!';
+}
+
+static bool ReleaseTag(const char* tag, size_t length) {
+    for(size_t start=0;;) {
+        size_t end=start;
+        while(end<length && tag[end]!=',') ++end;
+        if(!ReleaseItem(tag+start,end-start)) return false;
+        if(end==length) return true;
+        start=end+1;
+    }
+}
+
+// stem without the release tags among the tags at its end, or all of stem if
+// nothing but tags would be left.
+static void FriendlyStem(const char* stem, size_t length, char* out, size_t capacity) {
+    enum { TagsMax = 16 };
+    size_t keptAt[TagsMax],keptEnd[TagsMax]; int keptCount=0;
+    size_t end=length;
+    for(;;) {
+        while(end && stem[end-1]==' ') --end;
+        if(!end) break;
+        char open=stem[end-1]==')' ? '(' : stem[end-1]==']' ? '[' : 0;
+        if(!open) break;
+        size_t at=end-1; bool found=false;
+        while(at && !found) found=stem[--at]==open;
+        if(!found || !at) break;
+        if(!ReleaseTag(stem+at+1,end-at-2)) {
+            if(keptCount==TagsMax) break;
+            keptAt[keptCount]=at; keptEnd[keptCount]=end; ++keptCount;
+        }
+        end=at;
+    }
+    while(end && stem[end-1]==' ') --end;
+    if(!end) { _snprintf_s(out,capacity,_TRUNCATE,"%.*s",int(length),stem); return; }
+    _snprintf_s(out,capacity,_TRUNCATE,"%.*s",int(end),stem);
+    for(int k=keptCount-1;k>=0;--k) {
+        size_t used=strlen(out);
+        _snprintf_s(out+used,capacity-used,_TRUNCATE," %.*s",int(keptEnd[k]-keptAt[k]),stem+keptAt[k]);
+    }
+}
+
+// FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names, up to 42.
+// Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
+static void SafeName(const char* text, size_t length, char* out) {
+    char name[IsvrNameBytes]; size_t used=0;
+    for(size_t i=0;i<length && used<sizeof(name)-1;++i) {
+        char c=text[i];
         if(c==',') continue;
         bool ok=(c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || (c && strchr(" !#$%&'()-.@[]^_`{}~",c));
-        name[length++]=ok ? c : '_';
+        name[used++]=ok ? c : '_';
     }
-    while(length && (name[length-1]==' ' || name[length-1]=='.')) --length;
-    name[length]=0;
-    if(!length) strcpy_s(name,"Game");
+    name[used]=0;
+    size_t start=0;
+    while(name[start]==' ' || name[start]=='.') ++start;
+    size_t keep=used-start;
+    if(keep>FolderNameMax) keep=FolderNameMax;
+    while(keep && (name[start+keep-1]==' ' || name[start+keep-1]=='.')) --keep;
+    if(!keep) strcpy_s(out,FolderNameMax+1,"Game");
+    else _snprintf_s(out,FolderNameMax+1,_TRUNCATE,"%.*s",int(keep),name+start);
+}
+
+static bool Taken(char used[][FolderNameMax + 1], int usedCount, const char* name) {
+    for(int i=0;i<usedCount;++i) if(!_stricmp(used[i],name)) return true;
+    return false;
+}
+
+void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out) {
+    const char* dot=strrchr(isoName,'.');
+    size_t stem=dot ? size_t(dot-isoName) : strlen(isoName);
+    char friendly[IsvrNameBytes],name[FolderNameMax+1];
+    FriendlyStem(isoName,stem,friendly,sizeof(friendly));
+    SafeName(friendly,strlen(friendly),name);
     strcpy_s(out,FolderNameMax+1,name);
-    for(int n=2;;++n) {
-        bool taken=false;
-        for(int i=0;i<usedCount && !taken;++i) taken=!_stricmp(used[i],out);
-        if(!taken) return;
+    if(!Taken(used,usedCount,out)) return;
+    // Another release of the same game keeps its tags, and after that a number.
+    SafeName(isoName,stem,out);
+    for(int n=2;Taken(used,usedCount,out);++n) {
         char suffix[16]; _snprintf_s(suffix,sizeof(suffix),_TRUNCATE," (%d)",n);
         size_t keep=strlen(name); size_t room=FolderNameMax-strlen(suffix);
         if(keep>room) keep=room;
