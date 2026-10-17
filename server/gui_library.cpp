@@ -72,6 +72,48 @@ std::string Location(const nia::IsoFile& disc) {
     return path;
 }
 
+// The bytes in a folder and everything in it.
+unsigned long long FolderBytes(const std::wstring& folder, int depth) {
+    unsigned long long total = 0;
+    WIN32_FIND_DATAW found;
+    HANDLE find = FindFirstFileExW((folder + L"\\*").c_str(), FindExInfoBasic, &found, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            total += ((unsigned long long)found.nFileSizeHigh << 32) | found.nFileSizeLow;
+        else if (wcscmp(found.cFileName, L".") && wcscmp(found.cFileName, L"..") &&
+                 !(found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && depth < 32)
+            total += FolderBytes(folder + L"\\" + found.cFileName, depth + 1);
+    } while (FindNextFileW(find, &found));
+    FindClose(find);
+    return total;
+}
+
+// What an extracted game or a GOD package takes on the disk (the server only
+// works it out when it builds the disc), kept until the game changes.
+std::map<std::string, unsigned long long> Sizes;  // The scan thread only.
+
+unsigned long long DiscBytes(const nia::IsoFile& disc) {
+    if (disc.kind == nia::DiscIso) return disc.size;
+    char stamp[32];
+    _snprintf_s(stamp, sizeof(stamp), _TRUNCATE, "|%lld", disc.modified);
+    std::string key = disc.path + stamp;
+    std::map<std::string, unsigned long long>::iterator known = Sizes.find(key);
+    if (known != Sizes.end()) return known->second;
+    std::wstring path = Wide(AnsiToUtf8(disc.path));
+    unsigned long long bytes = 0;
+    if (disc.kind == nia::DiscFolder) {
+        bytes = FolderBytes(path, 0);
+    } else {
+        WIN32_FILE_ATTRIBUTE_DATA header;
+        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &header))
+            bytes = ((unsigned long long)header.nFileSizeHigh << 32) | header.nFileSizeLow;
+        bytes += FolderBytes(path + L".data", 0);
+    }
+    Sizes[key] = bytes;
+    return bytes;
+}
+
 Library* Scan(const std::vector<std::wstring>& folders, std::string& last) {
     std::vector<std::string> roots;
     std::vector<nia::IsoFile> isos;
@@ -102,7 +144,7 @@ Library* Scan(const std::vector<std::wstring>& folders, std::string& last) {
         Game game;
         game.name = AnsiToUtf8(iso.name.size() > 4 ? iso.name.substr(0, iso.name.size() - 4) : iso.name);
         game.path = AnsiToUtf8(Location(iso));
-        game.size = iso.size;
+        game.size = DiscBytes(iso);
         game.kind = iso.kind;
         game.titleId = iso.titleId;
         game.disc = iso.disc;

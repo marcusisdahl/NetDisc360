@@ -551,7 +551,7 @@ void GameCard(const Game& game) {
     ImVec2 a = at + ImVec2(S(6), S(32)), b = end - ImVec2(S(6), S(6));
     CoverImage(draw, game, a, b, S(6));
     Badge(draw, b - ImVec2(S(6), S(6)), ICON_Tag, game.titleId ? Hex(game.titleId) : std::string(KindName(game.kind)));
-    Badge(draw, b - ImVec2(S(6), S(27)), NULL, Gib(game.size));
+    if (game.size) Badge(draw, b - ImVec2(S(6), S(27)), NULL, Gib(game.size));
     if (game.kind != nia::DiscIso) Badge(draw, ImVec2(b.x - S(6), a.y + S(24)), NULL, KindName(game.kind));
     if (playing) {
         float w = Measure(FontBold, S(11), "Playing").x + S(30);
@@ -585,7 +585,7 @@ void GameRow(const Game& game, float width, int index) {
           Elide(FontBold, TextSize(), name, kindX - at.x - S(56)));
     Write(draw, FontText, TextSize(), ImVec2(kindX, y), C.muted, KindName(game.kind));
     Write(draw, FontMono, S(13), ImVec2(idX, y + S(1)), C.muted, game.titleId ? Hex(game.titleId) : "-");
-    std::string gib = Gib(game.size);
+    std::string gib = game.size ? Gib(game.size) : "-";
     Write(draw, FontText, TextSize(), ImVec2(sizeX - Measure(FontText, TextSize(), gib.c_str()).x, y), C.text, gib);
 }
 
@@ -628,7 +628,7 @@ void DetailsWindow() {
             for (const Game& g : Games.games) discs += game->titleId && g.titleId == game->titleId;
             if (game->disc && discs > 1) row("Disc", std::to_string(game->disc));
             row("Kind", game->kind == nia::DiscGod ? "Games on Demand package" : game->kind == nia::DiscFolder ? "Extracted game folder" : "ISO file");
-            row("Size", Gib(game->size));
+            if (game->size) row("Size", Gib(game->size));
             row("Where", game->path);
             if (IsPlaying(*game)) row("Now", "Mounted on the Xbox");
             ImGui::PopTextWrapPos();
