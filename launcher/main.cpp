@@ -32,10 +32,9 @@ struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
-// XLaunchNewImageEx): starts xexName from mountPath. This is how Aurora 0.7b
-// starts titles, discs included, with flags 0x10 (read from its Nova.xex).
-// XLaunchNewImage on \Device\Cdrom0\default.xex ended on the Xbox dashboard
-// with the Guide dead instead.
+// XLaunchNewImageEx): starts xexName from mountPath. Nova.xex's file browser
+// starts files this way, with flags 0x10. It starts the game, but the Guide
+// is dead in it, so it's only the fallback (and start=nova) now.
 extern "C" DWORD __stdcall XLaunchNewImageEx(LPCSTR xexName,LPCSTR mountPath,LPCSTR commandLine,DWORD flags);
 // XLaunchNewImage is declared DECLSPEC_NORETURN, so the compiler drops the
 // code after a call, but it does return when the launch fails. Calling it
@@ -46,8 +45,17 @@ static LaunchFunction volatile LaunchImage=XLaunchNewImage;
 static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
 static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
-static const char LaunchXex[]="\\Device\\Cdrom0\\default.xex",DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
-static const DWORD AuroraLaunchFlags=0x10;
+static const char DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
+static const DWORD NovaLaunchFlags=0x10;
+// Aurora's disc entry (Aurora.xex 0.7b.2: ScnProfileDVD, then its
+// ContentLauncher) links Dvd: to \Device\Cdrom0 and starts the disc with
+// XLaunchNewImage("Dvd:\default.xex",0), which is XamLoaderLaunchTitle with
+// flags 0. Started that way, the game has a working Guide. The same call
+// with \Device\Cdrom0\default.xex instead ended on the Xbox dashboard.
+static const char AuroraDiscLink[]="\\??\\Dvd:",AuroraDiscXex[]="Dvd:\\default.xex";
+// What XLaunchNewImage takes to start whatever disc is in the drive, like
+// the Xbox dashboard does (read from Aurora's copy of XLaunchNewImage).
+static const char DetectMedia[]="XLNI_DET_MEDIA";
 static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
 static const char MountFolder[]="Mount";
 static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
@@ -308,19 +316,47 @@ static bool MountGame(const char* ini) {
     return false;
 }
 
-// Starts default.xex on the disc the way Aurora does, then the plain way if
-// that returns. Returns only if both failed. The log is closed meanwhile.
-static void StartDisc(const char* logFile) {
-    Note("Launching %s from %s, as Aurora does",DiscXexName,DiscMount);
+// Aurora starts a game with no launch data. The helper was started with
+// "NetISO boot", which would otherwise go on to the game.
+static void ClearLaunchData() {
+    DWORD size=0;
+    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || !size) return;
+    static char none[4];
+    DWORD result=XSetLaunchData(none,0);
+    Note("Clearing the launch data: %lu.",result);
+}
+
+// The XLaunchNewImage calls return only when the start failed. The log is
+// closed while they run.
+static void Launch(const char* path) {
+    if(Log) { fclose(Log); Log=NULL; }
+    LaunchImage(path,0);
+    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    Note("XLaunchNewImage(%s) failed (%lu).",path,GetLastError());
+}
+
+// Starts default.xex on the disc the way Aurora's disc entry does, or as
+// start= in netiso.ini says: aurora (the default), nova (Nova.xex's
+// XamLoaderLaunchTitleEx call, the previous way) or media (whatever disc is
+// in the drive, as the dashboard starts it). Returns only if that failed.
+static void StartDisc(const char* ini) {
+    char start[16]="aurora";
+    nia::IniValue(ini,"start",start,sizeof(start));
+    ClearLaunchData();
     Progress=100; ScreenDraw(); ScreenStop();
+    if(!_stricmp(start,"media")) {
+        Note("Starting the disc in the drive (start=media)");
+        Launch(DetectMedia);
+    } else if(_stricmp(start,"nova")) {
+        LONG status=LinkDrive(AuroraDiscLink,DiscDevice);
+        if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
+        else { Note("Starting %s, as Aurora's disc entry does",AuroraDiscXex); Launch(AuroraDiscXex); }
+    }
+    Note("Starting %s from %s, as Nova's file browser does",DiscXexName,DiscMount);
     if(Log) { fclose(Log); Log=NULL; }
-    DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,AuroraLaunchFlags);
-    if(fopen_s(&Log,logFile,"a")) Log=NULL;
-    Note("XamLoaderLaunchTitleEx returned %08X (%lu); trying XLaunchNewImage(%s).",result,GetLastError(),LaunchXex);
-    if(Log) { fclose(Log); Log=NULL; }
-    LaunchImage(LaunchXex,0); // Returns VOID in this SDK; returning at all means it failed.
-    if(fopen_s(&Log,logFile,"a")) Log=NULL;
-    Note("XLaunchNewImage failed (%lu).",GetLastError());
+    DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,NovaLaunchFlags);
+    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
 }
 
 // mount_only=1 in netiso.ini mounts and goes back to Aurora without starting
@@ -330,7 +366,7 @@ static void LaunchGame(const char* ini) {
     UnlinkDrive(DiscLink);
     if(!mounted) return;
     if(IniNumber(ini,"mount_only",0)) { Note("mount_only=1: back to Aurora without starting the game."); return; }
-    StartDisc(LogFile);
+    StartDisc(ini);
 }
 
 // ---- NetISO Sync ----
