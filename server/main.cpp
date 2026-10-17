@@ -33,16 +33,18 @@ namespace {
 enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, Header = 20,
        MaxReadBytes = 16 << 20, MaxNameBytes = 4096, MaxDepth = 8 };
 // An ISO counts as settled, and gets pushed, when nothing about it changed for this long.
-const double SettleSeconds = 10, ProbeDownSeconds = 15, ProbeUpSeconds = 60, RetrySkippedSeconds = 600, FilterCheckSeconds = 600;
+const double SettleSeconds = 10, ProbeDownSeconds = 15, ProbeUpSeconds = 60, RetrySkippedSeconds = 600, FilterCheckSeconds = 600,
+             ScanRetrySeconds = 30;
+const int ScanTries = 20;
 
 struct Options {
     std::vector<std::string> folders;
     std::string ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
     int port, ftpPort;
     DWORD xbox;
-    bool push, filter, verbose, pushOnce;
+    bool push, filter, scan, verbose, pushOnce;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
-                port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), verbose(false), pushOnce(false) {}
+                port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), scan(true), verbose(false), pushOnce(false) {}
 };
 Options Settings;
 std::vector<unsigned char> Launcher, Boot;
@@ -358,11 +360,26 @@ bool Push(FtpClient& ftp, SyncResult& result) {
     return ok;
 }
 
+// Asks Aurora to scan the game folder now, with FtpDll's SITE INITIATESCAN,
+// so new games show up at once and Aurora looks them up online while the
+// network is up. Its own scan at boot runs before the Xbox has a network (40 s
+// after boot on the test console), and a game it first finds then never gets
+// its name or art. False when Aurora didn't start one (its scanner may be busy).
+bool StartScan(FtpClient& ftp) {
+    std::string reply;
+    bool ok=ftp.Site(("INITIATESCAN "+Settings.xboxFolder).c_str(),reply) && reply.find("Unable")==std::string::npos;
+    if(ok) Log("Asked Aurora to scan %s, so it lists the changes now and downloads the new games' art.",Settings.xboxFolder.c_str());
+    else Log("Aurora didn't start a scan: %s",reply.empty() ? ftp.Error() : reply.c_str());
+    return ok;
+}
+
 // Watches the ISO folder and the Xbox. Pushes when the ISOs changed and have
 // settled, and when the Xbox's FTP server (Aurora) comes back after being away.
 void PushLoop() {
     std::string previous,pushed;
-    double changedAt=-1e9,nextProbe=0,retryAt=0,filterAt=0;
+    double changedAt=-1e9,nextProbe=0,retryAt=0,filterAt=0,scanAt=0;
+    int scanTries=0;
+    bool attempted=false;
     bool everPushed=false,reachable=false,toldDown=false;
     DWORD target=0;
     for(;;) {
@@ -384,13 +401,22 @@ void PushLoop() {
                 if(Settings.filter && (back || Now()>=filterAt)) { GuardFilter(ftp,back); filterAt=Now()+FilterCheckSeconds; }
                 if(settled && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt))) {
                     SyncResult result;
+                    attempted=true;
                     if(Push(ftp,result)) {
                         everPushed=true; pushed=state;
                         retryAt=result.skipped ? Now()+RetrySkippedSeconds : 0;
-                        if(result.added || result.removed) Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
+                        if(result.added || result.removed) {
+                            if(Settings.scan) { scanTries=Settings.pushOnce ? 1 : ScanTries; scanAt=Now(); }
+                            else Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
+                        }
                     } else nextProbe=Now()+30;
-                    if(Settings.pushOnce) exit(everPushed ? 0 : 1);
                 }
+                if(scanTries && Now()>=scanAt) {
+                    if(StartScan(ftp)) scanTries=0;
+                    else if(--scanTries) scanAt=Now()+ScanRetrySeconds;
+                    else Log("Aurora shows the changes after its next scan of %s.",Settings.xboxFolder.c_str());
+                }
+                if(Settings.pushOnce && attempted && !scanTries) exit(everPushed ? 0 : 1);
                 ftp.Close();
             }
         }
@@ -438,6 +464,7 @@ void Usage() {
         "  --aurora <path>         Aurora's folder on the Xbox, as an FTP path (/Hdd1/Apps/Aurora)\n"
         "  --no-push               only serve ISOs; leave the Xbox alone\n"
         "  --no-category           leave Aurora's Xbox 360 category alone\n"
+        "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
         "  -v                      log every request\n"
         "  -r, -b                  accepted for netiso-srv's command line; subfolders are always searched\n");
@@ -452,6 +479,7 @@ bool ParseArguments(int argc, char** argv) {
         else if(a=="-v") Settings.verbose=true;
         else if(a=="--no-push") Settings.push=false;
         else if(a=="--no-category") Settings.filter=false;
+        else if(a=="--no-scan") Settings.scan=false;
         else if(a=="--push-once") Settings.pushOnce=true;  // For the tests.
         else if(hasValue && a=="--xbox") {
             Settings.xbox=inet_addr(argv[++i]);

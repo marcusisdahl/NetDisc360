@@ -254,6 +254,19 @@ class Push(ServerTest):
         self.assertIn("0 added, 0 removed, 2 kept (0 updated)", out)
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
 
+    def test_asks_aurora_to_scan_after_adding_or_removing_games(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        path = self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        out = self.push()
+        self.assertEqual(self.ftp.scans, ["/Hdd1/NetISO"])
+        self.assertIn("Asked Aurora to scan /Hdd1/NetISO", out)
+        # Nothing added or removed: no scan.
+        self.push()
+        self.assertEqual(len(self.ftp.scans), 1)
+        os.remove(path)
+        self.push()
+        self.assertEqual(len(self.ftp.scans), 2)
+
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
         os.makedirs(sync)

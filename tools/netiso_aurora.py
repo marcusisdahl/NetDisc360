@@ -21,6 +21,7 @@ are rewritten, and nothing else there is touched.
 import argparse
 import hashlib
 import os
+import re
 import struct
 import sys
 
@@ -131,12 +132,55 @@ def launcher_info_offset(launcher):
     return at
 
 
+# Release tags in No-Intro and Redump names say which release an ISO is, not
+# which game: "(USA, Europe)", "(En,Ja,Fr,De)", "(Rev 1)", "(v1.02)", "[!]".
+# Folders leave them out, so Aurora shows a clean name until its lookup names
+# the game. Other tags stay: "(Disc 1)", "(Bonus Disc)", "(Demo)". Matches
+# FolderName in shared/library.cpp.
+REGIONS = {r.lower() for r in (
+    "USA", "Europe", "Japan", "World", "Asia", "Australia", "Austria", "Belgium", "Brazil", "Canada", "China", "Czech",
+    "Denmark", "Finland", "France", "Germany", "Greece", "Hong Kong", "India", "Ireland", "Israel", "Italy", "Korea",
+    "Latin America", "Mexico", "Netherlands", "New Zealand", "Norway", "Poland", "Portugal", "Russia", "Scandinavia",
+    "South Africa", "Spain", "Sweden", "Switzerland", "Taiwan", "Turkey", "UK", "Unknown")}
+RELEASE_ITEM = re.compile(r"[A-Z][a-z](-[A-Za-z]+)?|[Rr][Ee][Vv] .+|[vV][0-9][0-9.]*|!")
+
+
+def release_tag(tag):
+    return all(item.strip(" ").lower() in REGIONS or RELEASE_ITEM.fullmatch(item.strip(" ")) for item in tag.split(","))
+
+
+def friendly_stem(stem):
+    """stem without the release tags among the tags at its end, or all of it if only tags would be left."""
+    end, kept = len(stem), []
+    while True:
+        while end and stem[end - 1] == " ":
+            end -= 1
+        opener = {")": "(", "]": "["}.get(stem[end - 1]) if end else None
+        if not opener:
+            break
+        at = stem.rfind(opener, 0, end - 1)
+        if at <= 0:
+            break
+        if not release_tag(stem[at + 1:end - 1]):
+            if len(kept) == 16:
+                break
+            kept.append(stem[at:end])
+        end = at
+    title = stem[:end].rstrip(" ")
+    return " ".join([title] + kept[::-1]) if title else stem
+
+
+def safe_name(text):
+    # Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
+    name = "".join(c if c in FATX_OK else "_" for c in text.replace(",", ""))
+    return name.lstrip(" .")[:FATX_NAME_MAX].rstrip(" .") or "Game"
+
+
 def folder_name(iso_name, used):
     stem = os.path.splitext(iso_name)[0]
-    # Commas are common in No-Intro names ("(USA, Europe)") and read fine dropped.
-    name = "".join(c if c in FATX_OK else "_" for c in stem.replace(",", ""))
-    name = name.strip(" .")[:FATX_NAME_MAX].rstrip(" .") or "Game"
-    candidate, n = name, 2
+    name = safe_name(friendly_stem(stem))
+    # Another release of the same game keeps its tags, and after that a number.
+    candidate, n = name if name.lower() not in used else safe_name(stem), 2
     while candidate.lower() in used:
         suffix = " (%d)" % n
         candidate = name[:FATX_NAME_MAX - len(suffix)].rstrip(" .") + suffix

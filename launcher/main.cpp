@@ -835,11 +835,9 @@ static void HandToHelper() {
     if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); mounting from the launcher.",set); return; }
     Note("Handing the start to %s",BootXex);
     CloseLog();
-    ScreenStop();
     LaunchImage(BootXex,0);
     OpenLog(false);
     Note("Couldn't start %s (%lu); mounting from the launcher.",BootXex,GetLastError());
-    ScreenStart();
 }
 
 void __cdecl main() {
@@ -847,8 +845,6 @@ void __cdecl main() {
     InitializeCriticalSection(&ShownLock);
     MainThread=GetCurrentThreadId();
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
-    ScreenStart();
-    ScreenDraw();
     bool helper=LaunchedWith(BootData);
     OpenLog(true);
     NoteRun();
@@ -857,13 +853,22 @@ void __cdecl main() {
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
     bool game=nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0];
+    // The tile's launcher hands over before it draws anything: a frame of the
+    // loading screen here, then the black of the switch, then the helper's
+    // screen showed as a flicker (seen on the console). The game's name is
+    // there from the first frame, so it doesn't pop in either.
+    if(game && !helper) HandToHelper();
+    if(game) nia::GameName(iso,Shown.game,sizeof(Shown.game));
+    else {
+        strcpy_s(Shown.game,"NetISO Sync");
+        ShowStep(nia::StepServer,0.1,"Updating the game folders from the NetISO server");
+    }
+    ScreenStart();
+    ScreenDraw();
     if(game) {
-        if(!helper) HandToHelper();
         LaunchGame(ini);
     } else {
         Note("NetISO Sync");
-        strcpy_s(Shown.game,"NetISO Sync");
-        ShowStep(nia::StepServer,0.1,"Updating the game folders from the NetISO server");
         Sync(ini);
         LaunchAfterSync(ini);
     }

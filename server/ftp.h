@@ -32,6 +32,9 @@ public:
     bool Exists(const char* folder);
     bool Delete(const char* path);
     bool RemoveFolder(const char* path);
+    // A SITE command (FtpDll's own, such as INITIATESCAN); reply is its last
+    // line. True for a 2xx reply.
+    bool Site(const char* command, std::string& reply);
     void Close();
     bool Missing() const { return missing_; }
     // Last reply code, or 0 for a connection problem.
