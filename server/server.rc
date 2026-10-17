@@ -7,3 +7,30 @@
 
 IDR_LAUNCHER RCDATA "..\\build\\NetISO Sync\\default.xex"
 IDR_BOOT RCDATA "..\\build\\NetISO Sync\\boot.xex"
+
+// What Explorer and Task Manager show for the exe.
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Marcus Isdahl"
+            VALUE "FileDescription", "NetDisc 360"
+            VALUE "FileVersion", "1.0.0"
+            VALUE "InternalName", "NetDisc"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Marcus Isdahl. MIT License."
+            VALUE "OriginalFilename", "NetDisc.exe"
+            VALUE "ProductName", "NetDisc 360"
+            VALUE "ProductVersion", "1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

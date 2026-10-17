@@ -32,4 +32,4 @@ jobs:
         with:
           context: .
           push: false
-          tags: netiso-aurora:ci
+          tags: netdisc-360:ci

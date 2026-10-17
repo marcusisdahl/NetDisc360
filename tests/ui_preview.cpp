@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     else if(!strcmp(scene,"start")) { s.step=nia::StepStart; s.fraction=1; strcpy(s.status,"Starting Skate 3"); }
     else if(!strcmp(scene,"no-server")) Error(s,nia::StepServer,"Can't reach the NetISO server",
         "Nothing answered at 192.168.1.20, port 4323, for 2 minutes.",
-        "Start netiso-server.exe on the PC, and check that the PC and the Xbox",
+        "Start NetDisc 360 on the PC, and check that the PC and the Xbox",
         "are on the same network. The address is in Hdd1:\\netiso.xex.txt.",true);
     else if(!strcmp(scene,"not-listed")) Error(s,nia::StepMount,"Skate 3 isn't on the server",
         "The server doesn't list Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl).iso.",

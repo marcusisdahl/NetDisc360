@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
-// NetISO server for Aurora: one program in place of netiso-srv. It serves the
-// ISOs in a folder (and its subfolders) to the NetISO plugin, noticing new
-// ones without a restart, and keeps the console's Hdd1:\NetISO game folders
-// in step with them over Aurora's FTP server, with NetISO Sync's own code
-// (shared/library.cpp). The launcher XEXs it writes are built into it.
+// NetDisc 360, a NetISO server for Aurora: one program in place of
+// netiso-srv. It serves the games in folders (and their subfolders) to the
+// NetISO plugin, noticing new ones without a restart, and keeps the console's
+// Hdd1:\NetISO game folders in step with them over Aurora's FTP server, with
+// NetISO Sync's own code (shared/library.cpp). The launcher XEXs it writes are
+// built into it.
 //
-//   netiso-server [options] [ISO folder]      (netiso-server -h lists them)
+//   netdisc [options] [game folder ...]      (netdisc -h lists them)
 #include "../shared/library.h"
 #include "discs.h"
 #include "ftp.h"
@@ -283,7 +284,7 @@ const char FilterNetIso[] =
     "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\n"
     "end\n"
     "\n"
-    "-- NetISO for Aurora: the game launchers in Hdd1:\\NetISO play retail discs\n"
+    "-- NetDisc 360: the game launchers in Hdd1:\\NetISO play retail discs\n"
     "-- from the NetISO server, so they count as Xbox 360 games here. Aurora files\n"
     "-- them as Unsigned because they aren't retail-signed. The NetISO Sync app\n"
     "-- itself stays out.\n"
@@ -490,12 +491,13 @@ bool BuiltIn(int id, std::vector<unsigned char>& out) {
 
 void Usage() {
     printf(
-        "NetISO server for Aurora. Serves the games in folders and their subfolders to\n"
-        "the NetISO plugin, and keeps the Xbox's game folders for Aurora in step with them.\n"
+        "NetDisc 360, a NetISO server for Aurora. Serves the games in folders and their\n"
+        "subfolders to the NetISO plugin, and keeps the Xbox's game folders for Aurora in\n"
+        "step with them.\n"
         "Games can be ISOs, extracted to a folder (default.xex at the top; a \"Disc 2\"\n"
         "folder inside is a disc of its own), or Games on Demand packages. Each game is\n"
         "served once; extra copies are listed so they can be removed.\n\n"
-        "  netiso-server [options] [folder ...]   (default: the current folder)\n\n"
+        "  netdisc [options] [folder ...]   (default: the current folder)\n\n"
         "  --xbox <address>        the Xbox to update (default: the console that connects)\n"
         "  --ftp-user <name>       Aurora's FTP login (xboxftp)\n"
         "  --ftp-password <text>   (xboxftp)\n"
@@ -552,14 +554,14 @@ bool ParseArguments(int argc, char** argv) {
 int Run(int argc, char** argv) {
     // The window (gui.cpp) and the Docker image pass the FTP password here,
     // so it doesn't show in the process list; --ftp-password still wins.
-    if(const char* password=getenv("NETISO_FTP_PASSWORD")) Settings.ftpPassword=password;
+    if(const char* password=getenv("NETDISC_FTP_PASSWORD")) Settings.ftpPassword=password;
     if(!ParseArguments(argc,argv)) return 2;
 #ifdef _WIN32
-    SetConsoleTitleA("NetISO server for Aurora");
+    SetConsoleTitleA("NetDisc 360");
     WSADATA wsa;
     if(WSAStartup(MAKEWORD(2,2),&wsa)) { fprintf(stderr,"Winsock didn't start.\n"); return 1; }
 #endif
-    Log("NetISO server for Aurora, built %s %s.",__DATE__,__TIME__);
+    Log("NetDisc 360, built %s %s.",__DATE__,__TIME__);
     std::string where;
     for(size_t i=0;i<Settings.folders.size();++i) where+=(i ? ", " : "")+Settings.folders[i];
     std::vector<IsoFile> isos=Isos();

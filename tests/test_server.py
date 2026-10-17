@@ -2,7 +2,7 @@
 and NetISO Sync use it, and pushing game folders to tests/aurora_ftp.py, a
 stand-in for Aurora's FTP server.
 
-Builds build/host/netiso-server with g++ (or uses NETISO_SERVER if set).
+Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 
     python tests/test_server.py
 """
@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import aurora_ftp  # noqa: E402
 from test_generator import execution_info, header_digest, write_iso, xex  # noqa: E402
 
-SERVER = os.environ.get("NETISO_SERVER") or os.path.join(ROOT, "build", "host", "netiso-server")
+SERVER = os.environ.get("NETDISC_SERVER") or os.path.join(ROOT, "build", "host", "netdisc")
 LUA = shutil.which("lua5.2") or shutil.which("lua")
 
 # The part of Aurora 0.7b.2's Media\Scripts\Content\FilterFunctions.lua the server edits.
@@ -40,7 +40,7 @@ FILTER = (b"function GameListFilterXbox360(Content)\r\n"
 
 
 def build_server():
-    if os.environ.get("NETISO_SERVER"):
+    if os.environ.get("NETDISC_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/ftp.cpp", "shared/library.cpp", "shared/isvr.cpp")]
@@ -272,21 +272,21 @@ class Push(ServerTest):
         # The window and the Docker image pass the password this way.
         self.ftp.password = "s3cret pass"
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
-        os.environ["NETISO_FTP_PASSWORD"] = "s3cret pass"
+        os.environ["NETDISC_FTP_PASSWORD"] = "s3cret pass"
         try:
             self.assertIn("1 added, 0 removed", self.push())
         finally:
-            del os.environ["NETISO_FTP_PASSWORD"]
+            del os.environ["NETDISC_FTP_PASSWORD"]
         self.assertNotIn("s3cret", "".join(self.ftp.log))
         # --ftp-password wins over it.
-        os.environ["NETISO_FTP_PASSWORD"] = "wrong"
+        os.environ["NETDISC_FTP_PASSWORD"] = "wrong"
         try:
             result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
                                      "--ftp-port", str(self.ftp.server_address[1]), "--ftp-password", "s3cret pass",
                                      "--launcher", self.launcher, "--boot", self.boot],
                                     capture_output=True, text=True, timeout=60)
         finally:
-            del os.environ["NETISO_FTP_PASSWORD"]
+            del os.environ["NETDISC_FTP_PASSWORD"]
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_asks_aurora_to_scan_after_adding_or_removing_games(self):

@@ -4,8 +4,8 @@
 //
 // Covers come from the XboxUnity-Scraper archive of XboxUnity's covers on
 // GitHub (the same covers Aurora downloads), or from XboxUnity itself for a
-// title the archive lacks, and are kept in %LOCALAPPDATA%\NetISO for
-// Aurora\Covers. They are only for this window: the Xbox gets its art from
+// title the archive lacks, and are kept in %LOCALAPPDATA%\NetDisc
+// 360\Covers. They are only for this window: the Xbox gets its art from
 // Aurora's own scan.
 #ifdef _WIN32
 #include "gui.h"
@@ -192,9 +192,11 @@ std::wstring CoverFolder() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &local))) folder = local;
     CoTaskMemFree(local);
     if (folder.empty()) return L"";
-    folder += L"\\NetISO for Aurora";
+    std::wstring old = folder + L"\\NetISO for Aurora\\Covers";  // Kept there before the rename.
+    folder += L"\\NetDisc 360";
     CreateDirectoryW(folder.c_str(), NULL);
     folder += L"\\Covers";
+    if (GetFileAttributesW(folder.c_str()) == INVALID_FILE_ATTRIBUTES) MoveFileW(old.c_str(), folder.c_str());
     CreateDirectoryW(folder.c_str(), NULL);
     return folder;
 }
@@ -295,7 +297,7 @@ bool IsImage(const std::string& data) {
 bool Download(DWORD titleId, std::string& image) {
     char id[12];
     _snprintf_s(id, sizeof(id), _TRUNCATE, "%08X", (unsigned)titleId);
-    const char* custom = getenv("NETISO_COVERS_URL");  // For the tests: an archive elsewhere.
+    const char* custom = getenv("NETDISC_COVERS_URL");  // For the tests: an archive elsewhere.
     std::string archive = custom && *custom ? custom : ArchiveUrl, json;
     if (Get(archive + "/Covers/" + id + "/metadata.json", json))
         for (const std::string& cover : CoverIds(json))

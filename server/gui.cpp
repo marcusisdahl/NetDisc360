@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-// The window of netiso-server.exe on Windows. Started with no options (from
+// The window of NetDisc.exe (NetDisc 360) on Windows. Started with no options (from
 // Explorer, a shortcut, or at sign-in with --tray), the exe shows a window
 // with the games it serves, the game folders, the Xbox's connection and the
 // server's log, drawn with Dear ImGui over Direct3D 11 (gui_view.cpp). The
-// settings are kept in %APPDATA%\NetISO for Aurora\netiso-server.ini (the
+// settings are kept in %APPDATA%\NetDisc 360\netdisc.ini (the
 // password encrypted for this Windows user), and the server itself runs as a
 // second copy of this exe with those settings as options, its output shown
 // in the log. Minimizing or closing the window leaves the server running
@@ -56,10 +56,13 @@ ID3D11Device* Device;
 ID3D11DeviceContext* Context;
 
 namespace {
-const wchar_t AppName[] = L"NetISO for Aurora";
-const wchar_t WindowClass[] = L"NetIsoAuroraServer";
+const wchar_t AppName[] = L"NetDisc 360";
+const wchar_t WindowClass[] = L"NetDisc360Window";
+// The name before NetDisc 360: its settings and "Start with Windows" carry over.
+const wchar_t OldName[] = L"NetISO for Aurora";
+const wchar_t OldRunValue[] = L"NetISO server for Aurora";
 const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t RunValue[] = L"NetISO server for Aurora";
+const wchar_t RunValue[] = L"NetDisc 360";
 const wchar_t Section[] = L"Server";
 const int IconId = 1;  // server.rc
 const size_t LogLines = 5000;
@@ -118,7 +121,7 @@ std::wstring ExeFolder() {
 // The FTP password is kept encrypted for this Windows user (DPAPI).
 std::wstring Protect(const std::wstring& text) {
     DATA_BLOB in = {DWORD(text.size() * sizeof(wchar_t)), (BYTE*)text.data()}, out = {0, NULL};
-    if (!CryptProtectData(&in, L"NetISO for Aurora FTP password", NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &out)) return L"";
+    if (!CryptProtectData(&in, L"NetDisc 360 FTP password", NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &out)) return L"";
     DWORD n = 0;
     std::wstring result;
     if (CryptBinaryToStringW(out.pbData, out.cbData, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &n)) {
@@ -269,7 +272,7 @@ std::wstring ServerCommandLine() {
         command += L" " + Quote(f);
     }
     if (!Saved.xbox.empty()) command += L" --xbox " + Quote(Saved.xbox);
-    command += L" --ftp-user " + Quote(Saved.user);  // The password goes in NETISO_FTP_PASSWORD.
+    command += L" --ftp-user " + Quote(Saved.user);  // The password goes in NETDISC_FTP_PASSWORD.
     if (!Saved.options.empty()) command += L" " + Saved.options;
     return command;
 }
@@ -294,7 +297,7 @@ void ReadOutput(HANDLE pipe, unsigned generation) {
 }
 
 void SetTrayTip() {
-    std::wstring tip = std::wstring(L"NetISO for Aurora: ") + (Server.running ? L"running" : L"stopped");
+    std::wstring tip = std::wstring(AppName) + L": " + (Server.running ? L"running" : L"stopped");
     if (Server.running && Server.games >= 0) tip += L", " + std::to_wstring(Server.games) + (Server.games == 1 ? L" game" : L" games");
     wcsncpy_s(Tray.szTip, tip.c_str(), _TRUNCATE);
     Tray.uFlags = NIF_TIP | NIF_SHOWTIP;
@@ -492,7 +495,7 @@ void HideToTray() {
         Saved.toldTray = true;
         SaveConfig();
         Tray.uFlags = NIF_INFO;
-        wcsncpy_s(Tray.szInfoTitle, L"NetISO for Aurora keeps serving your games", _TRUNCATE);
+        wcsncpy_s(Tray.szInfoTitle, L"NetDisc 360 keeps serving your games", _TRUNCATE);
         wcsncpy_s(Tray.szInfo, L"It's here in the notification area. Click the icon to open it, or right-click it to quit.", _TRUNCATE);
         Tray.dwInfoFlags = NIIF_INFO;
         Shell_NotifyIconW(NIM_MODIFY, &Tray);
@@ -728,7 +731,7 @@ void Loop() {
 }
 
 int RunWindow(bool tray) {
-    HANDLE once = CreateMutexW(NULL, FALSE, L"Local\\NetIsoAuroraServerWindow");
+    HANDLE once = CreateMutexW(NULL, FALSE, L"Local\\NetDisc360Window");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Already running: show that one instead.
         HWND other = FindWindowW(WindowClass, NULL);
@@ -738,6 +741,12 @@ int RunWindow(bool tray) {
     HighDpi();
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     LoadConfig();
+    wchar_t old[MAX_PATH * 4];
+    DWORD oldSize = sizeof(old);
+    if (RegGetValueW(HKEY_CURRENT_USER, RunKey, OldRunValue, RRF_RT_REG_SZ, NULL, old, &oldSize) == ERROR_SUCCESS) {
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, RunKey, OldRunValue);
+        SetStartWithWindows(true);
+    }
     // Keep "Start with Windows" pointing at this exe if it was moved.
     std::wstring entry = StartupEntry();
     if (!entry.empty() && entry != RunCommand()) SetStartWithWindows(true);
@@ -772,7 +781,7 @@ int RunWindow(bool tray) {
     AdjustWindowRectEx(&size, WS_OVERLAPPEDWINDOW, FALSE, 0);
     SetWindowPos(Window, NULL, 0, 0, size.right - size.left, size.bottom - size.top, SWP_NOMOVE | SWP_NOZORDER);
     if (!MakeDevice()) {
-        MessageBoxW(NULL, L"Direct3D 11 isn't available, so the window can't be shown. The server also runs from a command prompt: netiso-server.exe -h",
+        MessageBoxW(NULL, L"Direct3D 11 isn't available, so the window can't be shown. The server also runs from a command prompt: NetDisc.exe -h",
                     AppName, MB_ICONERROR);
         return 1;
     }
@@ -836,9 +845,13 @@ std::wstring IniPath() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &roaming))) folder = roaming;
     CoTaskMemFree(roaming);
     if (folder.empty()) folder = ExeFolder();
-    folder += L"\\NetISO for Aurora";
+    std::wstring old = folder + L"\\" + OldName + L"\\netiso-server.ini";
+    folder += L"\\";
+    folder += AppName;
     CreateDirectoryW(folder.c_str(), NULL);
-    return folder + L"\\netiso-server.ini";
+    std::wstring ini = folder + L"\\netdisc.ini";
+    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) CopyFileW(old.c_str(), ini.c_str(), TRUE);
+    return ini;
 }
 
 void SaveConfig() {
@@ -911,10 +924,10 @@ void StartServer() {
     std::wstring command = ServerCommandLine();
     std::wstring folder = ExeFolder();
     // The password travels in the server's environment, not on its command line.
-    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", Saved.password.c_str());
+    SetEnvironmentVariableW(L"NETDISC_FTP_PASSWORD", Saved.password.c_str());
     BOOL started = CreateProcessW(ExePath().c_str(), &command[0], NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED,
                                   NULL, folder.c_str(), &start, &process);
-    SetEnvironmentVariableW(L"NETISO_FTP_PASSWORD", NULL);
+    SetEnvironmentVariableW(L"NETDISC_FTP_PASSWORD", NULL);
     CloseHandle(writeEnd);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!started) {

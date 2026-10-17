@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The pages of netiso-server.exe's window, drawn with Dear ImGui after
+// The pages of NetDisc 360's window, drawn with Dear ImGui after
 // TinyXbox360BackupManager's look: icons down the left, a page per icon,
 // rounded cards, and the games as a grid of covers. Everything here runs on
 // the window's thread, once per frame (gui.cpp draws only when something
@@ -17,7 +17,7 @@
 namespace gui {
 namespace {
 enum Page { PageGames, PageFolders, PageXbox, PageLog, PageSettings, PageAbout };
-const char RepositoryUrl[] = "https://github.com/marcusisdahl/NetISO-Aurora";
+const char RepositoryUrl[] = "https://github.com/marcusisdahl/NetDisc-360";
 
 struct Palette {
     ImU32 sidebar, content, line, card, cardLine, field, fieldLine, text, muted, faint, accent, onAccent, accentSoft, hover, warning,
@@ -1009,7 +1009,7 @@ void SettingsPage() {
     BeginCard(ICON_Sliders, "Advanced");
     ImGui::TextUnformatted("Extra server options");
     if (Field("##options", OptionsText, sizeof(OptionsText), "for example --verbose", CardInner(), 0, FontMono)) SetOptions(Trimmed(OptionsText));
-    Muted("Added to the server's command line; netiso-server.exe -h in a command prompt lists them. Applies when you press Enter.");
+    Muted("Added to the server's command line; NetDisc.exe -h in a command prompt lists them. Applies when you press Enter.");
     ImGui::Dummy(ImVec2(0, S(6)));
     std::string ini = Utf8(IniPath());
     ImGui::PushStyleColor(ImGuiCol_Text, C.muted);
@@ -1040,14 +1040,14 @@ void AboutPage() {
     ImVec2 a = ImGui::GetCursorScreenPos();
     draw->AddCircleFilled(a + ImVec2(S(40), S(40)), S(40), C.accentSoft, 48);
     Icon(draw, ICON_Disc, a + ImVec2(S(40), S(40)), S(44), C.accent);
-    Write(draw, FontBold, S(22), a + ImVec2(S(100), S(12)), C.text, "NetISO for Aurora");
+    Write(draw, FontBold, S(22), a + ImVec2(S(100), S(12)), C.text, "NetDisc 360");
     Write(draw, FontText, TextSize(), a + ImVec2(S(100), S(46)), C.muted, "Built " __DATE__);
     ImGui::Dummy(ImVec2(0, S(96)));
     BeginCard(ICON_Info, "What it does");
     ImGui::TextWrapped("Serves the Xbox 360 games on this PC to a modded Xbox 360 over the network, and puts each one in Aurora like an "
                        "installed game, with its cover and the Guide working.");
     ImGui::Dummy(ImVec2(0, S(4)));
-    Link("github.com/marcusisdahl/NetISO-Aurora", RepositoryUrl);
+    Link("github.com/marcusisdahl/NetDisc-360", RepositoryUrl);
     EndCard();
     BeginCard(ICON_Heart, "Thanks to");
     ImGui::TextWrapped("cOz for NetISO and its plugin; tuxuser for netiso-srv; Team Phoenix for Aurora; XboxUnity for the covers.");
@@ -1204,7 +1204,7 @@ void Draw() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
-    ImGui::Begin("NetISO for Aurora", NULL,
+    ImGui::Begin("NetDisc 360", NULL,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar(3);

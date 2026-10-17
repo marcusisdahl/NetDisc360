@@ -7,7 +7,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
     <OutDir>$(ProjectDir)..\build\</OutDir><IntDir>$(ProjectDir)..\build\pc\obj\</IntDir>
-    <TargetName>netiso-server</TargetName>
+    <TargetName>NetDisc</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <!-- One self-contained exe: the C runtime is linked in, and the launcher XEXs are resources.

@@ -128,8 +128,8 @@ void DrawLoadUi(const LoadScreen& s) {
 
     // Header: name and what it does on the left, the server on the right.
     Box(Left,Top+6,6,40,Hex(Green),3);
-    Text(Heading,Left+20,Top,Hex(White),"NetISO");
-    Text(Small,Left+20+Width(Heading,"NetISO")+16,Top+15,Hex(Muted),"Playing from your NetISO server");
+    Text(Heading,Left+20,Top,Hex(White),"NetDisc 360");
+    Text(Small,Left+20+Width(Heading,"NetDisc 360")+16,Top+15,Hex(Muted),"Playing from your NetISO server");
     float headerRight=Right;
     if(s.server[0]) {
         TextRight(Heading,Right,Top,Hex(White),s.server);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The window of netiso-server.exe on Windows, in three parts that share this
+// The window of NetDisc.exe (NetDisc 360) on Windows, in three parts that share this
 // header: gui.cpp runs the window, the server process, the notification-area
 // icon and the settings; gui_library.cpp finds the games in the folders and
 // their covers; gui_view.cpp draws the pages with Dear ImGui.
