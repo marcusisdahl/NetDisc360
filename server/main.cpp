@@ -36,6 +36,8 @@ enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4,
        MaxReadBytes = 16 << 20, MaxNameBytes = 4096, MaxDepth = 8 };
 // An ISO counts as settled, and gets pushed, when nothing about it changed for this long.
 const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, ScanRetrySeconds = 30;
+// A console that connected once (no --xbox) but not for this long is probed only every IdleProbeSeconds.
+const double IdleSeconds = 86400, IdleProbeSeconds = 600;
 const int ScanTries = 20;
 
 struct Options {
@@ -416,7 +418,10 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce) {
 
 // Pushing the game folders ---------------------------------------------------
 
-const Console* Pushing;  // The console Push is writing to, for PushNote (PushLoop's thread).
+// Sync keeps its lists in static buffers (it runs on the console too), so the
+// consoles' threads push one at a time.
+std::mutex SyncLock;
+const Console* Pushing;  // The console Sync is writing to, for PushNote (under SyncLock).
 void PushNote(const char* text) { XboxLog(*Pushing,"%s",text); }
 
 // Writes data to path on the Xbox unless it already holds exactly that.
@@ -452,9 +457,13 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
     IsvrClient client(30);
     if(!client.Connect(htonl(0x7F000001),Settings.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
-    Pushing=&console;
-    bool ok=Sync(client,storage,Settings.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
+    bool ok;
+    {
+        std::lock_guard<std::mutex> hold(SyncLock);
+        Pushing=&console;
+        ok=Sync(client,storage,Settings.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
+    }
     if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
     if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start.",result.held,Settings.removeWait);
     else if(!ok) XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
@@ -474,14 +483,16 @@ bool StartScan(const Console& console, FtpClient& ftp) {
 }
 
 // What PushLoop knows about one console.
+// What a console's push thread knows about it.
 struct PushState {
     std::string pushed;  // The games when its folders were last written.
-    double nextProbe, retryAt, scanAt, downSince, upSince;
+    double nextProbe, probedAt, retryAt, scanAt, downSince, upSince;
     int scanTries;
-    bool attempted, everPushed, reachable, toldDown, toldWaiting;
-    bool finished;  // --push-once: done with this console.
-    PushState() : nextProbe(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
-                  attempted(false), everPushed(false), reachable(false), toldDown(false), toldWaiting(false), finished(false) {}
+    bool attempted, reachable, toldDown, toldWaiting;
+    std::atomic<bool> everPushed;
+    std::atomic<bool> finished;  // --push-once: done with this console.
+    PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
+                  attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false) {}
 };
 
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
@@ -490,6 +501,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     bool scanDue=s.scanTries && Now()>=s.scanAt;
     bool online=Settings.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=Settings.onlineWait;
     if(!(pushDue || scanDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
+    bool idle=Settings.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
+    if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
+    s.probedAt=Now();
     FtpClient ftp(console.address,Settings.ftpPort,Settings.ftpUser.c_str(),Settings.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
         if(s.reachable || !s.toldDown) XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
@@ -534,8 +548,25 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     ftp.Close();
 }
 
+// The games' fingerprint, and whether it has settled, for the consoles' threads.
+std::mutex GamesLock;
+std::string GamesState;
+bool GamesSettled;
+
+// One console's push thread, so a console that is off (its FTP connection
+// waits up to 15 s) doesn't hold up the others.
+void ConsoleLoop(Console* console, PushState* s, double startedAt) {
+    while(!s->finished) {
+        std::string state;
+        bool settled;
+        { std::lock_guard<std::mutex> hold(GamesLock); state=GamesState; settled=GamesSettled; }
+        PushTo(*console,*s,state,settled,startedAt);
+        if(!s->finished) Sleep(1000);
+    }
+}
+
 // Watches the game folders and keeps each console's game folders in step with
-// them, each console on its own. A console is only contacted when there is
+// them, each console on its own thread. A console is only contacted when there is
 // something to do: the games changed (and have settled), or a scan or a
 // skipped game is still due. Until its FTP server (Aurora) answers, it's tried
 // every ProbeDownSeconds.
@@ -562,15 +593,16 @@ void PushLoop() {
     for(;;) {
         std::string state=Fingerprint(Isos());
         if(state!=previous) { if(!previous.empty() || changedAt>-1e9) changedAt=Now(); previous=state; }
-        bool settled=Now()-changedAt>=SettleSeconds;
+        { std::lock_guard<std::mutex> hold(GamesLock); GamesState=state; GamesSettled=Now()-changedAt>=SettleSeconds; }
         std::vector<Console*> consoles=AllConsoles();
         bool finished=true,failed=false;
         for(size_t i=0;i<consoles.size();++i) {
             if(!consoles[i]->push) continue;
-            PushState& s=states[consoles[i]->address];
-            PushTo(*consoles[i],s,state,settled,startedAt);
-            finished&=s.finished;
-            failed|=!s.everPushed;
+            bool added=!states.count(consoles[i]->address);
+            PushState& s=states[consoles[i]->address];  // Never erased, so the thread's pointer stays valid.
+            if(added) std::thread(ConsoleLoop,consoles[i],&s,startedAt).detach();
+            finished=finished && s.finished;
+            failed=failed || !s.everPushed;
         }
         // --push-once (the tests): ends when every console given is done.
         if(Settings.pushOnce && finished) exit(failed ? 1 : 0);
