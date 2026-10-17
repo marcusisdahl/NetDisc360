@@ -43,7 +43,7 @@ def build_server():
     if os.environ.get("NETISO_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
-    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/ftp.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/ftp.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 

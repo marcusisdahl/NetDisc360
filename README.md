@@ -16,7 +16,7 @@ Each game gets a small launcher folder in `Hdd1:\NetISO` (`default.xex`, `boot.x
 1. Build: `.\build.ps1 -Tests` makes `build\netiso-server.exe`, `build\NetIsoTiles.xex` and `build\NetISO Sync\`.
 2. Add `NetIsoTiles.xex` to DashLaunch's plugins in `launch.ini`, next to `NetISO.xex`, and reboot the Xbox.
 3. Put the PC's IP address in `Hdd1:\netiso.xex.txt` (or `Usb0:\netiso.xex.txt`), as the NetISO plugin needs anyway.
-4. On the PC, run `netiso-server.exe` in the folder with your ISOs, in place of `netiso-srv` or `server.exe`. Subfolders count too.
+4. On the PC, run `netiso-server.exe` in the folder with your ISOs, in place of `netiso-srv` or `server.exe`. Subfolders count too. More folders can follow on the command line: `netiso-server.exe . "C:\XBOX 360\Games"`.
 5. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1.
 
 That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO plugin, and once the Xbox connects it keeps `Hdd1:\NetISO` current over Aurora's FTP. A new ISO gets its folder (after the file has stopped changing for 10 s), a removed ISO loses it, and launchers from an older build are replaced. Aurora picks the games up at its next scan. The server checks the Xbox every 15 s while it's off and every minute while it's on, so it doesn't matter which starts first.
@@ -33,6 +33,18 @@ That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO pl
 | `-v` | | Log every request. |
 
 `-r` and `-b` from netiso-srv are accepted and ignored.
+
+### Extracted games and Games on Demand
+
+Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.xex` at the top) and Games on Demand packages (`<Title ID>\00007000\<package>` with its `.data` folder), from the same folders. Nothing is converted or written next to them: the NetISO plugin only reads a disc as sectors, so the server answers with the disc image the folder or package came from, put together as it's read, and the console sees it like an ISO.
+
+- A folder lists as `<folder name> (folder).iso`, a package as `<game folder> (GOD).iso` (or the package's own title when it isn't in a folder of its own). A `Disc 2` folder with its own `default.xex` inside a game's folder is a disc of its own, `<game> - Disc 2 (folder).iso`.
+- An extracted game is a GDF (XDVDFS) disc built in memory when it's mounted: the directory tables are made from the folder, and each read is answered from the file it falls in. A disc can't hold a file of 4 GB or more.
+- A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
+- Both are placed at the game partition offset of a full XGD2 image (XGD3 when too big for XGD2), like the retail ISOs; what comes before it reads as zeros.
+- Original Xbox games (`default.xbe`) are skipped, as their ISOs are.
+
+**Each game is served once.** A game that is there more than once (the same Title ID and disc number, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the server window lists the other copies with their paths so they can be removed.
 
 ### Aurora's Xbox 360 category
 
@@ -98,6 +110,7 @@ Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each fo
 ## Tests
 
 - `python tests\test_server.py` builds `netiso-server` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end) and the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server: folders as Sync makes them, removal, repair, and the category edit (made once, line endings kept, the Lua still valid; an unknown filter left alone).
+- `python tests\test_discs.py` checks extracted folders and GOD packages: the disc a folder makes is walked by name through each directory's search tree, as the console does, and every file reads back as it is on disk (hundreds of files in one folder, odd names, empty folders and files, nested folders, a `Disc 2`); GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files, mapped the way Xenia maps them; NetISO Sync gets the Title IDs from both; duplicates are served once and reported once; original Xbox folders are skipped; a file over 4 GB is refused.
 - `python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`: it writes exactly what the PC tool writes, adds only new ISOs, removes folders of ISOs that are gone (and keeps folders with other files in them), removes nothing when the server lists nothing, skips bad ISOs, keeps clear of folders it didn't make, and rebuilds a launcher that carries another game's IDs.
 - `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the generator: execution info copied exactly and nothing else changed, the ini, FATX-safe unique folder names, bad ISOs skipped, recursive search and duplicate file names.
 - `tests/ui_preview.cpp` draws the loading screen on a PC into a BMP, for each step and error, to review it without a console.

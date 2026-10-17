@@ -7,6 +7,7 @@
 //
 //   netiso-server [options] [ISO folder]      (netiso-server -h lists them)
 #include "../shared/library.h"
+#include "discs.h"
 #include "ftp.h"
 #include <algorithm>
 #include <atomic>
@@ -23,7 +24,6 @@
 #ifdef _WIN32
 typedef int AddressLength;
 #else
-#include <dirent.h>
 typedef socklen_t AddressLength;
 #endif
 
@@ -36,11 +36,12 @@ enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4,
 const double SettleSeconds = 10, ProbeDownSeconds = 15, ProbeUpSeconds = 60, RetrySkippedSeconds = 600, FilterCheckSeconds = 600;
 
 struct Options {
-    std::string folder, ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
+    std::vector<std::string> folders;
+    std::string ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
     int port, ftpPort;
     DWORD xbox;
     bool push, filter, verbose, pushOnce;
-    Options() : folder("."), ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
+    Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
                 port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), verbose(false), pushOnce(false) {}
 };
 Options Settings;
@@ -63,56 +64,42 @@ void Log(const char* format, ...) {
 
 // Files ----------------------------------------------------------------------
 
-struct IsoFile { std::string path, name; U64 size; long long modified; };
+// The discs (ISOs, extracted games, GOD packages) are found and read in discs.cpp.
+std::mutex DuplicatesLock;
+std::string DuplicatesReported;
 
-bool IsIsoName(const char* name) {
-    size_t length=strlen(name);
-    return length>4 && !_stricmp(name+length-4,".iso");
+// Where a disc is, as the user would remove it: a GOD package by its Title ID folder.
+std::string Location(const IsoFile& disc) {
+    if(disc.kind!=DiscGod) return disc.path;
+    std::string path=disc.path;
+    for(int i=0;i<2;++i) { size_t at=path.find_last_of("/\\"); if(at!=std::string::npos) path.erase(at); }
+    return path+" (GOD package)";
 }
 
-void FindIsos(const std::string& folder, std::vector<IsoFile>& out, int depth=0) {
-    if(depth>MaxDepth) return;
-#ifdef _WIN32
-    WIN32_FIND_DATAA found;
-    HANDLE search=FindFirstFileA((folder+"\\*").c_str(),&found);
-    if(search==INVALID_HANDLE_VALUE) return;
-    do {
-        const char* name=found.cFileName;
-        if(!strcmp(name,".") || !strcmp(name,"..")) continue;
-        std::string path=folder+"\\"+name;
-        if(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) {
-            // Junctions and links could loop.
-            if(!(found.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)) FindIsos(path,out,depth+1);
-        } else if(IsIsoName(name)) {
-            IsoFile iso; iso.path=path; iso.name=name;
-            iso.size=(U64(found.nFileSizeHigh)<<32)|found.nFileSizeLow;
-            iso.modified=(long long)((U64(found.ftLastWriteTime.dwHighDateTime)<<32)|found.ftLastWriteTime.dwLowDateTime);
-            out.push_back(iso);
-        }
-    } while(FindNextFileA(search,&found));
-    FindClose(search);
-#else
-    DIR* dir=opendir(folder.c_str()); if(!dir) return;
-    while(struct dirent* e=readdir(dir)) {
-        const char* name=e->d_name;
-        if(!strcmp(name,".") || !strcmp(name,"..")) continue;
-        std::string path=folder+"/"+name;
-        struct stat st; if(lstat(path.c_str(),&st)) continue;
-        if(S_ISDIR(st.st_mode)) FindIsos(path,out,depth+1);
-        else if(S_ISREG(st.st_mode) && IsIsoName(name)) {
-            IsoFile iso; iso.path=path; iso.name=name; iso.size=U64(st.st_size); iso.modified=(long long)st.st_mtime;
-            out.push_back(iso);
+// Everything in the folders, each game once. A game that is there more than
+// once is reported (once, until that changes) so the copies can be removed.
+std::vector<IsoFile> Isos() {
+    std::vector<IsoFile> isos;
+    for(size_t i=0;i<Settings.folders.size();++i) FindIsos(Settings.folders[i],isos);
+    ReadTitles(isos);
+    std::vector<IsoFile> dropped,kept;
+    DropDuplicates(isos,dropped,kept);
+    UniqueNames(isos);
+    std::string report;
+    for(size_t i=0;i<dropped.size();++i) {
+        char line[96]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Title ID %08X, disc %d",dropped[i].titleId,dropped[i].disc);
+        report+="  "+Location(dropped[i])+"\n    is the same game as "+Location(kept[i])+" ("+line+"); only that one is served.\n";
+    }
+    std::lock_guard<std::mutex> hold(DuplicatesLock);
+    if(report!=DuplicatesReported) {
+        DuplicatesReported=report;
+        if(!report.empty()) {
+            report.erase(report.size()-1);
+            Log("%d game(s) are here more than once. Remove the extra copies:\n%s",int(dropped.size()),report.c_str());
         }
     }
-    closedir(dir);
-#endif
-    if(!depth) std::sort(out.begin(),out.end(),[](const IsoFile& a, const IsoFile& b) {
-        int order=_stricmp(a.name.c_str(),b.name.c_str());
-        return order ? order<0 : a.path<b.path;
-    });
+    return isos;
 }
-
-std::vector<IsoFile> Isos() { std::vector<IsoFile> isos; FindIsos(Settings.folder,isos); return isos; }
 
 // What the push compares: an ISO that is still being copied keeps changing.
 std::string Fingerprint(const std::vector<IsoFile>& isos) {
@@ -123,71 +110,6 @@ std::string Fingerprint(const std::vector<IsoFile>& isos) {
     }
     return text;
 }
-
-class IsoReader {
-public:
-    IsoReader() : size_(0) {
-#ifdef _WIN32
-        file_=INVALID_HANDLE_VALUE;
-#else
-        file_=-1;
-#endif
-    }
-    ~IsoReader() { Close(); }
-    bool Open(const IsoFile& iso) {
-        Close();
-#ifdef _WIN32
-        file_=CreateFileA(iso.path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-        if(file_==INVALID_HANDLE_VALUE) return false;
-        LARGE_INTEGER size;
-        if(!GetFileSizeEx(file_,&size)) { Close(); return false; }
-        size_=U64(size.QuadPart);
-#else
-        file_=open(iso.path.c_str(),O_RDONLY);
-        if(file_<0) return false;
-        struct stat st; if(fstat(file_,&st)) { Close(); return false; }
-        size_=U64(st.st_size);
-#endif
-        return true;
-    }
-    bool IsOpen() const {
-#ifdef _WIN32
-        return file_!=INVALID_HANDLE_VALUE;
-#else
-        return file_>=0;
-#endif
-    }
-    void Close() {
-#ifdef _WIN32
-        if(file_!=INVALID_HANDLE_VALUE) { CloseHandle(file_); file_=INVALID_HANDLE_VALUE; }
-#else
-        if(file_>=0) { close(file_); file_=-1; }
-#endif
-        size_=0;
-    }
-    U64 Size() const { return size_; }
-    bool Read(U64 offset, unsigned char* data, DWORD length) {
-        while(length) {
-#ifdef _WIN32
-            OVERLAPPED at; memset(&at,0,sizeof(at)); at.Offset=DWORD(offset); at.OffsetHigh=DWORD(offset>>32);
-            DWORD got=0;
-            if(!::ReadFile(file_,data,length,&got,&at) || !got) return false;
-#else
-            ssize_t got=pread(file_,data,length,off_t(offset));
-            if(got<=0) { if(got<0 && errno==EINTR) continue; return false; }
-#endif
-            data+=got; offset+=U64(got); length-=DWORD(got);
-        }
-        return true;
-    }
-private:
-#ifdef _WIN32
-    HANDLE file_;
-#else
-    int file_;
-#endif
-    U64 size_;
-};
 
 // The NetISO server ----------------------------------------------------------
 
@@ -296,9 +218,12 @@ private:
         for(size_t i=0;i<isos.size() && !found && !name.empty();++i)
             if(isos[i].name.size()>=name.size() && !_stricmp(isos[i].name.c_str()+isos[i].name.size()-name.size(),name.c_str())) found=&isos[i];
         if(!found) { Log("%s asked to mount \"%s\", which isn't here.",peer_,name.c_str()); return 0; }
-        if(!iso_.Open(*found)) { Log("%s: couldn't open %s.",peer_,found->path.c_str()); mounted_.clear(); return 0; }
+        if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); return 0; }
         mounted_=found->name;
-        if(!quiet_) Log("%s: mounted %s.",peer_,found->name.c_str());
+        if(!quiet_) {
+            if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
+            else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
+        }
         return 1;
     }
     SOCKET socket_;
@@ -500,9 +425,12 @@ bool BuiltIn(int id, std::vector<unsigned char>& out) {
 
 void Usage() {
     printf(
-        "NetISO server for Aurora. Serves the ISOs in a folder and its subfolders to\n"
-        "the NetISO plugin, and keeps the Xbox's game folders for Aurora in step with them.\n\n"
-        "  netiso-server [options] [ISO folder]   (default: the current folder)\n\n"
+        "NetISO server for Aurora. Serves the games in folders and their subfolders to\n"
+        "the NetISO plugin, and keeps the Xbox's game folders for Aurora in step with them.\n"
+        "Games can be ISOs, extracted to a folder (default.xex at the top; a \"Disc 2\"\n"
+        "folder inside is a disc of its own), or Games on Demand packages. Each game is\n"
+        "served once; extra copies are listed so they can be removed.\n\n"
+        "  netiso-server [options] [folder ...]   (default: the current folder)\n\n"
         "  --xbox <address>        the Xbox to update (default: the console that connects)\n"
         "  --ftp-user <name>       Aurora's FTP login (xboxftp)\n"
         "  --ftp-password <text>   (xboxftp)\n"
@@ -516,7 +444,6 @@ void Usage() {
 }
 
 bool ParseArguments(int argc, char** argv) {
-    bool folderGiven=false;
     for(int i=1;i<argc;++i) {
         std::string a=argv[i];
         bool hasValue=i+1<argc;
@@ -538,11 +465,14 @@ bool ParseArguments(int argc, char** argv) {
         else if(hasValue && a=="--ftp-port") Settings.ftpPort=atoi(argv[++i]);
         else if(hasValue && a=="--launcher") Settings.launcherPath=argv[++i];
         else if(hasValue && a=="--boot") Settings.bootPath=argv[++i];
-        else if(a[0]!='-' && !folderGiven) { Settings.folder=a; folderGiven=true; }
+        else if(a[0]!='-') {
+            while(a.size()>1 && (a[a.size()-1]=='/' || a[a.size()-1]=='\\')) a.erase(a.size()-1);
+            Settings.folders.push_back(a);
+        }
         else { fprintf(stderr,"Unknown option %s (-h lists them).\n",a.c_str()); return false; }
     }
     while(Settings.xboxFolder.size()>1 && Settings.xboxFolder[Settings.xboxFolder.size()-1]=='/') Settings.xboxFolder.erase(Settings.xboxFolder.size()-1);
-    while(Settings.folder.size()>1 && (Settings.folder[Settings.folder.size()-1]=='/' || Settings.folder[Settings.folder.size()-1]=='\\')) Settings.folder.erase(Settings.folder.size()-1);
+    if(Settings.folders.empty()) Settings.folders.push_back(".");
     return Settings.port>0 && Settings.port<65536 && Settings.ftpPort>0 && Settings.ftpPort<65536;
 }
 
@@ -554,10 +484,12 @@ int Run(int argc, char** argv) {
     if(WSAStartup(MAKEWORD(2,2),&wsa)) { fprintf(stderr,"Winsock didn't start.\n"); return 1; }
 #endif
     Log("NetISO server for Aurora, built %s %s.",__DATE__,__TIME__);
+    std::string where;
+    for(size_t i=0;i<Settings.folders.size();++i) where+=(i ? ", " : "")+Settings.folders[i];
     std::vector<IsoFile> isos=Isos();
-    Log("%d ISO(s) in %s and its subfolders:",int(isos.size()),Settings.folder.c_str());
+    Log("%d game(s) in %s and subfolders:",int(isos.size()),where.c_str());
     for(size_t i=0;i<isos.size();++i) Log("  %s",isos[i].name.c_str());
-    if(isos.empty()) Log("New ISOs put there are served without a restart.");
+    if(isos.empty()) Log("New games put there are served without a restart.");
 
     if(Settings.push) {
         bool loaded=Settings.launcherPath.empty() ? BuiltIn(IDR_LAUNCHER,Launcher) : LoadFile(Settings.launcherPath,Launcher);
