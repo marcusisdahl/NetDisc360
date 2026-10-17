@@ -3,6 +3,7 @@
 Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360 is a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora: every game it serves shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
 
 - **One small program on the PC.** Double-click `NetDisc.exe`, pick your game folders, and minimize it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker.
+- **Any number of consoles.** Several consoles can play from one server at once, each with its own game list in Aurora. The window's dashboard shows what each one plays and how fast its game streams.
 - **ISOs, extracted games and Games on Demand**, from as many folders as you like. Nothing is converted or copied.
 - **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
 - **The Guide keeps working** in games started this way.
@@ -31,7 +32,7 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360
      CUsbEnet.xex        <- optional, see Recommended extras
    ```
 
-2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The Windows app shows this address at the bottom of its window. Give your PC a fixed address in your router, so it doesn't change.
+2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The Windows app shows this address on its dashboard and at the bottom of its window. Give your PC a fixed address in your router, so it doesn't change.
 
 3. **Load the plugins in DashLaunch.** Open `launch.ini` and set its `[Plugins]` section like this (leave the rest of the file as it is):
 
@@ -56,8 +57,9 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360
 **On Windows:** put `NetDisc.exe` anywhere, for example in the folder with your games, and double-click it.
 
 - The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with the round **+** button (or drop them on the window). Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
-- The **Games** page shows every game it serves, with its cover, as a grid or a list. Click a game for its details.
-- On the **Xbox 360** page, leave **IP address** empty: the server finds the console when it connects. Fill it in only if the console isn't found. Enter **Aurora's FTP login** there if you changed it.
+- The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows whether the server runs, this PC's address, each console that uses it (what it plays, how fast the game streams, whether its Aurora answers and when its game folders were updated), and what happened lately.
+- The **Games** page lists every game it serves, with its cover, format, Title ID and size, and which console is playing it. Click a game for its details.
+- The **Consoles** page lists the consoles that have used the server. Enter **Aurora's FTP login** there if you changed it. Leave **Only these consoles** empty to keep every console that connects up to date.
 - On the **Settings** page, turn on **Start with Windows** to have it start, hidden, every time you sign in.
 - **Minimize or close the window and forget about it.** The server keeps running behind its icon in the notification area (by the clock). Click the icon to open the window again; right-click it and pick **Quit** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
@@ -69,6 +71,8 @@ Settings are saved in `%APPDATA%\NetDisc 360\netdisc.ini`, with the FTP password
 ### 3. Turn on the console
 
 Turn the console on. Within a minute or two of Aurora starting, the server adds a folder for each game to `Hdd1:\NetISO`, asks Aurora to scan it, and Aurora fetches the names and cover art. Your games are then in Aurora's game list next to your installed games, in the Xbox 360 category too. It doesn't matter whether the PC or the console starts first.
+
+For more consoles, repeat step 1 on each one (their `NetISO.xex.txt` holds the same PC address). Each console gets its own game folders and can play a different game at the same time.
 
 ## Docker
 
@@ -84,7 +88,7 @@ It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each releas
 | Setting | Default | |
 |---|---|---|
 | volume `/games` | | Your games (read-only is fine). Mount more folders under it, like `/games/isos`. |
-| `NETDISC_XBOX` | the console that connects | The console's IP address. Needed on Docker Desktop (Windows, macOS). |
+| `NETDISC_XBOX` | every console that connects | Only these consoles' game folders are kept up to date: IP addresses, separated by commas. Needed on Docker Desktop (Windows, macOS), where the server doesn't see the consoles' own addresses. |
 | `NETDISC_FTP_USER` | `xboxftp` | Aurora's FTP login. |
 | `NETDISC_FTP_PASSWORD` | `xboxftp` | Or `NETDISC_FTP_PASSWORD_FILE` with the path of a Docker secret. |
 | `NETDISC_NO_CATEGORY` | | `true`: leave Aurora's Xbox 360 category alone. |
@@ -136,12 +140,13 @@ What `NetDisc.exe` does, all from one file:
 - **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
-- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the window's **Game folders** page lists the other copies with their paths so you can remove them.
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the window's **Games** page lists the other copies with their paths so you can remove them.
+- **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
 
 | Option | Default | |
 |---|---|---|
 | `<folder> ...` | the current folder | Folders with your games. |
-| `--xbox <address>` | the console that connects | The console to update. |
+| `--xbox <address>` | every console that connects | Keep only this console's game folders up to date. Give it once for each console. |
 | `--ftp-user`, `--ftp-password` | `xboxftp` | Aurora's FTP login. |
 | `--xbox-folder <path>` | `/Hdd1/NetISO` | The game folder on the console, as an FTP path. |
 | `--aurora <path>` | `/Hdd1/Apps/Aurora` | Aurora's folder, for the Xbox 360 category. |
@@ -256,7 +261,7 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 - [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
 - [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
-- Dear ImGui 1.92 (MIT, `third_party/imgui-1.92/LICENSE.txt`) and [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the Windows window, whose look follows [TinyXbox360BackupManager](https://github.com/jeanmatthieud/TinyXbox360BackupManager). Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
+- Dear ImGui 1.92 (MIT, `third_party/imgui-1.92/LICENSE.txt`) and [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the Windows window. Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
 

@@ -19,7 +19,8 @@ services:
       - ./games:/games:ro
     environment:
       TZ: Etc/UTC                  # your time zone, for the log's times
-      # The Xbox's IP address. Empty: the Xbox that connects.
+      # Only these consoles' game folders are kept up to date (IP addresses,
+      # separated by commas). Empty: every console that connects.
       NETDISC_XBOX: ""
       # Aurora's FTP login (Aurora: Settings > FTP).
       NETDISC_FTP_USER: xboxftp

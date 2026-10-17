@@ -27,7 +27,9 @@
 #include <wincrypt.h>
 #include <windowsx.h>
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
+#include <algorithm>
 #include <functional>
 #include <thread>
 
@@ -201,12 +203,20 @@ void LoadConfig() {
     Saved.theme = GetPrivateProfileIntW(Section, L"theme", ThemeSystem, ini.c_str());
     if (Saved.theme < ThemeSystem || Saved.theme > ThemeDark) Saved.theme = ThemeSystem;
     Saved.covers = ReadFlag(ini, L"covers", true);
-    Saved.listView = ReadFlag(ini, L"list_view", false);
     Saved.sortBySize = ReadFlag(ini, L"sort_by_size", false);
     Saved.showIso = ReadFlag(ini, L"show_iso", true);
     Saved.showGod = ReadFlag(ini, L"show_god", true);
     Saved.showFolder = ReadFlag(ini, L"show_folder", true);
     Saved.toldTray = ReadFlag(ini, L"told_tray", false);
+    Saved.setupDone = ReadFlag(ini, L"setup_done", false);
+    int consoles = GetPrivateProfileIntW(Section, L"consoles", 0, ini.c_str());
+    for (int i = 1; i <= consoles; ++i) {
+        std::string value = Utf8(ReadSetting(ini, (L"console" + std::to_wstring(i)).c_str(), L""));
+        size_t bar = value.find('|');
+        if (bar == std::string::npos || !bar) continue;
+        KnownConsole known = {value.substr(0, bar), atoll(value.c_str() + bar + 1)};
+        Saved.consoles.push_back(known);
+    }
 }
 
 // Start with Windows: a value under HKCU\...\Run that starts the exe in the tray.
@@ -271,8 +281,18 @@ std::wstring ServerCommandLine() {
         if (f.size() <= 3 && f.size() >= 2 && f[1] == L':') f = f.substr(0, 2) + L"\\.";
         command += L" " + Quote(f);
     }
-    if (!Saved.xbox.empty()) command += L" --xbox " + Quote(Saved.xbox);
+    // Only these consoles, separated by commas or spaces.
+    std::wstring xboxes = Saved.xbox;
+    for (wchar_t& c : xboxes)
+        if (c == L',' || c == L';') c = L' ';
+    size_t at = 0;
+    while ((at = xboxes.find_first_not_of(L' ', at)) != std::wstring::npos) {
+        size_t end = xboxes.find(L' ', at);
+        command += L" --xbox " + Quote(xboxes.substr(at, end == std::wstring::npos ? std::wstring::npos : end - at));
+        at = end;
+    }
     command += L" --ftp-user " + Quote(Saved.user);  // The password goes in NETDISC_FTP_PASSWORD.
+    command += L" --stats";  // Each console's numbers for the dashboard ("@stats" lines).
     if (!Saved.options.empty()) command += L" " + Saved.options;
     return command;
 }
@@ -312,36 +332,121 @@ void ServerChanged() {
 
 bool StartsWith(const std::string& text, const char* start) { return !text.compare(0, strlen(start), start); }
 
-// The server's own lines (after its "hh:mm:ss " time) that say how things are.
+std::string Clock() {
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    char text[8];
+    _snprintf_s(text, sizeof(text), _TRUNCATE, "%02d:%02d", now.wHour, now.wMinute);
+    return text;
+}
+
+void AddEvent(int kind, const std::string& text, const std::string& time = std::string()) {
+    Event event = {time.empty() ? Clock() : time, kind, text};
+    Server.events.push_back(event);
+    if (Server.events.size() > 100) Server.events.erase(Server.events.begin(), Server.events.begin() + 20);
+}
+
+std::string WithoutIso(const std::string& name) {
+    return name.size() > 4 && !_stricmp(name.c_str() + name.size() - 4, ".iso") ? name.substr(0, name.size() - 4) : name;
+}
+
+ConsoleState& ConsoleFor(const std::string& address) {
+    for (ConsoleState& c : Server.consoles)
+        if (c.address == address) return c;
+    ConsoleState c;
+    c.address = address;
+    Server.consoles.push_back(c);
+    return Server.consoles.back();
+}
+
+// Remembers a console that connected, for the dashboard after a restart.
+void Remember(const std::string& address) {
+    long long now = (long long)time(NULL);
+    for (KnownConsole& known : Saved.consoles)
+        if (known.address == address) {
+            bool save = now - known.seen > 600;  // Not on every line.
+            known.seen = now;
+            if (save) SaveConfig();
+            return;
+        }
+    KnownConsole known = {address, now};
+    Saved.consoles.push_back(known);
+    SaveConfig();
+}
+
+// "@stats <address> at=<ms> connections=<n> sent=<bytes> ftp=<0|1|2> synced=<time> mounted=<name>"
+void ReadStats(const std::string& line) {
+    size_t space = line.find(' ', 7);
+    if (space == std::string::npos) return;
+    ConsoleState& c = ConsoleFor(line.substr(7, space - 7));
+    long long at = 0, synced = 0;
+    unsigned long long sent = 0;
+    int connections = 0, ftp = 0;
+    size_t mounted = line.find(" mounted=");
+    if (sscanf_s(line.c_str() + space, " at=%lld connections=%d sent=%llu ftp=%d synced=%lld", &at, &connections, &sent, &ftp, &synced) != 5 ||
+        mounted == std::string::npos)
+        return;
+    long long now = Second();
+    if (c.lastAt && at > c.lastAt && sent >= c.sent) {
+        // The rate since its last line, for each second that covers.
+        float rate = float((sent - c.sent) * 1000.0 / double(at - c.lastAt));
+        long long seconds = std::max(1LL, std::min(120LL, (at - c.lastAt + 500) / 1000));
+        for (long long s = now - seconds + 1; s <= now; ++s) {
+            c.rate[s % 120] = rate;
+            c.rateSecond[s % 120] = s;
+        }
+    }
+    float total = 0;
+    for (const ConsoleState& other : Server.consoles) total += other.RateAt(now);
+    Server.peak = std::max(Server.peak, total);
+    c.lastAt = at;
+    c.sent = sent;
+    c.connections = connections;
+    if (ftp != c.ftp) c.ftpAt = (long long)time(NULL);
+    c.ftp = ftp;
+    c.synced = synced;
+    c.mounted = WithoutIso(line.substr(mounted + 9));
+    if (connections > 0) Remember(c.address);
+}
+
+// The server's own lines (after its "hh:mm:ss " time) that say how things
+// are, and what goes in the dashboard's activity.
 void ReadLine(const std::string& line) {
     if (line.size() < 9 || line[2] != ':' || line[5] != ':') return;
     std::string time = line.substr(0, 5), text = line.substr(9);
-    int count;
+    int count, added, removed;
     size_t at;
     if (sscanf_s(text.c_str(), "%d game(s) in", &count) == 1 && text.find(" game(s) in ") != std::string::npos) {
         Server.games = count;
-    } else if (StartsWith(text, "The Xbox is at ") && (at = text.find(';')) != std::string::npos) {
-        Server.xbox = text.substr(15, at - 15);
-    } else if (text.size() > 11 && text.compare(text.size() - 11, 11, " connected.") == 0 && text.find(' ') == text.size() - 11 &&
-               !StartsWith(text, "127.")) {
-        Server.xbox = text.substr(0, text.size() - 11);
+        AddEvent(EventGood, "Server started, serving " + std::to_string(count) + (count == 1 ? " game" : " games"), time);
+    } else if (StartsWith(text, "Found an Xbox at ") && (at = text.find(';')) != std::string::npos) {
+        AddEvent(EventXbox, "New console at " + text.substr(17, at - 17), time);
     } else if ((at = text.find(": mounted ")) != std::string::npos && text.find(' ') == at + 1) {
-        std::string name = text.substr(at + 10);
-        size_t iso = name.rfind(".iso");
-        Server.playing = iso == std::string::npos ? name : name.substr(0, iso);
-    } else if ((at = text.find(": unmounting ")) != std::string::npos && text.find(' ') == at + 1) {
-        Server.playing.clear();
-    } else if (StartsWith(text, "Waiting for the Xbox's FTP server: ")) {
-        Server.ftp = 1;
-        Server.ftpNote = text.substr(35);
-    } else if (StartsWith(text, "The Xbox's FTP server at ") && (at = text.find(" answers.")) != std::string::npos) {
-        Server.ftp = 2;
-        Server.ftpNote = text.substr(25, at - 25);
-    } else if (StartsWith(text, "The Xbox is up to date: ")) {
-        Server.update = time + "  " + text.substr(24);
-        if (!Server.update.empty() && Server.update.back() == '.') Server.update.pop_back();
-    } else if (StartsWith(text, "Updating the Xbox's game folders stopped: ") || StartsWith(text, "Couldn't list ")) {
-        Server.update = time + "  " + text;
+        std::string name = text.substr(at + 10), extra;
+        size_t note = name.find(" (");
+        if (note != std::string::npos) name.erase(note);
+        if (!name.empty() && name.back() == '.') name.pop_back();
+        AddEvent(EventPlay, WithoutIso(name) + " started on " + text.substr(0, at), time);
+    } else if (StartsWith(text, "Xbox ") && (at = text.find(": ")) != std::string::npos) {
+        std::string xbox = text.substr(5, at - 5), what = text.substr(at + 2);
+        if (sscanf_s(what.c_str(), "game folders up to date: %d added, %d removed", &added, &removed) == 2 && (added || removed)) {
+            std::string change;
+            if (added) change = std::to_string(added) + (added == 1 ? " game" : " games") + " added";
+            if (removed) change += (change.empty() ? "" : ", ") + std::to_string(removed) + (removed == 1 ? " game" : " games") + " removed";
+            AddEvent(EventGood, change + " on " + xbox, time);
+        } else if (StartsWith(what, "asked Aurora to scan ")) {
+            AddEvent(EventInfo, "Aurora on " + xbox + " is looking up the new games", time);
+        } else if (StartsWith(what, "its FTP server answers")) {
+            AddEvent(EventXbox, "Aurora on " + xbox + " answers", time);
+        } else if (StartsWith(what, "waiting for its FTP server")) {
+            AddEvent(EventInfo, "Waiting for Aurora on " + xbox, time);
+        } else if (StartsWith(what, "added the NetISO games to Aurora's Xbox 360 category")) {
+            AddEvent(EventGood, "Games added to Aurora's Xbox 360 category on " + xbox + "; restart Aurora to see it", time);
+        } else if (StartsWith(what, "couldn't") || StartsWith(what, "updating the game folders stopped")) {
+            AddEvent(EventWarning, what + " (" + xbox + ")", time);
+        }
+    } else if (StartsWith(text, "Can't listen on port")) {
+        AddEvent(EventWarning, text, time);
     }
 }
 
@@ -639,6 +744,12 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         return 0;
     case WM_LOGLINE: {
         std::string* line = (std::string*)lParam;
+        if (StartsWith(*line, "@stats ")) {  // Numbers for the dashboard, not the log.
+            if (wParam == Generation) ReadStats(*line);
+            delete line;
+            WantFrames(1);
+            return 0;
+        }
         Log(*line);
         if (wParam == Generation) ReadLine(*line);
         delete line;
@@ -657,9 +768,25 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
             ServerChanged();
         }
         return 0;
-    case WM_LIBRARY:
+    case WM_LIBRARY: {
+        // New and gone games for the dashboard's activity, after the first scan.
+        bool before = Games.done;
+        std::vector<std::string> old;
+        for (const Game& g : Games.games) old.push_back(g.path);
         TakeLibrary((void*)lParam);
+        if (!before || !lParam) return 0;
+        std::sort(old.begin(), old.end());
+        std::vector<std::string> now;
+        for (const Game& g : Games.games) {
+            now.push_back(g.path);
+            if (!std::binary_search(old.begin(), old.end(), g.path)) AddEvent(EventGood, "New game: " + g.name);
+        }
+        std::sort(now.begin(), now.end());
+        int gone = 0;
+        for (const std::string& path : old) gone += !std::binary_search(now.begin(), now.end(), path);
+        if (gone) AddEvent(EventInfo, std::to_string(gone) + (gone == 1 ? " game is" : " games are") + " no longer in your folders");
         return 0;
+    }
     case WM_COVER:
         TakeCover((void*)lParam);
         return 0;
@@ -876,12 +1003,17 @@ void SaveConfig() {
     WritePrivateProfileStringW(Section, L"options", Saved.options.c_str(), ini.c_str());
     WritePrivateProfileStringW(Section, L"theme", std::to_wstring(Saved.theme).c_str(), ini.c_str());
     WriteFlag(ini, L"covers", Saved.covers);
-    WriteFlag(ini, L"list_view", Saved.listView);
     WriteFlag(ini, L"sort_by_size", Saved.sortBySize);
     WriteFlag(ini, L"show_iso", Saved.showIso);
     WriteFlag(ini, L"show_god", Saved.showGod);
     WriteFlag(ini, L"show_folder", Saved.showFolder);
     WriteFlag(ini, L"told_tray", Saved.toldTray);
+    WriteFlag(ini, L"setup_done", Saved.setupDone);
+    WritePrivateProfileStringW(Section, L"consoles", std::to_wstring(Saved.consoles.size()).c_str(), ini.c_str());
+    for (size_t i = 0; i < Saved.consoles.size(); ++i) {
+        std::string value = Saved.consoles[i].address + "|" + std::to_string(Saved.consoles[i].seen);
+        WritePrivateProfileStringW(Section, (L"console" + std::to_wstring(i + 1)).c_str(), Wide(value).c_str(), ini.c_str());
+    }
 }
 
 void WantFrames(int count) {
@@ -903,9 +1035,13 @@ void Log(const std::string& line) {
 void StartServer() {
     if (Server.running) return;
     Server.games = -1;
-    Server.ftp = 0;
-    Server.ftpNote.clear();
-    Server.playing.clear();
+    // A new server counts from zero.
+    for (ConsoleState& c : Server.consoles) {
+        Server.sentBefore += c.sent;
+        ConsoleState fresh;
+        fresh.address = c.address;
+        c = fresh;
+    }
     if (Saved.folders.empty()) {
         Log("Add a folder with your games to start the server.");
         ServerChanged();
@@ -954,8 +1090,11 @@ void StopServer(bool say) {
     CloseHandle(Child);
     Child = NULL;
     Server.running = false;
-    Server.playing.clear();
-    if (say) Log("Server stopped.");
+    for (ConsoleState& c : Server.consoles) c.connections = 0;
+    if (say) {
+        Log("Server stopped.");
+        AddEvent(EventWarning, "Server stopped");
+    }
     ServerChanged();
 }
 
@@ -1012,6 +1151,22 @@ void SetConnection(const std::wstring& xbox, const std::wstring& user, const std
     Saved.password = password;
     SaveConfig();
     Later(RestartServer);
+}
+
+void ForgetConsole(const std::string& address) {
+    for (size_t i = 0; i < Saved.consoles.size(); ++i)
+        if (Saved.consoles[i].address == address) Saved.consoles.erase(Saved.consoles.begin() + i--);
+    for (size_t i = 0; i < Server.consoles.size(); ++i)
+        if (Server.consoles[i].address == address && !Server.consoles[i].connections) Server.consoles.erase(Server.consoles.begin() + i--);
+    SaveConfig();
+}
+
+long long Second() { return (long long)(GetTickCount64() / 1000); }
+
+void SetupDone() {
+    if (Saved.setupDone) return;
+    Saved.setupDone = true;
+    SaveConfig();
 }
 
 void SetOptions(const std::wstring& options) {

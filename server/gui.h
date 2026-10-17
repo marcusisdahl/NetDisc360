@@ -21,17 +21,25 @@ namespace gui {
 
 enum Theme { ThemeSystem, ThemeLight, ThemeDark };
 
+// A console that has used the server, kept between runs for the dashboard.
+struct KnownConsole {
+    std::string address;
+    long long seen;  // When it was last connected (time()).
+};
+
 struct Config {
     std::vector<std::wstring> folders;
-    std::wstring xbox, user, password, options;
+    std::wstring xbox;  // Only these consoles' game folders are kept up to date (addresses, comma separated); empty: every console.
+    std::wstring user, password, options;
     int theme;
     bool covers;      // Download covers for the games page.
-    bool listView;    // The games as a list instead of a grid.
     bool sortBySize;
     bool showIso, showGod, showFolder;
     bool toldTray;
-    Config() : user(L"xboxftp"), password(L"xboxftp"), theme(ThemeSystem), covers(true), listView(false), sortBySize(false),
-               showIso(true), showGod(true), showFolder(true), toldTray(false) {}
+    bool setupDone;   // The dashboard's setup steps were all done once.
+    std::vector<KnownConsole> consoles;
+    Config() : user(L"xboxftp"), password(L"xboxftp"), theme(ThemeSystem), covers(true), sortBySize(false),
+               showIso(true), showGod(true), showFolder(true), toldTray(false), setupDone(false) {}
 };
 extern Config Saved;
 
@@ -56,21 +64,47 @@ struct Library {
 };
 extern Library Games;
 
+// A console using the server, from the server's "@stats" lines (--stats).
+struct ConsoleState {
+    std::string address;
+    int connections;
+    unsigned long long sent;  // Bytes of game data sent to it since the server started.
+    int ftp;                  // Its Aurora's FTP server: 0 not tried yet, 1 not answering, 2 answers.
+    long long ftpAt;          // When ftp last changed (time()).
+    long long synced;         // When its game folders were last brought up to date (time()); 0: not yet.
+    std::string mounted;      // Its disc, without ".iso"; empty: none.
+    long long lastAt;         // The server's clock (ms) at its last line, for the rate.
+    float rate[120];          // Bytes per second, by second: rate[s % 120] is for second s (Second()).
+    long long rateSecond[120];
+    ConsoleState() : connections(0), sent(0), ftp(0), ftpAt(0), synced(0), lastAt(0) {
+        for (int i = 0; i < 120; ++i) { rate[i] = 0; rateSecond[i] = -1; }
+    }
+    float RateAt(long long second) const { return rateSecond[second % 120] == second ? rate[second % 120] : 0; }
+};
+
+// Something that happened, for the dashboard.
+enum EventKind { EventInfo, EventGood, EventPlay, EventXbox, EventWarning };
+struct Event {
+    std::string time;  // "hh:mm"
+    int kind;
+    std::string text;
+};
+
 // What the server's output has said.
 struct ServerState {
     bool running;
     int games;               // From its "N game(s) in" line; -1 before.
-    std::string xbox;        // Where the Xbox's NetISO plugin connected from.
-    std::string playing;     // The disc it mounted last, without ".iso".
-    int ftp;                 // Aurora's FTP server: 0 not tried yet, 1 waiting for it, 2 answers.
-    std::string ftpNote;     // Why it's waiting, or where it answers.
-    std::string update;      // The last update of the Xbox's game folders, with its time.
-    std::vector<std::string> log;  // What it printed (the last lines), and what the window adds.
-    ServerState() : running(false), games(-1), ftp(0) {}
+    std::vector<ConsoleState> consoles;
+    unsigned long long sentBefore;  // Sent by earlier runs of the server since the window opened.
+    float peak;                     // The highest rate to all consoles together (bytes/s) since the window opened.
+    std::vector<Event> events;      // The latest last.
+    std::vector<std::string> log;   // What it printed (the last lines), and what the window adds.
+    ServerState() : running(false), games(-1), sentBefore(0), peak(0) {}
 };
 extern ServerState Server;
 
 extern std::string ThisPc;     // The PC's addresses, for netiso.xex.txt.
+long long Second();            // A clock in seconds, for the consoles' rates.
 extern float Scale;            // The window's DPI / 96.
 extern bool Dark;
 extern ImFont *FontText, *FontBold, *FontMono, *FontIcons;
@@ -87,6 +121,8 @@ void StartServer();
 void StopServer(bool say);
 void Quit();
 void SetConnection(const std::wstring& xbox, const std::wstring& user, const std::wstring& password);
+void ForgetConsole(const std::string& address);
+void SetupDone();
 void SetOptions(const std::wstring& options);
 bool StartsWithWindows();
 void SetStartWithWindows(bool on);

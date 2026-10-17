@@ -64,6 +64,22 @@ ICONS = {
     "Windows": "app-window",
     "Sliders": "sliders-horizontal",
     "Key": "key-round",
+    "Dashboard": "layout-dashboard",
+    "Activity": "activity",
+    "Server": "server",
+    "History": "history",
+    "ListChecks": "list-checks",
+    "Pending": "circle-dashed",
+    "Done": "circle-check-big",
+    "Clock": "clock",
+    "ChevronUp": "chevron-up",
+    "ChevronDown": "chevron-down",
+    "Sync": "folder-sync",
+    "Sparkles": "sparkles",
+    "Upload": "upload",
+    "Playing": "monitor-play",
+    "Unplug": "unplug",
+    "Plug": "plug",
 }
 
 
