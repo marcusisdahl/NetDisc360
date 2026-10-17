@@ -10,8 +10,9 @@
 // Aurora.xex 0.7b.2 starts tiles with (XamLoaderLaunchTitle, ordinal 420,
 // through XLaunchNewImage, and XamLoaderLaunchTitleEx, 421). When the XEX to
 // start is default.xex in a folder whose netiso.ini names an ISO, it mounts
-// that ISO on Aurora's thread, waits until the disc is the game, and starts
-// Dvd:\default.xex the way Aurora's disc entry does. Every other launch, and
+// that ISO on Aurora's thread, reaching the plugin's folders by their device
+// path as Aurora's file browser does, waits until the disc is the game, and
+// starts Dvd:\default.xex the way Aurora's disc entry does. Every other launch, and
 // a tile it can't mount, goes on to xam unchanged, so the tile's launcher
 // still runs as before when the plugin can't help.
 #include <xtl.h>
@@ -24,6 +25,16 @@
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
+// The kernel's file calls, for device paths (\Device\...), which the Win32
+// ones don't take.
+struct ObjectAttributes { HANDLE root; KernelString* name; ULONG attributes; };
+struct IoStatusBlock { LONG status; ULONG_PTR information; };
+struct DirectoryInfo { ULONG next,index; LARGE_INTEGER created,accessed,written,changed,size,allocated; ULONG attributes,nameLength; char name[MAX_PATH]; };
+extern "C" LONG __stdcall NtOpenFile(HANDLE* handle,ACCESS_MASK access,ObjectAttributes* attributes,IoStatusBlock* status,ULONG share,ULONG options);
+extern "C" LONG __stdcall NtQueryDirectoryFile(HANDLE handle,HANDLE event,void* apc,void* context,IoStatusBlock* status,void* info,ULONG length,KernelString* pattern,BOOLEAN restart);
+extern "C" LONG __stdcall NtReadFile(HANDLE handle,HANDLE event,void* apc,void* context,IoStatusBlock* status,void* buffer,ULONG length,LARGE_INTEGER* offset);
+extern "C" LONG __stdcall NtClose(HANDLE handle);
+static const LONG NoMoreFiles=LONG(0x80000006);
 extern "C" LONG __stdcall XexGetModuleHandle(const char* name,HANDLE* module);
 extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,void** address);
 
@@ -36,8 +47,13 @@ static const DWORD LaunchTitleOrdinal=420,LaunchTitleExOrdinal=421,QueueNoticeOr
 static QueueNotice Notice=NULL;
 
 static const char IniName[]="netiso.ini",LogName[]="netiso.log",GameXex[]="default.xex";
-static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
-static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
+// The plugin's folders and the disc are reached by their device paths, the
+// way Aurora's file browser reaches them, with no drive links of our own.
+// The launcher's mount, through drive links it created and Win32 listings,
+// killed the Guide every time while the file browser's never did (seen on
+// the console), so this keeps to the browser's way of asking.
+static const char IsoDevice[]="\\Device\\NetIso",DiscDevice[]="\\Device\\Cdrom0";
+static const char DiscXex[]="\\Device\\Cdrom0\\default.xex";
 // A tile given as a device path (\Device\...) is read through this link to its folder.
 static const char TileLink[]="\\??\\NIsoT:",TileRoot[]="NIsoT:";
 // Aurora's disc entry links Dvd: to \Device\Cdrom0 and starts the disc with
@@ -286,29 +302,38 @@ static bool ReadSettings(const char* ini,Settings& settings) {
     return settings.iso[0] && settings.titleId;
 }
 
+// Opens a folder or a file by its device path, read-only and synchronous.
+static LONG OpenPath(const char* path,bool folder,HANDLE& handle) {
+    char text[MAX_PATH]; strcpy_s(text,path);
+    KernelString name={USHORT(strlen(text)),USHORT(sizeof(text)),text};
+    ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+    IoStatusBlock status={0,0};
+    handle=NULL;
+    // FILE_LIST_DIRECTORY or FILE_READ_DATA (both 1) with SYNCHRONIZE;
+    // FILE_DIRECTORY_FILE or FILE_NON_DIRECTORY_FILE, with FILE_SYNCHRONOUS_IO_NONALERT.
+    return NtOpenFile(&handle,0x100001,&attributes,&status,folder ? 3 : 1,folder ? 0x21 : 0x60);
+}
+
 // Title ID and Media ID from the execution info header (0x40006) of the
 // default.xex on the disc that is in the drive now.
+static DWORD Header[4096]; // The XEX header, 16 KB; its directory is at the start.
 static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
-    HANDLE file=CreateFile(DiscXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) return false;
-    bool found=false;
-    DWORD header[6],done=0; // Read as words: the console is big-endian, like the file.
-    if(ReadFile(file,header,sizeof(header),&done,NULL)&&done==sizeof(header)&&!memcmp(header,"XEX2",4)) {
-        DWORD count=header[5];
-        for(DWORD i=0;i<count&&i<64&&!found;++i) {
-            DWORD entry[2];
-            if(SetFilePointer(file,24+i*8,NULL,FILE_BEGIN)==INVALID_SET_FILE_POINTER) break;
-            if(!ReadFile(file,entry,sizeof(entry),&done,NULL)||done!=sizeof(entry)) break;
-            if(entry[0]!=0x40006) continue;
-            DWORD info[4]; // media ID, version, base version, title ID
-            if(SetFilePointer(file,entry[1],NULL,FILE_BEGIN)==INVALID_SET_FILE_POINTER) break;
-            if(ReadFile(file,info,sizeof(info),&done,NULL)&&done==sizeof(info)) {
-                mediaId=info[0]; titleId=info[3]; found=true;
-            }
-        }
+    HANDLE file;
+    if(OpenPath(DiscXex,false,file)<0) return false;
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,Header,sizeof(Header),&offset);
+    NtClose(file);
+    if(read<0 || status.information<24 || memcmp(Header,"XEX2",4)) return false;
+    DWORD count=Header[5];
+    for(DWORD i=0;i<count&&i<64;++i) {
+        if(24+i*8+8>status.information) break;
+        if(Header[6+i*2]!=0x40006) continue;
+        DWORD at=Header[7+i*2]; // media ID, version, base version, title ID
+        if(at+16>status.information) break;
+        mediaId=Header[at/4]; titleId=Header[at/4+3];
+        return true;
     }
-    CloseHandle(file);
-    return found;
+    return false;
 }
 static bool DiscIsGame(const Settings& settings) {
     DWORD titleId=0,mediaId=0;
@@ -317,15 +342,23 @@ static bool DiscIsGame(const Settings& settings) {
 }
 
 static char Names[MaxNames][MAX_PATH];
+static DirectoryInfo Entry;
+// Lists a folder by device path into Names; the number of names, or -1 when
+// it can't be opened. Each query returns one entry.
 static int ListFolder(const char* folder) {
-    char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
-    WIN32_FIND_DATA found;
-    HANDLE find=FindFirstFile(pattern,&found);
-    if(find==INVALID_HANDLE_VALUE) { Note("%s: nothing listed (error %lu)",pattern,GetLastError()); return 0; }
+    HANDLE handle;
+    LONG status=OpenPath(folder,true,handle);
+    if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
     int count=0;
-    do { if(count<MaxNames) strcpy_s(Names[count++],found.cFileName); } while(FindNextFile(find,&found));
-    FindClose(find);
-    Note("%s: %d entries",pattern,count);
+    for(;;) {
+        IoStatusBlock io={0,0};
+        LONG result=NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),NULL,FALSE);
+        if(result<0) { if(result!=NoMoreFiles) Note("%s: listing stopped (status %08X)",folder,result); break; }
+        DWORD length=Entry.nameLength<MAX_PATH-1 ? Entry.nameLength : MAX_PATH-1;
+        if(count<MaxNames) { memcpy(Names[count],Entry.name,length); Names[count][length]=0; ++count; }
+    }
+    NtClose(handle);
+    Note("%s: %d entries",folder,count);
     return count;
 }
 static const char* FindName(int count,const char* name) {
@@ -333,11 +366,14 @@ static const char* FindName(int count,const char* name) {
     return NULL;
 }
 // Walks from the root to the ISO's Mount folder by name, as the launcher and
-// Aurora's file browser do. Listing these folders doesn't mount.
-static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity) {
-    strcpy_s(folder,capacity,IsoRoot);
+// Aurora's file browser do. Listing these folders doesn't mount. isoFolder
+// gets the ISO's own folder.
+static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,char* isoFolder) {
+    strcpy_s(folder,capacity,IsoDevice);
+    isoFolder[0]=0;
     for(int depth=0;depth<MaxDepth;++depth) {
         int count=ListFolder(folder);
+        if(count<0) return false;
         const char* next=FindName(count,settings.iso);
         if(!next && (next=FindName(count,MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
@@ -345,37 +381,62 @@ static bool FindMountFolder(const Settings& settings,char* folder,size_t capacit
         }
         if(!next) return false;
         strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
+        strcpy_s(isoFolder,capacity,folder);
     }
     return false;
 }
-// Listing a Mount folder mounts: the plugin swaps the disc before the listing
-// returns (empty, error 18), then fakes the tray open and close.
-static bool ListMountFolder(const char* folder) {
-    char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
-    WIN32_FIND_DATA found;
-    HANDLE find=FindFirstFile(pattern,&found);
-    DWORD error=ERROR_SUCCESS;
-    if(find==INVALID_HANDLE_VALUE) error=GetLastError(); else FindClose(find);
-    Note("%s: error %lu",folder,error);
-    return error==ERROR_NO_MORE_FILES||error==ERROR_SUCCESS;
+// Opening and listing a Mount folder mounts: the plugin swaps the disc before
+// the listing returns (empty), then fakes the tray open and close. With hold,
+// the folder stays open (in MountHandle) until the caller closes it.
+static HANDLE MountHandle=NULL;
+static bool ListMountFolder(const char* folder,bool hold) {
+    HANDLE handle;
+    LONG status=OpenPath(folder,true,handle);
+    if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
+    IoStatusBlock io={0,0};
+    LONG result=NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),NULL,FALSE);
+    Note("%s: listed (status %08X)",folder,result);
+    if(hold) MountHandle=handle; else NtClose(handle);
+    return true;
+}
+static void CloseMountFolder() {
+    if(!MountHandle) return;
+    NtClose(MountHandle); MountHandle=NULL;
+    Note("Closed the Mount folder (hold_mount).");
 }
 
+static char Folder[MAX_PATH],Ini[2048];
+// Whole number from the tile's netiso.ini, or fallback.
+static int IniNumber(const char* key,int fallback) {
+    char value[16];
+    if(!IniValue(Ini,key,value,sizeof(value)) || !value[0]) return fallback;
+    return atoi(value);
+}
+
+// Two test switches in a game folder's netiso.ini, to find what Aurora's file
+// browser does around its mount that keeps the Guide: hold_mount=1 keeps the
+// Mount folder open until the disc is the game, and relist=1 lists the ISO's
+// folder and the root again right after the mount, as a user leaving the
+// Mount folder would.
 static bool Mount(const Settings& settings) {
     if(DiscIsGame(settings)) { Note("The game is already mounted."); return true; }
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
-    LONG status=LinkDrive(IsoLink,IsoDevice);
-    if(status<0) { Note("Can't link %s (status %08X).",IsoDevice,status); Tell("NetISO isn't running."); return false; }
-    char folder[MAX_PATH];
-    bool found=FindMountFolder(settings,folder,sizeof(folder));
-    bool asked=found && ListMountFolder(folder);
-    UnlinkDrive(IsoLink);
+    bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
+    char folder[MAX_PATH],isoFolder[MAX_PATH];
+    bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
     if(!found) { Tell("NetISO: the server doesn't list this game. Is it running?"); return false; }
-    if(!asked) { Tell("NetISO couldn't mount this game."); return false; }
+    if(!ListMountFolder(folder,hold)) { Tell("NetISO couldn't mount this game."); return false; }
+    if(relist) {
+        Note("Listing the ISO's folder and the root again (relist).");
+        if(isoFolder[0]) ListFolder(isoFolder);
+        ListFolder(IsoDevice);
+    }
     Sleep(QuietMs);
     for(int waited=QuietMs;waited<QuietMs+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return true; }
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return true; }
         Sleep(PollMs);
     }
+    CloseMountFolder();
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
@@ -385,7 +446,6 @@ static bool Mount(const Settings& settings) {
 
 // ---- Tiles ----
 
-static char Folder[MAX_PATH],Ini[2048];
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
 // a netiso.ini with iso= and title_id=. Folder is then where to read them.
 static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
@@ -426,8 +486,7 @@ static volatile LONG Busy=0;
 // Mounts the tile's ISO and starts the disc. Returns only if it couldn't;
 // the caller then starts the tile itself.
 static void StartTile(const Settings& settings) {
-    bool mounted=LinkDrive(DiscLink,DiscDevice)>=0 && Mount(settings);
-    UnlinkDrive(DiscLink);
+    bool mounted=Mount(settings);
     LONG status=mounted ? LinkDrive(AuroraDiscLink,DiscDevice) : 0;
     if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
     if(mounted && status>=0) {
