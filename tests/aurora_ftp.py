@@ -92,10 +92,10 @@ class Handler(socketserver.StreamRequestHandler):
                 if self.passive:
                     self.passive.close()
                 self.passive = socket.socket()
-                self.passive.bind(("127.0.0.1", 0))
+                self.passive.bind((self.server.host, 0))
                 self.passive.listen(1)
                 port = self.passive.getsockname()[1]
-                self.reply("227 Entering Passive Mode (127,0,0,1,%d,%d)" % (port >> 8, port & 255))
+                self.reply("227 Entering Passive Mode (%s,%d,%d)" % (self.server.host.replace(".", ","), port >> 8, port & 255))
             elif command in ("LIST", "NLST"):
                 # FtpDll ignores the argument.
                 conn = self.data_connection()
@@ -176,9 +176,9 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, root, port=0, user="xboxftp", password="xboxftp"):
-        super().__init__(("127.0.0.1", port), Handler)
-        self.root, self.user, self.password = root, user, password
+    def __init__(self, root, port=0, user="xboxftp", password="xboxftp", host="127.0.0.1"):
+        super().__init__((host, port), Handler)
+        self.root, self.user, self.password, self.host = root, user, password, host
         self.log, self.stored, self.scans = [], [], []
 
 

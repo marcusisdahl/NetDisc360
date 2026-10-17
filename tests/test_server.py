@@ -48,6 +48,20 @@ def build_server():
                     "-o", SERVER] + sources, check=True)
 
 
+def own_address():
+    """An address of this machine other than loopback, or None."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))
+            address = s.getsockname()[0]
+        except OSError:
+            return None
+    return None if address.startswith("127.") or address == "0.0.0.0" else address
+
+
+OWN_ADDRESS = own_address()
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -267,26 +281,71 @@ class Push(ServerTest):
         self.push()
         self.assertEqual(len(self.ftp.scans), 2)
 
-    def test_leaves_aurora_time_to_start_before_writing(self):
-        # Aurora's own scan right after it starts skips the online lookup, so
-        # the running server writes nothing until --aurora-wait has passed.
-        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
-        server = subprocess.Popen([SERVER, self.isos, "--port", str(free_port()), "--xbox", "127.0.0.1",
-                                   "--ftp-port", str(self.ftp.server_address[1]), "--aurora-wait", "3",
-                                   "--launcher", self.launcher, "--boot", self.boot],
+    def run_server(self, *options, xbox="127.0.0.1", ftp_port=None):
+        port = free_port()
+        server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox,
+                                   "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
+                                   "--launcher", self.launcher, "--boot", self.boot] + list(options),
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return server, port
+
+    def wait_for(self, condition, seconds):
+        deadline = time.time() + seconds
+        while not condition() and time.time() < deadline:
+            time.sleep(0.2)
+        return condition()
+
+    def logins(self, ftp=None):
+        return sum(1 for line in (ftp or self.ftp).log if line.startswith("USER"))
+
+    def test_logs_in_only_when_something_changed(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        server, _ = self.run_server()
         try:
-            time.sleep(1.5)
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 10))
+            first = self.logins()
+            # Nothing changed: the Xbox is left alone.
+            time.sleep(3)
+            self.assertEqual(self.logins(), first)
+            # A new ISO is written once it has settled (10 s).
+            self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+            self.assertTrue(self.wait_for(lambda: len(self.ftp.scans) == 2, 25))
+            self.assertTrue(os.path.isdir(os.path.join(self.games, "Skate 3")))
+            done = self.logins()
+            time.sleep(3)
+            self.assertEqual(self.logins(), done)
+        finally:
+            server.kill()
+            server.communicate()
+
+    @unittest.skipUnless(OWN_ADDRESS, "needs an address other than loopback")
+    def test_waits_for_the_xbox_to_come_online_after_aurora_comes_back(self):
+        # Aurora's FTP answers before the Xbox can reach out; folders Aurora
+        # finds then get no online lookup. The server writes once the Xbox
+        # connects to it (its NetISO plugin), not as soon as FTP answers.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        ftp_port = free_port()
+        server, port = self.run_server("--online-wait", "60", xbox=OWN_ADDRESS, ftp_port=ftp_port)
+        ftp = None
+        try:
+            time.sleep(2)  # The Xbox is off: its FTP doesn't answer.
+            ftp = aurora_ftp.Server(self.xbox, ftp_port, host=OWN_ADDRESS)
+            threading.Thread(target=ftp.serve_forever, daemon=True).start()
+            self.assertTrue(self.wait_for(lambda: self.logins(ftp), 20))
+            time.sleep(2)
             self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))
-            deadline = time.time() + 15
-            while not self.ftp.scans and time.time() < deadline:
-                time.sleep(0.2)
+            with socket.socket() as plugin:
+                plugin.bind((OWN_ADDRESS, 0))
+                plugin.connect((OWN_ADDRESS, port))
+                self.assertTrue(self.wait_for(lambda: ftp.scans, 10))
             self.assertTrue(os.path.isfile(os.path.join(self.games, "Halo 3", "default.xex")))
-            self.assertEqual(self.ftp.scans, ["/Hdd1/NetISO"])
         finally:
             server.kill()
             out = server.communicate()[0]
-        self.assertIn("Leaving Aurora 3 s to finish starting", out)
+            if ftp:
+                ftp.shutdown()
+                ftp.server_close()
+        self.assertIn("Waiting for the Xbox to come online", out)
 
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
