@@ -60,8 +60,9 @@ static void WriteJump(DWORD* at,DWORD target) {
     at[3]=0x4E800420;
 }
 static void FlushCode(void* at,DWORD size) {
-    for(DWORD offset=0;offset<size;offset+=4) { __dcbst(offset,at); __sync(); __icbi(offset,at); }
-    __sync(); __isync();
+    // The RXDK's ppcintrinsics.h has neither __icbi nor __isync; isync is emitted by its opcode.
+    for(DWORD offset=0;offset<size;offset+=4) { __dcbst(offset,at); __sync(); }
+    __sync(); __emit(0x4C00012C); // isync
 }
 
 // Code space for the two trampolines and for a copy of the compiler's

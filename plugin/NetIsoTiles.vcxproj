@@ -19,7 +19,7 @@
     </ClCompile>
     <!-- No COMDAT folding: the trampolines are placeholder functions that are
          overwritten at start-up, and must stay separate. -->
-    <Link><OutputFile>$(OutDir)NetIsoTiles.dll</OutputFile><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>false</EnableCOMDATFolding>
+    <Link><OutputFile>$(OutDir)NetIsoTiles.dll</OutputFile><LinkDLL>true</LinkDLL><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>false</EnableCOMDATFolding>
       <BaseAddress>0x91380000</BaseAddress>
       <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
