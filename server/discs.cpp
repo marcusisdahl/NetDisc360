@@ -548,7 +548,7 @@ void AddFolder(const std::string& path, const std::string& name, const std::vect
     const Entry* xex=Find(entries,"default.xex",false);
     disc.modified=xex ? xex->modified : 0;
     std::string clean=CleanName(name);
-    disc.name=(clean.empty() ? std::string("Game") : clean)+" (folder).iso";
+    disc.name=(clean.empty() ? std::string("Game") : clean)+".iso";
     out.push_back(disc);
 }
 
@@ -568,7 +568,7 @@ void AddGod(const std::string& folder, int depth, const Entry& header, std::vect
     if(name.empty()) name=CleanName(h.title);
     if(name.empty()) name=CleanName(header.name);
     if(h.discs>1 && h.disc>0) { char suffix[24]; _snprintf_s(suffix,sizeof(suffix),_TRUNCATE," - Disc %d",h.disc); name+=suffix; }
-    disc.name=name+" (GOD).iso";
+    disc.name=name+".iso";
     out.push_back(disc);
 }
 
@@ -621,7 +621,7 @@ void UniqueNames(std::vector<IsoFile>& discs) {
     for(size_t i=0;i<discs.size();++i) {
         if(discs[i].kind==DiscIso) continue;
         std::string name=discs[i].name;
-        size_t cut=name.rfind(" (");
+        size_t cut=name.size()-4;  // Before ".iso".
         for(int n=2;;++n) {
             bool taken=false;
             for(size_t k=0;k<discs.size() && !taken;++k) taken=k!=i && !_stricmp(discs[k].name.c_str(),discs[i].name.c_str()) && (k<i || discs[k].kind==DiscIso);

@@ -254,8 +254,8 @@ class Discs(ServerTest):
             f.write(b"two" * 5000)
         self.start()
         c = Client(self.port)
-        self.assertEqual(c.names(), ["Halo Reach (folder).iso", "Halo Reach - Disc 2 (folder).iso"])
-        self.assertEqual(c.mount("\\Halo Reach (folder).iso\\Mount\\"), 1)
+        self.assertEqual(c.names(), ["Halo Reach - Disc 2.iso", "Halo Reach.iso"])
+        self.assertEqual(c.mount("\\Halo Reach.iso\\Mount\\"), 1)
         sectors, sector_size = c.size()
         self.assertEqual(sector_size, 2048)
         gdf = Gdf(c)
@@ -273,7 +273,7 @@ class Discs(ServerTest):
         # The end of the last file is the end of the disc.
         self.assertGreaterEqual(sectors * 2048, XGD2 + max(s * 2048 + n for s, n, _ in found.values()))
 
-        self.assertEqual(c.mount("Halo Reach - Disc 2 (folder).iso"), 1)
+        self.assertEqual(c.mount("Halo Reach - Disc 2.iso"), 1)
         gdf = Gdf(c)
         found = gdf.walk()
         self.assertEqual(sorted(found), ["default.xex", "second.bin"])
@@ -294,12 +294,12 @@ class Discs(ServerTest):
         games = os.path.join(self.tmp.name, "NetISO")
         out = subprocess.run([sync_host, str(self.port), games, launcher], capture_output=True, text=True, timeout=60).stdout
         self.assertIn("added=2", out)
-        self.assertEqual(sorted(os.listdir(games)), ["Guitar Hero - World Tour (GOD)", "Portal 2 (folder)"])
-        with open(os.path.join(games, "Portal 2 (folder)", "netiso.ini")) as f:
+        self.assertEqual(sorted(os.listdir(games)), ["Guitar Hero - World Tour", "Portal 2"])
+        with open(os.path.join(games, "Portal 2", "netiso.ini")) as f:
             ini = f.read()
-        self.assertIn("iso=Portal 2 (folder).iso", ini)
+        self.assertIn("iso=Portal 2.iso", ini)
         self.assertIn("title_id=45410950", ini)
-        with open(os.path.join(games, "Guitar Hero - World Tour (GOD)", "netiso.ini")) as f:
+        with open(os.path.join(games, "Guitar Hero - World Tour", "netiso.ini")) as f:
             self.assertIn("title_id=4156081A", f.read())
 
     def test_god_package_across_parts(self):
@@ -312,8 +312,8 @@ class Discs(ServerTest):
         chunks = write_god(os.path.join(self.isos, "Some Game"), 0x4156081A, files)
         self.start()
         c = Client(self.port)
-        self.assertEqual(c.names(), ["Some Game (GOD).iso"])
-        self.assertEqual(c.mount("Some Game (GOD).iso"), 1)
+        self.assertEqual(c.names(), ["Some Game.iso"])
+        self.assertEqual(c.mount("Some Game.iso"), 1)
         gdf = Gdf(c)
         self.assertEqual(gdf.start, XGD2)
         found = gdf.walk()
@@ -334,8 +334,8 @@ class Discs(ServerTest):
         write_god(self.isos, 0x415607F7, files, title="Guitar Hero III: Legends of Rock", disc=2, discs=2, egdf=True)
         self.start()
         c = Client(self.port)
-        self.assertEqual(c.names(), ["Guitar Hero III - Legends of Rock - Disc 2 (GOD).iso"])
-        self.assertEqual(c.mount("Guitar Hero III - Legends of Rock - Disc 2 (GOD).iso"), 1)
+        self.assertEqual(c.names(), ["Guitar Hero III - Legends of Rock - Disc 2.iso"])
+        self.assertEqual(c.mount("Guitar Hero III - Legends of Rock - Disc 2.iso"), 1)
         gdf = Gdf(c)
         found = gdf.walk()
         self.assertEqual(gdf.read_file(*found["x.bin"][:2]), b"xyz" * 999)
@@ -352,7 +352,7 @@ class Discs(ServerTest):
         self.start()
         c = Client(self.port)
         names = c.names()
-        self.assertEqual(names, ["Halo Reach.iso", "Other (folder).iso", "Other 2 (folder).iso", "Portal 2 GOD (GOD).iso"])
+        self.assertEqual(names, ["Halo Reach.iso", "Other.iso", "Other 2.iso", "Portal 2 GOD.iso"])
         c.close()
         log = self.log()
         self.assertIn("3 game(s) are here more than once", log)
@@ -372,7 +372,7 @@ class Discs(ServerTest):
         self.make_game("Elsewhere", 0x33333333, folder=other)
         self.start(other)
         c = Client(self.port)
-        self.assertEqual(c.names(), ["Elsewhere (folder).iso"])
+        self.assertEqual(c.names(), ["Elsewhere.iso"])
         c.close()
 
     def test_a_served_folder_is_not_a_game(self):
@@ -384,7 +384,19 @@ class Discs(ServerTest):
         self.make_game("Game", 0x22222222)
         self.start()
         c = Client(self.port)
-        self.assertEqual(c.names(), ["a.iso", "Game (folder).iso"])
+        self.assertEqual(c.names(), ["a.iso", "Game.iso"])
+        c.close()
+
+    def test_a_name_an_iso_already_has(self):
+        self.add_iso("Kameo.iso", 1, 0x11111111)
+        self.make_game("Kameo", 0x22222222)  # Another game with the same name.
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Kameo 2.iso", "Kameo.iso"])
+        self.assertEqual(c.mount("Kameo 2.iso"), 1)
+        self.assertEqual(Gdf(c).start, XGD2)  # The folder, not the ISO (which has no XGD2 layout).
+        self.assertEqual(c.mount("Kameo.iso"), 1)
+        self.assertEqual(Gdf(c).start, 0)
         c.close()
 
     def test_a_file_too_big_for_a_disc(self):
@@ -393,7 +405,7 @@ class Discs(ServerTest):
             f.truncate(4 << 30)
         self.start()
         c = Client(self.port)
-        self.assertEqual(c.mount("Huge (folder).iso"), 0)
+        self.assertEqual(c.mount("Huge.iso"), 0)
         c.close()
         self.assertIn("is over 4 GB, which a disc can't hold", self.log())
 

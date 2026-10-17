@@ -39,7 +39,7 @@ That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO pl
 
 Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.xex` at the top) and Games on Demand packages (`<Title ID>\00007000\<package>` with its `.data` folder), from the same folders. Nothing is converted or written next to them: the NetISO plugin only reads a disc as sectors, so the server answers with the disc image the folder or package came from, put together as it's read, and the console sees it like an ISO.
 
-- A folder lists as `<folder name> (folder).iso`, a package as `<game folder> (GOD).iso` (or the package's own title when it isn't in a folder of its own). A `Disc 2` folder with its own `default.xex` inside a game's folder is a disc of its own, `<game> - Disc 2 (folder).iso`.
+- A folder lists as `<folder name>.iso`, a package as `<game folder>.iso` (or the package's own title when it isn't in a folder of its own), so the console's game folders get the same plain names. A `Disc 2` folder with its own `default.xex` inside a game's folder is a disc of its own, `<game> - Disc 2.iso`. A name that is already taken gets a number.
 - An extracted game is a GDF (XDVDFS) disc built in memory when it's mounted: the directory tables are made from the folder, and each read is answered from the file it falls in. A disc can't hold a file of 4 GB or more.
 - A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
 - Both are placed at the game partition offset of a full XGD2 image (XGD3 when too big for XGD2), like the retail ISOs; what comes before it reads as zeros.

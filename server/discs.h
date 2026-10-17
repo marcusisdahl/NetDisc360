@@ -12,15 +12,15 @@
 
 namespace nia {
 enum DiscKind { DiscIso, DiscGod, DiscFolder };
-// name is what the server lists. For folders and GOD packages it ends in
-// " (folder).iso" or " (GOD).iso", so it can't clash with an ISO of the same
-// game, and NetISO Sync names the console's game folder from it as for an ISO.
+// name is what the server lists. For folders and GOD packages it is the
+// game's name with ".iso" added, so NetISO Sync names the console's game
+// folder from it as for an ISO.
 // titleId and disc come from the game's default.xex (0: not known yet, or not a game).
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId; int disc; };
 
 // The discs in folder and its subfolders, sorted by name, added to out.
 void FindIsos(const std::string& folder, std::vector<IsoFile>& out);
-// Gives listed names that are the same (ignoring case) a number, except for ISOs.
+// Gives a folder or GOD package whose listed name is taken (ignoring case) a number.
 void UniqueNames(std::vector<IsoFile>& discs);
 // Reads each disc's Title ID and disc number (remembered between calls).
 void ReadTitles(std::vector<IsoFile>& discs);
