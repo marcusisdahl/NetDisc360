@@ -72,6 +72,17 @@ def header(html):
             "static const unsigned char WebPage[] = {\n%s\n};\n" % (len(data), len(html), "\n".join(lines)))
 
 
+def current(html):
+    """Whether server/web_page.h holds this page. Compares the page, not the
+    gzip bytes, which differ between zlib builds."""
+    try:
+        with open(HEADER, encoding="utf-8") as f:
+            data = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-f]{2})", f.read()))
+        return gzip.decompress(data) == html
+    except (OSError, EOFError):
+        return False
+
+
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--icons"]:
@@ -80,16 +91,11 @@ def main():
         args = args[2:]
     html = build()
     if args[:1] == ["--check"]:
-        # Compares the page, not the gzip bytes, which differ between zlib builds.
-        with open(HEADER, encoding="utf-8") as f:
-            data = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-f]{2})", f.read()))
-        try:
-            same = gzip.decompress(data) == html
-        except (OSError, EOFError):
-            same = False
-        if not same:
+        if not current(html):
             sys.exit("server/web_page.h is out of date: run python tools/make_web.py")
         return
+    if current(html):
+        return  # Left alone, so a build doesn't touch the file (or the git tree).
     with open(HEADER, "w", encoding="utf-8", newline="\n") as f:
         f.write(header(html))
 
