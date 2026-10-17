@@ -75,14 +75,14 @@ int main(int argc, char** argv) {
     unsigned char* alpha=NULL; ImGui::GetIO().Fonts->GetTexDataAsAlpha8(&alpha,&TextureWidth,&TextureHeight); Texture=alpha;
     nia::LoadScreen s; const char* scene=argc>2 ? argv[2] : "mount";
     strcpy(s.iso,"Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl).iso"); nia::GameName(s.iso,s.game,sizeof(s.game));
-    strcpy(s.server,"10.10.1.56"); s.titleId=0x454108E6; s.time=0.3; s.elapsed=12.4;
-    if(!strcmp(scene,"server")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"Checking the NetISO server at 10.10.1.56"); }
+    strcpy(s.server,"192.168.1.20"); s.titleId=0x454108E6; s.time=0.3; s.elapsed=12.4;
+    if(!strcmp(scene,"server")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"Checking the NetISO server at 192.168.1.20"); }
     else if(!strcmp(scene,"network")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"The Xbox's network is still starting after the reboot. Waiting for the server... 42 s"); }
     else if(!strcmp(scene,"mount")) { s.step=nia::StepMount; s.fraction=0.2; strcpy(s.status,"Asking the server for the disc"); }
     else if(!strcmp(scene,"disc")) { s.step=nia::StepDisc; s.fraction=0.62; strcpy(s.status,"The disc is going in. Waiting for the console to read it"); s.time=0.7; }
     else if(!strcmp(scene,"start")) { s.step=nia::StepStart; s.fraction=1; strcpy(s.status,"Starting Skate 3"); }
     else if(!strcmp(scene,"no-server")) Error(s,nia::StepServer,"Can't reach the NetISO server",
-        "Nothing answered at 10.10.1.56, port 4323, for 2 minutes.",
+        "Nothing answered at 192.168.1.20, port 4323, for 2 minutes.",
         "Start netiso-server.exe on the PC, and check that the PC and the Xbox",
         "are on the same network. The address is in Hdd1:\\netiso.xex.txt.",true);
     else if(!strcmp(scene,"not-listed")) Error(s,nia::StepMount,"Skate 3 isn't on the server",

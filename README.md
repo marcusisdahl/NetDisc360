@@ -1,120 +1,173 @@
 # NetISO for Aurora
 
-Lists the games on your [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server in Aurora like installed games, with cover art, title updates and DLC. Pick one and it plays; no file browser, no Mount folder.
+Play the Xbox 360 games on your PC straight from Aurora's game list. Every game on your [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
 
-Each game gets a small launcher folder in `Hdd1:\NetISO` (`default.xex`, `boot.xex` and `netiso.ini`). Its `default.xex` carries the game's Title ID and Media ID, so Aurora scans it as that game. Starting it shows a loading screen, asks the NetISO plugin to mount the game's ISO from the server, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive, with a working Guide.
+- **One program on the PC.** `netiso-server.exe` replaces `netiso-srv` / `server.exe`. It serves your games to the console and keeps Aurora's game list up to date by itself.
+- **ISOs, extracted games and Games on Demand**, from as many folders as you like. Nothing is converted or copied.
+- **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
+- **The Guide keeps working** in games started this way.
 
 ## What you need
 
-- DashLaunch with the NetISO plugin (`NetISO.xex`) and this project's `NetIsoTiles.xex` as plugins. The modified `Nova.xex` is not needed.
-- Aurora with its FTP server on (the default login, `xboxftp`, is fine).
-- A Windows PC with your ISOs, on the same network as the Xbox.
-- To build: Visual Studio 2022 with the Xbox 360 SDK (the same setup as Xbox360-FastFTP) and the "Desktop development with C++" workload.
+On the console:
+- A modded Xbox 360 with DashLaunch and Aurora (tested with BadUpdate / XeUnshackle and Aurora 0.7b.2).
+- The NetISO plugin, `NetISO.xex` 1.0 by cOz, loaded by DashLaunch. It is not part of this project; get it where you got NetISO. The modified `Nova.xex` from the NetISO kit is not needed.
+- `NetIsoTiles.xex` from this project, loaded by DashLaunch next to `NetISO.xex`.
+- Aurora's FTP server turned on.
 
-## Set up
+On the PC:
+- Windows 10 or 11 (64-bit), on the same network as the console.
+- Your games: ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
 
-1. Build: `.\build.ps1 -Tests` makes `build\netiso-server.exe`, `build\NetIsoTiles.xex` and `build\NetISO Sync\`.
-2. Add `NetIsoTiles.xex` to DashLaunch's plugins in `launch.ini`, next to `NetISO.xex`, and reboot the Xbox.
+## Install
+
+1. Download `netiso-server.exe` and `NetIsoTiles.xex` from the [Releases](../../releases) page (or build them, below).
+2. Copy `NetIsoTiles.xex` to the console and add it to DashLaunch's `launch.ini` as a plugin, next to `NetISO.xex`. DashLaunch loads at most 5 plugins. Reboot the console.
 3. Put the PC's IP address in `Hdd1:\netiso.xex.txt` (or `Usb0:\netiso.xex.txt`), as the NetISO plugin needs anyway.
-4. On the PC, run `netiso-server.exe` in the folder with your ISOs, in place of `netiso-srv` or `server.exe`. Subfolders count too. More folders can follow on the command line: `netiso-server.exe . "C:\XBOX 360\Games"`.
-5. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1.
+4. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1.
+5. On the PC, run `netiso-server.exe` with your game folders, for example:
 
-That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO plugin, and once the Xbox connects it keeps `Hdd1:\NetISO` current over Aurora's FTP. A new ISO gets its folder (after the file has stopped changing for 10 s), named after the game without the region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` gets `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed ISO loses its folder, and launchers from an older build are replaced. Then the server asks Aurora to scan the folder (`SITE INITIATESCAN`, a command of Aurora's FTP server), so the game shows up at once and Aurora looks up its name and art online. Aurora looks a game up only once, when its scan first finds it, and its own scan while it starts (after a boot or a game) skips the lookup: a game first found then keeps its folder name and no art. So after Aurora's FTP server comes up the server waits 90 s (`--aurora-wait`) before it writes any game folders. A game that has no art anyway can be refreshed in Aurora, or its folder in `Hdd1:\NetISO` renamed: at its next scan Aurora drops the old entry and looks the game up again. The server keeps a renamed folder, since it matches folders to ISOs by their `netiso.ini`. The server checks the Xbox every 15 s while it's off and every minute while it's on, so it doesn't matter which starts first.
+   ```
+   netiso-server.exe "D:\Xbox 360\ISOs" "D:\Xbox 360\Games"
+   ```
 
-| Option | Default | |
-|---|---|---|
-| `--xbox <address>` | the console that connects | The Xbox to update. |
-| `--ftp-user`, `--ftp-password` | `xboxftp` | Aurora's FTP login. |
-| `--xbox-folder <path>` | `/Hdd1/NetISO` | The game folder, as an FTP path. |
-| `--aurora <path>` | `/Hdd1/Apps/Aurora` | Aurora's folder, for the Xbox 360 category. |
-| `--no-push` | | Only serve ISOs; leave the Xbox alone. |
-| `--no-category` | | Leave Aurora's Xbox 360 category alone. |
-| `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
-| `--aurora-wait <s>` | 90 | How long to leave Aurora after it starts before writing game folders. |
-| `--port`, `--ftp-port` | 4323, 21 | |
-| `-v` | | Log every request. |
+   With no folder it serves the folder it runs in. Subfolders count too. If you changed Aurora's FTP login (recommended, see [Security](#security)), add `--ftp-user` and `--ftp-password`.
 
-`-r` and `-b` from netiso-srv are accepted and ignored.
-
-### Extracted games and Games on Demand
-
-Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.xex` at the top) and Games on Demand packages (`<Title ID>\00007000\<package>` with its `.data` folder), from the same folders. Nothing is converted or written next to them: the NetISO plugin only reads a disc as sectors, so the server answers with the disc image the folder or package came from, put together as it's read, and the console sees it like an ISO.
-
-- A folder lists as `<folder name>.iso`, a package as `<game folder>.iso` (or the package's own title when it isn't in a folder of its own), so the console's game folders get the same plain names. A `Disc 2` folder with its own `default.xex` inside a game's folder is a disc of its own, `<game> - Disc 2.iso`. A name that is already taken gets a number.
-- An extracted game is a GDF (XDVDFS) disc built in memory when it's mounted: the directory tables are made from the folder, and each read is answered from the file it falls in. A disc can't hold a file of 4 GB or more.
-- A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
-- Both are placed at the game partition offset of a full XGD2 image (XGD3 when too big for XGD2), like the retail ISOs; what comes before it reads as zeros.
-- Original Xbox games (`default.xbe`) are skipped, as their ISOs are.
-- A folder given on the command line is never taken as a game itself, even with a `default.xex` at its top; only what is inside it counts.
-
-**Each game is served once.** A game that is there more than once (the same Title ID and disc number, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the server window lists the other copies with their paths so they can be removed.
-
-### Aurora's Xbox 360 category
-
-Aurora files the launchers under Unsigned, because they aren't retail-signed, so its Xbox 360 category doesn't show them. The server edits `Media\Scripts\Content\FilterFunctions.lua` in Aurora's folder once, so that the category also lists games in the NetISO folder (NetISO Sync itself stays out), and keeps the original next to it as `FilterFunctions.lua.before-netiso`. If an Aurora update puts the original back, the server makes the same edit again. A filter it doesn't recognise is left alone, and `--no-category` turns this off.
+That's all. Once the console is on, the server makes a small launcher folder for each game in `Hdd1:\NetISO` and asks Aurora to scan it, and Aurora looks up the game's name and art online. It doesn't matter whether the PC or the console starts first: the server checks for the console every 15 s while it's off and every minute while it's on.
 
 ## Playing
 
-Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills smoothly to 100%, and at the top how long it has been since you pressed the tile. Once the bar is full the screen stays up for a second, then the game starts.
+Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
 
-- **B cancels at any step** and goes back to Aurora at once, even while the network or the server is slow.
-- Right after a reboot the Xbox can't reach the server for a minute or two, and the NetISO plugin takes a little longer still (it lists only "No Server!" until then). For the first 4 minutes after boot the screen waits for both instead of failing.
-- When something goes wrong, the screen says what and what to do: the server doesn't answer, the NetISO plugin isn't loaded, the ISO is no longer on the server, the disc didn't show up, a different game is in the drive, or the game didn't start. **A** goes back to Aurora and **X** tries again; after a minute it goes back to Aurora by itself.
+- **B cancels at any step** and goes back to Aurora at once.
+- Right after a reboot the console can't reach the server for a minute or two, and the NetISO plugin needs a little longer still. For the first 4 minutes after boot the screen waits for both instead of failing.
+- When something goes wrong, the screen says what and what to do: the server doesn't answer, the NetISO plugin isn't loaded, the game is no longer on the server, the disc didn't show up, a different game is in the drive, or the game didn't start. **A** goes back to Aurora and **X** tries again; after a minute it goes back to Aurora by itself.
 
-There is no unmount step: the plugin keeps the last ISO mounted until another one is mounted. Starting another game mounts that game in its place, and starting the same game again skips the mount.
+There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
-## NetISO Sync
+## The server
 
-`build\NetISO Sync\` is the same launcher without a game: copied to the console as `Hdd1:\NetISO\NetISO Sync` and started from Aurora, it asks the NetISO server for its ISOs, writes and removes game folders the way `netiso-server.exe` does, and returns to Aurora. It works with any NetISO server, for when the PC can't run `netiso-server.exe`. `server=` in its `netiso.ini` names the server if `netiso.xex.txt` doesn't, and `after=` names what to start when it's done (to run it at every boot as DashLaunch's Default, set `after=` to Aurora's XEX). `tools\netiso_aurora.py` makes the same folders on a PC, for copying by hand.
+What `netiso-server.exe` does, all from one file:
 
-Folders are removed only if they hold nothing but the launcher's own files, and nothing is removed when the server lists no ISOs. Original Xbox ISOs (no `default.xex`) are skipped.
+- **Serves your games** to the NetISO plugin over the NetISO protocol (TCP port 4323), like `netiso-srv`. New and removed games are picked up without a restart.
+- **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
+- **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
+- **Puts the games in Aurora's Xbox 360 category** (see below).
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the server window lists the other copies with their paths so you can remove them.
+
+| Option | Default | |
+|---|---|---|
+| `<folder> ...` | the current folder | Folders with your games. |
+| `--xbox <address>` | the console that connects | The console to update. |
+| `--ftp-user`, `--ftp-password` | `xboxftp` | Aurora's FTP login. |
+| `--xbox-folder <path>` | `/Hdd1/NetISO` | The game folder on the console, as an FTP path. |
+| `--aurora <path>` | `/Hdd1/Apps/Aurora` | Aurora's folder, for the Xbox 360 category. |
+| `--no-push` | | Only serve games; leave the console alone. |
+| `--no-category` | | Leave Aurora's Xbox 360 category alone. |
+| `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
+| `--aurora-wait <s>` | 90 | How long to leave Aurora after it starts before writing game folders (see below). |
+| `--port`, `--ftp-port` | 4323, 21 | |
+| `-v` | | Log every request. |
+
+`-r` and `-b` from `netiso-srv` are accepted and ignored. `netiso-server.exe --help` lists every option.
+
+### Cover art
+
+Aurora looks a game up online (name and art) only once, when its scan first finds it, and its own scan while it starts (after a boot or after a game) skips that lookup. A game first found then keeps its folder name and gets no art. That is why the server leaves Aurora alone for a while after it starts before writing new game folders (`--aurora-wait`). A game that has no art anyway can be refreshed in Aurora, or its folder in `Hdd1:\NetISO` renamed: at the next scan Aurora drops the old entry and looks the game up again. The server keeps a renamed folder, since it matches folders to games by their `netiso.ini`.
+
+### Aurora's Xbox 360 category
+
+Aurora files the launchers under Unsigned, because they aren't retail-signed, so its Xbox 360 category doesn't show them. The server edits `Media\Scripts\Content\FilterFunctions.lua` in Aurora's folder once, so that the category also lists games in the NetISO folder, and keeps the original next to it as `FilterFunctions.lua.before-netiso`. If an Aurora update puts the original back, the server makes the same edit again. A filter it doesn't recognise is left alone, and `--no-category` turns this off.
+
+### Extracted games and Games on Demand
+
+Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.xex` at the top) and Games on Demand packages (`<Title ID>\00007000\<package>` with its `.data` folder). Nothing is converted or written next to them: the NetISO plugin only reads a disc as sectors, so the server answers with the disc image the folder or package came from, put together as it's read.
+
+- A folder is listed as `<folder name>.iso`, a package as `<game folder>.iso` (or the package's own title when it isn't in a folder of its own). A `Disc 2` folder with its own `default.xex` inside a game's folder is a disc of its own, `<game> - Disc 2.iso`. A name that is already taken gets a number.
+- An extracted game is a GDF (XDVDFS) disc built in memory when it's mounted. A disc can't hold a file of 4 GB or more.
+- A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
+- A folder given on the command line is never taken as a game itself, even with a `default.xex` at its top; only what is inside it counts.
+
+## Security
+
+- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and pass it with `--ftp-user` and `--ftp-password`. FTP sends the login unencrypted, so keep the console on a network you trust. The server never writes the password to its window or logs.
+- **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `netiso-server.exe` on private networks only.
+- The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
+
+## Limitations
+
+- Original Xbox games (`default.xbe`) are not supported, as NetISO doesn't play them; they are skipped.
+- Multi-disc games get one launcher per disc; swapping discs during a game is not handled.
+- The launcher has no title name of its own; Aurora names each game from its online lookup by Title ID.
+- `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix is off.
+
+## NetISO Sync (for other NetISO servers)
+
+If your PC runs another NetISO server (`netiso-srv`, `server.exe`, Docker) instead of `netiso-server.exe`, NetISO Sync makes the game folders from the console. `build\NetISO Sync\` is the launcher without a game: copied to `Hdd1:\NetISO\NetISO Sync` and started from Aurora, it asks the NetISO server for its ISOs, writes and removes game folders the way `netiso-server.exe` does, and returns to Aurora. It reads ISOs only (no extracted folders or GOD packages, which only `netiso-server.exe` serves) and doesn't change Aurora's category or start a scan.
+
+`server=` in its `netiso.ini` names the server if `netiso.xex.txt` doesn't, and `after=` names what to start when it's done (to run it at every boot as DashLaunch's Default, set `after=` to Aurora's XEX). `tools\netiso_aurora.py` makes the same folders on a PC, for copying by hand.
+
+## Build
+
+You need Visual Studio 2022 with the "Desktop development with C++" workload, and the Xbox 360 SDK integration for Visual Studio (the same setup as [Xbox360-FastFTP](https://github.com/marcusisdahl/Xbox360-FastFTP)), and Python 3. The SDK is not included and can't be redistributed.
+
+```
+.\build.ps1 -Tests
+```
+
+This makes `build\netiso-server.exe` (with the launcher built in), `build\NetIsoTiles.xex` and `build\NetISO Sync\`.
+
+## Logs
+
+Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. `netiso-server.exe` logs to its window.
+
+### Troubleshooting switches
+
+These go in a game folder's `netiso.ini` and help find out what breaks on a console.
+
+- `stop_after=link|root|iso` stops short of the mount and goes back to Aurora: after linking the NetISO drive, listing its root, or listing the game's folder.
+- `quiet_ms=` sets how long the launcher leaves the disc alone after the mount (5000).
+- `hold_ms=` sets how long the full bar stays up before the game starts (1000).
+- `mount_only=1` mounts the game and goes back to Aurora without starting it.
+- `start=aurora|nova|media` picks how the disc is started: as Aurora's disc entry does (the default), as Nova's file browser does, or whatever disc is in the drive, as the dashboard does. If the chosen start fails, the launcher tries `nova`.
+- `tiles=aurora` has `NetIsoTiles.xex` mount from inside Aurora instead, the older way, with no loading screen and no cancel. With it, `hold_mount=1`, `relist=1`, `tiles_stop=server|disc|root|iso|mount` and `tiles_thread=system` change how the plugin mounts.
 
 ## How it works
+
+Each game's folder in `Hdd1:\NetISO` holds `default.xex`, `boot.xex` and `netiso.ini`. `default.xex` carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to `boot.xex` next to it (the same program without a Title ID), which draws the loading screen, asks the NetISO plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
 
 ### The mount
 
 The NetISO plugin has no published source. This is what `NetISO.xex` 1.0 does, read from the binary:
 
 - It registers the file system device `\Device\NetIso` and hooks `\Device\Cdrom0`.
-- Listing its root lists the server's ISOs (`GetIsoName`), each with a `Mount` folder inside, plus `[Disable Current ISO]` while one is mounted. Listing a `Mount` folder sends `MountIso` with that path; the server strips `\Mount` and backslashes and mounts the ISO whose name ends with the rest.
+- Listing its root lists the server's ISOs, each with a `Mount` folder inside, plus `[Disable Current ISO]` while one is mounted. Listing a `Mount` folder sends the server a mount request for that ISO.
 - After a successful mount it swaps the disc and fakes a tray open and close on its own thread, after which the console reads the ISO as the disc.
 - Right after every mount request it calls `XamAppUnloadSelf` on the thread that asked.
 
-The launcher walks those folders by name (root, the ISO, `Mount`) rather than assuming their depth, leaves the disc alone for 5 s, then checks `\Device\Cdrom0\default.xex` for the expected Title ID and Media ID. It starts the game with `XLaunchNewImage("Dvd:\default.xex")` and `Dvd:` linked to `\Device\Cdrom0`, as Aurora 0.7b.2's disc entry does.
+The launcher walks those folders by name (root, the ISO, `Mount`), leaves the disc alone for 5 s, then checks `\Device\Cdrom0\default.xex` for the expected Title ID and Media ID. It starts the game with `XLaunchNewImage("Dvd:\default.xex")` and `Dvd:` linked to `\Device\Cdrom0`, as Aurora 0.7b.2's disc entry does.
 
 ### The Guide
 
-`XamAppUnloadSelf` is what killed the Guide. From the Guide's own file browser that call just closes the Guide, but a mount asked from anywhere else left the Guide dead until reboot. At start-up `NetIsoTiles.xex` points NetISO's import of that call at its own function, which skips it unless the Guide's browser asked, after checking that NetISO 1.0's code is where it was read. With that, the launcher's mount keeps the Guide (seen on the console, 2026-10-17).
+`XamAppUnloadSelf` is what killed the Guide. From the Guide's own file browser that call just closes the Guide, but a mount asked from anywhere else left the Guide dead until reboot. At start-up `NetIsoTiles.xex` points NetISO's import of that call at its own function, which skips it unless the Guide's browser asked, after checking that NetISO 1.0's code is where it was read.
 
-Two more things the launcher does for the Guide, each found on the console: it starts the game the way Aurora's disc entry does (`XamLoaderLaunchTitleEx`, as Nova's browser starts files, left the Guide dead), and it stays off the disc for 5 s after the mount (reading it during the fake tray cycle left the Guide dead and crashed the game at its storage prompt). The game's `default.xex` also hands the mount to `boot.xex` next to it, the same program without a Title ID, like Aurora; the mount happens there. The launcher keeps presenting frames until it launches, since a title that never drew left the Guide dead too.
+The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLaunchTitleEx`, as Nova's browser starts files, left the Guide dead), stays off the disc for 5 s after the mount (reading it during the fake tray cycle left the Guide dead), and keeps drawing frames until it launches (a title that never drew left the Guide dead too).
 
-`NetIsoTiles.xex` also hooks xam's two launch calls (ordinals 420 and 421, which Aurora starts tiles with). By default it leaves tiles to their launcher. `tiles=aurora` in a game's `netiso.ini` has it mount from inside Aurora instead, the older way, with no loading screen and no cancel.
-
-## Test switches
-
-These go in a game folder's `netiso.ini` and help find out what breaks on the console.
-
-- `stop_after=link|root|iso` stops short of the mount and goes back to Aurora: after linking the NetISO drive, listing its root, or listing the ISO's folder.
-- `quiet_ms=` sets how long the launcher leaves the disc alone after the mount (5000).
-- `hold_ms=` sets how long the full bar stays up before the game starts (1000).
-- `mount_only=1` mounts the game and goes back to Aurora without starting it.
-- `start=aurora|nova|media` picks how the disc is started: as Aurora's disc entry does (the default), as Nova's file browser does, or whatever disc is in the drive, as the dashboard does. If the chosen start fails, the launcher tries `nova`.
-- With `tiles=aurora`: `hold_mount=1`, `relist=1`, `tiles_stop=server|disc|root|iso|mount` and `tiles_thread=system` change how the plugin mounts.
-
-## Logs
-
-Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each folder listed, each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time. A run begins with a `====` line giving the date, the build time and how long the console has been on, so a fresh boot shows as a small uptime. A file over 512 KB starts over on the next run. `netiso-server.exe` logs to its window.
-
-## Not verified on a console yet
-
-- BadUpdate/XeUnshackle. The launchers' rewritten headers keep a matching digest (SHA-1 at security info + 0x164); only the RSA signature over it is stale, which a patched kernel skips.
-- Multi-disc games: each disc's ISO gets its own launcher; swapping discs mid-game is not handled.
-- Aurora names the games from its online lookup by Title ID; the launcher has no title name resource.
+`NetIsoTiles.xex` also hooks xam's two launch calls (ordinals 420 and 421, which Aurora starts tiles with). By default it leaves tiles to their launcher.
 
 ## Tests
 
-- `python tests\test_server.py` builds `netiso-server` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end) and the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server: folders as Sync makes them, removal, repair, and the category edit (made once, line endings kept, the Lua still valid; an unknown filter left alone).
-- `python tests\test_discs.py` checks extracted folders and GOD packages: the disc a folder makes is walked by name through each directory's search tree, as the console does, and every file reads back as it is on disk (hundreds of files in one folder, odd names, empty folders and files, nested folders, a `Disc 2`); GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files, mapped the way Xenia maps them; NetISO Sync gets the Title IDs from both; duplicates are served once and reported once; original Xbox folders are skipped; a file over 4 GB is refused.
-- `python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`: it writes exactly what the PC tool writes, adds only new ISOs, removes folders of ISOs that are gone (and keeps folders with other files in them), removes nothing when the server lists nothing, skips bad ISOs, keeps clear of folders it didn't make, and rebuilds a launcher that carries another game's IDs.
-- `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the generator: execution info copied exactly and nothing else changed, the ini, FATX-safe unique folder names without release tags, bad ISOs skipped, recursive search and duplicate file names.
-- `tests/ui_preview.cpp` draws the loading screen on a PC into a BMP, for each step and error, to review it without a console.
+- `python tests\test_server.py` builds `netiso-server` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end) and the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server: folders, removal, repair, and the category edit.
+- `python tests\test_discs.py` checks extracted folders and GOD packages: every file of a folder's disc reads back as it is on disk, walked as the console walks it; GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files; duplicates are served once and reported once; original Xbox folders are skipped; a file over 4 GB is refused.
+- `python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`.
+- `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the launcher folders made from them.
+- `tests/ui_preview.cpp` draws the loading screen on a PC into a BMP, for each step and error.
+
+## Credits
+
+- NetISO and its plugin `NetISO.xex` by cOz. This project doesn't include or modify the plugin's file; `NetIsoTiles.xex` patches it in memory at run time.
+- [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
+- [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
+- [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
+
+Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
