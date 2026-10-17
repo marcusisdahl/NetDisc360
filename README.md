@@ -24,8 +24,9 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 
 ## Contents
 
+- [Quick start](#quick-start)
 - [What you need](#what-you-need)
-- [Install](#install)
+- [Install](#install) (step by step)
 - [Docker](#docker)
 - [Playing](#playing)
 - [Recommended extras](#recommended-extras)
@@ -35,6 +36,33 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - [The server in detail](#the-server-in-detail)
 - [Build](#build)
 - [How it works](#how-it-works)
+
+## Quick start
+
+You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetISO.xex` 1.0), and a Windows PC or a NAS with your games on the same network.
+
+1. Download `NetDisc.exe` and `NetIsoTiles.xex` from the [Releases](../../releases) page.
+2. Copy `NetISO.xex` and `NetIsoTiles.xex` to your USB drive, add a text file `NetISO.xex.txt` next to them with your PC's IP address in it, and load both plugins in `launch.ini`:
+
+   ```ini
+   [Plugins]
+   plugin1 = Usb:\NetISO.xex
+   plugin2 = Usb:\NetIsoTiles.xex
+   ```
+
+3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetISO` with depth 1.
+4. On the PC, start `NetDisc.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it in Docker instead and open `http://<its address>:8360`:
+
+   ```sh
+   mkdir -p ~/netdisc && sudo chown 1000:1000 ~/netdisc
+   docker run -d --name netdisc --network host --restart unless-stopped \
+     -v /path/to/games:/games:ro -v ~/netdisc:/config \
+     -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc-360
+   ```
+
+5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
+
+[Install](#install) goes through each step in detail, and [Docker](#docker) has every setting.
 
 ## What you need
 
