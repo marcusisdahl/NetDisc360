@@ -605,7 +605,7 @@ void PushLoop() {
             failed=failed || !s.everPushed;
         }
         // --push-once (the tests): ends when every console given is done.
-        if(Settings.pushOnce && finished) exit(failed ? 1 : 0);
+        if(Settings.pushOnce && !states.empty() && finished) exit(failed ? 1 : 0);
         Sleep(1000);
     }
 }
@@ -676,7 +676,7 @@ bool ParseArguments(int argc, char** argv) {
         else if(hasValue && a=="--xbox") {
             DWORD xbox=inet_addr(argv[++i]);
             if(xbox==INADDR_NONE || !xbox) { fprintf(stderr,"--xbox needs an IPv4 address like 192.168.1.20.\n"); return false; }
-            Settings.xboxes.push_back(xbox);
+            if(std::find(Settings.xboxes.begin(),Settings.xboxes.end(),xbox)==Settings.xboxes.end()) Settings.xboxes.push_back(xbox);
         }
         else if(hasValue && a=="--ftp-user") Settings.ftpUser=argv[++i];
         else if(hasValue && a=="--ftp-password") Settings.ftpPassword=argv[++i];
