@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>Play the Xbox 360 games on your PC straight from Aurora's game list: a NetISO server with a web dashboard, for Windows and Docker.</b>
+  <b>Your Xbox 360 games on your PC, in Aurora's game list like installed games. Pick one and it plays over the network.</b>
 </p>
 
 <p align="center">
