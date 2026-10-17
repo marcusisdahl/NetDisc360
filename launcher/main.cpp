@@ -233,16 +233,19 @@ static const char* FindName(int count,const char* name) {
 
 // Walks from the root toward the ISO's Mount folder by name, the way you
 // would in Aurora's file browser, and returns that folder's path (inside
-// NIsoL:). Listing these folders doesn't mount; listing Mount does.
-static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity) {
+// NIsoL:). Listing these folders doesn't mount; listing Mount does. It stops
+// without a path after the given number of listings.
+static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,int listings) {
     strcpy_s(folder,capacity,IsoRoot);
     bool sawIso=false;
     for(int depth=0;depth<MaxDepth;++depth) {
+        if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return false; }
         int count=ListFolder(folder);
         const char* next=FindName(count,settings.iso);
         if(next) sawIso=true;
         else if((next=FindName(count,MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
+            if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return false; }
             return true;
         }
         if(!next) {
@@ -284,6 +287,19 @@ static bool ServerAnswers(const char* ini) {
     return ok;
 }
 
+// stop_after= in netiso.ini stops short of the mount and goes back to
+// Aurora: after linking the NetIso drive (link), listing its root (root) or
+// listing the ISO's folder (iso). It tells which step breaks the Guide.
+static const int NoStop=1000;
+static int StopAfter(const char* ini) {
+    static const char* const steps[]={"link","root","iso"};
+    char value[16];
+    if(!nia::IniValue(ini,"stop_after",value,sizeof(value)) || !value[0]) return NoStop;
+    for(int i=0;i<3;++i) if(!_stricmp(value,steps[i])) return i;
+    Note("Unknown stop_after=%s; mounting.",value);
+    return NoStop;
+}
+
 static bool MountGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) return false;
@@ -294,9 +310,11 @@ static bool MountGame(const char* ini) {
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded. Add it as a DashLaunch plugin.");
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
+    int stop=StopAfter(ini);
     char folder[MAX_PATH];
-    bool asked=FindMountFolder(settings,folder,sizeof(folder)) && ListMountFolder(folder);
+    bool asked=FindMountFolder(settings,folder,sizeof(folder),stop) && ListMountFolder(folder);
     UnlinkDrive(IsoLink);
+    if(stop!=NoStop) { Note("Back to Aurora without mounting."); return false; }
     if(!asked) { Failed=true; Wait(5000); return false; }
     int quiet=IniNumber(ini,"quiet_ms",QuietMs);
     if(quiet!=QuietMs) Note("Leaving the disc alone for %d ms (quiet_ms).",quiet);
