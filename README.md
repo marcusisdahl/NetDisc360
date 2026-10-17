@@ -114,7 +114,7 @@ There is no unmount step: the plugin keeps the last game mounted until another o
 Both are separate homebrew projects that work well alongside NetISO.
 
 - **[CUsbEnet](https://github.com/marcusisdahl/CUsbEnet)**: a DashLaunch plugin that lets the Xbox 360 use a USB Ethernet adapter. The console's own network port is 100 Mbit/s, and NetISO reads every game over the network; with a gigabit USB adapter (ASIX AX88179 or Realtek based, such as the TP-Link UE306) FTP to the console has reached about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
-- **[FastFTP](https://github.com/marcusisdahl/Xbox360-FastFTP)**: a fast FTP server app for the console, for copying games, saves and files to and from it (about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console). It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; `netiso-server` keeps using Aurora's own FTP, which runs whenever Aurora is open.
+- **[FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP)**: a fast FTP server app for the console, for copying games, saves and files to and from it (about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console). It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; `netiso-server` keeps using Aurora's own FTP, which runs whenever Aurora is open.
 
 ## Troubleshooting
 
@@ -192,7 +192,7 @@ If your PC runs another NetISO server (`netiso-srv`, `server.exe`, Docker) inste
 
 ## Build
 
-You need Visual Studio 2022 with the "Desktop development with C++" workload, and the Xbox 360 SDK integration for Visual Studio (the same setup as [Xbox360-FastFTP](https://github.com/marcusisdahl/Xbox360-FastFTP)), and Python 3. The SDK is not included and can't be redistributed.
+You need Visual Studio 2022 with the "Desktop development with C++" workload, and the Xbox 360 SDK integration for Visual Studio (the same setup as [Xbox360-FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP)), and Python 3. The SDK is not included and can't be redistributed.
 
 ```
 .\build.ps1 -Tests
