@@ -18,7 +18,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
 - **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
 
-Under the hood it's a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora; [How it works](#how-it-works) has the details.
+**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin stops NetISO from killing the Guide. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](#how-it-works) has the details.
 
 **Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** Games load faster through a gigabit USB network adapter, which CUsbEnet makes work on the Xbox (its own network port is 100 Mbit/s); see [Recommended extras](#recommended-extras).
 
