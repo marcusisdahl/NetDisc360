@@ -161,7 +161,7 @@ class Xex:
         """The file's image data, decrypted (raw, as stored) and the loaded image."""
         at, encryption, compression, blocks = self.format()
         if compression not in (0, 1):
-            raise SystemExit('the XEX is compressed; package it with <format><uncompressed/></format>')
+            raise SystemExit('the XEX is LZX compressed; package it with <format><raw/></format>')
         raw = bytes(self.x[self.data_at:])
         if encryption:
             sealed = bytes(self.x[self.security + 0x150:self.security + 0x160])

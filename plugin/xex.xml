@@ -3,7 +3,7 @@
      is packaged as a title DLL at the base its PE header was patched to, and
      tools/sysdll.py then moves the XEX to the system base the code was linked
      at (0x91380000, between NetISO.xex and Aurora's Nova.xex), with NetISO's
-     module and image flags. Uncompressed, so sysdll.py can hash the pages. -->
+     module and image flags. Raw (not LZX), so sysdll.py can hash the pages. -->
 <xex>
-  <format><uncompressed/></format>
+  <format><unencrypted/><raw/></format>
 </xex>
