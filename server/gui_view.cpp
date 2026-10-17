@@ -165,7 +165,7 @@ bool IconButton(const char* id, const char* icon, const char* tip, ImU32 color =
 }
 
 float ButtonWidth(const char* icon, const char* label) {
-    return Measure(FontText, TextSize(), label).x + S(icon ? 46 : 28);
+    return Measure(FontText, TextSize(), label).x + S(icon ? 46.0f : 28.0f);
 }
 
 // A rounded button with a label: filled with the accent color when primary.
