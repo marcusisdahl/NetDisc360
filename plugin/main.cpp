@@ -21,6 +21,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include "../shared/isvr.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -53,6 +54,9 @@ static const char IniName[]="netiso.ini",LogName[]="netiso.log",GameXex[]="defau
 // killed the Guide every time while the file browser's never did (seen on
 // the console), so this keeps to the browser's way of asking.
 static const char IsoDevice[]="\\Device\\NetIso",DiscDevice[]="\\Device\\Cdrom0";
+// A device's root folder is opened with a trailing backslash; without one
+// the device itself is opened, as on Windows.
+static const char IsoRoot[]="\\Device\\NetIso\\";
 static const char DiscXex[]="\\Device\\Cdrom0\\default.xex";
 // A tile given as a device path (\Device\...) is read through this link to its folder.
 static const char TileLink[]="\\??\\NIsoT:",TileRoot[]="NIsoT:";
@@ -343,19 +347,35 @@ static bool DiscIsGame(const Settings& settings) {
 
 static char Names[MaxNames][MAX_PATH];
 static DirectoryInfo Entry;
+// One directory query, returning one entry. The first names the pattern *
+// and restarts the scan, as FindFirstFile does. Listing NetISO's root with
+// neither, and without the root's trailing backslash, never finished (Aurora
+// hung, seen on the console).
+static LONG QueryFolder(HANDLE handle,bool first) {
+    static char all[]="*";
+    KernelString pattern={1,sizeof(all),all};
+    IoStatusBlock io={0,0};
+    return NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),first ? &pattern : NULL,first);
+}
+static LONG OpenFolder(const char* folder,HANDLE& handle) {
+    return OpenPath(strcmp(folder,IsoDevice) ? folder : IsoRoot,true,handle);
+}
 // Lists a folder by device path into Names; the number of names, or -1 when
-// it can't be opened. Each query returns one entry.
+// it can't be opened. Stops at MaxNames, or if an entry comes back twice in a
+// row.
 static int ListFolder(const char* folder) {
     HANDLE handle;
-    LONG status=OpenPath(folder,true,handle);
+    LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
     int count=0;
     for(;;) {
-        IoStatusBlock io={0,0};
-        LONG result=NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),NULL,FALSE);
+        LONG result=QueryFolder(handle,count==0);
         if(result<0) { if(result!=NoMoreFiles) Note("%s: listing stopped (status %08X)",folder,result); break; }
+        if(count==MaxNames) { Note("%s: more than %d entries; using the first %d.",folder,MaxNames,MaxNames); break; }
         DWORD length=Entry.nameLength<MAX_PATH-1 ? Entry.nameLength : MAX_PATH-1;
-        if(count<MaxNames) { memcpy(Names[count],Entry.name,length); Names[count][length]=0; ++count; }
+        memcpy(Names[count],Entry.name,length); Names[count][length]=0;
+        if(count && !strcmp(Names[count],Names[count-1])) { Note("%s: %s came back twice; stopping.",folder,Names[count]); break; }
+        ++count;
     }
     NtClose(handle);
     Note("%s: %d entries",folder,count);
@@ -391,10 +411,9 @@ static bool FindMountFolder(const Settings& settings,char* folder,size_t capacit
 static HANDLE MountHandle=NULL;
 static bool ListMountFolder(const char* folder,bool hold) {
     HANDLE handle;
-    LONG status=OpenPath(folder,true,handle);
+    LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
-    IoStatusBlock io={0,0};
-    LONG result=NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),NULL,FALSE);
+    LONG result=QueryFolder(handle,true);
     Note("%s: listed (status %08X)",folder,result);
     if(hold) MountHandle=handle; else NtClose(handle);
     return true;
@@ -413,19 +432,123 @@ static int IniNumber(const char* key,int fallback) {
     return atoi(value);
 }
 
+// ---- Server ----
+
+// "192.168.1.20" or "192.168.1.20:4323", as in the launcher.
+static bool ParseServer(const char* text,DWORD& address,int& port) {
+    char host[64]; strcpy_s(host,text);
+    char* colon=strchr(host,':');
+    if(colon) { *colon=0; port=atoi(colon+1); if(port<1||port>65535) return false; }
+    size_t length=strlen(host);
+    while(length && (host[length-1]==' '||host[length-1]=='\t')) host[--length]=0;
+    address=inet_addr(host);
+    return address!=INADDR_NONE && address!=0;
+}
+static bool ReadDeviceText(const char* path,char* text,DWORD capacity) {
+    text[0]=0;
+    HANDLE file;
+    if(OpenPath(path,false,file)<0) return false;
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,text,capacity-1,&offset);
+    NtClose(file);
+    if(read<0) return false;
+    text[status.information]=0;
+    return true;
+}
+// server= in the tile's netiso.ini, or the NetISO plugin's own netiso.xex.txt
+// on Hdd1: or Usb0:, as the launcher finds it.
+static bool FindServer(DWORD& address,int& port) {
+    char value[64];
+    if(IniValue(Ini,"server",value,sizeof(value))) {
+        if(ParseServer(value,address,port)) return true;
+        Note("server=%s in %s is not an IPv4 address.",value,IniName); return false;
+    }
+    static const char* const plugin[]={"\\Device\\Harddisk0\\Partition1\\netiso.xex.txt","\\Device\\Mass0\\netiso.xex.txt"};
+    for(int i=0;i<int(sizeof(plugin)/sizeof(plugin[0]));++i) {
+        char text[128];
+        if(!ReadDeviceText(plugin[i],text,sizeof(text))) continue;
+        text[strcspn(text,"\r\n")]=0;
+        if(ParseServer(text,address,port)) { Note("Server %s from %s.",text,plugin[i]); return true; }
+    }
+    Note("No server address in %s or netiso.xex.txt.",IniName);
+    return false;
+}
+// Whether the NetISO server answers, asked before anything touches the disc
+// drive or the NetISO drive. For a minute or two after boot the console can't
+// reach it, and a tile started then froze Aurora for 14 s on the NetISO drive
+// and killed the Guide without mounting anything (seen on the console).
+// Uses Aurora's own network, which its FTP server runs on.
+enum ServerState { ServerUnknown, ServerUp, ServerDown };
+static ServerState CheckServer(char* where,size_t capacity) {
+    DWORD address=0; int port=nia::IsvrPort;
+    if(!FindServer(address,port)) { Note("Not checking the server."); return ServerUnknown; }
+    nia::AddressText(address,where,capacity);
+    WSADATA wsa;
+    if(WSAStartup(MAKEWORD(2,2),&wsa)) { Note("Aurora's network isn't started; not checking the server."); return ServerUnknown; }
+    ServerState state=ServerUnknown;
+    SOCKET probe=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if(probe==INVALID_SOCKET) Note("No socket from Aurora's network (%d); not checking the server.",WSAGetLastError());
+    else {
+        closesocket(probe);
+        nia::IsvrClient client(3);
+        bool up=client.Connect(address,port,2) && client.Ping();
+        if(up) Note("The server answers."); else Note("The server doesn't answer: %s",client.Error());
+        client.Close();
+        state=up ? ServerUp : ServerDown;
+    }
+    WSACleanup();
+    return state;
+}
+
+// tiles_stop= in a game folder's netiso.ini stops the plugin after one step
+// and goes back to Aurora, with no notice and without the tile's launcher, to
+// find the step that kills the Guide: after the server check (server),
+// reading the disc drive (disc), listing the NetISO drive's root (root),
+// finding the ISO's Mount folder (iso), or the mount, before the start (mount).
+enum Step { StepServer, StepDisc, StepRoot, StepIso, StepMount, NoStop };
+static int StopStep() {
+    static const char* const steps[]={"server","disc","root","iso","mount"};
+    char value[16];
+    if(!IniValue(Ini,"tiles_stop",value,sizeof(value)) || !value[0]) return NoStop;
+    for(int i=0;i<NoStop;++i) if(!_stricmp(value,steps[i])) { Note("Test: stopping after %s (tiles_stop).",steps[i]); return i; }
+    Note("Unknown tiles_stop=%s; not stopping.",value);
+    return NoStop;
+}
+
+// What the plugin made of a tile.
+enum Outcome {
+    Started,    // the disc is the game; start it
+    Fallback,   // couldn't mount; let the tile's launcher try
+    Cancelled   // back to Aurora, starting nothing
+};
+
 // Two test switches in a game folder's netiso.ini, to find what Aurora's file
 // browser does around its mount that keeps the Guide: hold_mount=1 keeps the
 // Mount folder open until the disc is the game, and relist=1 lists the ISO's
 // folder and the root again right after the mount, as a user leaving the
 // Mount folder would.
-static bool Mount(const Settings& settings) {
-    if(DiscIsGame(settings)) { Note("The game is already mounted."); return true; }
+static Outcome Mount(const Settings& settings) {
+    int stop=StopStep();
+    char where[16]="";
+    if(CheckServer(where,sizeof(where))==ServerDown) {
+        static char text[96];
+        sprintf_s(text,"NetISO server %s isn't answering. Try again in a minute.",where);
+        Tell(text);
+        return Cancelled;
+    }
+    if(stop==StepServer) return Cancelled;
+    bool game=DiscIsGame(settings);
+    Note(game ? "The game is already mounted." : "The disc isn't the game.");
+    if(stop==StepDisc) return Cancelled;
+    if(game) return Started;
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
+    if(stop==StepRoot) { ListFolder(IsoDevice); return Cancelled; }
     bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
     bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
-    if(!found) { Tell("NetISO: the server doesn't list this game. Is it running?"); return false; }
-    if(!ListMountFolder(folder,hold)) { Tell("NetISO couldn't mount this game."); return false; }
+    if(!found) { Tell("NetISO: the server doesn't list this game. Is it running?"); return Fallback; }
+    if(stop==StepIso) return Cancelled;
+    if(!ListMountFolder(folder,hold)) { Tell("NetISO couldn't mount this game."); return Fallback; }
     if(relist) {
         Note("Listing the ISO's folder and the root again (relist).");
         if(isoFolder[0]) ListFolder(isoFolder);
@@ -433,7 +556,7 @@ static bool Mount(const Settings& settings) {
     }
     Sleep(QuietMs);
     for(int waited=QuietMs;waited<QuietMs+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return true; }
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return stop==StepMount ? Cancelled : Started; }
         Sleep(PollMs);
     }
     CloseMountFolder();
@@ -441,7 +564,7 @@ static bool Mount(const Settings& settings) {
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
     Tell("NetISO: the game didn't show up in the drive.");
-    return false;
+    return Fallback;
 }
 
 // ---- Tiles ----
@@ -483,10 +606,18 @@ static bool Skipping() {
 // One tile at a time.
 static volatile LONG Busy=0;
 
-// Mounts the tile's ISO and starts the disc. Returns only if it couldn't;
-// the caller then starts the tile itself.
-static void StartTile(const Settings& settings) {
-    bool mounted=Mount(settings);
+// Mounts the tile's ISO and starts the disc. Returns only if it couldn't:
+// Fallback when the tile's launcher should try, Cancelled when nothing should
+// start.
+static Outcome StartTile(const Settings& settings) {
+    Outcome outcome=Mount(settings);
+    if(outcome==Cancelled) {
+        Note("Back to Aurora.");
+        CloseLog();
+        UnlinkDrive(TileLink);
+        return Cancelled;
+    }
+    bool mounted=outcome==Started;
     LONG status=mounted ? LinkDrive(AuroraDiscLink,DiscDevice) : 0;
     if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
     if(mounted && status>=0) {
@@ -501,28 +632,35 @@ static void StartTile(const Settings& settings) {
     Note("Starting the tile's own launcher instead.");
     CloseLog();
     UnlinkDrive(TileLink);
+    return Fallback;
 }
-// Tries a tile launch the plugin's way. Returns true when it was a tile the
-// plugin couldn't start; the caller then lets xam start the tile as asked.
-static bool Handled(const char* path,const char* mountPath) {
-    if(Skipping() || InterlockedCompareExchange(&Busy,1,0)) return false;
+// Tries a launch the plugin's way: NotTile when it isn't a tile (xam starts
+// it as asked), Fallback when it's a tile the plugin couldn't start (xam
+// starts the tile's launcher), Cancelled when nothing should start.
+enum Handling { NotTile, TileFallback, TileCancelled };
+static Handling Handled(const char* path,const char* mountPath) {
+    if(Skipping() || InterlockedCompareExchange(&Busy,1,0)) return NotTile;
     Settings settings;
-    bool tile=IsTile(path,mountPath,settings);
-    if(tile) StartTile(settings);
+    Handling handling=NotTile;
+    if(IsTile(path,mountPath,settings)) handling=StartTile(settings)==Cancelled ? TileCancelled : TileFallback;
     InterlockedExchange(&Busy,0);
-    if(tile) Skip(true);
-    return tile;
+    if(handling==TileFallback) Skip(true);
+    return handling;
 }
+// What xam's launch calls get back for a tile that was cancelled.
+static const DWORD CancelledLaunch=ERROR_NOT_READY;
 static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
-    bool handled=Handled(path,NULL);
+    Handling handling=Handled(path,NULL);
+    if(handling==TileCancelled) return CancelledLaunch;
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
-    if(handled) Skip(false);
+    if(handling==TileFallback) Skip(false);
     return result;
 }
 static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const char* commandLine,DWORD flags) {
-    bool handled=Handled(path,mountPath);
+    Handling handling=Handled(path,mountPath);
+    if(handling==TileCancelled) return CancelledLaunch;
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
-    if(handled) Skip(false);
+    if(handling==TileFallback) Skip(false);
     return result;
 }
 

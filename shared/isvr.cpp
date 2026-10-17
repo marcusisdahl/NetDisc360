@@ -11,6 +11,10 @@ enum { Ping_ = 0, GetIsoSize = 1, ReadData = 3, GetIsoName = 4, MountIso = 5, He
 
 DWORD Read32(const unsigned char* p) { return (DWORD(p[0])<<24)|(DWORD(p[1])<<16)|(DWORD(p[2])<<8)|p[3]; }
 void Write32(unsigned char* p, DWORD v) { p[0]=BYTE(v>>24); p[1]=BYTE(v>>16); p[2]=BYTE(v>>8); p[3]=BYTE(v); }
+void AddressText(DWORD address, char* text, size_t capacity) {
+    DWORD host=ntohl(address);
+    _snprintf_s(text,capacity,_TRUNCATE,"%u.%u.%u.%u",host>>24,(host>>16)&0xFF,(host>>8)&0xFF,host&0xFF);
+}
 double Now() {
     LARGE_INTEGER counter, frequency;
     QueryPerformanceCounter(&counter); QueryPerformanceFrequency(&frequency);
@@ -86,8 +90,7 @@ bool IsvrClient::Connect(DWORD address, int port, double connectSeconds) {
         if(code!=WSAEWOULDBLOCK) return Fail("Connect failed (%d)",code);
         const double deadline=Now()+connectSeconds;
         for(;;) {
-            if(Now()>deadline) return Fail("No answer from %u.%u.%u.%u port %d",
-                BYTE(address),BYTE(address>>8),BYTE(address>>16),BYTE(address>>24),port);
+            if(Now()>deadline) { char where[16]; AddressText(address,where,sizeof(where)); return Fail("No answer from %s port %d",where,port); }
             fd_set writable,failed; FD_ZERO(&writable); FD_ZERO(&failed); FD_SET(socket_,&writable); FD_SET(socket_,&failed);
             timeval interval={0,100000};
             int rc=select(0,NULL,&writable,&failed,&interval);

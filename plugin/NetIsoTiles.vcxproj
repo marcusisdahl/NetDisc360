@@ -20,13 +20,14 @@
          overwritten at start-up, and must stay separate. -->
     <Link><OutputFile>$(OutDir)NetIsoTiles.dll</OutputFile><LinkDLL>true</LinkDLL><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>false</EnableCOMDATFolding>
       <BaseAddress>0x91380000</BaseAddress><FixedBaseAddress>true</FixedBaseAddress>
-      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <!-- Not packaged here: imagexex refuses the system base (see build.ps1 and xex.xml). -->
     <ImageXex><ExcludedFromBuild>true</ExcludedFromBuild></ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
   <ItemGroup><None Include="xex.xml" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- The Xbox 360 platform's ImageXex target ignores ExcludedFromBuild; this

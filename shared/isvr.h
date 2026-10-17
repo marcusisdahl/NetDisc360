@@ -11,6 +11,8 @@ enum { IsvrPort = 4323, IsvrSector = 2048, IsvrNameBytes = 256, IsvrMaxIsos = 10
 DWORD Read32(const unsigned char* p);
 void Write32(unsigned char* p, DWORD value);
 double Now();
+// "a.b.c.d" for an IPv4 address in network byte order.
+void AddressText(DWORD address, char* text, size_t capacity);
 
 class IsvrClient {
 public:
