@@ -54,9 +54,6 @@ static const char IniName[]="netiso.ini",LogName[]="netiso.log",GameXex[]="defau
 // killed the Guide every time while the file browser's never did (seen on
 // the console), so this keeps to the browser's way of asking.
 static const char IsoDevice[]="\\Device\\NetIso",DiscDevice[]="\\Device\\Cdrom0";
-// A device's root folder is opened with a trailing backslash; without one
-// the device itself is opened, as on Windows.
-static const char IsoRoot[]="\\Device\\NetIso\\";
 static const char DiscXex[]="\\Device\\Cdrom0\\default.xex";
 // A tile given as a device path (\Device\...) is read through this link to its folder.
 static const char TileLink[]="\\??\\NIsoT:",TileRoot[]="NIsoT:";
@@ -68,7 +65,7 @@ static const char MountFolder[]="Mount";
 // After the mount the plugin fakes a tray open and close on its own thread,
 // and the console then reads the new disc. Reading the disc meanwhile broke
 // the game the launcher started, so the disc is left alone this long first.
-static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
+static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=256;
 
 // ---- Hooks ----
 
@@ -348,24 +345,24 @@ static bool DiscIsGame(const Settings& settings) {
 static char Names[MaxNames][MAX_PATH];
 static DirectoryInfo Entry;
 // One directory query, returning one entry. The first names the pattern *
-// and restarts the scan, as FindFirstFile does. Listing NetISO's root with
-// neither, and without the root's trailing backslash, never finished (Aurora
-// hung, seen on the console).
+// and restarts the scan, as FindFirstFile does.
 static LONG QueryFolder(HANDLE handle,bool first) {
     static char all[]="*";
     KernelString pattern={1,sizeof(all),all};
     IoStatusBlock io={0,0};
     return NtQueryDirectoryFile(handle,NULL,NULL,NULL,&io,&Entry,sizeof(Entry),first ? &pattern : NULL,first);
 }
-static LONG OpenFolder(const char* folder,HANDLE& handle) {
-    return OpenPath(strcmp(folder,IsoDevice) ? folder : IsoRoot,true,handle);
-}
 // Lists a folder by device path into Names; the number of names, or -1 when
 // it can't be opened. Stops at MaxNames, or if an entry comes back twice in a
-// row.
+// row. The folder is opened with a trailing backslash, as FindFirstFile opens
+// it (the server saw the launcher's mount as <iso>\Mount\). Without it,
+// listing NetISO's root never finished (Aurora hung), and \Device\NetIso\<iso>
+// listed the ISO's own name (the walk then asked the server for
+// <iso>\<iso>\Mount); both seen on the console.
 static int ListFolder(const char* folder) {
+    char path[MAX_PATH]; sprintf_s(path,"%s\\",folder);
     HANDLE handle;
-    LONG status=OpenFolder(folder,handle);
+    LONG status=OpenPath(path,true,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
     int count=0;
     for(;;) {
@@ -385,33 +382,31 @@ static const char* FindName(int count,const char* name) {
     for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
-// Walks from the root to the ISO's Mount folder by name, as the launcher and
-// Aurora's file browser do. Listing these folders doesn't mount. isoFolder
-// gets the ISO's own folder.
+// The ISO's Mount folder, \Device\NetIso\<iso>\Mount, after listing the root
+// and the ISO's folder on the way, as Aurora's file browser does. Listing
+// these folders doesn't mount. isoFolder gets the ISO's own folder.
 static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,char* isoFolder) {
-    strcpy_s(folder,capacity,IsoDevice);
     isoFolder[0]=0;
-    for(int depth=0;depth<MaxDepth;++depth) {
-        int count=ListFolder(folder);
-        if(count<0) return false;
-        const char* next=FindName(count,settings.iso);
-        if(!next && (next=FindName(count,MountFolder))!=NULL) {
-            strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
-            return true;
-        }
-        if(!next) return false;
-        strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
-        strcpy_s(isoFolder,capacity,folder);
-    }
-    return false;
+    int count=ListFolder(IsoDevice);
+    if(count<0) return false;
+    const char* iso=FindName(count,settings.iso);
+    if(!iso) { Note("The server doesn't list %s.",settings.iso); return false; }
+    sprintf_s(isoFolder,capacity,"%s\\%s",IsoDevice,iso);
+    count=ListFolder(isoFolder);
+    if(count>=0 && !FindName(count,MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
+    sprintf_s(folder,capacity,"%s\\%s",isoFolder,MountFolder);
+    return true;
 }
 // Opening and listing a Mount folder mounts: the plugin swaps the disc before
 // the listing returns (empty), then fakes the tray open and close. With hold,
-// the folder stays open (in MountHandle) until the caller closes it.
+// the folder stays open (in MountHandle) until the caller closes it. It is
+// opened without a trailing backslash, so the server is asked for <iso>\Mount
+// (seen in its output), not <iso>\Mount\ as by the launcher, whose mount
+// killed the Guide.
 static HANDLE MountHandle=NULL;
 static bool ListMountFolder(const char* folder,bool hold) {
     HANDLE handle;
-    LONG status=OpenFolder(folder,handle);
+    LONG status=OpenPath(folder,true,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
     LONG result=QueryFolder(handle,true);
     Note("%s: listed (status %08X)",folder,result);
