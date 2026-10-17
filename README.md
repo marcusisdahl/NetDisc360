@@ -19,7 +19,7 @@ Each game gets a small launcher folder in `Hdd1:\NetISO` (`default.xex`, `boot.x
 4. On the PC, run `netiso-server.exe` in the folder with your ISOs, in place of `netiso-srv` or `server.exe`. Subfolders count too.
 5. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1.
 
-That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO plugin, and once the Xbox connects it keeps `Hdd1:\NetISO` current over Aurora's FTP. A new ISO gets its folder (after the file has stopped changing for 10 s), a removed ISO loses it, and launchers from an older build are replaced. Aurora picks the games up at its next scan. The server checks the Xbox every 15 s while it's off and every minute while it's on, so it doesn't matter which starts first.
+That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO plugin, and once the Xbox connects it keeps `Hdd1:\NetISO` current over Aurora's FTP. A new ISO gets its folder (after the file has stopped changing for 10 s), a removed ISO loses it, and launchers from an older build are replaced. Then the server asks Aurora to scan the folder (`SITE INITIATESCAN`, a command of Aurora's FTP server), so the game shows up at once and Aurora looks up its name and art online while the network is up. Aurora looks a game up only once, when its scan first finds it, and its own scan at boot runs before the Xbox has a network: a game first found then keeps its folder name and no art until you refresh it in Aurora. The server checks the Xbox every 15 s while it's off and every minute while it's on, so it doesn't matter which starts first.
 
 | Option | Default | |
 |---|---|---|
@@ -29,6 +29,7 @@ That's all. `netiso-server.exe` is one file: it serves the ISOs to the NetISO pl
 | `--aurora <path>` | `/Hdd1/Apps/Aurora` | Aurora's folder, for the Xbox 360 category. |
 | `--no-push` | | Only serve ISOs; leave the Xbox alone. |
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
+| `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--port`, `--ftp-port` | 4323, 21 | |
 | `-v` | | Log every request. |
 

@@ -273,6 +273,13 @@ bool FtpClient::Delete(const char* path) {
     return false;
 }
 
+bool FtpClient::Site(const char* command, std::string& reply) {
+    reply.clear();
+    if(!Open() || !Send("SITE %s",command) || !Reply()) return false;
+    reply=text_;
+    return code_/100==2;
+}
+
 bool FtpClient::RemoveFolder(const char* path) {
     std::string parent,name; SplitPath(path,parent,name);
     if(!Open() || !Enter(parent)) return false;

@@ -66,6 +66,16 @@ class Handler(socketserver.StreamRequestHandler):
                 self.reply("215 UNIX Type: L8")
             elif command == "TYPE":
                 self.reply("200 Type set to %s" % argument)
+            elif command == "SITE":
+                # FtpDll 1655: "SITE INITIATESCAN <Path>" starts Aurora's content scan.
+                verb, _, path = argument.partition(" ")
+                if verb.upper() == "INITIATESCAN":
+                    self.server.scans.append(path)
+                    self.reply("200 Initiating Content Scan")
+                elif verb.upper() == "REVISION":
+                    self.reply("200 1655")
+                else:
+                    self.reply("502 Command SITE not implemented for this argument.")
             elif command == "NOOP":
                 self.reply("200 ori r0, r0, 0")
             elif command == "PWD":
@@ -169,7 +179,7 @@ class Server(socketserver.ThreadingTCPServer):
     def __init__(self, root, port=0, user="xboxftp", password="xboxftp"):
         super().__init__(("127.0.0.1", port), Handler)
         self.root, self.user, self.password = root, user, password
-        self.log, self.stored = [], []
+        self.log, self.stored, self.scans = [], [], []
 
 
 def main():
