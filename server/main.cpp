@@ -43,8 +43,12 @@ struct Options {
     int port, ftpPort;
     DWORD xbox;
     bool push, filter, scan, verbose, pushOnce;
+    // Seconds to leave Aurora alone after its FTP server comes up, before
+    // the game folders are written (see PushLoop).
+    double auroraWait;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"),
-                port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), scan(true), verbose(false), pushOnce(false) {}
+                port(IsvrPort), ftpPort(21), xbox(0), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
+                auroraWait(90) {}
 };
 Options Settings;
 std::vector<unsigned char> Launcher, Boot;
@@ -361,10 +365,9 @@ bool Push(FtpClient& ftp, SyncResult& result) {
 }
 
 // Asks Aurora to scan the game folder now, with FtpDll's SITE INITIATESCAN,
-// so new games show up at once and Aurora looks them up online while the
-// network is up. Its own scan at boot runs before the Xbox has a network (40 s
-// after boot on the test console), and a game it first finds then never gets
-// its name or art. False when Aurora didn't start one (its scanner may be busy).
+// so new games show up at once and Aurora looks them up online. A game its own
+// scan finds while Aurora is starting never gets its name or art (see
+// PushLoop). False when Aurora didn't start one (its scanner may be busy).
 bool StartScan(FtpClient& ftp) {
     std::string reply;
     bool ok=ftp.Site(("INITIATESCAN "+Settings.xboxFolder).c_str(),reply) && reply.find("Unable")==std::string::npos;
@@ -375,9 +378,15 @@ bool StartScan(FtpClient& ftp) {
 
 // Watches the ISO folder and the Xbox. Pushes when the ISOs changed and have
 // settled, and when the Xbox's FTP server (Aurora) comes back after being away.
+// When Aurora has just started (after a boot or a game), its own scan runs
+// first, and a game folder it finds then gets no online lookup, so no name or
+// art, ever: 17 of 26 folders written then came out that way, and Banjo
+// before them (seen on the console, 2026-10-17). So the folders are written
+// auroraWait seconds after its FTP server comes up, and the scan the server
+// asks for afterwards does the lookups.
 void PushLoop() {
     std::string previous,pushed;
-    double changedAt=-1e9,nextProbe=0,retryAt=0,filterAt=0,scanAt=0;
+    double changedAt=-1e9,nextProbe=0,retryAt=0,filterAt=0,scanAt=0,upSince=0;
     int scanTries=0;
     bool attempted=false;
     bool everPushed=false,reachable=false,toldDown=false;
@@ -388,7 +397,8 @@ void PushLoop() {
         DWORD xbox=Settings.xbox ? Settings.xbox : XboxAddress.load();
         if(xbox && xbox!=target) { target=xbox; reachable=false; toldDown=false; nextProbe=0; }
         bool settled=Now()-changedAt>=SettleSeconds;
-        bool due=reachable && settled && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt));
+        bool auroraReady=Settings.pushOnce || Now()-upSince>=Settings.auroraWait;
+        bool due=reachable && settled && auroraReady && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt));
         if(target && (due || Now()>=nextProbe)) {
             FtpClient ftp(target,Settings.ftpPort,Settings.ftpUser.c_str(),Settings.ftpPassword.c_str(),15);
             if(!ftp.Open()) {
@@ -396,10 +406,15 @@ void PushLoop() {
                 reachable=false; toldDown=true; nextProbe=Now()+ProbeDownSeconds;
             } else {
                 bool back=!reachable;
-                if(back) { char where[16]; AddressText(target,where,sizeof(where)); Log("The Xbox's FTP server at %s answers.",where); }
+                if(back) {
+                    char where[16]; AddressText(target,where,sizeof(where));
+                    upSince=Now(); auroraReady=Settings.pushOnce || Settings.auroraWait<=0;
+                    if(auroraReady) Log("The Xbox's FTP server at %s answers.",where);
+                    else Log("The Xbox's FTP server at %s answers. Leaving Aurora %.0f s to finish starting before the game folders are checked.",where,Settings.auroraWait);
+                }
                 reachable=true; toldDown=false; nextProbe=Now()+ProbeUpSeconds;
                 if(Settings.filter && (back || Now()>=filterAt)) { GuardFilter(ftp,back); filterAt=Now()+FilterCheckSeconds; }
-                if(settled && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt))) {
+                if(settled && auroraReady && (!everPushed || state!=pushed || (retryAt && Now()>=retryAt))) {
                     SyncResult result;
                     attempted=true;
                     if(Push(ftp,result)) {
@@ -465,6 +480,7 @@ void Usage() {
         "  --no-push               only serve ISOs; leave the Xbox alone\n"
         "  --no-category           leave Aurora's Xbox 360 category alone\n"
         "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
+        "  --aurora-wait <s>       seconds to leave Aurora after it starts, before writing (90)\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
         "  -v                      log every request\n"
         "  -r, -b                  accepted for netiso-srv's command line; subfolders are always searched\n");
@@ -493,6 +509,7 @@ bool ParseArguments(int argc, char** argv) {
         else if(hasValue && a=="--ftp-port") Settings.ftpPort=atoi(argv[++i]);
         else if(hasValue && a=="--launcher") Settings.launcherPath=argv[++i];
         else if(hasValue && a=="--boot") Settings.bootPath=argv[++i];
+        else if(hasValue && a=="--aurora-wait") Settings.auroraWait=atof(argv[++i]);
         else if(a[0]!='-') {
             while(a.size()>1 && (a[a.size()-1]=='/' || a[a.size()-1]=='\\')) a.erase(a.size()-1);
             Settings.folders.push_back(a);

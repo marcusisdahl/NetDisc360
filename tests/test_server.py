@@ -267,6 +267,27 @@ class Push(ServerTest):
         self.push()
         self.assertEqual(len(self.ftp.scans), 2)
 
+    def test_leaves_aurora_time_to_start_before_writing(self):
+        # Aurora's own scan right after it starts skips the online lookup, so
+        # the running server writes nothing until --aurora-wait has passed.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        server = subprocess.Popen([SERVER, self.isos, "--port", str(free_port()), "--xbox", "127.0.0.1",
+                                   "--ftp-port", str(self.ftp.server_address[1]), "--aurora-wait", "3",
+                                   "--launcher", self.launcher, "--boot", self.boot],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            time.sleep(1.5)
+            self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))
+            deadline = time.time() + 15
+            while not self.ftp.scans and time.time() < deadline:
+                time.sleep(0.2)
+            self.assertTrue(os.path.isfile(os.path.join(self.games, "Halo 3", "default.xex")))
+            self.assertEqual(self.ftp.scans, ["/Hdd1/NetISO"])
+        finally:
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("Leaving Aurora 3 s to finish starting", out)
+
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
         os.makedirs(sync)
