@@ -30,7 +30,7 @@ try {
     # dashboard page (web/index.html, made into server/web_page.h).
     & python tools\make_web.py
     if ($LASTEXITCODE) { throw 'make_web.py failed.' }
-    & $msbuild server\NetIsoServer.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+    & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
     # It is linked at its system base (0x91380000), which the public imagexex

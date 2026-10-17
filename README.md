@@ -1,6 +1,16 @@
-# NetDisc 360
+<p align="center">
+  <img src="docs/images/logo.png" alt="NetDisc 360: network games for homebrew Xbox 360" width="480">
+</p>
 
-Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360 is a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora: every game it serves shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
+<p align="center">
+  <b>Play the Xbox 360 games on your PC straight from Aurora's game list: a NetISO server with a web dashboard, for Windows and Docker.</b>
+</p>
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
+</p>
+
+NetDisc 360 is a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora: every game it serves shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
 
 - **One small program on the PC.** Double-click `NetDisc.exe`, pick your game folders on its dashboard in your web browser, and forget about it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker, with the same dashboard.
 - **Any number of consoles.** Several consoles can play from one server at once, each with its own game list in Aurora. The dashboard shows what each one plays and how fast its game streams.
@@ -8,7 +18,21 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. NetDisc 360
 - **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
 - **The Guide keeps working** in games started this way.
 
-**Contents:** [What you need](#what-you-need) · [Install](#install) · [Docker](#docker) · [Playing](#playing) · [Recommended extras](#recommended-extras) · [Troubleshooting](#troubleshooting) · [Updating](#updating) · [Security](#security) · [The server in detail](#the-server-in-detail) · [Build](#build) · [How it works](#how-it-works)
+**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** NetISO reads every game over the network while you play, and the console's own network port is 100 Mbit/s. A gigabit USB Ethernet adapter on CUsbEnet gives games more room; see [Recommended extras](#recommended-extras).
+
+## Contents
+
+- [What you need](#what-you-need)
+- [Install](#install)
+- [Docker](#docker)
+- [Playing](#playing)
+- [Recommended extras](#recommended-extras)
+- [Troubleshooting](#troubleshooting)
+- [Updating](#updating)
+- [Security](#security)
+- [The server in detail](#the-server-in-detail)
+- [Build](#build)
+- [How it works](#how-it-works)
 
 ## What you need
 
