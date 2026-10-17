@@ -6,7 +6,8 @@
    - `netiso-server.exe`
    - `NetIsoTiles.xex`
    - `NetISO-Sync.zip`
-4. Publish the release. The "Docker image" workflow then builds `ghcr.io/marcusisdahl/netiso-aurora` for x86-64 and ARM64 with that release's launchers, tagged with the version and `latest`.
-5. The first time only: on GitHub, open the package (your profile, Packages, `netiso-aurora`), Package settings, and set its visibility to **Public**, so `docker compose pull` works without a login.
+4. Make the repository public (Settings, General, Danger Zone, Change visibility), if it isn't yet. Do this before publishing: the Docker workflow downloads `NetISO-Sync.zip` from the release, which only works once the repository is public.
+5. Publish the release. The "Docker image" workflow then builds `ghcr.io/marcusisdahl/netiso-aurora` for x86-64 and ARM64 with that release's launchers, tagged with the version and `latest`.
+6. The first time only: on GitHub, open the package (your profile, Packages, `netiso-aurora`), Package settings, and set its visibility to **Public**, so `docker compose pull` works without a login.
 
 If the workflow ran before the files were attached, run it again from the Actions tab ("Docker image", Run workflow) with the release's tag.
