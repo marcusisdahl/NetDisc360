@@ -55,7 +55,7 @@ Play the Xbox 360 games on your PC straight from Aurora's game list. Every game 
 
 **On Windows:** put `netiso-server.exe` anywhere, for example in the folder with your games, and double-click it.
 
-- The first time, it serves the folder it is in. Add your other game folders with **Add folder...** (or drop them on the window), and remove any you don't want. Subfolders count too.
+- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with **Add folder...** (or drop them on the window), and remove any you don't want. Subfolders count too.
 - Leave **Xbox IP address** empty: the server finds the console when it connects. Fill it in only if the console isn't found.
 - Enter **Aurora's FTP login** if you changed it.
 - Tick **Start with Windows** to have it start, minimized, every time you sign in.

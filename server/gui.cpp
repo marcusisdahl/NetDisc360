@@ -122,6 +122,25 @@ bool Unprotect(const std::wstring& text, std::wstring& password) {
     return true;
 }
 
+// Whether a folder looks like it holds games: an ISO, an extracted game's
+// default.xex or a GOD package's 00007000 folder, within a few levels.
+bool HasGames(const std::wstring& folder, int depth) {
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileW((folder + L"\\*").c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE) return false;
+    bool games = false;
+    do {
+        std::wstring name = found.cFileName;
+        if (name == L"." || name == L"..") continue;
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            games = !_wcsicmp(name.c_str(), L"00007000") || (depth > 0 && HasGames(folder + L"\\" + name, depth - 1));
+        else
+            games = (name.size() > 4 && !_wcsicmp(name.c_str() + name.size() - 4, L".iso")) || !_wcsicmp(name.c_str(), L"default.xex");
+    } while (!games && FindNextFileW(search, &found));
+    FindClose(search);
+    return games;
+}
+
 std::wstring ReadSetting(const std::wstring& ini, const wchar_t* key, const wchar_t* fallback) {
     std::vector<wchar_t> value(32768);
     GetPrivateProfileStringW(Section, key, fallback, value.data(), DWORD(value.size()), ini.c_str());
@@ -131,9 +150,10 @@ std::wstring ReadSetting(const std::wstring& ini, const wchar_t* key, const wcha
 void LoadConfig() {
     std::wstring ini = IniPath();
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        // First start: serve the folder the exe is in, so it can simply be
-        // put in the folder with the games.
-        Saved.folders.push_back(ExeFolder());
+        // First start: serve the folder the exe is in when it has games, so
+        // the exe can simply be put in the folder with them. Run from the
+        // Desktop or Downloads, it starts with an empty list instead.
+        if (HasGames(ExeFolder(), 3)) Saved.folders.push_back(ExeFolder());
         return;
     }
     int count = GetPrivateProfileIntW(Section, L"folders", 0, ini.c_str());
