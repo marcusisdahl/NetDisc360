@@ -3,22 +3,24 @@
 </p>
 
 <p align="center">
-  <b>Your Xbox 360 games on your PC, in Aurora's game list like installed games. Pick one and it plays over the network.</b>
+  <b>Play your whole Xbox 360 library from your PC or NAS. Every game shows up in Aurora as if it were installed, without filling your Xbox's hard drive.</b>
 </p>
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
 </p>
 
-NetDisc 360 is a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora: every game it serves shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
+Keep your games on your PC or NAS and play them on your Xbox 360 just like installed games. Each one appears in Aurora with its name, cover art, title updates and DLC; pick it and it starts.
 
-- **One small program on the PC.** Double-click `NetDisc.exe`, pick your game folders on its dashboard in your web browser, and forget about it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker, with the same dashboard.
-- **Any number of consoles.** Several consoles can play from one server at once, each with its own game list in Aurora. The dashboard shows what each one plays and how fast its game streams.
-- **ISOs, extracted games and Games on Demand**, from as many folders as you like. Nothing is converted or copied.
-- **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
-- **The Guide keeps working** in games started this way.
+- **Your Xbox's drive stays free.** The games stay on your PC or NAS. The console keeps only a tiny shortcut for each one (about 6 MB), so 2,300 games take about 13 GB on the Xbox instead of many terabytes.
+- **Set it up once.** Start NetDisc 360 on your PC, choose your game folders, and that's it. New games show up in Aurora by themselves and removed ones disappear. It can start with Windows, and on a NAS it runs in Docker.
+- **Every console in the house.** Several Xboxes can play from the same library at the same time, and the dashboard shows what each one is playing.
+- **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
+- **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
 
-**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** NetISO reads every game over the network while you play, and the console's own network port is 100 Mbit/s. A gigabit USB Ethernet adapter on CUsbEnet gives games more room; see [Recommended extras](#recommended-extras).
+Under the hood it's a [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server for Aurora; [How it works](#how-it-works) has the details.
+
+**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** Games load faster through a gigabit USB network adapter, which CUsbEnet makes work on the Xbox (its own network port is 100 Mbit/s); see [Recommended extras](#recommended-extras).
 
 ## Contents
 
