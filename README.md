@@ -44,6 +44,7 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 - A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
 - Both are placed at the game partition offset of a full XGD2 image (XGD3 when too big for XGD2), like the retail ISOs; what comes before it reads as zeros.
 - Original Xbox games (`default.xbe`) are skipped, as their ISOs are.
+- A folder given on the command line is never taken as a game itself, even with a `default.xex` at its top; only what is inside it counts.
 
 **Each game is served once.** A game that is there more than once (the same Title ID and disc number, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the server window lists the other copies with their paths so they can be removed.
 

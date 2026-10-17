@@ -576,7 +576,9 @@ void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
     if(depth>MaxDepth) return;
     std::vector<Entry> entries;
     if(!List(folder,entries)) return;
-    if(Find(entries,"default.xex",false)) {
+    // A served folder itself is a library, not a game, even with a
+    // default.xex left in it: the ISOs and folders in it are what count.
+    if(depth>0 && Find(entries,"default.xex",false)) {
         AddFolder(folder,Leaf(folder),entries,out);
         for(size_t i=0;i<entries.size();++i) {
             std::string inside=Join(folder,entries[i].name);
@@ -587,7 +589,7 @@ void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
         return;
     }
     // An original Xbox game, which NetISO can't start; no need to look inside.
-    if(Find(entries,"default.xbe",false)) return;
+    if(depth>0 && Find(entries,"default.xbe",false)) return;
     for(size_t i=0;i<entries.size();++i) {
         const Entry& e=entries[i];
         if(e.folder) continue;

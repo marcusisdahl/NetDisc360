@@ -375,6 +375,18 @@ class Discs(ServerTest):
         self.assertEqual(c.names(), ["Elsewhere (folder).iso"])
         c.close()
 
+    def test_a_served_folder_is_not_a_game(self):
+        # Game files left at the top of the ISO folder don't hide the ISOs.
+        with open(os.path.join(self.isos, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(1, 0x4156081A)))
+        open(os.path.join(self.isos, "default.xbe"), "wb").close()
+        self.add_iso("a.iso", 1, 0x11111111)
+        self.make_game("Game", 0x22222222)
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["a.iso", "Game (folder).iso"])
+        c.close()
+
     def test_a_file_too_big_for_a_disc(self):
         game = self.make_game("Huge", 0x44444444)
         with open(os.path.join(game, "big.bin"), "wb") as f:
