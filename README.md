@@ -171,3 +171,7 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The files in `third_party/` keep their own licenses.
