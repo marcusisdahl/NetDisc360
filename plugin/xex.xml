@@ -1,8 +1,9 @@
 <?xml version="1.0"?>
-<!-- A system DLL, like NetISO.xex (module flags 0xA, base 0x91100000), so
-     DashLaunch can load it as a plugin. The base sits between NetISO.xex
-     and Aurora's Nova.xex (0x91A00000). -->
+<!-- The public imagexex refuses a system DLL (IM1038/IM1067), so the plugin
+     is packaged as a title DLL at the base its PE header was patched to, and
+     tools/sysdll.py then moves the XEX to the system base the code was linked
+     at (0x91380000, between NetISO.xex and Aurora's Nova.xex), with NetISO's
+     module and image flags. Uncompressed, so sysdll.py can hash the pages. -->
 <xex>
-  <baseaddr addr="0x91380000"/>
-  <sysdll/>
+  <format><uncompressed/></format>
 </xex>

@@ -22,9 +22,18 @@ try {
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
     # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
+    # It is linked at its system base (0x91380000), which the public imagexex
+    # refuses, so its PE header is patched to a title base for imagexex and
+    # tools/sysdll.py then moves the XEX back to the system base, as a system
+    # DLL like NetISO.xex. The code itself is never relocated.
     & $msbuild plugin\NetIsoTiles.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Plugin compilation failed.' }
-    Copy-Item -LiteralPath build\xbox\NetIsoTiles.xex -Destination build\NetIsoTiles.xex -Force
+    & python tools\sysdll.py pe-base build\xbox\NetIsoTiles.dll build\xbox\NetIsoTiles-title.dll 0x82000000
+    if ($LASTEXITCODE) { throw 'sysdll.py pe-base failed.' }
+    & $imagexex.FullName /IN:build\xbox\NetIsoTiles-title.dll /OUT:build\xbox\NetIsoTiles-title.xex /CONFIG:plugin\xex.xml
+    if ($LASTEXITCODE) { throw 'imagexex failed for NetIsoTiles.' }
+    & python tools\sysdll.py xex build\xbox\NetIsoTiles-title.xex build\NetIsoTiles.xex 0x91380000
+    if ($LASTEXITCODE) { throw 'sysdll.py failed for NetIsoTiles.' }
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
