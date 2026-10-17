@@ -10,17 +10,20 @@
     <TargetName>netiso-server</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
-    <!-- One self-contained exe: the C runtime is linked in, and the launcher XEXs are resources. -->
+    <!-- One self-contained exe: the C runtime is linked in, and the launcher XEXs are resources.
+         A Windows program (no console window of its own): started without options it shows
+         its window (gui.cpp); with options it attaches to the console it was started from. -->
     <ClCompile><Optimization>MaxSpeed</Optimization><WarningLevel>Level3</WarningLevel><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard><SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
+    <Link><SubSystem>Windows</SubSystem><EntryPointSymbol>mainCRTStartup</EntryPointSymbol><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
       <AdditionalDependencies>ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="discs.cpp" /><ClCompile Include="ftp.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="gui.cpp" /><ClCompile Include="discs.cpp" /><ClCompile Include="ftp.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
   <ItemGroup><ClInclude Include="ftp.h" /><ClInclude Include="discs.h" /><ClInclude Include="resource.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /></ItemGroup>
   <ItemGroup><ResourceCompile Include="server.rc" /></ItemGroup>
+  <ItemGroup><Image Include="netiso.ico" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

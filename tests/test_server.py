@@ -268,6 +268,27 @@ class Push(ServerTest):
         self.assertIn("0 added, 0 removed, 2 kept (0 updated)", out)
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
 
+    def test_takes_the_ftp_password_from_the_environment(self):
+        # The window and the Docker image pass the password this way.
+        self.ftp.password = "s3cret pass"
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        os.environ["NETISO_FTP_PASSWORD"] = "s3cret pass"
+        try:
+            self.assertIn("1 added, 0 removed", self.push())
+        finally:
+            del os.environ["NETISO_FTP_PASSWORD"]
+        self.assertNotIn("s3cret", "".join(self.ftp.log))
+        # --ftp-password wins over it.
+        os.environ["NETISO_FTP_PASSWORD"] = "wrong"
+        try:
+            result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
+                                     "--ftp-port", str(self.ftp.server_address[1]), "--ftp-password", "s3cret pass",
+                                     "--launcher", self.launcher, "--boot", self.boot],
+                                    capture_output=True, text=True, timeout=60)
+        finally:
+            del os.environ["NETISO_FTP_PASSWORD"]
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_asks_aurora_to_scan_after_adding_or_removing_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         path = self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)

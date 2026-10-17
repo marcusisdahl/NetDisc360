@@ -540,6 +540,9 @@ bool ParseArguments(int argc, char** argv) {
 }
 
 int Run(int argc, char** argv) {
+    // The window (gui.cpp) and the Docker image pass the FTP password here,
+    // so it doesn't show in the process list; --ftp-password still wins.
+    if(const char* password=getenv("NETISO_FTP_PASSWORD")) Settings.ftpPassword=password;
     if(!ParseArguments(argc,argv)) return 2;
 #ifdef _WIN32
     SetConsoleTitleA("NetISO server for Aurora");
@@ -591,7 +594,15 @@ int Run(int argc, char** argv) {
 }
 }
 
+#ifdef _WIN32
+int GuiMain(int argc, char** argv);  // gui.cpp: the window when started without options.
+#endif
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    int window=GuiMain(argc,argv);
+    if(window>=0) return window;
+#endif
     int code=Run(argc,argv);
 #ifdef _WIN32
     // Started from Explorer: keep the window open to show why it stopped.
