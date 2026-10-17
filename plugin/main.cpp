@@ -16,6 +16,12 @@
 // XamAppUnloadSelf for mounts that don't come from the Guide (see below). Every other launch, and
 // a tile it can't mount, goes on to xam unchanged, so the tile's launcher
 // still runs as before when the plugin can't help.
+//
+// That unload call turned out to be what killed the Guide, and with it
+// skipped the launcher's own mount keeps the Guide too (seen on the console).
+// So tiles now go to their launcher, which shows the loading screen and can
+// be cancelled at every step; tiles=aurora in a game's netiso.ini still
+// mounts from inside Aurora.
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
@@ -769,12 +775,11 @@ static Handling Handled(const char* path,const char* mountPath) {
     Settings settings;
     Handling handling=NotTile;
     if(IsTile(path,mountPath,settings)) {
-        // tiles=launcher in netiso.ini leaves the tile to its own launcher
-        // (with NetISO's unload call still skipped), to test whether the
-        // launcher's mount keeps the Guide now.
+        // The tile's own launcher starts it (see the top of this file);
+        // tiles=aurora in netiso.ini mounts from inside Aurora instead.
         char value[16];
-        if(IniValue(Ini,"tiles",value,sizeof(value)) && !_stricmp(value,"launcher")) {
-            Note("tiles=launcher: the tile's own launcher starts it.");
+        if(!IniValue(Ini,"tiles",value,sizeof(value)) || _stricmp(value,"aurora")) {
+            Note("The tile's own launcher starts it (tiles=aurora would mount from Aurora).");
             CloseLog();
             UnlinkDrive(TileLink);
             handling=TileFallback;

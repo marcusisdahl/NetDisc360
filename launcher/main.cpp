@@ -27,6 +27,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include "../shared/library.h"
+#include "../third_party/imgui/imgui.h"
+#include "imgui_impl_xbox360.h"
+#include "ui.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -75,34 +78,66 @@ static int IniNumber(const char* ini,const char* key,int fallback) {
     return atoi(value);
 }
 
-// A plain screen with a progress bar, drawn while the launcher works. A title
-// that never draws left the Guide dead, in the game it started too (seen on
-// the console), so the launcher keeps presenting frames until it launches.
+// The loading screen (ui.cpp, in Xbox360-FastFTP's style). A title that
+// never draws left the Guide dead, in the game it started too (seen on the
+// console), so the launcher keeps presenting frames until it launches. Only
+// the main thread draws; the mount runs on a worker that sets the steps.
 static IDirect3DDevice9* Screen=NULL;
-static int Progress=0; // 0 to 100
-static bool Failed=false; // Draws the bar red.
+static nia::LoadScreen Shown;
+static CRITICAL_SECTION ShownLock;
+static WORD Held=0; // Controller buttons down at the last look.
+static WORD Buttons() {
+    WORD buttons=0;
+    for(DWORD pad=0;pad<4;++pad) {
+        XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
+        if(XInputGetState(pad,&state)==ERROR_SUCCESS) buttons|=state.Gamepad.wButtons;
+    }
+    return buttons;
+}
+// Buttons pressed since the last call.
+static WORD Pressed() {
+    WORD buttons=Buttons(),pressed=buttons&~Held;
+    Held=buttons;
+    return pressed;
+}
 static void ScreenStart() {
+    if(ImGui::GetCurrentContext()) ImGui::DestroyContext();
+    nia::InitLoadUi();
     IDirect3D9* d3d=Direct3DCreate9(D3D_SDK_VERSION);
     if(!d3d) return;
     D3DPRESENT_PARAMETERS pp; ZeroMemory(&pp,sizeof(pp));
-    pp.BackBufferWidth=1280; pp.BackBufferHeight=720; pp.BackBufferFormat=D3DFMT_X8R8G8B8; pp.BackBufferCount=1;
+    pp.BackBufferWidth=1280; pp.BackBufferHeight=720; pp.BackBufferFormat=D3DFMT_A8R8G8B8;
+    pp.FrontBufferFormat=D3DFMT_LE_X8R8G8B8; pp.BackBufferCount=1;
     pp.MultiSampleType=D3DMULTISAMPLE_NONE; pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
     pp.PresentationInterval=D3DPRESENT_INTERVAL_ONE;
     if(FAILED(d3d->CreateDevice(0,D3DDEVTYPE_HAL,NULL,D3DCREATE_HARDWARE_VERTEXPROCESSING,&pp,&Screen))) Screen=NULL;
     d3d->Release();
+    if(Screen && !ImGuiXbox360Init(Screen)) { Screen->Release(); Screen=NULL; }
+    // The A that started the tile may still be down.
+    Held=Buttons();
 }
 static void ScreenDraw() {
     if(!Screen) return;
-    Screen->Clear(0,NULL,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,16,16),1.0f,0);
-    D3DRECT track={340,500,940,510},bar={340,500,340+6*Progress,510};
-    Screen->Clear(1,&track,D3DCLEAR_TARGET,D3DCOLOR_XRGB(48,48,48),1.0f,0);
-    if(Failed) Screen->Clear(1,&track,D3DCLEAR_TARGET,D3DCOLOR_XRGB(180,32,32),1.0f,0);
-    else if(Progress>0) Screen->Clear(1,&bar,D3DCLEAR_TARGET,D3DCOLOR_XRGB(16,124,16),1.0f,0);
+    EnterCriticalSection(&ShownLock);
+    nia::LoadScreen frame=Shown;
+    LeaveCriticalSection(&ShownLock);
+    frame.time=GetTickCount()/1000.0;
+    ImGui::GetIO().DeltaTime=1.0f/60;
+    nia::DrawLoadUi(frame);
+    Screen->Clear(0,NULL,D3DCLEAR_TARGET,0xFF0F1725,1.0f,0);
+    ImGuiXbox360Render(ImGui::GetDrawData());
     Screen->Present(NULL,NULL,NULL,NULL);
 }
 // Before launching anything.
 static void ScreenStop() {
     if(Screen) { Screen->Release(); Screen=NULL; }
+}
+// The step under way, how far along the whole start is (0 to 1), and a line about it.
+static void ShowStep(int step,double fraction,const char* format,...) {
+    EnterCriticalSection(&ShownLock);
+    Shown.step=step; Shown.fraction=fraction;
+    va_list args; va_start(args,format); _vsnprintf_s(Shown.status,sizeof(Shown.status),_TRUNCATE,format,args); va_end(args);
+    LeaveCriticalSection(&ShownLock);
 }
 // The log is one file per folder that every run appends to, each line with
 // the console's time, so a run never wipes the one before it. Each run starts
@@ -116,8 +151,11 @@ static void OpenLog(bool run) {
     fseek(Log,0,SEEK_END);
     if(ftell(Log)>LogMax) { fclose(Log); if(fopen_s(&Log,LogFile,"w")) Log=NULL; }
 }
+static CRITICAL_SECTION LogLock;
 static void CloseLog() {
+    EnterCriticalSection(&LogLock);
     if(Log) { fclose(Log); Log=NULL; }
+    LeaveCriticalSection(&LogLock);
 }
 static void Stamp() {
     SYSTEMTIME t; GetLocalTime(&t);
@@ -131,7 +169,6 @@ static void Stamp() {
 // is logged, to see what the swap sends.
 static HANDLE Notifications=NULL;
 // The log is also written from the mount thread; only the main thread draws.
-static CRITICAL_SECTION LogLock;
 static DWORD MainThread=0;
 static void ReadNotifications() {
     if(!Notifications) return;
@@ -143,9 +180,10 @@ static void ReadNotifications() {
     }
 }
 
-// Sleep that keeps drawing and reading notifications.
+// Sleep that keeps drawing and reading notifications on the main thread.
 static void Wait(int ms) {
-    for(int waited=0;waited<ms;waited+=20) { ReadNotifications(); ScreenDraw(); Sleep(20); }
+    if(GetCurrentThreadId()!=MainThread) { Sleep(ms); return; }
+    for(DWORD start=GetTickCount();GetTickCount()-start<DWORD(ms);) { ReadNotifications(); ScreenDraw(); if(!Screen) Sleep(20); }
 }
 
 static void Note(const char* format,...) {
@@ -265,31 +303,33 @@ static const char* FindName(int count,const char* name) {
 }
 
 // Walks from the root toward the ISO's Mount folder by name, the way you
-// would in Aurora's file browser, and returns that folder's path (inside
+// would in Aurora's file browser, and gives that folder's path (inside
 // NIsoL:). Listing these folders doesn't mount; listing Mount does. It stops
 // without a path after the given number of listings.
-static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,int listings) {
+enum Found { FoundMount, FoundStopped, FoundNoRoot, FoundNotListed, FoundNoMount };
+static Found FindMountFolder(const Settings& settings,char* folder,size_t capacity,int listings) {
     strcpy_s(folder,capacity,IsoRoot);
     bool sawIso=false;
     for(int depth=0;depth<MaxDepth;++depth) {
-        if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return false; }
+        if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
         int count=ListFolder(folder);
+        // An empty root: the plugin couldn't reach the server.
+        if(!depth && !count) return FoundNoRoot;
         const char* next=FindName(count,settings.iso);
         if(next) sawIso=true;
         else if((next=FindName(count,MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
-            if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return false; }
-            return true;
+            if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return FoundStopped; }
+            return FoundMount;
         }
         if(!next) {
-            Note(sawIso?"No Mount folder under %s.":"%s isn't listed by the server. Is the server running, and is the ISO in its folder?",
-                sawIso?folder:settings.iso);
-            return false;
+            Note(sawIso?"No Mount folder under %s.":"%s isn't listed by the server.",sawIso?folder:settings.iso);
+            return sawIso ? FoundNoMount : FoundNotListed;
         }
         strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
     }
     Note("Gave up after %d folders without a Mount folder.",MaxDepth);
-    return false;
+    return FoundNoMount;
 }
 // Lists a Mount folder, which mounts: the plugin swaps the disc before the
 // listing returns (empty, error 18 no more files), then fakes the tray open
@@ -305,19 +345,66 @@ static bool ListMountFolder(const char* folder) {
 }
 
 static bool FindServer(const char* ini,DWORD& address,int& port);
-static bool StartNetwork();
-// Whether the NetISO server answers, before asking the plugin to mount. Not
-// knowing the server isn't fatal: the plugin may still have one.
-static bool ServerAnswers(const char* ini) {
+static bool StartNetwork(int addressWaitMs);
+static char ServerSource[48]="";
+
+// A failed start, as the screen tells it: the step, a title and up to three
+// lines, and whether trying again could help.
+struct Failure { int step; bool retry; char title[96]; char lines[3][128]; };
+static Failure Problem;
+enum Result { Mounted, Failed, Cancelled };
+static volatile LONG CancelAsked=0;
+static Result Fail(int step,bool retry,const char* title,const char* line0,const char* line1=NULL,const char* line2=NULL) {
+    Problem.step=step; Problem.retry=retry;
+    strcpy_s(Problem.title,title);
+    const char* lines[3]={line0,line1,line2};
+    for(int i=0;i<3;++i) strcpy_s(Problem.lines[i],lines[i] ? lines[i] : "");
+    Note("Failed: %s",title);
+    for(int i=0;i<3;++i) if(Problem.lines[i][0]) Note("  %s",Problem.lines[i]);
+    return Failed;
+}
+// Sleeps up to ms, in steps, unless B was pressed.
+static bool Pause(int ms) {
+    for(int waited=0;waited<ms;waited+=100) { if(CancelAsked) return false; Sleep(100); }
+    return !CancelAsked;
+}
+
+// Right after a reboot the console can't reach the server for a minute or
+// two (seen on the console), so until it has been up this long the launcher
+// keeps trying instead of failing.
+static const DWORD BootSeconds=240,RetrySeconds=10;
+static Result WaitForServer(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
-    if(!FindServer(ini,address,port)) { Note("Not checking the server."); return true; }
-    if(!StartNetwork()) return false;
-    nia::IsvrClient client(5);
-    bool ok=client.Connect(address,port,3) && client.Ping();
-    if(ok) Note("The server answers.");
-    else Note("Can't reach the NetISO server: %s",client.Error());
-    client.Close();
-    return ok;
+    if(!FindServer(ini,address,port))
+        return Fail(nia::StepServer,true,"No NetISO server is set up","The launcher found no server address for this game.",
+                    "Put the PC's IP address in Hdd1:\\netiso.xex.txt, as the NetISO plugin reads it,",
+                    "or server=<address> in this game's netiso.ini.");
+    char where[32]; nia::AddressText(address,where,sizeof(where));
+    EnterCriticalSection(&ShownLock); strcpy_s(Shown.server,where); LeaveCriticalSection(&ShownLock);
+    if(!StartNetwork(0)) return Fail(nia::StepServer,true,"The Xbox's network didn't start","XNetStartup or WSAStartup failed.","Reboot the Xbox and try again.");
+    const DWORD start=GetTickCount();
+    char error[160]="";
+    for(;;) {
+        if(CancelAsked) return Cancelled;
+        XNADDR own;
+        if(XNetGetTitleXnAddr(&own)==XNET_GET_XNADDR_PENDING) strcpy_s(error,"The Xbox has no network address yet");
+        else {
+            nia::IsvrClient client(5);
+            if(client.Connect(address,port,3) && client.Ping()) { Note("The server answers."); return Mounted; }
+            strcpy_s(error,client.Error());
+        }
+        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
+        bool booting=up<BootSeconds;
+        if(!booting && waited>=RetrySeconds) break;
+        if(booting) ShowStep(nia::StepServer,0.04,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
+        else ShowStep(nia::StepServer,0.04,"Waiting for the NetISO server at %s... %lu s",where,waited);
+        if(!Pause(1000)) return Cancelled;
+    }
+    Note("Can't reach the NetISO server: %s",error);
+    char line0[128],line2[128];
+    _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
+    _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
+    return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start netiso-server.exe on the PC, and check that the PC and the Xbox",line2);
 }
 
 // stop_after= in netiso.ini stops short of the mount and goes back to
@@ -333,42 +420,152 @@ static int StopAfter(const char* ini) {
     return NoStop;
 }
 
-static bool MountGame(const char* ini) {
-    Settings settings;
-    if(!ReadSettings(ini,settings)) return false;
-    if(LinkDrive(DiscLink,DiscDevice)<0) { Note("Can't link %s.",DiscDevice); return false; }
-    if(DiscIsGame(settings)) { Note("The game is already mounted."); return true; }
-    if(!ServerAnswers(ini)) { Failed=true; Wait(5000); return false; }
-    Progress=5; ScreenDraw();
-    if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded. Add it as a DashLaunch plugin.");
-    // With the plugin (plugin/main.cpp) loaded, it starts the tile from Aurora
-    // instead, and runs the launcher only when it couldn't.
-    Note(GetModuleHandle("NetIsoTiles.xex") ? "NetIsoTiles.xex is loaded and passed this tile on."
-                                            : "NetIsoTiles.xex isn't loaded.");
+// The NetISO plugin connects to the server by itself, and until it has, its
+// drive lists one entry, "No Server!". Right after a reboot that lasted past
+// the point where the launcher could reach the server (seen on the console
+// at 1:07 after boot), so the launcher waits for it as for the server.
+static const char NoServerEntry[]="No Server!";
+static bool WaitForNetIso() {
+    const DWORD start=GetTickCount();
+    for(;;) {
+        int count=ListFolder(IsoRoot);
+        if(!FindName(count,NoServerEntry)) return true;
+        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
+        if(up>=BootSeconds && waited>=RetrySeconds*3) return false;
+        ShowStep(nia::StepMount,0.12,"NetISO is still connecting to the server after the reboot... %lu s",waited);
+        if(!Pause(2000)) return false;
+    }
+}
+
+// The whole mount, on the worker thread: the server, the mount and the disc.
+static Result Mount(const char* ini,const Settings& settings) {
+    char game[96],line[128],line1[128];
+    nia::GameName(settings.iso,game,sizeof(game));
+    ShowStep(nia::StepServer,0.02,"Checking the NetISO server");
+    if(DiscIsGame(settings)) { Note("The game is already mounted."); return Mounted; }
+    Result server=WaitForServer(ini);
+    if(server!=Mounted) return server;
+
+    ShowStep(nia::StepMount,0.15,"Asking the server for the disc");
+    if(!GetModuleHandle("NetISO.xex"))
+        return Fail(nia::StepMount,false,"The NetISO plugin isn't running","NetISO.xex isn't loaded, so there is no NetISO drive to mount from.",
+                    "Add it to DashLaunch's plugins in launch.ini and reboot the Xbox.");
+    Note(GetModuleHandle("NetIsoTiles.xex") ? "NetIsoTiles.xex is loaded and passed this tile on." : "NetIsoTiles.xex isn't loaded.");
     LONG status=LinkDrive(IsoLink,IsoDevice);
-    if(status<0) { Note("Can't link %s (status %08X). Is the NetISO plugin running?",IsoDevice,status); return false; }
+    if(status<0) {
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"Linking %s failed (status %08X).",IsoDevice,status);
+        return Fail(nia::StepMount,false,"The NetISO drive isn't there",line,"Check that NetISO.xex is in DashLaunch's plugins, and reboot the Xbox.");
+    }
+    if(!WaitForNetIso()) {
+        UnlinkDrive(IsoLink);
+        if(CancelAsked) return Cancelled;
+        return Fail(nia::StepMount,true,"NetISO can't reach the server","The server answers this launcher, but the NetISO plugin still shows \"No Server!\".",
+                    "Right after a reboot it can take a minute or two longer; try again in a moment.");
+    }
     int stop=StopAfter(ini);
     char folder[MAX_PATH];
-    bool asked=FindMountFolder(settings,folder,sizeof(folder),stop) && ListMountFolder(folder);
+    Found found=FindMountFolder(settings,folder,sizeof(folder),stop);
+    bool asked=found==FoundMount && ListMountFolder(folder);
+    DWORD error=GetLastError();
     UnlinkDrive(IsoLink);
-    if(stop!=NoStop) { Note("Back to Aurora without mounting."); return false; }
-    if(!asked) { Failed=true; Wait(5000); return false; }
+    if(stop!=NoStop) { Note("Back to Aurora without mounting."); return Cancelled; }
+    if(found==FoundNoRoot)
+        return Fail(nia::StepMount,true,"The NetISO plugin can't reach the server","The server answers, but the NetISO drive lists no games.",
+                    "After a reboot the plugin can take a little longer; try again in a moment.");
+    if(found==FoundNotListed) {
+        char title[96]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%s isn't on the server",game);
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The server doesn't list %s.",settings.iso);
+        return Fail(nia::StepMount,true,title,line,"It may have been renamed, moved or deleted on the PC.");
+    }
+    if(found==FoundNoMount) {
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The NetISO drive shows %s without its Mount folder.",settings.iso);
+        return Fail(nia::StepMount,true,"The NetISO drive looks different",line,"This launcher was made for NetISO.xex 1.0.");
+    }
+    if(!asked) {
+        char title[96]; _snprintf_s(title,sizeof(title),_TRUNCATE,"The server didn't mount %s",game);
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The NetISO drive answered the mount with error %lu.",error);
+        return Fail(nia::StepMount,true,title,line,"The server's window on the PC may say why.");
+    }
+    if(CancelAsked) return Cancelled;
+
+    ShowStep(nia::StepDisc,0.3,"The disc is going in. Waiting for the console to read it");
     int quiet=IniNumber(ini,"quiet_ms",QuietMs);
     if(quiet!=QuietMs) Note("Leaving the disc alone for %d ms (quiet_ms).",quiet);
     for(int waited=0;waited<quiet;waited+=PollMs) {
-        Progress=10+60*waited/quiet;
-        Wait(PollMs);
+        ShowStep(nia::StepDisc,0.3+0.4*waited/quiet,"The disc is going in. Waiting for the console to read it");
+        if(!Pause(PollMs)) return Cancelled;
     }
     for(int waited=quiet;waited<quiet+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return true; }
-        Progress=70+20*(waited-quiet)/MountWaitMs;
-        Wait(PollMs);
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return Mounted; }
+        ShowStep(nia::StepDisc,0.7+0.25*(waited-quiet)/MountWaitMs,"Reading the disc");
+        if(!Pause(PollMs)) return Cancelled;
     }
     DWORD titleId=0,mediaId=0;
-    if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,MountWaitMs);
-    else Note("No readable disc after %d ms.",MountWaitMs);
-    Failed=true; Wait(5000);
-    return false;
+    if(DiscIds(titleId,mediaId)) {
+        Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,MountWaitMs);
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The disc in the drive is Title ID %08X, not %s's %08X.",titleId,game,settings.titleId);
+        return Fail(nia::StepDisc,true,"A different game is in the drive",line,"The ISO may not be the game this tile was made for.");
+    }
+    Note("No readable disc after %d ms.",MountWaitMs);
+    _snprintf_s(line1,sizeof(line1),_TRUNCATE,"The server mounted the game, but the console read no disc within %d s.",MountWaitMs/1000);
+    return Fail(nia::StepDisc,true,"The disc didn't show up",line1,"Try again; if it keeps happening, reboot the Xbox.");
+}
+
+struct MountJob { const char* ini; const Settings* settings; Result result; };
+static DWORD WINAPI MountThread(void* parameter) {
+    MountJob* job=static_cast<MountJob*>(parameter);
+    job->result=Mount(job->ini,*job->settings);
+    return 0;
+}
+// Mounts on a worker while this thread draws and reads the controller. B
+// goes back to Aurora at once, at any step: a worker stuck in a slow listing
+// or a wait for the network ends with the title.
+static MountJob Job;
+static Result RunMount(const char* ini,const Settings& settings) {
+    Job.ini=ini; Job.settings=&settings; Job.result=Failed;
+    InterlockedExchange(&CancelAsked,0);
+    HANDLE thread=CreateThread(NULL,64*1024,MountThread,&Job,0,NULL);
+    if(!thread) return Mount(ini,settings);
+    while(WaitForSingleObject(thread,0)==WAIT_TIMEOUT) {
+        ReadNotifications();
+        if(Pressed()&XINPUT_GAMEPAD_B) {
+            InterlockedExchange(&CancelAsked,1);
+            Note("B pressed: back to Aurora.");
+            if(WaitForSingleObject(thread,300)==WAIT_TIMEOUT) { CloseHandle(thread); return Cancelled; }
+            break;
+        }
+        ScreenDraw();
+        if(!Screen) Sleep(20);
+    }
+    CloseHandle(thread);
+    return CancelAsked ? Cancelled : Job.result;
+}
+
+// Shows Problem until A or B (back to Aurora), X (try again, when that could
+// help) or a minute has passed. True to try again.
+static const int ErrorSeconds=60;
+static bool ShowProblem() {
+    if(!Screen) ScreenStart();
+    EnterCriticalSection(&ShownLock);
+    Shown.step=Problem.step; Shown.canRetry=Problem.retry;
+    strcpy_s(Shown.errorTitle,Problem.title);
+    for(int i=0;i<3;++i) strcpy_s(Shown.errorLines[i],Problem.lines[i]);
+    LeaveCriticalSection(&ShownLock);
+    bool again=false;
+    for(DWORD start=GetTickCount();;) {
+        int left=ErrorSeconds-int((GetTickCount()-start)/1000);
+        EnterCriticalSection(&ShownLock); Shown.countdown=left; LeaveCriticalSection(&ShownLock);
+        ReadNotifications();
+        WORD pressed=Pressed();
+        if(pressed&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B) || left<=0 || !Screen) break;
+        if(Problem.retry && (pressed&XINPUT_GAMEPAD_X)) { again=true; break; }
+        ScreenDraw();
+    }
+    Note(again ? "X pressed: trying again." : "Back to Aurora.");
+    EnterCriticalSection(&ShownLock);
+    Shown.errorTitle[0]=0; Shown.canRetry=false; Shown.countdown=0;
+    LeaveCriticalSection(&ShownLock);
+    return again;
 }
 
 // Aurora starts a game with no launch data. The helper was started with
@@ -398,7 +595,7 @@ static void StartDisc(const char* ini) {
     char start[16]="aurora";
     nia::IniValue(ini,"start",start,sizeof(start));
     ClearLaunchData();
-    Progress=100; ScreenDraw(); ScreenStop();
+    ScreenStop();
     if(!_stricmp(start,"media")) {
         Note("Starting the disc in the drive (start=media)");
         Launch(DetectMedia);
@@ -414,14 +611,37 @@ static void StartDisc(const char* ini) {
     Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
 }
 
-// mount_only=1 in netiso.ini mounts and goes back to Aurora without starting
-// the game, to tell whether the mount or the start breaks something.
+// Mounts the game and starts it, showing what goes wrong until the player
+// goes back to Aurora. mount_only=1 in netiso.ini mounts and goes back to
+// Aurora without starting the game, to tell whether the mount or the start
+// breaks something.
 static void LaunchGame(const char* ini) {
-    bool mounted=MountGame(ini);
+    Settings settings;
+    if(!ReadSettings(ini,settings)) {
+        Fail(nia::StepServer,false,"This game's netiso.ini is incomplete","It needs iso= and title_id= lines.","Let netiso-server.exe or NetISO Sync write the folder again.");
+        ShowProblem();
+        return;
+    }
+    EnterCriticalSection(&ShownLock);
+    strcpy_s(Shown.iso,settings.iso); nia::GameName(settings.iso,Shown.game,sizeof(Shown.game)); Shown.titleId=settings.titleId;
+    LeaveCriticalSection(&ShownLock);
+    if(LinkDrive(DiscLink,DiscDevice)<0) Note("Can't link %s.",DiscDevice);
+    for(;;) {
+        Result result=RunMount(ini,settings);
+        if(result==Cancelled) break;
+        if(result==Mounted) {
+            if(IniNumber(ini,"mount_only",0)) { Note("mount_only=1: back to Aurora without starting the game."); break; }
+            ShowStep(nia::StepStart,1,"Starting %s",Shown.game);
+            Wait(300);
+            UnlinkDrive(DiscLink);
+            StartDisc(ini);
+            char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting the disc failed (error %lu).",GetLastError());
+            Fail(nia::StepStart,true,"The game didn't start",line,"Try again, or start the disc from Aurora.");
+            LinkDrive(DiscLink,DiscDevice);
+        }
+        if(!ShowProblem()) break;
+    }
     UnlinkDrive(DiscLink);
-    if(!mounted) return;
-    if(IniNumber(ini,"mount_only",0)) { Note("mount_only=1: back to Aurora without starting the game."); return; }
-    StartDisc(ini);
 }
 
 // ---- NetISO Sync ----
@@ -516,7 +736,7 @@ static bool ParseServer(const char* text,DWORD& address,int& port) {
 static bool FindServer(const char* ini,DWORD& address,int& port) {
     char value[64];
     if(nia::IniValue(ini,"server",value,sizeof(value))) {
-        if(ParseServer(value,address,port)) return true;
+        if(ParseServer(value,address,port)) { strcpy_s(ServerSource,"this game's netiso.ini"); return true; }
         Note("server=%s in %s is not an IPv4 address.",value,IniFile); return false;
     }
     static const char* plugin[]={"Hdd1:\\netiso.xex.txt","Usb0:\\netiso.xex.txt"};
@@ -524,25 +744,30 @@ static bool FindServer(const char* ini,DWORD& address,int& port) {
         char path[nia::PathMax],text[128];
         if(!MapPath(plugin[i],path,sizeof(path)) || !ReadText(path,text,sizeof(text))) continue;
         text[strcspn(text,"\r\n")]=0;
-        if(ParseServer(text,address,port)) { Note("Server %s from %s.",text,plugin[i]); return true; }
+        if(ParseServer(text,address,port)) { Note("Server %s from %s.",text,plugin[i]); strcpy_s(ServerSource,plugin[i]); return true; }
     }
     Note("No server. Put server=<IP address> in %s.",IniFile);
     return false;
 }
 
-static bool StartNetwork() {
-    XNetStartupParams params; memset(&params,0,sizeof(params));
-    params.cfgSizeOfStruct=sizeof(params); params.cfgFlags=XNET_STARTUP_BYPASS_SECURITY;
-    WSADATA wsa;
-    if(XNetStartup(&params) || WSAStartup(MAKEWORD(2,2),&wsa)) { Note("Network startup failed."); return false; }
-    // Right after boot the console may still be getting its address.
+// addressWaitMs: how long to wait for the console's network address, which
+// it may not have yet right after boot. Started once per run.
+static bool StartNetwork(int addressWaitMs) {
+    static bool started=false;
+    if(!started) {
+        XNetStartupParams params; memset(&params,0,sizeof(params));
+        params.cfgSizeOfStruct=sizeof(params); params.cfgFlags=XNET_STARTUP_BYPASS_SECURITY;
+        WSADATA wsa;
+        if(XNetStartup(&params) || WSAStartup(MAKEWORD(2,2),&wsa)) { Note("Network startup failed."); return false; }
+        started=true;
+    }
     XNADDR address;
-    for(int waited=0;waited<10000;waited+=250) {
+    for(int waited=0;waited<addressWaitMs;waited+=250) {
         if(XNetGetTitleXnAddr(&address)!=XNET_GET_XNADDR_PENDING) return true;
         Wait(250);
     }
-    Note("No network address after 10 s.");
-    return false;
+    if(addressWaitMs) { Note("No network address after %d s.",addressWaitMs/1000); return false; }
+    return true;
 }
 
 static unsigned char Launcher[4<<20],Boot[4<<20];
@@ -559,7 +784,7 @@ static void Sync(const char* ini) {
     DWORD bootSize=0;
     bool boot=storage.ReadFile(BootXex,Boot,sizeof(Boot),bootSize);
     if(!boot) Note("No %s; games will mount from their own launcher.",BootXex);
-    if(!FindServer(ini,address,port) || !StartNetwork()) return;
+    if(!FindServer(ini,address,port) || !StartNetwork(10000)) return;
     nia::IsvrClient client(10);
     bool connected=false;
     for(int attempt=0;attempt<3 && !connected;++attempt) {
@@ -619,6 +844,7 @@ static void HandToHelper() {
 
 void __cdecl main() {
     InitializeCriticalSection(&LogLock);
+    InitializeCriticalSection(&ShownLock);
     MainThread=GetCurrentThreadId();
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     ScreenStart();
@@ -636,6 +862,8 @@ void __cdecl main() {
         LaunchGame(ini);
     } else {
         Note("NetISO Sync");
+        strcpy_s(Shown.game,"NetISO Sync");
+        ShowStep(nia::StepServer,0.1,"Updating the game folders from the NetISO server");
         Sync(ini);
         LaunchAfterSync(ini);
     }

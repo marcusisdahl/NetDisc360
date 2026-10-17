@@ -14,11 +14,11 @@
   <ItemDefinitionGroup>
     <ClCompile><Optimization>MinSpace</Optimization><WarningLevel>Level4</WarningLevel>
       <PrecompiledHeader>NotUsing</PrecompiledHeader><RuntimeLibrary>MultiThreaded</RuntimeLibrary><ExceptionHandling>false</ExceptionHandling>
-      <PreprocessorDefinitions>NDEBUG;_XBOX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_XBOX;IMGUI_USE_BGRA_PACKED_COLOR;IMGUI_DISABLE_FILE_FUNCTIONS;IMGUI_DISABLE_WIN32_FUNCTIONS;IMGUI_DISABLE_DEMO_WINDOWS;IMGUI_DISABLE_METRICS_WINDOW;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <FunctionLevelLinking>true</FunctionLevelLinking><StringPooling>true</StringPooling>
     </ClCompile>
     <Link><OutputFile>$(OutDir)NetIsoLauncher.exe</OutputFile><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;xav.lib;d3d9.lib;xgraphics.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;xav.lib;d3d9.lib;d3dx9.lib;xgraphics.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ImageXex>
       <!-- A placeholder: tools/netiso_aurora.py overwrites the execution info
@@ -30,7 +30,8 @@
     </ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
-  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /><None Include="xex.xml" /><None Include="sync.ini" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /><ClCompile Include="ui.cpp" /><ClCompile Include="imgui_impl_xbox360.cpp" />
+    <ClCompile Include="..\third_party\imgui\imgui.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_draw.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_widgets.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_tables.cpp"><WarningLevel>Level3</WarningLevel></ClCompile></ItemGroup>
+  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /><ClInclude Include="ui.h" /><ClInclude Include="imgui_impl_xbox360.h" /><ClInclude Include="..\third_party\imgui\imgui.h" /><None Include="xex.xml" /><None Include="sync.ini" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
