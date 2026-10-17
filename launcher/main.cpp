@@ -104,7 +104,25 @@ static void ScreenDraw() {
 static void ScreenStop() {
     if(Screen) { Screen->Release(); Screen=NULL; }
 }
+// The log is one file per folder that every run appends to, each line with
+// the console's time, so a run never wipes the one before it. Each run starts
+// with a header line with the date and the console's uptime (a small uptime
+// means a fresh boot). Past LogMax the next run starts the file over.
 static FILE* Log=NULL;
+static const long LogMax=512*1024;
+static void OpenLog(bool run) {
+    if(fopen_s(&Log,LogFile,"a")) { Log=NULL; return; }
+    if(!run) return;
+    fseek(Log,0,SEEK_END);
+    if(ftell(Log)>LogMax) { fclose(Log); if(fopen_s(&Log,LogFile,"w")) Log=NULL; }
+}
+static void CloseLog() {
+    if(Log) { fclose(Log); Log=NULL; }
+}
+static void Stamp() {
+    SYSTEMTIME t; GetLocalTime(&t);
+    fprintf(Log,"%02u:%02u:%02u.%03u ",t.wHour,t.wMinute,t.wSecond,t.wMilliseconds);
+}
 
 // System notifications, read the way a game reads them. The plugin's fake
 // disc swap while the launcher ran left the Guide dead in the game it then
@@ -120,7 +138,7 @@ static void ReadNotifications() {
     DWORD id; ULONG_PTR param;
     while(XNotifyGetNext(Notifications,0,&id,&param)) {
         EnterCriticalSection(&LogLock);
-        if(Log) { fprintf(Log,"  notification %08X, %08X\n",id,(DWORD)param); fflush(Log); }
+        if(Log) { Stamp(); fprintf(Log,"  notification %08X, %08X\n",id,(DWORD)param); fflush(Log); }
         LeaveCriticalSection(&LogLock);
     }
 }
@@ -134,12 +152,27 @@ static void Note(const char* format,...) {
     if(GetCurrentThreadId()==MainThread) { ReadNotifications(); ScreenDraw(); }
     EnterCriticalSection(&LogLock);
     if(Log) {
+        Stamp();
         va_list args; va_start(args,format); vfprintf(Log,format,args); va_end(args);
         fputc('\n',Log); fflush(Log);
     }
     LeaveCriticalSection(&LogLock);
 }
 static void NoteText(const char* text) { Note("%s",text); }
+// Written before the notifications that were waiting, so they follow it.
+static void NoteRun() {
+    SYSTEMTIME t; GetLocalTime(&t);
+    DWORD up=GetTickCount()/1000;
+    EnterCriticalSection(&LogLock);
+    if(Log) {
+        fprintf(Log,"\n");
+        Stamp();
+        fprintf(Log,"==== %04u-%02u-%02u, NetISO launcher built %s %s, console up %lu:%02lu:%02lu ====\n",
+                t.wYear,t.wMonth,t.wDay,__DATE__,__TIME__,up/3600,up/60%60,up%60);
+        fflush(Log);
+    }
+    LeaveCriticalSection(&LogLock);
+}
 
 static LONG LinkDrive(const char* name,const char* device) {
     char nameText[32],deviceText[64]; strcpy_s(nameText,name); strcpy_s(deviceText,device);
@@ -347,9 +380,9 @@ static void ClearLaunchData() {
 // The XLaunchNewImage calls return only when the start failed. The log is
 // closed while they run.
 static void Launch(const char* path) {
-    if(Log) { fclose(Log); Log=NULL; }
+    CloseLog();
     LaunchImage(path,0);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    OpenLog(false);
     Note("XLaunchNewImage(%s) failed (%lu).",path,GetLastError());
 }
 
@@ -371,9 +404,9 @@ static void StartDisc(const char* ini) {
         else { Note("Starting %s, as Aurora's disc entry does",AuroraDiscXex); Launch(AuroraDiscXex); }
     }
     Note("Starting %s from %s, as Nova's file browser does",DiscXexName,DiscMount);
-    if(Log) { fclose(Log); Log=NULL; }
+    CloseLog();
     DWORD result=XLaunchNewImageEx(DiscXexName,DiscMount,NULL,NovaLaunchFlags);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    OpenLog(false);
     Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
 }
 
@@ -544,11 +577,11 @@ static void LaunchAfterSync(const char* ini) {
     if(!nia::IniValue(ini,"after",value,sizeof(value)) || !value[0]) return;
     DevicePath(value,path,sizeof(path));
     Note("Starting %s",path);
-    if(Log) { fclose(Log); Log=NULL; }
+    CloseLog();
     UnlinkDrives();
     ScreenStop();
     LaunchImage(path,0);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    OpenLog(false);
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
@@ -572,10 +605,10 @@ static void HandToHelper() {
     DWORD set=XSetLaunchData((PVOID)BootData,sizeof(BootData));
     if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); mounting from the launcher.",set); return; }
     Note("Handing the start to %s",BootXex);
-    if(Log) { fclose(Log); Log=NULL; }
+    CloseLog();
     ScreenStop();
     LaunchImage(BootXex,0);
-    if(fopen_s(&Log,LogFile,"a")) Log=NULL;
+    OpenLog(false);
     Note("Couldn't start %s (%lu); mounting from the launcher.",BootXex,GetLastError());
     ScreenStart();
 }
@@ -587,9 +620,8 @@ void __cdecl main() {
     ScreenStart();
     ScreenDraw();
     bool helper=LaunchedWith(BootData);
-    // The helper appends to the launcher's log.
-    if(fopen_s(&Log,LogFile,helper ? "a" : "w")) Log=NULL;
-    Note("NetISO launcher built %s %s",__DATE__,__TIME__);
+    OpenLog(true);
+    NoteRun();
     if(helper) Note("Started as the helper.");
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
@@ -604,7 +636,7 @@ void __cdecl main() {
         LaunchAfterSync(ini);
     }
     UnlinkDrives();
-    if(Log) fclose(Log);
+    CloseLog();
     ScreenStop();
     // A game that didn't start goes back to the default app, which DashLaunch
     // points at its Default (Aurora). Sync goes to the dashboard: it may be
