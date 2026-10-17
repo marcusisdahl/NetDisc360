@@ -1,0 +1,30 @@
+# NetISO server for Aurora in Docker. Put your games in a folder, set the
+# path below, then:   docker compose up -d
+# See "Docker" in README.md for every setting.
+services:
+  netiso:
+    image: ghcr.io/marcusisdahl/netiso-aurora:latest
+    build: .
+    container_name: netiso
+    restart: unless-stopped
+    # Host networking: the Xbox connects straight to this machine on port 4323,
+    # and the server sees the Xbox's real address. (Docker Desktop on Windows
+    # or macOS: use the ports below instead and set NETISO_XBOX.)
+    network_mode: host
+    # ports:
+    #   - "4323:4323"
+    volumes:
+      # Your games: ISOs, extracted games and GOD packages, subfolders too.
+      # Read-only: the server never writes to them.
+      - ./games:/games:ro
+    environment:
+      TZ: Etc/UTC                  # your time zone, for the log's times
+      # The Xbox's IP address. Empty: the Xbox that connects.
+      NETISO_XBOX: ""
+      # Aurora's FTP login (Aurora: Settings > FTP).
+      NETISO_FTP_USER: xboxftp
+      NETISO_FTP_PASSWORD: xboxftp
+      # NETISO_NO_CATEGORY: "true"   # leave Aurora's Xbox 360 category alone
+      # NETISO_NO_PUSH: "true"       # only serve games, don't touch the Xbox
+    # Files must be readable by this user (default 1000:1000).
+    # user: "1000:1000"

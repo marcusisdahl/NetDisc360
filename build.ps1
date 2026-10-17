@@ -21,6 +21,9 @@ try {
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
+    # The same folder zipped, for the release: NetISO Sync for other servers,
+    # and the launchers the Docker image downloads (Dockerfile).
+    Compress-Archive -Path $sync -DestinationPath build\NetISO-Sync.zip -Force
     # netiso-server.exe: the PC server that replaces netiso-srv and keeps the
     # Xbox's game folders current, with default.xex and boot.xex built in
     # (server/). Rebuilt every time so it carries the XEXs just made.

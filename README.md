@@ -2,38 +2,102 @@
 
 Play the Xbox 360 games on your PC straight from Aurora's game list. Every game on your [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server shows up in Aurora like an installed game, with its name, cover art, title updates and DLC. Pick it and it plays: no file browser, no Mount folder.
 
-- **One program on the PC.** `netiso-server.exe` replaces `netiso-srv` / `server.exe`. It serves your games to the console and keeps Aurora's game list up to date by itself.
+- **One small program on the PC.** Double-click `netiso-server.exe`, pick your game folders, and minimize it. It serves your games to the console and keeps Aurora's game list up to date by itself, and it can start with Windows. On Linux or a NAS it runs in Docker.
 - **ISOs, extracted games and Games on Demand**, from as many folders as you like. Nothing is converted or copied.
 - **A loading screen** with progress, B to cancel at any step, and a clear message when something is wrong.
 - **The Guide keeps working** in games started this way.
 
+**Contents:** [What you need](#what-you-need) · [Install](#install) · [Docker](#docker) · [Playing](#playing) · [Recommended extras](#recommended-extras) · [Troubleshooting](#troubleshooting) · [Updating](#updating) · [Security](#security) · [The server in detail](#the-server-in-detail) · [Build](#build) · [How it works](#how-it-works)
+
 ## What you need
 
-On the console:
-- A modded Xbox 360 with DashLaunch and Aurora (tested with BadUpdate / XeUnshackle and Aurora 0.7b.2).
-- The NetISO plugin, `NetISO.xex` 1.0 by cOz, loaded by DashLaunch. It is not part of this project; get it where you got NetISO. The modified `Nova.xex` from the NetISO kit is not needed.
-- `NetIsoTiles.xex` from this project, loaded by DashLaunch next to `NetISO.xex`.
-- Aurora's FTP server turned on.
-
-On the PC:
-- Windows 10 or 11 (64-bit), on the same network as the console.
-- Your games: ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
+- **A modded Xbox 360** with DashLaunch and Aurora (tested with BadUpdate / XeUnshackle and Aurora 0.7b.2), on the same network as your PC.
+- **The NetISO plugin**, `NetISO.xex` 1.0 by cOz. It is not part of this project; get it where you get NetISO. The modified `Nova.xex` from the NetISO kit is not needed.
+- **From this project's [Releases](../../releases) page:** `NetIsoTiles.xex` for the console, and `netiso-server.exe` for a Windows 10 or 11 PC (or the Docker image for Linux or a NAS).
+- **Your games:** ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
 
 ## Install
 
-1. Download `netiso-server.exe` and `NetIsoTiles.xex` from the [Releases](../../releases) page (or build them, below).
-2. Copy `NetIsoTiles.xex` to the console and add it to DashLaunch's `launch.ini` as a plugin, next to `NetISO.xex`. DashLaunch loads at most 5 plugins. Reboot the console.
-3. Put the PC's IP address in `Hdd1:\netiso.xex.txt` (or `Usb0:\netiso.xex.txt`), as the NetISO plugin needs anyway.
-4. In Aurora: Settings, Content, Scan paths, add `Hdd1:\NetISO` with depth 1.
-5. On the PC, run `netiso-server.exe` with your game folders, for example:
+### 1. Set up the console
+
+1. **Copy the plugins to the root of your USB drive** (the one DashLaunch reads `launch.ini` from):
 
    ```
-   netiso-server.exe "D:\Xbox 360\ISOs" "D:\Xbox 360\Games"
+   Usb:\
+     launch.ini
+     NetISO.xex
+     NetISO.xex.txt      <- you make this one in step 2
+     NetIsoTiles.xex
+     CUsbEnet.xex        <- optional, see Recommended extras
    ```
 
-   With no folder it serves the folder it runs in. Subfolders count too. If you changed Aurora's FTP login (recommended, see [Security](#security)), add `--ftp-user` and `--ftp-password`.
+2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The Windows app shows this address at the bottom of its window. Give your PC a fixed address in your router, so it doesn't change.
 
-That's all. Once the console is on, the server makes a small launcher folder for each game in `Hdd1:\NetISO` and asks Aurora to scan it, and Aurora looks up the game's name and art online. It doesn't matter whether the PC or the console starts first. The server only logs in to the console when it has something to do (at start, when your games change, or to retry a scan Aurora was too busy for), and while the console is off it tries every 15 s.
+3. **Load the plugins in DashLaunch.** Open `launch.ini` and set its `[Plugins]` section like this (leave the rest of the file as it is):
+
+   ```ini
+   [Paths]
+   Default = Hdd:\Apps\Aurora\Aurora.xex
+
+   [Plugins]
+   plugin1 = Usb:\CUsbEnet.xex
+   plugin2 = Usb:\NetISO.xex
+   plugin3 = Usb:\NetIsoTiles.xex
+   ```
+
+   `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `CUsbEnet` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
+
+4. **Turn on Aurora's FTP server and add the game folder.** Reboot the console into Aurora. In Aurora's settings, make sure the FTP server is on, and under Content, Scan paths, add `Hdd1:\NetISO` with depth 1 (the folder can be empty; the PC fills it).
+
+   Aurora's FTP login is `xboxftp` / `xboxftp` unless you changed it. Changing it is a good idea (see [Security](#security)); then enter the same login on the PC.
+
+### 2. Start the server
+
+**On Windows:** put `netiso-server.exe` anywhere, for example in the folder with your games, and double-click it.
+
+- The first time, it serves the folder it is in. Add your other game folders with **Add folder...** (or drop them on the window), and remove any you don't want. Subfolders count too.
+- Leave **Xbox IP address** empty: the server finds the console when it connects. Fill it in only if the console isn't found.
+- Enter **Aurora's FTP login** if you changed it.
+- Tick **Start with Windows** to have it start, minimized, every time you sign in.
+- **Minimize or close the window and forget about it.** The server keeps running behind its icon in the notification area (by the clock). Click the icon to open the window again; right-click it and pick **Quit** to stop the server.
+- When Windows Firewall asks, allow it on **private networks**.
+
+Settings are saved in `%APPDATA%\NetISO for Aurora\netiso-server.ini`, with the FTP password encrypted for your Windows user. The window's log shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), as before.
+
+**With Docker** (Linux, a NAS, a Raspberry Pi): see [Docker](#docker) below.
+
+### 3. Turn on the console
+
+Turn the console on. Within a minute or two of Aurora starting, the server adds a folder for each game to `Hdd1:\NetISO`, asks Aurora to scan it, and Aurora fetches the names and cover art. Your games are then in Aurora's game list next to your installed games, in the Xbox 360 category too. It doesn't matter whether the PC or the console starts first.
+
+## Docker
+
+The same server runs in Docker on Linux, a NAS or anything else with Docker. Put [`docker-compose.yml`](docker-compose.yml) in a folder, set the path to your games in it, then:
+
+```
+docker compose up -d
+docker compose logs -f
+```
+
+It uses the image `ghcr.io/marcusisdahl/netiso-aurora`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker compose up -d --build`.
+
+| Setting | Default | |
+|---|---|---|
+| volume `/games` | | Your games (read-only is fine). Mount more folders under it, like `/games/isos`. |
+| `NETISO_XBOX` | the console that connects | The console's IP address. Needed on Docker Desktop (Windows, macOS). |
+| `NETISO_FTP_USER` | `xboxftp` | Aurora's FTP login. |
+| `NETISO_FTP_PASSWORD` | `xboxftp` | Or `NETISO_FTP_PASSWORD_FILE` with the path of a Docker secret. |
+| `NETISO_NO_CATEGORY` | | `true`: leave Aurora's Xbox 360 category alone. |
+| `NETISO_NO_SCAN` | | `true`: don't ask Aurora to scan after changes. |
+| `NETISO_NO_PUSH` | | `true`: only serve games; leave the console alone. |
+| `NETISO_XBOX_FOLDER`, `NETISO_AURORA` | `/Hdd1/NetISO`, `/Hdd1/Apps/Aurora` | As `--xbox-folder` and `--aurora`. |
+| `NETISO_PORT`, `NETISO_FTP_PORT` | 4323, 21 | |
+| `NETISO_VERBOSE` | | `true`: log every request. |
+| `TZ` | UTC | Your time zone, for the log's times. |
+
+- The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports: - "4323:4323"`, as on Docker Desktop), set `NETISO_XBOX`.
+- The server runs as user 1000:1000. If it can't read your games, set `user:` in the compose file to an ID that can.
+- Without Docker Compose: `docker run -d --name netiso --network host --restart unless-stopped -v /path/to/games:/games:ro -e NETISO_FTP_PASSWORD=xboxftp ghcr.io/marcusisdahl/netiso-aurora`.
 
 ## Playing
 
@@ -45,7 +109,26 @@ Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc a
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
-## The server
+## Recommended extras
+
+Both are separate homebrew projects that work well alongside NetISO.
+
+- **[CUsbEnet](https://github.com/marcusisdahl/CUsbEnet)**: a DashLaunch plugin that lets the Xbox 360 use a USB Ethernet adapter. The console's own network port is 100 Mbit/s, and NetISO reads every game over the network; with a gigabit USB adapter (ASIX AX88179 or Realtek based, such as the TP-Link UE306) FTP to the console has reached about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
+- **[FastFTP](https://github.com/marcusisdahl/Xbox360-FastFTP)**: a fast FTP server app for the console, for copying games, saves and files to and from it (about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console). It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; `netiso-server` keeps using Aurora's own FTP, which runs whenever Aurora is open.
+
+## Troubleshooting
+
+- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login in the window (or `--ftp-user`/`--ftp-password`) matches Aurora's. The server's log says what it is waiting for.
+- **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the window shows, and that Windows Firewall allows `netiso-server.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
+- **A game has no cover art.** Rename its folder in `Hdd1:\NetISO` (for example over FTP); at the next scan Aurora looks it up again. See [Cover art](#cover-art).
+- **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
+- **A game is listed twice in the server's log as an extra copy.** The same game is in your folders more than once; the log shows where, so you can remove the copy you don't need.
+
+## Updating
+
+Replace `netiso-server.exe` with the new one (quit the old one first from its notification-area icon) and start it again; the settings stay. On its next visit to the console it replaces the launchers in `Hdd1:\NetISO` with the new build by itself. Copy the new `NetIsoTiles.xex` over the old one on your USB drive and reboot the console. With Docker: `docker compose pull && docker compose up -d`.
+
+## The server in detail
 
 What `netiso-server.exe` does, all from one file:
 
@@ -90,8 +173,8 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 
 ## Security
 
-- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and pass it with `--ftp-user` and `--ftp-password`. FTP sends the login unencrypted, so keep the console on a network you trust. The server never writes the password to its window or logs.
-- **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `netiso-server.exe` on private networks only.
+- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it in the server's window (or `NETISO_FTP_USER`/`NETISO_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. The window keeps the password encrypted for your Windows user and hands it to the server outside its command line; the server never writes it to its log.
+- **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `netiso-server.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
 
 ## Limitations
@@ -115,7 +198,9 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 .\build.ps1 -Tests
 ```
 
-This makes `build\netiso-server.exe` (with the launcher built in), `build\NetIsoTiles.xex` and `build\NetISO Sync\`.
+This makes `build\netiso-server.exe` (with the launcher built in), `build\NetIsoTiles.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
+
+To make a release, see [RELEASING.md](RELEASING.md).
 
 ## Logs
 
