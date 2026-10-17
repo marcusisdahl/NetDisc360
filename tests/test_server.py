@@ -254,6 +254,28 @@ class Push(ServerTest):
         self.assertIn("0 added, 0 removed, 2 kept (0 updated)", out)
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
 
+    def test_updates_netiso_sync_to_this_build(self):
+        sync = os.path.join(self.games, "NetISO Sync")
+        os.makedirs(sync)
+        with open(os.path.join(sync, "default.xex"), "wb") as f:
+            f.write(b"OLD SYNC")
+        with open(os.path.join(sync, "netiso.ini"), "w") as f:
+            f.write("after=Hdd1:\\Apps\\Aurora\\Aurora.xex\n")
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push()
+        self.assertIn("Updated /Hdd1/NetISO/NetISO Sync on the Xbox to this build.", out)
+        for name, path in (("default.xex", self.launcher), ("boot.xex", self.boot)):
+            with open(os.path.join(sync, name), "rb") as f, open(path, "rb") as built:
+                self.assertEqual(f.read(), built.read())
+        with open(os.path.join(sync, "netiso.ini")) as f:
+            self.assertIn("after=", f.read())
+        self.assertIn("1 added, 0 removed", out)
+        # Current: not written again.
+        self.ftp.stored.clear()
+        out = self.push()
+        self.assertNotIn("NetISO Sync on the Xbox", out)
+        self.assertEqual([p for p in self.ftp.stored if "Sync" in p], [])
+
     def test_removes_games_whose_iso_is_gone_and_keeps_other_folders(self):
         self.add_iso("a.iso", 1, 0x11111111)
         path = self.add_iso("b.iso", 2, 0x22222222)

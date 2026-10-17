@@ -393,10 +393,36 @@ void GuardFilter(FtpClient& ftp, bool announce) {
 
 void PushNote(const char* text) { Log("Xbox: %s",text); }
 
+// Writes data to path on the Xbox unless it already holds exactly that.
+// 1 if written, 0 if current, -1 on failure.
+int RefreshRemote(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& data) {
+    std::vector<unsigned char> old;
+    if(ftp.Retrieve(path.c_str(),old,data.size()+1) && old==data) return 0;
+    return ftp.Store(path.c_str(),data.data(),data.size()) ? 1 : -1;
+}
+
+const char SyncFolder[]="NetISO Sync";
+// NetISO Sync's own folder, if it's there, gets this build's launcher and
+// helper as they are (the launcher keeps its own Title ID, FFFF4E49): an
+// older Sync can't read the launchers this server writes, and would only
+// log errors.
+void RefreshSyncApp(FtpClient& ftp, const std::vector<FtpEntry>& entries) {
+    for(size_t i=0;i<entries.size();++i) {
+        if(!entries[i].folder || _stricmp(entries[i].name.c_str(),SyncFolder)) continue;
+        std::string folder=Settings.xboxFolder+"/"+entries[i].name;
+        int launcher=RefreshRemote(ftp,folder+"/default.xex",Launcher);
+        int boot=Boot.empty() ? 0 : RefreshRemote(ftp,folder+"/boot.xex",Boot);
+        if(launcher<0 || boot<0) Log("Couldn't update %s on the Xbox: %s",folder.c_str(),ftp.Error());
+        else if(launcher || boot) Log("Updated %s on the Xbox to this build.",folder.c_str());
+        return;
+    }
+}
+
 bool Push(FtpClient& ftp, SyncResult& result) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(Settings.xboxFolder.c_str());
     if(!ftp.List(Settings.xboxFolder.c_str(),entries)) { Log("Couldn't list %s on the Xbox: %s",Settings.xboxFolder.c_str(),ftp.Error()); return false; }
+    RefreshSyncApp(ftp,entries);
     IsvrClient client(30);
     if(!client.Connect(htonl(0x7F000001),Settings.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
