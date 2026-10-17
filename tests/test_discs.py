@@ -388,7 +388,7 @@ class Discs(ServerTest):
         c.close()
 
     def test_a_name_an_iso_already_has(self):
-        self.add_iso("Kameo.iso", 1, 0x11111111)
+        iso = self.add_iso("Kameo.iso", 1, 0x11111111)
         self.make_game("Kameo", 0x22222222)  # Another game with the same name.
         self.start()
         c = Client(self.port)
@@ -396,7 +396,7 @@ class Discs(ServerTest):
         self.assertEqual(c.mount("Kameo 2.iso"), 1)
         self.assertEqual(Gdf(c).start, XGD2)  # The folder, not the ISO (which has no XGD2 layout).
         self.assertEqual(c.mount("Kameo.iso"), 1)
-        self.assertEqual(Gdf(c).start, 0)
+        self.assertEqual(c.size()[0] * 2048, os.path.getsize(iso))
         c.close()
 
     def test_a_file_too_big_for_a_disc(self):
