@@ -41,7 +41,6 @@ XEX_DIGEST_AT, XEX_DIGEST_END = 0x164, 0x17C
 FATX_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-.@[]^_`{}~")
 BUILT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "NetISO Sync")
 DEFAULT_LAUNCHER = os.path.join(BUILT, "default.xex")
-DEFAULT_HELPER = os.path.join(BUILT, "boot.xex")
 HELPER_FOLDER, HELPER_XEX = "NetDisc 360", "boot.xex"  # As in shared/helper.h.
 
 
@@ -213,7 +212,7 @@ def main(argv=None):
     parser.add_argument("isos", help="folder the NetISO server serves")
     parser.add_argument("output", help="folder to write the game folders to")
     parser.add_argument("--launcher", default=DEFAULT_LAUNCHER, help="the tile launcher (default: %(default)s)")
-    parser.add_argument("--helper", help="the helper the game folders share (default: %s, when it is there)" % DEFAULT_HELPER)
+    parser.add_argument("--helper", help="the helper the game folders share (default: boot.xex next to the tile launcher, when it is there)")
     parser.add_argument("--recursive", action="store_true", help="also look in subfolders (like netiso-srv -r)")
     args = parser.parse_args(argv)
 
@@ -221,7 +220,9 @@ def main(argv=None):
         launcher = f.read()
     info_at = launcher_info_offset(launcher)
     os.makedirs(args.output, exist_ok=True)
-    helper = args.helper or (DEFAULT_HELPER if os.path.isfile(DEFAULT_HELPER) else None)
+    # NetISO Sync's folder has both: the tile launcher as default.xex and the helper as boot.xex.
+    beside = os.path.join(os.path.dirname(os.path.abspath(args.launcher)), HELPER_XEX)
+    helper = args.helper or (beside if os.path.isfile(beside) else None)
     if helper:
         with open(helper, "rb") as f:
             data = f.read()
