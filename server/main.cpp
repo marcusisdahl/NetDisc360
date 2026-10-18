@@ -291,6 +291,7 @@ std::vector<IsoFile> Isos() {
     std::vector<IsoFile> dropped,kept;
     DropDuplicates(isos,dropped,kept,chosen);
     UniqueNames(isos);
+    LinkInstallDiscs(isos);
     for(size_t i=0;i<kept.size();++i)  // With the names just given.
         for(size_t k=0;k<isos.size();++k) if(isos[k].path==kept[i].path) { kept[i]=isos[k]; break; }
     std::string report;
@@ -916,6 +917,31 @@ std::string Count(int n, const char* one, const char* many) {
     return text;
 }
 
+// What a game folder's install.ini says (see shared/library.h): a disc whose
+// game has an install disc here names it and its packages; any other game
+// needs none, so an install.ini left from an install disc that is gone is
+// emptied.
+void InstallFor(const char* iso, InstallNeed& need) {
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    const IsoFile* game=NULL;
+    for(size_t i=0;i<GamesList.size() && !game;++i) if(!_stricmp(GamesList[i].name.c_str(),iso)) game=&GamesList[i];
+    if(!game) return;
+    need.known=true;
+    const IsoFile* install=NULL;
+    for(size_t i=0;i<GamesList.size() && !install && !game->installDisc.empty();++i) if(GamesList[i].name==game->installDisc) install=&GamesList[i];
+    if(!install) return;
+    _snprintf_s(need.iso,sizeof(need.iso),_TRUNCATE,"%s",install->name.c_str());
+    std::string lines;
+    for(size_t i=0;i<install->packages.size();++i) {
+        char line[IsvrNameBytes+64];
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"package_%d=%s|%llu\r\n",int(i+1),install->packages[i].path.c_str(),
+                    (unsigned long long)install->packages[i].size);
+        if(lines.size()+strlen(line)>=sizeof(need.packages)) break;
+        lines+=line;
+    }
+    memcpy(need.packages,lines.c_str(),lines.size()+1);
+}
+
 bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(o.xboxFolder.c_str());
@@ -933,7 +959,7 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
         std::lock_guard<std::mutex> hold(SyncLock);
         Pushing=&console;
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone);
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor);
     }
     if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
     if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
@@ -1500,7 +1526,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     }
     j.Set("name",config::ToUtf8(WithoutIso(g.name))).Set("path",config::ToUtf8(g.path)).Set("kind",KindName(g.kind));
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
-    j.Set("disc",g.disc).Set("folder",folder);
+    j.Set("disc",g.disc).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
 }
 
 void Games(web::Reply& out) {

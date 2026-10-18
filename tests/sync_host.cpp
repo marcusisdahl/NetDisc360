@@ -30,8 +30,8 @@ public:
     }
     bool MakeFolder(const char* path) { return mkdir(path,0777)==0 || errno==EEXIST; }
     bool RemoveGame(const char* folder) {
-        static const char* files[]={"default.xex","boot.xex","netiso.ini","netiso.log"};
-        for(int i=0;i<4;++i) { char path[nia::PathMax]; snprintf(path,sizeof(path),"%s/%s",folder,files[i]); unlink(path); }
+        static const char* files[]={"default.xex","boot.xex","netiso.ini","install.ini","netiso.log"};
+        for(int i=0;i<5;++i) { char path[nia::PathMax]; snprintf(path,sizeof(path),"%s/%s",folder,files[i]); unlink(path); }
         return rmdir(folder)==0;
     }
     unsigned long LastError() { return (unsigned long)errno; }

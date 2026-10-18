@@ -23,8 +23,8 @@ public:
     virtual bool ReadFile(const char* path, unsigned char* data, DWORD capacity, DWORD& size) = 0;
     virtual bool WriteFile(const char* path, const void* data, DWORD size) = 0;
     virtual bool MakeFolder(const char* path) = 0;
-    // Deletes default.xex, boot.xex, netiso.ini and netiso.log in folder, then the folder
-    // if it is empty. Anything else in it is left alone.
+    // Deletes default.xex, boot.xex, netiso.ini, install.ini and netiso.log in
+    // folder, then the folder if it is empty. Anything else in it is left alone.
     virtual bool RemoveGame(const char* folder) = 0;
     // Error code of the last call that failed, for the log.
     virtual unsigned long LastError() = 0;
@@ -46,10 +46,23 @@ void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCou
 bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity);
 
 typedef void (*Note)(const char* text);
+
+// What the game on an ISO needs installed from another of the server's discs,
+// its install disc (GTA V's play disc needs its install disc's packages).
+// Sync writes it to the game folder's install.ini, which the launcher checks
+// before it starts the game.
+struct InstallNeed {
+    bool known;                     // false: the folder's install.ini is left as it is.
+    char iso[IsvrNameBytes];        // The install disc as the server lists it; empty: none needed.
+    char packages[IniMax / 2];      // "package_N=<path under Content>|<bytes>" lines, each ending in \r\n.
+};
+typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 // launcher is a launcher XEX (any copy; its execution info is overwritten).
 // boot, if not NULL, is the helper XEX without execution info that each game
 // folder gets as boot.xex (see launcher/main.cpp).
 // With removeGone false, folders whose ISO is gone are left and counted in held.
+// findInstall, if not NULL, is asked about each game folder's install.ini.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true);
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
+          FindInstall findInstall=NULL);
 }

@@ -10,8 +10,8 @@
 #include <string.h>
 
 namespace nia {
-LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), countdown(0), time(0), elapsed(-1) {
-    game[0]=iso[0]=server[0]=status[0]=errorTitle[0]=0;
+LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), question(false), countdown(0), time(0), elapsed(-1) {
+    game[0]=iso[0]=server[0]=status[0]=errorTitle[0]=buttonA[0]=buttonX[0]=0;
     for(int i=0;i<3;++i) errorLines[i][0]=0;
 }
 
@@ -123,7 +123,7 @@ void DrawLoadUi(const LoadScreen& s) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg,Hex(Background));
     ImGui::Begin("NetISO",NULL,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBringToFrontOnFocus);
     List=ImGui::GetWindowDrawList();
-    const bool failed=s.errorTitle[0]!=0;
+    const bool failed=s.errorTitle[0]!=0, asking=failed && s.question;
     char text[160];
 
     // Header: name and what it does on the left, the server on the right.
@@ -135,7 +135,7 @@ void DrawLoadUi(const LoadScreen& s) {
         TextRight(Heading,Right,Top,Hex(White),s.server);
         const char* label="NetISO server  /  port 4323";
         float lx=Right-Width(Small,label);
-        List->AddCircleFilled(ImVec2(lx-14,Top+57),5,Hex(failed && s.step==StepServer ? ErrorStrong : Green),16);
+        List->AddCircleFilled(ImVec2(lx-14,Top+57),5,Hex(failed && !asking && s.step==StepServer ? ErrorStrong : Green),16);
         Text(Small,lx,Top+46,Hex(Muted),label);
         float sx=Right-Width(Heading,s.server);
         headerRight=(sx<lx-19 ? sx : lx-19)-56;
@@ -159,14 +159,15 @@ void DrawLoadUi(const LoadScreen& s) {
     else _snprintf_s(text,sizeof(text),_TRUNCATE,"%s",s.iso);
     TextFit(Small,x,y,w,Hex(Muted),text);
     y+=58;
-    Steps(s,x+40,y,w-80,failed);
+    Steps(s,x+40,y,w-80,failed && !asking);
     y+=92;
     if(failed) {
-        // What went wrong and what to do, in place of the progress bar.
+        // What went wrong and what to do, or the question, in place of the progress bar.
+        const char* mark=asking ? "?" : "!";
         Box(x-12,y-14,w+24,cardY+cardH-y-8,Hex(Raised),12);
-        List->AddCircleFilled(ImVec2(x+20,y+22),18,Hex(ErrorStrong),32);
-        Text(Heading,x+20-Width(Heading,"!")/2,y+1,Hex(Background),"!");
-        TextFit(Heading,x+56,y+2,w-64,Hex(Error),s.errorTitle);
+        List->AddCircleFilled(ImVec2(x+20,y+22),18,Hex(asking ? Green : ErrorStrong),32);
+        Text(Heading,x+20-Width(Heading,mark)/2,y+1,Hex(Background),mark);
+        TextFit(Heading,x+56,y+2,w-64,Hex(asking ? White : Error),s.errorTitle);
         float ly=y+52;
         for(int i=0;i<3;++i) if(s.errorLines[i][0]) { TextFit(Body,x+56,ly,w-64,Hex(i ? Muted : White),s.errorLines[i]); ly+=34; }
     } else {
@@ -180,8 +181,9 @@ void DrawLoadUi(const LoadScreen& s) {
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
     if(failed) {
-        bx=Button(bx,Bottom-40,"A",ButtonA,"Back to Aurora");
-        if(s.canRetry) bx=Button(bx,Bottom-40,"X",ButtonX,"Try again");
+        bx=Button(bx,Bottom-40,"A",ButtonA,s.buttonA[0] ? s.buttonA : "Back to Aurora");
+        if(s.canRetry) bx=Button(bx,Bottom-40,"X",ButtonX,s.buttonX[0] ? s.buttonX : "Try again");
+        if(asking) bx=Button(bx,Bottom-40,"B",ButtonB,"Back to Aurora");
         if(s.countdown>0) {
             _snprintf_s(text,sizeof(text),_TRUNCATE,"Back to Aurora in %d s",s.countdown);
             TextRight(Small,Right,Bottom-36,Hex(Dim),text);

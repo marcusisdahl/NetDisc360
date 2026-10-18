@@ -330,8 +330,8 @@ bool FtpStorage::ReadFile(const char* path, unsigned char* data, DWORD capacity,
 bool FtpStorage::WriteFile(const char* path, const void* data, DWORD size) { return ftp_.Store(path,data,size); }
 bool FtpStorage::MakeFolder(const char* path) { return ftp_.MakeFolder(path); }
 bool FtpStorage::RemoveGame(const char* folder) {
-    static const char* files[]={"default.xex","boot.xex","netiso.ini","netiso.log"};
-    for(int i=0;i<4;++i) { char path[PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s/%s",folder,files[i]); ftp_.Delete(path); }
+    static const char* files[]={"default.xex","boot.xex","netiso.ini","install.ini","netiso.log"};
+    for(int i=0;i<5;++i) { char path[PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s/%s",folder,files[i]); ftp_.Delete(path); }
     return ftp_.RemoveFolder(folder);
 }
 unsigned long FtpStorage::LastError() { return (unsigned long)ftp_.Code(); }

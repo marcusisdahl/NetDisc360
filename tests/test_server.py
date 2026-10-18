@@ -52,6 +52,44 @@ def build_server():
                     "-o", SERVER] + sources, check=True)
 
 
+def write_tree_iso(path, tree, start=0x2080000):
+    """An XDVDFS image (XGD3 layout) of a tree {name: bytes or {name: ...}}:
+    each directory's entries one after another, as the server reads them."""
+    SECTOR = 2048
+    blocks = {}  # sector: data
+    next_sector = [33]
+
+    def place(data):
+        at = next_sector[0]
+        blocks[at] = data
+        next_sector[0] += max(1, (len(data) + SECTOR - 1) // SECTOR)
+        return at
+
+    def directory(node):
+        entries = bytearray()
+        for name, value in node.items():
+            if isinstance(value, dict):
+                table = directory(value)
+                sector, size, attributes = place(table), len(table), 0x10
+            else:
+                sector, size, attributes = place(value), len(value), 0x80
+            raw = name.encode("latin-1")
+            entry = struct.pack("<HHIIBB", 0, 0, sector, size, attributes, len(raw)) + raw
+            entries += entry + b"\xff" * (-len(entry) % 4)
+        return bytes(entries)
+
+    root = directory(tree)
+    root_sector = place(root)
+    with open(path, "wb") as f:
+        f.seek(start + 0x10000)
+        f.write(b"MICROSOFT*XBOX*MEDIA" + struct.pack("<II", root_sector, len(root)))
+        for sector, data in blocks.items():
+            f.seek(start + sector * SECTOR)
+            f.write(data)
+        f.seek(start + next_sector[0] * SECTOR)
+        f.write(b"\0" * SECTOR)
+
+
 def own_address():
     """An address of this machine other than loopback, or None."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -616,6 +654,64 @@ class Push(ServerTest):
         self.assertIn("1 launcher updated", [e["text"] for e in console["events"]])
         self.assertLessEqual(len(console["events"]), 5)
 
+    def test_names_the_install_disc_a_game_needs(self):
+        def game(folder, media_id, title_id, disc, discs=2, content=None):
+            os.makedirs(folder)
+            with open(os.path.join(folder, "default.xex"), "wb") as f:
+                f.write(xex(execution_info(media_id, title_id, disc, discs)))
+            for path, data in (content or {}).items():
+                os.makedirs(os.path.dirname(os.path.join(folder, path)), exist_ok=True)
+                with open(os.path.join(folder, path), "wb") as f:
+                    f.write(data)
+        # GTA V as extracted: the play disc on top, the install disc in Disc 2.
+        packages = "content/0000000000000000/545408A7/00000002/"
+        game(os.path.join(self.isos, "GTA V"), 0x79E465C5, 0x545408A7, 2)
+        game(os.path.join(self.isos, "GTA V", "Disc 2"), 0x0C48794E, 0x545408A7, 1,
+             content={packages + "545408A700000000": b"PIRS" + bytes(3000), packages + "545408A700000001": b"PIRS" + bytes(10)})
+        # Forza 4 as ISOs: its second disc carries car packs.
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        write_tree_iso(os.path.join(self.isos, "Forza 4 - Disc 2.iso"), {
+            "default.xex": xex(execution_info(0x33334444, 0x4D530910, 2, 2)),
+            "content": {"0000000000000000": {"4d530910": {"00000002": {"4d53091000000001": b"PIRS" + bytes(500)}}}}})
+        # A swap disc carries none; a package for another game doesn't count.
+        self.add_iso("Red Dead.iso", 0x55556666, 0x5454082B)
+        write_iso(os.path.join(self.isos, "Red Dead - Disc 2.iso"), {"default.xex": xex(execution_info(0x77778888, 0x5454082B, 2, 2))})
+        game(os.path.join(self.isos, "Halo CE"), 0x99990000, 0x4D53085C, 1, 1,
+             content={"content/0000000000000000/4D53085B/00080000/4D53085B01000060": b"PIRS" + bytes(100)})
+        out = self.push()
+        self.assertIn("7 added", out)
+
+        def install(folder):
+            path = os.path.join(self.games, folder, "install.ini")
+            if not os.path.exists(path):
+                return None
+            with open(path) as f:
+                return f.read()
+        gta = install("GTA V")
+        self.assertIn("install_iso=GTA V - Disc 2.iso\n", gta)
+        self.assertIn("install_title_id=545408A7\n", gta)
+        self.assertIn("install_media_id=0C48794E\n", gta)
+        self.assertIn("install_folder=GTA V - Disc 2\n", gta)
+        self.assertIn("package_1=0000000000000000\\545408A7\\00000002\\545408A700000000|3004\n", gta)
+        self.assertIn("package_2=0000000000000000\\545408A7\\00000002\\545408A700000001|14\n", gta)
+        self.assertIn("GTA V needs GTA V - Disc 2.iso installed first", out)
+        forza = install("Forza 4")
+        self.assertIn("install_iso=Forza 4 - Disc 2.iso\n", forza)
+        self.assertIn("install_media_id=33334444\n", forza)
+        self.assertIn("package_1=0000000000000000\\4d530910\\00000002\\4d53091000000001|504\n", forza)
+        for folder in ("GTA V - Disc 2", "Forza 4 - Disc 2", "Red Dead", "Red Dead - Disc 2", "Halo CE"):
+            self.assertIsNone(install(folder), folder)
+        # Nothing new: nothing written.
+        self.ftp.stored.clear()
+        self.push()
+        self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
+        # The install disc gone: the game needs none any more, and its folder goes as a whole.
+        os.remove(os.path.join(self.isos, "Forza 4 - Disc 2.iso"))
+        out = self.push()
+        self.assertIn("Forza 4 needs no install disc any more", out)
+        self.assertEqual(install("Forza 4"), "")
+        self.assertFalse(os.path.exists(os.path.join(self.games, "Forza 4 - Disc 2")))
+
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push(expect=1, ftp_port=free_port())
@@ -656,6 +752,18 @@ class Dashboard(ServerTest):
         games = self.json("GET", "/api/games")["games"]
         self.assertEqual([(g["name"], g["kind"], g["titleId"]) for g in games], [("Halo 3", "iso", "4D5307E6")])
         self.assertEqual(self.call("GET", "/api/nothing")[0], 404)
+
+    def test_a_game_names_its_install_disc(self):
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        write_tree_iso(os.path.join(self.isos, "Forza 4 - Disc 2.iso"), {
+            "default.xex": xex(execution_info(0x33334444, 0x4D530910, 2, 2)),
+            "content": {"0000000000000000": {"4D530910": {"00000002": {"4D53091000000001": b"PIRS" + bytes(500)}}}}})
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 3)
+        games = self.json("GET", "/api/games")["games"]
+        self.assertEqual([(g["name"], g["installDisc"]) for g in games],
+                         [("Forza 4 - Disc 2", ""), ("Forza 4", "Forza 4 - Disc 2"), ("Halo 3", "")])
 
     def test_a_game_there_twice_waits_for_a_choice(self):
         iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

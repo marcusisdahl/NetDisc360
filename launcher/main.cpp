@@ -590,27 +590,38 @@ static bool FinishBar(int holdMs) {
 // Shows Problem until A or B (back to Aurora), X (try again, when that could
 // help) or a minute has passed. True to try again.
 static const int ErrorSeconds=60;
-static bool ShowProblem() {
+// Shows Problem as a card until A, B or X (when it can retry) is pressed, or
+// for ErrorSeconds. Returns the button, or 0 when the time ran out. A
+// question's card has its own labels for A and X.
+static WORD ShowCard(bool question=false,const char* buttonA="",const char* buttonX="") {
     if(!Screen) ScreenStart();
     EnterCriticalSection(&ShownLock);
-    Shown.step=Problem.step; Shown.canRetry=Problem.retry;
+    Shown.step=Problem.step; Shown.canRetry=Problem.retry; Shown.question=question;
     strcpy_s(Shown.errorTitle,Problem.title);
     for(int i=0;i<3;++i) strcpy_s(Shown.errorLines[i],Problem.lines[i]);
+    strcpy_s(Shown.buttonA,buttonA); strcpy_s(Shown.buttonX,buttonX);
     LeaveCriticalSection(&ShownLock);
-    bool again=false;
+    WORD button=0;
     for(DWORD start=GetTickCount();;) {
         int left=ErrorSeconds-int((GetTickCount()-start)/1000);
         EnterCriticalSection(&ShownLock); Shown.countdown=left; LeaveCriticalSection(&ShownLock);
         ReadNotifications();
         WORD pressed=Pressed();
-        if(pressed&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B) || left<=0 || !Screen) break;
-        if(Problem.retry && (pressed&XINPUT_GAMEPAD_X)) { again=true; break; }
+        if(left<=0 || !Screen) break;
+        if(pressed&XINPUT_GAMEPAD_A) { button=XINPUT_GAMEPAD_A; break; }
+        if(pressed&XINPUT_GAMEPAD_B) { button=XINPUT_GAMEPAD_B; break; }
+        if(Problem.retry && (pressed&XINPUT_GAMEPAD_X)) { button=XINPUT_GAMEPAD_X; break; }
         ScreenDraw();
     }
-    Note(again ? "X pressed: trying again." : "Back to Aurora.");
     EnterCriticalSection(&ShownLock);
-    Shown.errorTitle[0]=0; Shown.canRetry=false; Shown.countdown=0;
+    Shown.errorTitle[0]=Shown.buttonA[0]=Shown.buttonX[0]=0; Shown.canRetry=Shown.question=false; Shown.countdown=0;
     LeaveCriticalSection(&ShownLock);
+    return button;
+}
+// True when the player pressed X to try again.
+static bool ShowProblem() {
+    bool again=ShowCard()==XINPUT_GAMEPAD_X;
+    Note(again ? "X pressed: trying again." : "Back to Aurora.");
     return again;
 }
 
@@ -657,6 +668,92 @@ static void StartDisc(const char* ini) {
     Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
 }
 
+// ---- Install discs ----
+
+// install.ini, which NetDisc 360 writes next to netiso.ini when the game's
+// install disc is another of the server's discs: that disc, and the packages
+// it puts under Content. GTA V's play disc froze at "Loading story mode"
+// without them (seen on the console); Forza 4 plays without its car packs.
+static const char InstallIni[]="game:\\install.ini";
+static const int MaxPackages=16;
+struct Install {
+    Settings disc;
+    char folder[64];  // The install disc's game folder, as the tile's name.
+    int packages;
+    char path[MaxPackages][MAX_PATH];  // Under Content: 0000000000000000\<Title ID>\<type>\<name>.
+    ULONGLONG size[MaxPackages];
+};
+static bool ReadInstall(Install& install) {
+    static char text[nia::IniMax];
+    memset(&install,0,sizeof(install));
+    if(!ReadText(InstallIni,text,sizeof(text))) return false;
+    char value[MAX_PATH+32];
+    nia::IniValue(text,"install_iso",install.disc.iso,sizeof(install.disc.iso));
+    if(nia::IniValue(text,"install_title_id",value,sizeof(value))) install.disc.titleId=strtoul(value,NULL,16);
+    if(nia::IniValue(text,"install_media_id",value,sizeof(value))) install.disc.mediaId=strtoul(value,NULL,16);
+    nia::IniValue(text,"install_folder",install.folder,sizeof(install.folder));
+    for(int i=0;i<MaxPackages;++i) {
+        char key[16]; sprintf_s(key,"package_%d",i+1);
+        if(!nia::IniValue(text,key,value,sizeof(value))) break;
+        char* bar=strrchr(value,'|');
+        if(!bar) continue;
+        *bar=0;
+        strcpy_s(install.path[install.packages],value);
+        install.size[install.packages++]=_strtoui64(bar+1,NULL,10);
+    }
+    if(!install.disc.iso[0] || !install.disc.titleId || !install.packages) return false;
+    if(!install.folder[0]) nia::GameName(install.disc.iso,install.folder,sizeof(install.folder));
+    return true;
+}
+
+// Where installed packages are looked for: the hard drive, and USB drives
+// set up as console storage (that path is inferred, not tried).
+struct ContentPlace { const char* link; const char* root; const char* device; };
+static const ContentPlace ContentPlaces[]={
+    {"\\??\\NIsoC0:","NIsoC0:","\\Device\\Harddisk0\\Partition1\\Content"},
+    {"\\??\\NIsoC1:","NIsoC1:","\\Device\\Mass0PartitionFile\\Storage\\Content"},
+    {"\\??\\NIsoC2:","NIsoC2:","\\Device\\Mass1PartitionFile\\Storage\\Content"},
+};
+static const int ContentPlaceCount=int(sizeof(ContentPlaces)/sizeof(ContentPlaces[0]));
+// Whether every package is on one of them, as big as on the disc. One that
+// isn't whole is taken as not installed: the game may not play with it.
+static bool Installed(const Install& install) {
+    for(int d=0;d<ContentPlaceCount;++d) LinkDrive(ContentPlaces[d].link,ContentPlaces[d].device);
+    bool all=true;
+    for(int p=0;p<install.packages;++p) {
+        bool found=false;
+        for(int d=0;d<ContentPlaceCount && !found;++d) {
+            char path[MAX_PATH]; sprintf_s(path,"%s\\%s",ContentPlaces[d].root,install.path[p]);
+            HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+            if(file==INVALID_HANDLE_VALUE) continue;
+            DWORD high=0,low=GetFileSize(file,&high);
+            CloseHandle(file);
+            ULONGLONG size=(ULONGLONG(high)<<32)|low;
+            if(size==install.size[p]) found=true;
+            else Note("%s is %I64u bytes, not %I64u.",path,size,install.size[p]);
+        }
+        if(!found) { Note("Not installed: %s (%I64u bytes).",install.path[p],install.size[p]); all=false; }
+    }
+    for(int d=0;d<ContentPlaceCount;++d) UnlinkDrive(ContentPlaces[d].link);
+    if(all) Note("Its install disc's %d package(s) are installed.",install.packages);
+    return all;
+}
+
+enum InstallChoice { InstallBack, InstallNow, InstallSkip };
+static InstallChoice AskToInstall(const char* game,const Install& install) {
+    Problem.step=nia::StepServer; Problem.retry=true;
+    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"Install %s first",install.folder);
+    _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"%s plays from what its install disc puts on the console, and it isn't there.",game);
+    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A starts %s, which installs it. Start this tile again after that.",install.folder);
+    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X starts %s anyway, if it's installed somewhere this launcher doesn't look.",game);
+    Note("Asking: %s",Problem.title);
+    WORD button=ShowCard(true,"Install now","Play anyway");
+    if(button==XINPUT_GAMEPAD_A) { Note("A pressed: starting the install disc, %s.",install.disc.iso); return InstallNow; }
+    if(button==XINPUT_GAMEPAD_X) { Note("X pressed: starting the game anyway."); return InstallSkip; }
+    Note("Back to Aurora.");
+    return InstallBack;
+}
+
 // Mounts the game and starts it, showing what goes wrong until the player
 // goes back to Aurora. mount_only=1 in netiso.ini mounts and goes back to
 // Aurora without starting the game, to tell whether the mount or the start
@@ -671,6 +768,22 @@ static void LaunchGame(const char* ini) {
     EnterCriticalSection(&ShownLock);
     strcpy_s(Shown.iso,settings.iso); nia::GameName(settings.iso,Shown.game,sizeof(Shown.game)); Shown.titleId=settings.titleId;
     LeaveCriticalSection(&ShownLock);
+    // A game whose install disc is on the server checks for the install first,
+    // and can start the install disc instead.
+    static Install install;
+    if(ReadInstall(install)) {
+        Note("Its install disc is %s (%s), with %d package(s).",install.folder,install.disc.iso,install.packages);
+        if(!Installed(install)) {
+            InstallChoice choice=AskToInstall(Shown.game,install);
+            if(choice==InstallBack) return;
+            if(choice==InstallNow) {
+                settings=install.disc;
+                EnterCriticalSection(&ShownLock);
+                strcpy_s(Shown.iso,settings.iso); strcpy_s(Shown.game,install.folder); Shown.titleId=settings.titleId;
+                LeaveCriticalSection(&ShownLock);
+            }
+        }
+    }
     if(LinkDrive(DiscLink,DiscDevice)<0) Note("Can't link %s.",DiscDevice);
     for(;;) {
         Result result=RunMount(ini,settings);
@@ -758,8 +871,8 @@ public:
     }
     bool MakeFolder(const char* path) { return CreateDirectory(path,NULL) || GetLastError()==ERROR_ALREADY_EXISTS; }
     bool RemoveGame(const char* folder) {
-        static const char* files[]={"default.xex","boot.xex","netiso.ini","netiso.log"};
-        for(int i=0;i<4;++i) {
+        static const char* files[]={"default.xex","boot.xex","netiso.ini","install.ini","netiso.log"};
+        for(int i=0;i<5;++i) {
             char path[nia::PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s\\%s",folder,files[i]);
             DeleteFile(path);
         }
