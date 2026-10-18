@@ -267,6 +267,9 @@ void NoteConflicts(const std::vector<IsoFile>& dropped, const std::vector<IsoFil
 #endif
 }
 
+// The Title ID the launcher XEX carries as built (FFFF4E49, "NI").
+const DWORD LauncherTitleId=0xFFFF4E49;
+
 // Everything in the folders, each game once. A game that is there more than
 // once is reported (once, until that changes) so the copies can be removed or
 // one of them chosen.
@@ -283,6 +286,9 @@ std::vector<IsoFile> Isos() {
         for(size_t k=0;k<found.size();++k) if(paths.insert(found[k].path).second) isos.push_back(found[k]);
     }
     ReadTitles(isos);
+    // The launcher's own build (NetISO Sync, in a build folder that is also
+    // served) has default.xex too, with the launcher's Title ID; it's no game.
+    for(size_t i=isos.size();i-->0;) if(isos[i].kind==DiscFolder && isos[i].titleId==LauncherTitleId) isos.erase(isos.begin()+i);
     std::lock_guard<std::mutex> hold(DuplicatesLock);
     std::set<std::string> chosen;
     for(std::map<std::string,Choice>::const_iterator c=Choices.begin();c!=Choices.end();++c) chosen.insert(c->second.path);

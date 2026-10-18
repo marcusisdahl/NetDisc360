@@ -643,6 +643,18 @@ class Push(ServerTest):
         self.assertIn("1 launcher updated", [e["text"] for e in console["events"]])
         self.assertLessEqual(len(console["events"]), 5)
 
+    def test_skips_the_launcher_s_own_build_folder(self):
+        # A build folder served as a game folder holds NetISO Sync, the
+        # launcher as built, with its own Title ID: no tile for it.
+        for name, title_id in (("NetISO Sync", 0xFFFF4E49), ("Halo 3", 0x4D5307E6)):
+            folder = os.path.join(self.isos, name)
+            os.makedirs(folder)
+            with open(os.path.join(folder, "default.xex"), "wb") as f:
+                f.write(xex(execution_info(0x12345678, title_id, 1, 1)))
+        out = self.push()
+        self.assertIn("1 added", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3"])
+
     def test_names_the_install_disc_a_game_needs(self):
         def game(folder, media_id, title_id, disc, discs=2, content=None):
             os.makedirs(folder)
