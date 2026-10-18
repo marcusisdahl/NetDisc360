@@ -7,6 +7,21 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/marcusisdahl/NetDisc-360/releases/latest"><img alt="Download the latest release" src="https://img.shields.io/github/v/release/marcusisdahl/NetDisc-360?label=download&color=3ED9BC"></a>
+  <a href="https://github.com/marcusisdahl/NetDisc-360/actions/workflows/ci.yml"><img alt="Tests" src="https://github.com/marcusisdahl/NetDisc-360/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="#docker"><img alt="Runs on Windows or Docker" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20Docker-73B8FF"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
+  <a href="#install">Install guide</a> &nbsp;·&nbsp;
+  <a href="#docker">Docker</a> &nbsp;·&nbsp;
+  <a href="#troubleshooting">Troubleshooting</a> &nbsp;·&nbsp;
+  <a href="#more-xbox-360-homebrew">More homebrew</a>
+</p>
+
+<p align="center">
   <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
 </p>
 
@@ -16,12 +31,28 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Set it up once.** Start NetDisc 360 on your PC, choose your game folders, and that's it. New games show up in Aurora by themselves and removed ones disappear. It can start with Windows, and on a NAS it runs in Docker.
 - **Every console in the house.** Several Xboxes can play from the same library at the same time, and the dashboard shows what each one is playing.
 - **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
+- **Multi-disc games just work.** Each disc gets its own tile, and when a game asks for its next disc, NetDisc 360 puts it in for you. A game with an install disc, like GTA V, offers to install it first.
 - **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
 - **Faster than the disc.** With a gigabit USB network adapter, games read at up to about 26 MB/s, where the console's own DVD drive manages about 16 MB/s at best and NetISO on its own about 7 MB/s.
 
-**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin stops NetISO from killing the Guide and lifts its read loop from 4 KB per request to 64 KB or more, with a bigger receive buffer. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](#how-it-works) has the details.
+<p align="center">
+  <img src="docs/images/loading-screen.png" alt="The loading screen: Skate 3 at the Disc step, 62%, with B to cancel" width="49%">
+  <img src="docs/images/install-notice.png" alt="GTA V's install notice: A starts the install disc, X plays anyway, B goes back to Aurora" width="49%">
+  <br>
+  <sub>What you see on the Xbox: the loading screen after you pick a game, and the notice when a game's install disc hasn't been installed yet.</sub>
+</p>
 
-**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [Recommended extras](#recommended-extras).
+**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
+
+```mermaid
+flowchart LR
+    games[("Your games<br>ISOs, extracted, GOD")] --> server["NetDisc 360<br>on your PC or NAS"]
+    server -- "a tile for each game<br>over Aurora's FTP" --> aurora["Aurora<br>your game list"]
+    aurora -- "you pick a game" --> plugin["NetISO + NetIsoTiles<br>on the Xbox"]
+    server -- "the game disc<br>over NetISO" --> plugin
+```
+
+**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
 ## Contents
 
@@ -31,13 +62,13 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - [Docker](#docker)
 - [Playing](#playing)
 - [Speed](#speed)
-- [Recommended extras](#recommended-extras)
+- [More Xbox 360 homebrew](#more-xbox-360-homebrew)
 - [Troubleshooting](#troubleshooting)
 - [Updating](#updating)
 - [Security](#security)
 - [The server in detail](#the-server-in-detail)
-- [Build](#build)
 - [How it works](#how-it-works)
+- [Build](#build)
 
 ## Quick start
 
@@ -86,7 +117,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
      NetISO.xex.txt      <- you make this one in step 2
      NetIsoTiles.xex
      NetIsoTiles.ini     <- optional, see Speed
-     CUsbEnet.xex        <- optional, see Recommended extras
+     CUsbEnet.xex        <- optional, see More Xbox 360 homebrew
    ```
 
 2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The server's dashboard shows this address. Give your PC a fixed address in your router, so it doesn't change.
@@ -176,6 +207,7 @@ Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc a
 - Right after a reboot the console can't reach the server for a minute or two, and the NetISO plugin needs a little longer still. For the first 4 minutes after boot the screen waits for both instead of failing.
 - When something goes wrong, the screen says what and what to do: the server doesn't answer, the NetISO plugin isn't loaded, the game is no longer on the server, the disc didn't show up, a different game is in the drive, or the game didn't start. **A** goes back to Aurora and **X** tries again; after a minute it goes back to Aurora by itself.
 - **Games with an install disc** (GTA V, Forza Motorsport 4) check for the install first. If the install disc's content isn't on the console's hard drive or USB storage, the screen asks: **A** starts the install disc so you can install it, **X** plays anyway, **B** goes back to Aurora. Without its install, GTA V freezes at "Loading story mode".
+- **Games on more than one disc** get a tile for each disc. When the game asks for another disc (GTA V's install disc asks for the play disc once it has installed), NetDisc 360 puts that disc in over the network and the game carries on, as if you had swapped it. A notification says "NetDisc 360: putting in disc 2". Every disc of the game has to be in your game folders.
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
@@ -206,12 +238,19 @@ That is about as fast as the adapter goes on the console's USB 2.0 port. The con
 - The file can also go on the root of `Hdd1:`; the USB drive's is used if both are there. Any other value is ignored, and NetISO then works as it does on its own.
 - Each game's `netiso.log` says what the plugin set, in two lines starting `NetISO reads:` and `NetISO's receive buffer:`.
 
-## Recommended extras
+## More Xbox 360 homebrew
 
-Both are separate homebrew projects that work well alongside NetISO.
+Two companion projects from the same GitHub account make NetDisc 360 faster and the console easier to manage. The dashboard's **Latest releases** links to the newest version of all three.
 
-- **[CUsbEnet](https://github.com/marcusisdahl/CUsbEnet)**: a DashLaunch plugin that lets the Xbox 360 use a USB Ethernet adapter. The console's own network port is 100 Mbit/s, and NetISO reads every game over the network; with a gigabit USB adapter (ASIX AX88179 or Realtek based, such as the TP-Link UE306) FTP to the console has reached about 29 MiB/s, and games load at about 26 MB/s (see [Speed](#speed)). It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
-- **[FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP)**: a fast FTP server app for the console, for copying games, saves and files to and from it (about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console). It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; NetDisc 360 keeps using Aurora's own FTP, which runs whenever Aurora is open.
+### [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet): a faster network for your Xbox
+
+The Xbox 360's own network port is 100 Mbit/s. CUsbEnet is a DashLaunch plugin that lets the console use a gigabit USB Ethernet adapter instead (ASIX AX88179 or Realtek based, such as the TP-Link UE306), so games over NetISO load at about 26 MB/s and FTP to the console reaches about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
+
+### [FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP): copy files to and from your Xbox, fast
+
+A fast FTP server app for the console, for games, saves and other files: about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console. It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; NetDisc 360 keeps using Aurora's own FTP, which runs whenever Aurora is open.
+
+More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Troubleshooting
 
@@ -221,6 +260,8 @@ Both are separate homebrew projects that work well alongside NetISO.
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
 - **"Choose which copy to play" on the Games page.** The same game is in your folders more than once. Pick the copy to play there; NetDisc 360 remembers it. To free up space, delete the copies you don't play.
 - **The dashboard doesn't open.** Another program may be using port 8360; the log says so. Start the server with `--web-port` and another port. Opened from another device by a name rather than an address, it says to use the address until it has a password.
+- **"NetDisc 360: this game asks for a disc it has no tile for".** The game's other disc isn't in your game folders. Add it; the server gives it a tile, and the swap works the next time you start the game.
+- **Something else.** Each game writes `netiso.log` in its folder on the console (`Hdd1:\NetISO\<game>`), with each step and why it stopped; the dashboard's **Log** page shows what the server did. [How it works](docs/how-it-works.md#logs) explains both.
 
 ## Updating
 
@@ -290,7 +331,7 @@ Some games come on two discs, one of which only installs content: GTA V's second
 ## Limitations
 
 - Original Xbox games (`default.xbe`) are not supported, as NetISO doesn't play them; they are skipped.
-- Multi-disc games get one launcher per disc; swapping discs during a game is not handled.
+- Disc swaps work for a game started from its tile, with every disc in your game folders. They have been tested with GTA V.
 - The launcher has no title name of its own; Aurora names each game from its online lookup by Title ID.
 - `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix and the speed-up are off.
 
@@ -299,6 +340,12 @@ Some games come on two discs, one of which only installs content: GTA V's second
 If your PC runs another NetISO server (`netiso-srv`, `server.exe`) instead of NetDisc 360, NetISO Sync makes the game folders from the console. `build\NetISO Sync\` is the launcher without a game: copied to `Hdd1:\NetISO\NetISO Sync` and started from Aurora, it asks the NetISO server for its ISOs, writes and removes game folders the way `NetDisc.exe` does, and returns to Aurora. It reads ISOs only (no extracted folders or GOD packages, which only `NetDisc.exe` serves) and doesn't change Aurora's category or start a scan.
 
 `server=` in its `netiso.ini` names the server if `netiso.xex.txt` doesn't, and `after=` names what to start when it's done (to run it at every boot as DashLaunch's Default, set `after=` to Aurora's XEX). `tools\netiso_aurora.py` makes the same folders on a PC, for copying by hand.
+
+## How it works
+
+Each game's folder in `Hdd1:\NetISO` holds a small launcher with the game's own Title ID and Media ID, so Aurora scans it as that game. When you pick it, the launcher draws the loading screen, asks the NetISO plugin to mount the game, waits until the emulated disc is that game, and boots it the way Aurora's own disc entry does. `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory, so the Guide keeps working, reads go out in bigger pieces, and a game's disc swaps reach the server.
+
+[docs/how-it-works.md](docs/how-it-works.md) has the details: what the NetISO plugin does (read from its binary), why the Guide died, disc swaps, read speed, the logs, and switches for finding out what breaks on a console.
 
 ## Build
 
@@ -311,50 +358,6 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 This makes `build\NetDisc.exe` (with the launcher built in), `build\NetIsoTiles.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
 
 To make a release, see [RELEASING.md](RELEASING.md).
-
-## Logs
-
-Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc 360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
-
-### Troubleshooting switches
-
-These go in a game folder's `netiso.ini` and help find out what breaks on a console.
-
-- `stop_after=link|root|iso` stops short of the mount and goes back to Aurora: after linking the NetISO drive, listing its root, or listing the game's folder.
-- `quiet_ms=` sets how long the launcher leaves the disc alone after the mount (5000).
-- `hold_ms=` sets how long the full bar stays up before the game starts (1000).
-- `mount_only=1` mounts the game and goes back to Aurora without starting it.
-- `start=aurora|nova|media` picks how the disc is started: as Aurora's disc entry does (the default), as Nova's file browser does, or whatever disc is in the drive, as the dashboard does. If the chosen start fails, the launcher tries `nova`.
-- `tiles=aurora` has `NetIsoTiles.xex` mount from inside Aurora instead, the older way, with no loading screen and no cancel. With it, `hold_mount=1`, `relist=1`, `tiles_stop=server|disc|root|iso|mount` and `tiles_thread=system` change how the plugin mounts.
-
-## How it works
-
-Each game's folder in `Hdd1:\NetISO` holds `default.xex`, `boot.xex` and `netiso.ini`. `default.xex` carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to `boot.xex` next to it (the same program without a Title ID), which draws the loading screen, asks the NetISO plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
-
-### The mount
-
-The NetISO plugin has no published source. This is what `NetISO.xex` 1.0 does, read from the binary:
-
-- It registers the file system device `\Device\NetIso` and hooks `\Device\Cdrom0`.
-- Listing its root lists the server's ISOs, each with a `Mount` folder inside, plus `[Disable Current ISO]` while one is mounted. Listing a `Mount` folder sends the server a mount request for that ISO.
-- After a successful mount it swaps the disc and fakes a tray open and close on its own thread, after which the console reads the ISO as the disc.
-- Right after every mount request it calls `XamAppUnloadSelf` on the thread that asked.
-
-The launcher walks those folders by name (root, the ISO, `Mount`), leaves the disc alone for 5 s, then checks `\Device\Cdrom0\default.xex` for the expected Title ID and Media ID. It starts the game with `XLaunchNewImage("Dvd:\default.xex")` and `Dvd:` linked to `\Device\Cdrom0`, as Aurora 0.7b.2's disc entry does.
-
-### The Guide
-
-`XamAppUnloadSelf` is what killed the Guide. From the Guide's own file browser that call just closes the Guide, but a mount asked from anywhere else left the Guide dead until reboot. At start-up `NetIsoTiles.xex` points NetISO's import of that call at its own function, which skips it unless the Guide's browser asked, after checking that NetISO 1.0's code is where it was read.
-
-The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLaunchTitleEx`, as Nova's browser starts files, left the Guide dead), stays off the disc for 5 s after the mount (reading it during the fake tray cycle left the Guide dead), and keeps drawing frames until it launches (a title that never drew left the Guide dead too).
-
-`NetIsoTiles.xex` also hooks xam's two launch calls (ordinals 420 and 421, which Aurora starts tiles with). By default it leaves tiles to their launcher.
-
-### Read speed
-
-`NetISO.xex` 1.0 splits every disc read into 4 KB requests and sends the next only when the last one's data is in, so each 4 KB costs a round trip (about 0.6 ms through a USB adapter). It receives straight into the caller's buffer, so the limit is only a constant: at start-up, before NetISO has a disc to read, `NetIsoTiles.xex` rewrites the three instructions that clamp a request to 4 KB to clamp it to `read_kb` instead. NetDisc 360 answers a request of up to 16 MB in one go.
-
-NetISO sets one option on its socket before connecting and leaves the receive buffer at XNet's default, which caps how much the server can have in flight. The plugin points that one `setsockopt` call at its own function, which also asks for `rcv_kb` KB with `SO_RCVBUF` on each connection NetISO makes. Both patches check NetISO 1.0's code first, like the Guide fix.
 
 ## Tests
 
