@@ -44,13 +44,9 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 
 **For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
 
-```mermaid
-flowchart LR
-    games[("Your games<br>ISOs, extracted, GOD")] --> server["NetDisc 360<br>on your PC or NAS"]
-    server -- "a tile for each game<br>over Aurora's FTP" --> aurora["Aurora<br>your game list"]
-    aurora -- "you pick a game" --> plugin["NetISO + NetIsoTiles<br>on the Xbox"]
-    server -- "the game disc<br>over NetISO" --> plugin
-```
+<p align="center">
+  <img src="docs/images/how-it-fits.svg" alt="NetDisc 360 on your PC or NAS gives Aurora a tile for each game over Aurora's FTP, and streams the game disc to the Xbox over NetISO as you play" width="800">
+</p>
 
 **Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
