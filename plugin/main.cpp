@@ -860,7 +860,6 @@ static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.a
 // the launching title's thread before the watcher is told; and the module
 // the watcher hooked.
 static volatile LONG SwapGeneration=0,SwapArmed=0,SwapBusy=0;
-static char SwapFolder[MAX_PATH];
 static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
 static volatile HANDLE SwapModule=NULL;
@@ -983,36 +982,62 @@ static const BYTE* XexField(const BYTE* header,DWORD size,DWORD key) {
     return NULL;
 }
 
-// The discs of SwapTitle: the tile folders in the tile's own folder's
-// parent. Returns how many it found.
+// The tile's disc set, found on Aurora's thread when the tile starts, the
+// way Aurora reads its folders: Win32 calls on the tile's drive path. (The
+// kernel's listing of \Device\Harddisk0\Partition1\NetISO on the launching
+// title's thread found no disc of GTA V; seen in the trace.) The discs are
+// the tile folders next to the tile's own with the same Title ID in
+// netiso.ini, numbered by their launcher's execution info, as Aurora finds
+// them. Each step goes to the tile's log.
 static DWORD DiscHeader[1024]; // 4 KB: the launchers' execution info is near the start.
-static int FindDiscs() {
-    memset(SwapIsos,0,sizeof(SwapIsos));
-    char parent[MAX_PATH]; strcpy_s(parent,SwapFolder);
+static DWORD PreparedTile=0;
+static int PreparedDiscs=0;
+// The disc number in an XEX's execution info, and how many discs the set
+// has; 0 without one, -1 if the file can't be read.
+static int DiscOfXex(const char* path,int* discs=NULL) {
+    HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return -1;
+    DWORD done=0; BOOL ok=ReadFile(file,DiscHeader,sizeof(DiscHeader),&done,NULL);
+    CloseHandle(file);
+    const BYTE* info=ok ? XexField((const BYTE*)DiscHeader,done,0x40006) : NULL;
+    if(!info || info+20>(const BYTE*)DiscHeader+done) return 0;
+    if(discs) *discs=info[19];
+    return info[18];
+}
+static void PrepareDiscs(const Settings& settings) {
+    PreparedTile=0; PreparedDiscs=0;
+    char path[MAX_PATH]; sprintf_s(path,"%s\\%s",Folder,GameXex);
+    int discs=0,disc=DiscOfXex(path,&discs);
+    if(discs<2) return;
+    Note("Disc swaps: this tile is disc %d of %d.",disc,discs);
+    char parent[MAX_PATH]; strcpy_s(parent,Folder);
     char* cut=strrchr(parent,'\\');
-    if(!cut || cut==parent) return 0;
+    if(!cut) { Note("Disc swaps: no folder above %s to find the other discs in.",Folder); return; }
     *cut=0;
-    int count=ListFolder(parent),found=0;
-    if(count<0) SwapNote("Disc swaps: can't list %s.",parent);
-    for(int i=0;i<count;++i) {
-        char path[MAX_PATH],text[512]; Settings settings;
-        sprintf_s(path,"%s\\%s\\%s",parent,Names[i],IniName);
-        if(!ReadDeviceText(path,text,sizeof(text)) || !ReadSettings(text,settings) || settings.titleId!=SwapTitle) continue;
-        sprintf_s(path,"%s\\%s\\%s",parent,Names[i],GameXex);
-        HANDLE file; IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
-        if(OpenPath(path,false,file)<0) { SwapNote("Disc swaps: can't open %s.",path); continue; }
-        LONG read=NtReadFile(file,NULL,NULL,NULL,&status,DiscHeader,sizeof(DiscHeader),&offset);
-        NtClose(file);
-        const BYTE* info=read<0 ? NULL : XexField((const BYTE*)DiscHeader,DWORD(status.information),0x40006);
-        if(!info || info+20>(const BYTE*)DiscHeader+status.information) { SwapNote("Disc swaps: no disc number in %s.",path); continue; }
-        int disc=info[18];
-        if(disc<1 || disc>MaxDiscs) continue;
-        if(SwapIsos[disc][0]) { SwapNote("Disc %u is both %s and %s; using %s.",DWORD(disc),SwapIsos[disc],settings.iso,SwapIsos[disc]); continue; }
-        strcpy_s(SwapIsos[disc],settings.iso);
-        SwapNote("Disc %u of this game: %s (%s).",DWORD(disc),settings.iso,Names[i]);
-        ++found;
-    }
-    return found;
+    char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",parent);
+    WIN32_FIND_DATA found;
+    HANDLE find=FindFirstFile(pattern,&found);
+    if(find==INVALID_HANDLE_VALUE) { Note("Disc swaps: can't list %s (%lu).",parent,GetLastError()); return; }
+    InterlockedExchange(&SwapArmed,0); // A game armed before keeps nothing of these.
+    memset(SwapIsos,0,sizeof(SwapIsos));
+    int folders=0,count=0;
+    do {
+        if(!(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) continue;
+        ++folders;
+        char text[512]; Settings other;
+        sprintf_s(path,"%s\\%s\\%s",parent,found.cFileName,IniName);
+        if(!ReadText(path,text,sizeof(text)) || !ReadSettings(text,other) || other.titleId!=settings.titleId) continue;
+        sprintf_s(path,"%s\\%s\\%s",parent,found.cFileName,GameXex);
+        int number=DiscOfXex(path);
+        if(number<1 || number>MaxDiscs) { Note("Disc swaps: %s has no disc number (%d).",path,number); continue; }
+        if(SwapIsos[number][0]) { Note("Disc swaps: disc %d is both %s and %s; using %s.",number,SwapIsos[number],other.iso,SwapIsos[number]); continue; }
+        strcpy_s(SwapIsos[number],other.iso);
+        ++count;
+        Note("Disc swaps: disc %d is %s (%s).",number,other.iso,found.cFileName);
+    } while(FindNextFile(find,&found));
+    FindClose(find);
+    Note("Disc swaps: %d of the %d discs found among %d folders in %s.",count,discs,folders,parent);
+    PreparedDiscs=count; PreparedTile=LastTile.at;
 }
 
 // Where a 16-byte thunk jumps: lis rN,high; ori or addi rN,rN,low; mtctr rN;
@@ -1227,9 +1252,10 @@ static void ArmSwap() {
     if(ArmedTile==LastTile.at && GetTickCount()-ArmedAt<10000) return;
     ArmedTile=LastTile.at; ArmedAt=GetTickCount();
     InterlockedExchange(&SwapArmed,0);
-    strcpy_s(SwapFolder,LastTile.folder); SwapTitle=LastTile.titleId; SwapModule=NULL;
-    int discs=FindDiscs();
-    if(discs<2) { SwapNote("Disc swaps: %u disc(s) of this game here, nothing to swap.",DWORD(discs)); return; }
+    if(PreparedTile!=LastTile.at) return; // A single disc.
+    int discs=PreparedDiscs;
+    if(discs<2) { SwapNote("Disc swaps: %u disc(s) of this game found, nothing to swap.",DWORD(discs)); return; }
+    SwapTitle=LastTile.titleId; SwapModule=NULL;
     if(!Watcher) { SwapNote("Disc swaps: the watcher didn't start with the plugin, so no swaps."); return; }
     __sync(); // The discs before the generation, for the watcher.
     InterlockedIncrement(&SwapGeneration);
@@ -1325,6 +1351,7 @@ static Handling Handled(const char* path,const char* mountPath) {
     if(IsTile(path,mountPath,settings)) {
         strcpy_s(LastTile.folder,TileDevice); LastTile.titleId=settings.titleId; LastTile.at=GetTickCount();
         SwapLogTo(LastTile.folder);
+        PrepareDiscs(settings);
         // The tile's own launcher starts it (see the top of this file);
         // tiles=aurora in netiso.ini mounts from inside Aurora instead.
         char value[16];
