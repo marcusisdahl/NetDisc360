@@ -1067,18 +1067,36 @@ static DWORD JumpTarget(const DWORD* thunk) {
     return 0;
 }
 
+// The running title's module comes from xboxkrnl's XexExecutableModuleHandle
+// (export 403, a pointer to its loader entry): XexGetModuleHandle doesn't
+// find a game's default.xex from the watcher's system thread (seen with
+// GTA V). Both addresses are looked up when the plugin starts.
+static const DWORD ExecutableModuleOrdinal=403;
+static HANDLE* ExecutableModule=NULL;
+static void* SwapDiscExport=NULL;
+static void FindSwapExports() {
+    HANDLE kernel=NULL,xam=NULL; void* address=NULL;
+    if(XexGetModuleHandle("xboxkrnl.exe",&kernel)>=0 && XexGetProcedureAddress(kernel,ExecutableModuleOrdinal,&address)>=0) ExecutableModule=(HANDLE*)address;
+    if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,SwapDiscOrdinal,&address)>=0) SwapDiscExport=address;
+}
+static HANDLE TitleModule() {
+    if(!ExecutableModule || !MmIsAddressValid(ExecutableModule)) return NULL;
+    HANDLE module=*ExecutableModule;
+    return module && MmIsAddressValid(module) ? module : NULL;
+}
 // The game's import of XSwapDisc: the thunk after the import record that xam
-// resolved to the export, in the import libraries of the module named
-// default.xex, if it is SwapTitle. NULL if there is none (yet); what was
-// found is in seen, for the log.
+// resolved to the export, in the import libraries of the running title, if
+// it is SwapTitle. NULL if there is none (yet); what was found is in seen,
+// for the log.
 enum SwapLook { NoGame, NoExport, NoHeader, OtherTitle, NoImports, NoImport, BadThunk, Found };
 static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
-    HANDLE xam=NULL; void* target=NULL;
+    void* target=SwapDiscExport;
     detail=0;
     seen=NoGame;
-    if(XexGetModuleHandle("default.xex",&module)<0 || !module) return NULL;
+    module=TitleModule();
+    if(!module) return NULL;
     seen=NoExport;
-    if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,SwapDiscOrdinal,&target)<0 || !target) return NULL;
+    if(!target) return NULL;
     // The module handle is its loader entry; the XEX header is at 0x58 (read from Nova.xex).
     seen=NoHeader;
     const BYTE* const* headerAt=(const BYTE* const*)((const BYTE*)module+0x58);
@@ -1163,7 +1181,7 @@ static DWORD WINAPI SwapThread(void*) {
 static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     DWORD number=disc&0xFF;
     HANDLE module=NULL;
-    if(XexGetModuleHandle("default.xex",&module)<0 || module!=SwapModule) {
+    if((module=TitleModule())==NULL || module!=SwapModule) {
         SwapNote("The game asks for disc %u (%X, %X, %X), but it isn't this tile's game; handing it on.",number,disc,DWORD(event),DWORD(extra));
         return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
     }
@@ -1220,12 +1238,12 @@ static DWORD WINAPI SwapWatch(void*) {
         DWORD* thunk=SwapThunk(module,seen,detail);
         if(seen!=last || detail!=lastDetail) {
             switch(seen) {
-            case NoGame: SwapNote("Disc swaps: no default.xex running."); break;
-            case NoExport: SwapNote("Disc swaps: xam has no export %u.",SwapDiscOrdinal); break;
-            case NoHeader: SwapNote("Disc swaps: default.xex (%X) has no XEX header in memory.",DWORD(module)); break;
-            case OtherTitle: SwapNote("Disc swaps: default.xex (%X) is Title ID %X.",DWORD(module),detail); break;
-            case NoImports: SwapNote("Disc swaps: default.xex (%X) has no import libraries.",DWORD(module)); break;
-            case NoImport: SwapNote("Disc swaps: default.xex (%X), %u import libraries, doesn't import XSwapDisc.",DWORD(module),detail); break;
+            case NoGame: SwapNote("Disc swaps: no title running (%X).",DWORD(ExecutableModule)); break;
+            case NoExport: SwapNote("Disc swaps: xam's export %u wasn't found when the plugin started.",SwapDiscOrdinal); break;
+            case NoHeader: SwapNote("Disc swaps: the title (%X) has no XEX header in memory.",DWORD(module)); break;
+            case OtherTitle: SwapNote("Disc swaps: the title (%X) is Title ID %X.",DWORD(module),detail); break;
+            case NoImports: SwapNote("Disc swaps: the title (%X) has no import libraries.",DWORD(module)); break;
+            case NoImport: SwapNote("Disc swaps: the title (%X), %u import libraries, doesn't import XSwapDisc.",DWORD(module),detail); break;
             case BadThunk: {
                 const DWORD* at=(const DWORD*)detail;
                 if(MmIsAddressValid((void*)at) && MmIsAddressValid((void*)(at+3)))
@@ -1242,15 +1260,13 @@ static DWORD WINAPI SwapWatch(void*) {
             seenAt=GetTickCount();
             DWORD to=JumpTarget(thunk);
             if(to!=DWORD(SwapDiscHooked)) {
-                HANDLE xam=NULL; void* target=NULL;
-                XexGetModuleHandle("xam.xex",&xam); XexGetProcedureAddress(xam,SwapDiscOrdinal,&target);
                 WriteJump((DWORD*)SwapPreviousStub,to);
                 FlushCode((void*)SwapPreviousStub,4*4);
                 SwapModule=module;
                 WriteJump(thunk,DWORD(SwapDiscHooked));
                 FlushCode(thunk,4*4);
                 SwapNote("Disc swaps: the game's (import at %X, module %X) come here now; they went to %X, %s.",
-                         DWORD(thunk),DWORD(module),to,to==DWORD(target) ? "xam" : "another plugin (Nova's, from Aurora)");
+                         DWORD(thunk),DWORD(module),to,to==DWORD(SwapDiscExport) ? "xam" : "another plugin (Nova's, from Aurora)");
                 Show("NetISO: disc swaps ready for this game");
             }
         } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
@@ -1447,6 +1463,7 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         PatchUnload();
         PatchReadLimit();
         PatchReceiveBuffer();
+        FindSwapExports();
         StartWatcher();
     } else if(reason==DLL_PROCESS_DETACH) {
         StopWatcher();
