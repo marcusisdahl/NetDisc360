@@ -996,7 +996,7 @@ static const BYTE* XexField(const BYTE* header,DWORD size,DWORD key) {
 // them. Each step goes to the tile's log.
 static DWORD DiscHeader[1024]; // 4 KB: the XEX header's field directory.
 static DWORD PreparedTile=0;
-static int PreparedDiscs=0;
+static int PreparedDiscs=0,PreparedDisc=0; // The set's discs found, and the tile's own.
 // The disc number in an XEX's execution info, and how many discs the set
 // has; 0 without one, -1 if the file can't be read. The directory is at the
 // start, but the field itself can be further in: the launchers' is at
@@ -1020,7 +1020,7 @@ static int DiscOfXex(const char* path,int* discs=NULL) {
     return info[18];
 }
 static void PrepareDiscs(const Settings& settings) {
-    PreparedTile=0; PreparedDiscs=0;
+    PreparedTile=0; PreparedDiscs=0; PreparedDisc=0;
     char path[MAX_PATH]; sprintf_s(path,"%s\\%s",Folder,GameXex);
     int discs=0,disc=DiscOfXex(path,&discs);
     if(disc<=0) { Note("Disc swaps: no disc number in %s (%d).",path,disc); return; }
@@ -1062,7 +1062,7 @@ static void PrepareDiscs(const Settings& settings) {
     for(int n=1;n<=MaxDiscs && installIso[0];++n)
         if(SwapIsos[n][0] && !_stricmp(SwapIsos[n],installIso)) { SwapRoles[n]=InstallDisc; Note("Disc swaps: disc %d is the install disc.",n); }
     Note("Disc swaps: %d of the %d discs found among %d folders in %s.",count,discs,folders,parent);
-    PreparedDiscs=count; PreparedTile=LastTile.at;
+    PreparedDiscs=count; PreparedDisc=disc; PreparedTile=LastTile.at;
 }
 
 // Where a 16-byte thunk jumps: lis rN,high; ori or addi rN,rN,low; mtctr rN;
@@ -1368,7 +1368,11 @@ static void ArmSwap() {
     InterlockedExchange(&SwapArmed,1);
     SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
     // On the launching title's thread, where notices show (see SwapWatch).
-    Show("NetDisc 360: ready to swap discs");
+    // It says what the player won't have to do: an install disc's game asks
+    // for its play disc when the install is done, and that goes in by itself.
+    bool play=false;
+    for(int n=1;n<=MaxDiscs;++n) if(n!=PreparedDisc && SwapRoles[n]==PlayDisc) play=true;
+    Show(play ? "NetDisc 360 will insert the play disc after the install" : "NetDisc 360 will swap the discs for you");
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {
