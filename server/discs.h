@@ -13,19 +13,29 @@
 
 namespace nia {
 enum DiscKind { DiscIso, DiscGod, DiscFolder };
+// A content package on an install disc: its path under Content
+// (0000000000000000\<Title ID>\<type>\<name>, as on the disc) and size.
+struct Package { std::string path; U64 size; };
 // name is what the server lists. For folders and GOD packages it is the
 // game's name with ".iso" added, so NetISO Sync names the console's game
 // folder from it as for an ISO.
 // titleId and disc come from the game's default.xex (0: not known yet, or not a game).
-struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId; int disc; };
+// packages are those the disc carries for its own game, under content at its
+// top; installDisc is the listed name of the disc whose packages this one's
+// game needs installed (see LinkInstallDiscs).
+struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId; int disc;
+                 std::vector<Package> packages; std::string installDisc; };
 
 // The discs in folder and its subfolders, sorted by name, added to out.
 void FindIsos(const std::string& folder, std::vector<IsoFile>& out);
 // Gives a disc whose listed name is taken (ignoring case) a number: an ISO
 // keeps its name over a folder or GOD package, otherwise the first one does.
 void UniqueNames(std::vector<IsoFile>& discs);
-// Reads each disc's Title ID and disc number (remembered between calls).
+// Reads each disc's Title ID, disc number and packages (remembered between calls).
 void ReadTitles(std::vector<IsoFile>& discs);
+// Sets installDisc on each disc of a game that carries no packages while
+// another disc of it does: GTA V's play disc, Forza 4's first disc.
+void LinkInstallDiscs(std::vector<IsoFile>& discs);
 // The same game (Title ID and disc number) more than once: keeps the copy
 // whose path is in chosen, else an ISO over a GOD package over a folder, and
 // moves the others to dropped, with kept naming the one kept for each.

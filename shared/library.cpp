@@ -8,7 +8,7 @@
 
 namespace nia {
 static const DWORD ExecutionInfo = 0x40006;
-static const char GameIni[] = "netiso.ini", GameXex[] = "default.xex", GameBoot[] = "boot.xex";
+static const char GameIni[] = "netiso.ini", GameXex[] = "default.xex", GameBoot[] = "boot.xex", GameInstall[] = "install.ini";
 // (where the magic is, where the game partition starts), as netiso-srv checks.
 static const U64 Partitions[][2] = { { 0xFDA0000, 0xFD90000 }, { 0x2090000, 0x2080000 }, { 0x10000, 0 } };
 static const char XgdMagic[] = "MICROSOFT*XBOX*MEDIA";
@@ -273,7 +273,7 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
     return Fail(error,capacity,"default.xex has no execution info");
 }
 
-struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId; bool game, keep; };
+struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId, mediaId; bool game, keep; };
 
 // Rewrites a game folder's default.xex when it was made from an older
 // launcher, keeping its game's execution info, or putting in info if given.
@@ -315,8 +315,40 @@ static int RefreshFile(Storage& storage, const char* folder, const char* name, c
     return storage.WriteFile(path,data,size) ? 1 : -1;
 }
 
+// Writes, or empties, a game folder's install.ini as the caller's findInstall
+// says (see library.h).
+static void RefreshInstall(Storage& storage, const char* root, const Folder* folders, int folderCount, const Folder& game,
+                           FindInstall findInstall, Note note) {
+    static InstallNeed need;
+    memset(&need,0,sizeof(need));
+    findInstall(game.iso,need);
+    if(!need.known) return;
+    char folder[PathMax],path[PathMax]; Join(folder,root,game.name); Join(path,folder,GameInstall);
+    static char text[IniMax+1];
+    text[0]=0;
+    if(need.iso[0]) {
+        // Its folder gives the install disc's Media ID, so the launcher can
+        // tell it from the play disc it shares the Title ID with.
+        const Folder* disc=NULL;
+        for(int k=0;k<folderCount && !disc;++k) if(folders[k].game && folders[k].keep && !_stricmp(folders[k].iso,need.iso)) disc=&folders[k];
+        _snprintf_s(text,sizeof(text),_TRUNCATE,
+            "; Written by NetDisc 360: this game's install disc, and the packages it puts under Content.\r\n"
+            "install_iso=%s\r\ninstall_title_id=%08X\r\ninstall_media_id=%08X\r\ninstall_folder=%s\r\n%s",
+            need.iso,game.titleId,disc ? disc->mediaId : 0,disc ? disc->name : "",need.packages);
+    } else {
+        // It needs none (any more): one that is there is emptied, none is made.
+        DWORD size=0;
+        if(!storage.ReadFile(path,reinterpret_cast<unsigned char*>(text),IniMax,size) || !size) return;
+        text[0]=0;
+    }
+    int written=RefreshFile(storage,folder,GameInstall,reinterpret_cast<const unsigned char*>(text),DWORD(strlen(text)));
+    if(written<0) Say(note,"Couldn't write %s (error %lu).",path,storage.LastError());
+    else if(written && need.iso[0]) Say(note,"%s needs %s installed first; its install.ini says so.",game.name,need.iso);
+    else if(written) Say(note,"%s needs no install disc any more; emptied its install.ini.",game.name);
+}
+
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
-          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone) {
+          const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -343,8 +375,9 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(storage.ReadFile(path,reinterpret_cast<unsigned char*>(ini),IniMax,size)) {
             ini[size]=0;
             f.game=IniValue(ini,"iso",f.iso,sizeof(f.iso)) && f.iso[0];
-            char title[16];
-            if(IniValue(ini,"title_id",title,sizeof(title))) f.titleId=DWORD(strtoul(title,NULL,16));
+            char id[16];
+            if(IniValue(ini,"title_id",id,sizeof(id))) f.titleId=DWORD(strtoul(id,NULL,16));
+            if(IniValue(ini,"media_id",id,sizeof(id))) f.mediaId=DWORD(strtoul(id,NULL,16));
         }
     }
 
@@ -395,6 +428,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         Folder& f=folders[folderCount]; memset(&f,0,sizeof(f));
         FolderName(isos[i],names,folderCount,f.name);
         strcpy_s(names[folderCount],f.name); strcpy_s(f.iso,isos[i]); f.game=f.keep=true; ++folderCount;
+        f.titleId=Read32(info+12); f.mediaId=Read32(info);
         char folder[PathMax],path[PathMax]; Join(folder,root,f.name);
         unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
         if(!copy) { Say(note,"Out of memory."); return false; }
@@ -420,6 +454,9 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         Say(note,"Added %s as %s (Title ID %08X, Media ID %08X).",isos[i],f.name,Read32(info+12),Read32(info));
         ++result.added;
     }
+
+    if(findInstall) for(int k=0;k<folderCount;++k)
+        if(folders[k].game && folders[k].keep) RefreshInstall(storage,root,folders,folderCount,folders[k],findInstall,note);
 
     // Folders whose ISO is gone. An empty listing could be a server problem,
     // so nothing is removed then.

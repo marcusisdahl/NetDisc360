@@ -18,6 +18,10 @@ struct LoadScreen {
     char errorTitle[96];
     char errorLines[3][128];
     bool canRetry;
+    // A question in place of a failure (an install disc to install first):
+    // the card isn't red, B goes back to Aurora, and A and X do as labelled.
+    bool question;
+    char buttonA[32], buttonX[32];  // Empty: "Back to Aurora" and "Try again".
     int countdown;      // Seconds until it goes back to Aurora by itself; 0 hides it.
     double time;        // Seconds since start, for the animation.
     double elapsed;     // Seconds since the tile was pressed, shown at the top; below 0 hides it.

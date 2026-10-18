@@ -2,7 +2,7 @@
 // Renders the launcher's loading screen (launcher/ui.cpp) on a PC, to review
 // it without a console: Dear ImGui's triangles drawn in software into a
 // 1280x720 BMP. The rasterizer is Xbox360-FastFTP's tests/ui_preview.cpp.
-//   ui-preview out.bmp [server|network|mount|disc|start|no-server|not-listed|no-disc|wrong-disc|no-plugin]
+//   ui-preview out.bmp [server|network|mount|disc|start|no-server|not-listed|no-disc|wrong-disc|no-plugin|install]
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <string.h>
@@ -98,6 +98,14 @@ int main(int argc, char** argv) {
     else if(!strcmp(scene,"no-plugin")) Error(s,nia::StepMount,"The NetISO plugin isn't running",
         "NetISO.xex isn't loaded, so there is no NetISO drive to mount from.",
         "Add it to DashLaunch's plugins in launch.ini and reboot the Xbox.","",false);
+    else if(!strcmp(scene,"install")) {
+        strcpy(s.iso,"GTA V.iso"); nia::GameName(s.iso,s.game,sizeof(s.game)); s.titleId=0x545408A7;
+        Error(s,nia::StepServer,"Install GTA V - Disc 2 first",
+            "GTA V plays from what its install disc puts on the console, and it isn't there.",
+            "A starts GTA V - Disc 2, which installs it. Start this tile again after that.",
+            "X starts GTA V anyway, if it's installed somewhere this launcher doesn't look.",true);
+        s.question=true; strcpy(s.buttonA,"Install now"); strcpy(s.buttonX,"Play anyway");
+    }
     ImGui::GetIO().DeltaTime=1.0f/60;
     nia::DrawLoadUi(s);
     Rasterize(ImGui::GetDrawData());
