@@ -100,10 +100,10 @@ int main(int argc, char** argv) {
         "Add it to DashLaunch's plugins in launch.ini and reboot the Xbox.","",false);
     else if(!strcmp(scene,"install")) {
         strcpy(s.iso,"GTA V.iso"); nia::GameName(s.iso,s.game,sizeof(s.game)); s.titleId=0x545408A7;
-        Error(s,nia::StepServer,"Install GTA V - Disc 2 first",
-            "GTA V plays from what its install disc puts on the console, and it isn't there.",
-            "A starts GTA V - Disc 2, which installs it. Start this tile again after that.",
-            "X starts GTA V anyway, if it's installed somewhere this launcher doesn't look.",true);
+        Error(s,nia::StepServer,"GTA V needs its content installed first",
+            "GTA V won't play until GTA V - Disc 2 installs its content.",
+            "A starts GTA V - Disc 2 to install it. Then start GTA V again.",
+            "X starts GTA V anyway, if you installed it some other way.",true);
         s.question=true; strcpy(s.buttonA,"Install now"); strcpy(s.buttonX,"Play anyway");
     }
     ImGui::GetIO().DeltaTime=1.0f/60;

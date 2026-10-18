@@ -31,7 +31,7 @@ enum { Left=64, Right=1216, Top=36, Bottom=684 };
 
 static ImU32 Hex(unsigned int rgb, int alpha=255) { return IM_COL32((rgb>>16)&255,(rgb>>8)&255,rgb&255,alpha); }
 static const unsigned int Background=0x0F1725,Card=0x192537,Raised=0x223349,White=0xE2EBF4,Muted=0x8FA6BA,Dim=0x51667A,
-    Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0;
+    Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,Info=0x62B6FF,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0;
 
 void InitLoadUi() {
     ImGui::CreateContext();
@@ -106,6 +106,13 @@ static void Steps(const LoadScreen& s, float x, float y, float w, bool failed) {
     }
 }
 
+// An information sign centred on (cx,cy): a blue circle with a dark "i".
+static void InfoSign(float cx, float cy) {
+    List->AddCircleFilled(ImVec2(cx,cy),19,Hex(Info),32);
+    List->AddCircleFilled(ImVec2(cx,cy-9),3.2f,Hex(Background),12);
+    Box(cx-2.6f,cy-3,5.2f,14,Hex(Background),2.6f);
+}
+
 static void Progress(float x, float y, float w, double fraction, double time) {
     if(fraction<0) fraction=0;
     if(fraction>1) fraction=1;
@@ -162,12 +169,22 @@ void DrawLoadUi(const LoadScreen& s) {
     Steps(s,x+40,y,w-80,failed && !asking);
     y+=92;
     if(failed) {
-        // What went wrong and what to do, or the question, in place of the progress bar.
-        const char* mark=asking ? "?" : "!";
-        Box(x-12,y-14,w+24,cardY+cardH-y-8,Hex(Raised),12);
-        List->AddCircleFilled(ImVec2(x+20,y+22),18,Hex(asking ? Green : ErrorStrong),32);
-        Text(Heading,x+20-Width(Heading,mark)/2,y+1,Hex(Background),mark);
-        TextFit(Heading,x+56,y+2,w-64,Hex(asking ? White : Error),s.errorTitle);
+        // What went wrong and what to do, in place of the progress bar. A
+        // question (a game's install missing) is a notice: blue edge, tint and sign.
+        const float panelY=y-14, panelH=cardY+cardH-y-8;
+        Box(x-12,panelY,w+24,panelH,Hex(Raised),12);
+        if(asking) {
+            Box(x-12,panelY,w+24,panelH,Hex(Info,12),12);
+            List->AddRect(ImVec2(x-12,panelY),ImVec2(x+w+12,panelY+panelH),Hex(Info,110),12,0,2);
+            List->PushClipRect(ImVec2(x-12,panelY),ImVec2(x-4,panelY+panelH),true);
+            Box(x-12,panelY,w+24,panelH,Hex(Info),12);
+            List->PopClipRect();
+            InfoSign(x+20,y+22);
+        } else {
+            List->AddCircleFilled(ImVec2(x+20,y+22),18,Hex(ErrorStrong),32);
+            Text(Heading,x+20-Width(Heading,"!")/2,y+1,Hex(Background),"!");
+        }
+        TextFit(Heading,x+56,y+2,w-64,Hex(asking ? Info : Error),s.errorTitle);
         float ly=y+52;
         for(int i=0;i<3;++i) if(s.errorLines[i][0]) { TextFit(Body,x+56,ly,w-64,Hex(i ? Muted : White),s.errorLines[i]); ly+=34; }
     } else {

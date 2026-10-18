@@ -742,10 +742,10 @@ static bool Installed(const Install& install) {
 enum InstallChoice { InstallBack, InstallNow, InstallSkip };
 static InstallChoice AskToInstall(const char* game,const Install& install) {
     Problem.step=nia::StepServer; Problem.retry=true;
-    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"Install %s first",install.folder);
-    _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"%s plays from what its install disc puts on the console, and it isn't there.",game);
-    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A starts %s, which installs it. Start this tile again after that.",install.folder);
-    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X starts %s anyway, if it's installed somewhere this launcher doesn't look.",game);
+    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"%s needs its content installed first",game);
+    _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"%s won't play until %s installs its content.",game,install.folder);
+    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A starts %s to install it. Then start %s again.",install.folder,game);
+    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X starts %s anyway, if you installed it some other way.",game);
     Note("Asking: %s",Problem.title);
     WORD button=ShowCard(true,"Install now","Play anyway");
     if(button==XINPUT_GAMEPAD_A) { Note("A pressed: starting the install disc, %s.",install.disc.iso); return InstallNow; }
