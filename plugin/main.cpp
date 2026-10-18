@@ -1368,11 +1368,12 @@ static void ArmSwap() {
     InterlockedExchange(&SwapArmed,1);
     SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
     // On the launching title's thread, where notices show (see SwapWatch).
-    // It says what the player won't have to do: an install disc's game asks
-    // for its play disc when the install is done, and that goes in by itself.
-    bool play=false;
-    for(int n=1;n<=MaxDiscs;++n) if(n!=PreparedDisc && SwapRoles[n]==PlayDisc) play=true;
-    Show(play ? "NetDisc 360 will insert the play disc after the install" : "NetDisc 360 will swap the discs for you");
+    // Only an install disc is sure to ask for another disc: its game asks for
+    // the play disc when the install is done, and that goes in by itself.
+    // Other sets' discs can be games of their own that never ask (Red Dead's
+    // disc 2 is Undead Nightmare), so they get no notice until a swap.
+    if(PreparedDisc>=1 && PreparedDisc<=MaxDiscs && SwapRoles[PreparedDisc]==InstallDisc)
+        Show("NetDisc 360 will insert the play disc after the install");
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {
