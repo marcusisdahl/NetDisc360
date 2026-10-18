@@ -66,7 +66,7 @@ typedef void (*QueueNotice)(DWORD type,DWORD user,unsigned __int64 areas,const w
 static const DWORD LaunchTitleOrdinal=420,LaunchTitleExOrdinal=421,QueueNoticeOrdinal=656;
 static QueueNotice Notice=NULL;
 
-static const char IniName[]="netiso.ini",LogName[]="netiso.log",GameXex[]="default.xex";
+static const char IniName[]="netiso.ini",LogName[]="netiso.log",GameXex[]="default.xex",InstallName[]="install.ini";
 // The plugin's folders and the disc are reached by their device paths, the
 // way Aurora's file browser reaches them, with no drive links of our own.
 // The launcher's mount, through drive links it created and Win32 listings,
@@ -863,6 +863,13 @@ static volatile LONG SwapGeneration=0,SwapArmed=0,SwapBusy=0;
 static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
 static volatile HANDLE SwapModule=NULL;
+// What each disc is to the player, for the notices: a game with an install
+// disc (GTA V) has install.ini in its play disc's folder naming that disc
+// (see launcher/main.cpp); any other disc is just its number.
+enum DiscRole { NumberedDisc, InstallDisc, PlayDisc };
+static char SwapRoles[MaxDiscs+1];
+// How many times the armed game has asked for a disc (see SwapWatch).
+static volatile LONG SwapsAsked=0;
 
 // A drive path to a device path, for the drives tiles are on; "" for others.
 static void DevicePath(const char* path,char* out,size_t capacity) {
@@ -1031,6 +1038,8 @@ static void PrepareDiscs(const Settings& settings) {
     if(find==INVALID_HANDLE_VALUE) { Note("Disc swaps: can't list %s (%lu).",parent,GetLastError()); return; }
     InterlockedExchange(&SwapArmed,0); // A game armed before keeps nothing of these.
     memset(SwapIsos,0,sizeof(SwapIsos));
+    memset(SwapRoles,0,sizeof(SwapRoles));
+    char installIso[MAX_PATH]="";
     int folders=0,count=0;
     do {
         if(!(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -1045,8 +1054,15 @@ static void PrepareDiscs(const Settings& settings) {
         strcpy_s(SwapIsos[number],other.iso);
         ++count;
         Note("Disc swaps: disc %d is %s (%s).",number,other.iso,found.cFileName);
+        char install[MAX_PATH];
+        sprintf_s(path,"%s\\%s\\%s",parent,found.cFileName,InstallName);
+        if(ReadText(path,text,sizeof(text)) && IniValue(text,"install_iso",install,sizeof(install)) && install[0]) {
+            SwapRoles[number]=PlayDisc; strcpy_s(installIso,install);
+        }
     } while(FindNextFile(find,&found));
     FindClose(find);
+    for(int n=1;n<=MaxDiscs && installIso[0];++n)
+        if(SwapIsos[n][0] && !_stricmp(SwapIsos[n],installIso)) { SwapRoles[n]=InstallDisc; Note("Disc swaps: disc %d is the install disc.",n); }
     Note("Disc swaps: %d of the %d discs found among %d folders in %s.",count,discs,folders,parent);
     PreparedDiscs=count; PreparedTile=LastTile.at;
 }
@@ -1169,11 +1185,21 @@ static DWORD DiscNumber() {
 // Whether an event is set: its dispatcher header's signal state.
 static bool EventSet(void* event) { return ((volatile LONG*)event)[1]!=0; }
 static bool GameRuns(void* event) { return SwapModule && TitleModule()==SwapModule && MmIsAddressValid(event); }
+// A disc as the notices name it: "the play disc" or "the install disc" where
+// the set has an install disc, which says more than its number, else
+// "disc 2 of 2".
+static void DiscName(DWORD disc,char* text,size_t capacity) {
+    char role=disc<=DWORD(MaxDiscs) ? SwapRoles[disc] : NumberedDisc;
+    if(role==PlayDisc) strcpy_s(text,capacity,"the play disc");
+    else if(role==InstallDisc) strcpy_s(text,capacity,"the install disc");
+    else sprintf_s(text,capacity,"disc %lu of %d",disc,PreparedDiscs);
+}
 // Puts the disc the game asked for in the drive, on a thread of the game's,
 // so NetISO's unload call is skipped (see UnloadHooked).
 static DWORD WINAPI SwapThread(void*) {
     DWORD disc=SwapRequest.disc; void* event=SwapRequest.event;
-    static char text[64]; sprintf_s(text,"NetDisc 360: inserting disc %lu of %d",disc,PreparedDiscs); Show(text);
+    char name[32]; DiscName(disc,name,sizeof(name));
+    static char text[64]; sprintf_s(text,"NetDisc 360: inserting %s",name); Show(text);
     Sleep(PollMs); // xam's swap is under way before the tray moves.
     bool in=false;
     Settings settings; memset(&settings,0,sizeof(settings));
@@ -1188,7 +1214,7 @@ static DWORD WINAPI SwapThread(void*) {
         }
         if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
     }
-    if(!in) { sprintf_s(text,"NetDisc 360 couldn't insert disc %lu",disc); Show(text); }
+    if(!in) { sprintf_s(text,"NetDisc 360 couldn't insert %s",name); Show(text); }
     else {
         // The event lives in the game; if the game has ended, it's gone.
         DWORD waited=0;
@@ -1207,6 +1233,7 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
         SwapNote("The game asks for disc %u (%X, %X, %X), but it isn't this tile's game; handing it on.",number,disc,DWORD(event),DWORD(extra));
         return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
     }
+    InterlockedIncrement(&SwapsAsked);
     // Nova's handler can't put in a disc from the server, so a tile's game
     // never goes there.
     if(number<1 || number>DWORD(MaxDiscs) || !SwapIsos[number][0] || !event || !extra) {
@@ -1245,16 +1272,24 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // kernel and never ran; seen over xbdm.) ArmSwap gives it a new generation;
 // it stops watching after SwapIdleMs without the game. Each change in what it
 // finds is logged. No CRT calls here (see SwapNote).
+//
+// Its notices wait until the game has run ReadyNoticeMs: queued in the
+// game's first seconds, they never showed (swap11: the import was taken 2.3 s
+// after the disc started, while GTA V was booting, and only the later
+// "inserting" notice appeared). One per tile start, and none once the game
+// has asked for a disc.
+static const DWORD ReadyNoticeMs=12000;
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
 static DWORD WINAPI SwapWatch(void*) {
-    LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
+    LONG watching=0,noticeFor=0,askedBefore=0; DWORD seenAt=0,lastDetail=1,noticeAt=0; SwapLook last=Found;
+    const char* notice=NULL;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
-            watching=generation; seenAt=GetTickCount(); last=Found; lastDetail=1;
+            watching=generation; seenAt=GetTickCount(); last=Found; lastDetail=1; notice=NULL;
             SwapNote("Disc swaps: watching for Title ID %X.",SwapTitle);
         }
         HANDLE module=NULL; SwapLook seen; DWORD detail;
@@ -1272,7 +1307,9 @@ static DWORD WINAPI SwapWatch(void*) {
                 if(MmIsAddressValid((void*)at) && MmIsAddressValid((void*)(at+3)))
                     SwapNote("Disc swaps: the game's XSwapDisc import at %X reads %X %X %X %X, not a jump.",detail,at[0],at[1],at[2],at[3]);
                 else SwapNote("Disc swaps: the game's XSwapDisc import at %X can't be read.",detail);
-                Show("NetDisc 360 can't take this game's disc swaps.");
+                if(noticeFor!=watching) {
+                    notice="NetDisc 360 can't take this game's disc swaps"; noticeAt=GetTickCount(); noticeFor=watching; askedBefore=SwapsAsked;
+                }
                 break;
             }
             case Found: break;
@@ -1290,7 +1327,9 @@ static DWORD WINAPI SwapWatch(void*) {
                 FlushCode(thunk,4*4);
                 SwapNote("Disc swaps: the game's (import at %X, module %X) come here now; they went to %X, %s.",
                          DWORD(thunk),DWORD(module),to,to==DWORD(SwapDiscExport) ? "xam" : "another plugin (Nova's, from Aurora)");
-                Show("NetDisc 360: ready to swap discs");
+                if(noticeFor!=watching) {
+                    notice="NetDisc 360: ready to swap discs"; noticeAt=GetTickCount(); noticeFor=watching; askedBefore=SwapsAsked;
+                }
             }
         } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
             SwapNote("Disc swaps: no game of this Title ID for %u s; not watching any more.",SwapIdleMs/1000);
@@ -1298,6 +1337,10 @@ static DWORD WINAPI SwapWatch(void*) {
         } else if(GetTickCount()-seenAt>SwapIdleMs*5) {
             SwapNote("Disc swaps: still no XSwapDisc import to take after %u s; not watching any more.",SwapIdleMs*5/1000);
             InterlockedExchange(&SwapArmed,0);
+        }
+        if(notice && GetTickCount()-noticeAt>=ReadyNoticeMs) {
+            if(seen!=NoGame && SwapsAsked==askedBefore) Show(notice);
+            notice=NULL;
         }
         Sleep(thunk ? 1000 : 250);
     }
