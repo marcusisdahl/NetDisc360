@@ -699,7 +699,19 @@ static Outcome Mount(const Settings& settings) {
     return MountSteps(settings,stop);
 }
 
-// ---- NetISO's read size ----
+// ---- NetISO's read size and receive buffer ----
+
+// Both are set in NetIsoTiles.ini on the root of Usb0: or Hdd1:, the first
+// one found. Returns which file set key, or NULL.
+static const char* TuningValue(const char* key,char* value,size_t capacity) {
+    static const char* const files[]={"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
+    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
+        char text[512];
+        if(!ReadDeviceText(files[i],text,sizeof(text))) continue;
+        return IniValue(text,key,value,capacity) ? files[i] : NULL;
+    }
+    return NULL;
+}
 
 // NetISO.xex 1.0 splits every disc read into 4 KB requests and sends the next
 // only when the last one's data is in (its read loop at 0x911050cc, read from
@@ -707,8 +719,7 @@ static Outcome Mount(const Settings& settings) {
 // adapter, so games loaded at about 7 MB/s however fast the link was (seen on
 // the console). It receives straight into the caller's buffer, so a bigger
 // limit only means fewer requests; NetDisc serves up to 16 MB in one.
-// read_kb= in NetIsoTiles.ini on the root of Usb0: or Hdd1: sets the limit:
-// 4 (NetISO's own), 16, 64, 256 or 1024.
+// read_kb= sets the limit: 4 (NetISO's own), 16, 64, 256 or 1024.
 static DWORD* const ReadLimit=(DWORD*)0x911050e0;
 // cmplwi cr6,r4,0x1000; blt cr6,+8; li r4,0x1000; bl ReadData
 static const DWORD ReadLimitCode[4]={0x2B041000,0x41980008,0x38801000,0x4BFFE52D};
@@ -718,14 +729,10 @@ static char ReadLimitNote[160];
 // instructions can't change at once under a read in progress; and left set
 // when this plugin unloads, since they don't lead into it.
 static void PatchReadLimit() {
-    int kb=DefaultReadKb; const char* from="default";
-    static const char* const files[]={"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
-    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
-        char text[512],value[16];
-        if(!ReadDeviceText(files[i],text,sizeof(text))) continue;
-        if(IniValue(text,"read_kb",value,sizeof(value))) { kb=atoi(value); from=files[i]; }
-        break;
-    }
+    char value[16];
+    const char* from=TuningValue("read_kb",value,sizeof(value));
+    int kb=from ? atoi(value) : DefaultReadKb;
+    if(!from) from="default";
     if(kb!=4 && kb!=16 && kb!=64 && kb!=256 && kb!=1024) {
         sprintf_s(ReadLimitNote,"read_kb=%d in %s isn't 4, 16, 64, 256 or 1024, so 4 KB per request (NetISO's own)",kb,from);
         return;
@@ -744,6 +751,58 @@ static void PatchReadLimit() {
     ReadLimit[2]=bytes<0x8000 ? 0x38800000|bytes : 0x3C800000|(bytes>>16);
     FlushCode(ReadLimit,3*4);
     sprintf_s(ReadLimitNote,"up to %d KB per request (%s)",kb,from);
+}
+
+// Before connecting, NetISO sets only option 0x5801 on its socket, through
+// NetDll_setsockopt (its helper at 0x91103000, read from the binary), so its
+// receive buffer is XNet's default: 16 KB by the XDK's XNetStartupParams,
+// not measured. The server can't have more than that in flight, which would
+// hold a read near 16 KB per round trip, however big the request. rcv_kb=
+// asks XNet for a bigger buffer on each connection NetISO makes from then on:
+// 16, 32, 64, 128 or 256; left out, NetISO's socket stays as it was.
+static DWORD* const SocketOptionCall=(DWORD*)0x91103030;
+static const DWORD SocketOptionCode=0x4800905D; // bl 0x9110c08c, NetISO's import of NetDll_setsockopt
+static const DWORD* const SocketOptionThunk=(const DWORD*)0x9110c08c;
+typedef int (*SetSocketOption)(DWORD caller,SOCKET s,int level,int name,const char* value,int length);
+static int ReceiveBytes=0;
+static volatile LONG ReceiveSets=0,ReceiveRefusals=0;
+static char ReceiveNote[160]="XNet's default (no rcv_kb)";
+static int SetSocketOptionHooked(DWORD caller,SOCKET s,int level,int name,const char* value,int length) {
+    SetSocketOption set=(SetSocketOption)SocketOptionThunk;
+    int result=set(caller,s,level,name,value,length);
+    int bytes=ReceiveBytes;
+    if(bytes) InterlockedIncrement(set(caller,s,SOL_SOCKET,SO_RCVBUF,(const char*)&bytes,sizeof(bytes)) ? &ReceiveRefusals : &ReceiveSets);
+    return result;
+}
+// One word, so it can change while NetISO runs; NetISO connects only once
+// the network is up, after this.
+static void PatchReceiveBuffer() {
+    char value[16];
+    const char* from=TuningValue("rcv_kb",value,sizeof(value));
+    if(!from || !value[0]) return;
+    int kb=atoi(value);
+    if(kb!=16 && kb!=32 && kb!=64 && kb!=128 && kb!=256) {
+        sprintf_s(ReceiveNote,"XNet's default; rcv_kb=%d in %s isn't 16, 32, 64, 128 or 256",kb,from);
+        return;
+    }
+    HANDLE module=NULL;
+    if(XexGetModuleHandle("NetISO.xex",&module)<0) { strcpy_s(ReceiveNote,"XNet's default; NetISO.xex wasn't loaded before this plugin"); return; }
+    if(!MmIsAddressValid(SocketOptionCall) || !MmIsAddressValid((void*)SocketOptionThunk) || *SocketOptionCall!=SocketOptionCode
+       || (SocketOptionThunk[0]&0xFFFF0000)!=0x3D600000 || SocketOptionThunk[2]!=0x7D6903A6 || SocketOptionThunk[3]!=0x4E800420) {
+        strcpy_s(ReceiveNote,"XNet's default; NetISO's socket setup isn't 1.0's"); return;
+    }
+    LONG distance=LONG(DWORD(SetSocketOptionHooked)-DWORD(SocketOptionCall));
+    if(distance<-0x2000000 || distance>=0x2000000) { strcpy_s(ReceiveNote,"XNet's default; this plugin is out of NetISO's branch range"); return; }
+    ReceiveBytes=kb*1024;
+    *SocketOptionCall=0x48000001|(DWORD(distance)&0x03FFFFFC);
+    FlushCode(SocketOptionCall,4);
+    sprintf_s(ReceiveNote,"%d KB asked (%s)",kb,from);
+}
+static void UnpatchReceiveBuffer() {
+    if(!ReceiveBytes) return;
+    *SocketOptionCall=SocketOptionCode;
+    FlushCode(SocketOptionCall,4);
+    ReceiveBytes=0;
 }
 
 // ---- Tiles ----
@@ -768,6 +827,7 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     Note("Tile %s",path);
     Note("ISO %s, Title ID %08X, Media ID %08X",settings.iso,settings.titleId,settings.mediaId);
     Note("NetISO reads: %s.",ReadLimitNote);
+    Note("NetISO's receive buffer: %s; set on %ld connection(s), refused on %ld.",ReceiveNote,ReceiveSets,ReceiveRefusals);
     return true;
 }
 
@@ -865,10 +925,13 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
            && !HookStart(LaunchTitleExHook,LaunchTitleExOrdinal,LaunchTitleExHooked,LaunchTitleExStub))
             Unhook(LaunchTitleHook);
         // NetISO.xex is loaded before this plugin in launch.ini; if not, the
-        // first tile patches its unload call, and its read size stays 4 KB.
+        // first tile patches its unload call, and its read size and receive
+        // buffer stay NetISO's own.
         PatchUnload();
         PatchReadLimit();
+        PatchReceiveBuffer();
     } else if(reason==DLL_PROCESS_DETACH) {
+        UnpatchReceiveBuffer();
         UnpatchUnload();
         Unhook(LaunchTitleExHook);
         Unhook(LaunchTitleHook);
