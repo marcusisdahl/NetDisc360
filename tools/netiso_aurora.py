@@ -1,19 +1,22 @@
 """Makes one Aurora launcher per Xbox 360 ISO served by NetISO.
 
 For each .iso under the ISO folder it reads default.xex from the ISO, copies
-the launcher XEX with that game's execution info (Title ID, Media ID,
+the tile launcher XEX with that game's execution info (Title ID, Media ID,
 versions, disc number) written into its header, and writes netiso.ini with
-the ISO's name next to it:
+the ISO's name next to it. The helper that all the tile launchers hand the
+start to goes in a folder of its own (see shared/helper.h):
 
     <output>/<game>/default.xex
     <output>/<game>/netiso.ini
+    <output>/NetDisc 360/boot.xex
 
 Copy the output folder to the console (for example Hdd1:\\NetISO) and add it
 to Aurora as a scan path with depth 1. Aurora then lists each game with its
 cover art; starting one mounts its ISO through the NetISO plugin and boots it.
 
     python tools/netiso_aurora.py <ISO folder> <output folder>
-        [--launcher build/xbox/NetIsoLauncher.xex] [--recursive]
+        [--launcher "build/NetISO Sync/default.xex"]
+        [--helper "build/NetISO Sync/boot.xex"] [--recursive]
 
 Only reads the ISOs. Game folders that already exist in the output folder
 are rewritten, and nothing else there is touched.
@@ -36,7 +39,10 @@ FATX_NAME_MAX = 42
 XEX_DIGEST_AT, XEX_DIGEST_END = 0x164, 0x17C
 # FATX allows letters, digits, space and !#$%&'()-.@[]^_`{}~ in names.
 FATX_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-.@[]^_`{}~")
-DEFAULT_LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "xbox", "NetIsoLauncher.xex")
+BUILT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "NetISO Sync")
+DEFAULT_LAUNCHER = os.path.join(BUILT, "default.xex")
+DEFAULT_HELPER = os.path.join(BUILT, "boot.xex")
+HELPER_FOLDER, HELPER_XEX = "NetDisc 360", "boot.xex"  # As in shared/helper.h.
 
 
 class IsoError(Exception):
@@ -206,7 +212,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Make one Aurora launcher per NetISO ISO.")
     parser.add_argument("isos", help="folder the NetISO server serves")
     parser.add_argument("output", help="folder to write the game folders to")
-    parser.add_argument("--launcher", default=DEFAULT_LAUNCHER, help="NetIsoLauncher.xex (default: %(default)s)")
+    parser.add_argument("--launcher", default=DEFAULT_LAUNCHER, help="the tile launcher (default: %(default)s)")
+    parser.add_argument("--helper", help="the helper the game folders share (default: %s, when it is there)" % DEFAULT_HELPER)
     parser.add_argument("--recursive", action="store_true", help="also look in subfolders (like netiso-srv -r)")
     args = parser.parse_args(argv)
 
@@ -214,6 +221,16 @@ def main(argv=None):
         launcher = f.read()
     info_at = launcher_info_offset(launcher)
     os.makedirs(args.output, exist_ok=True)
+    helper = args.helper or (DEFAULT_HELPER if os.path.isfile(DEFAULT_HELPER) else None)
+    if helper:
+        with open(helper, "rb") as f:
+            data = f.read()
+        os.makedirs(os.path.join(args.output, HELPER_FOLDER), exist_ok=True)
+        with open(os.path.join(args.output, HELPER_FOLDER, HELPER_XEX), "wb") as f:
+            f.write(data)
+    else:
+        print("No helper (--helper): copy NetISO Sync's boot.xex to %s too, or the games won't start."
+              % os.path.join(args.output, HELPER_FOLDER, HELPER_XEX))
 
     made, failed, used, names = 0, 0, set(), {}
     for iso in find_isos(args.isos, args.recursive):

@@ -274,6 +274,7 @@ bool FtpClient::MakeFolder(const char* path) {
 
 bool FtpClient::Delete(const char* path) {
     std::string folder,name; SplitPath(path,folder,name);
+    missing_=false;
     if(!Open()) return false;
     if(!Enter(folder)) { missing_=code_==550; return false; }
     if(Command(2,"DELE %s",name.c_str())) return true;
@@ -333,6 +334,10 @@ bool FtpStorage::RemoveGame(const char* folder) {
     static const char* files[]={"default.xex","boot.xex","netiso.ini","install.ini","netiso.log"};
     for(int i=0;i<5;++i) { char path[PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s/%s",folder,files[i]); ftp_.Delete(path); }
     return ftp_.RemoveFolder(folder);
+}
+int FtpStorage::RemoveFile(const char* path) {
+    if(ftp_.Delete(path)) return 1;
+    return ftp_.Missing() ? 0 : -1;
 }
 unsigned long FtpStorage::LastError() { return (unsigned long)ftp_.Code(); }
 }

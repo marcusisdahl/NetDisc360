@@ -26,6 +26,9 @@ public:
     // Deletes default.xex, boot.xex, netiso.ini, install.ini and netiso.log in
     // folder, then the folder if it is empty. Anything else in it is left alone.
     virtual bool RemoveGame(const char* folder) = 0;
+    // Deletes a file: 1 if it was deleted, 0 if it wasn't there, -1 if it
+    // couldn't be.
+    virtual int RemoveFile(const char* path) = 0;
     // Error code of the last call that failed, for the log.
     virtual unsigned long LastError() = 0;
 };
@@ -69,9 +72,11 @@ struct DiscRoleInfo {
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
-// launcher is a launcher XEX (any copy; its execution info is overwritten).
-// boot, if not NULL, is the helper XEX without execution info that each game
-// folder gets as boot.xex (see launcher/main.cpp).
+// launcher is the tile launcher XEX (any copy; its execution info is
+// overwritten), each game folder's default.xex. boot, if not NULL, is the
+// helper XEX without execution info that they share, kept in root as
+// HelperFolder\HelperXex (see shared/helper.h); the boot.xex a game folder
+// got before then goes.
 // With removeGone false, folders whose ISO is gone are left and counted in held.
 // findInstall, if not NULL, is asked about each game folder's install.ini,
 // and findRole about the disc_role and disc_label in its netiso.ini.

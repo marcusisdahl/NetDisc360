@@ -34,6 +34,7 @@ public:
         for(int i=0;i<5;++i) { char path[nia::PathMax]; snprintf(path,sizeof(path),"%s/%s",folder,files[i]); unlink(path); }
         return rmdir(folder)==0;
     }
+    int RemoveFile(const char* path) { return unlink(path)==0 ? 1 : errno==ENOENT ? 0 : -1; }
     unsigned long LastError() { return (unsigned long)errno; }
 };
 

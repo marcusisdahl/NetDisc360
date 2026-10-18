@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "library.h"
+#include "helper.h"
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -285,7 +286,8 @@ struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD title
 static int RefreshLauncher(Storage& storage, const char* folder, const unsigned char* launcher, DWORD launcherSize, DWORD infoAt,
                            DWORD titleId, const unsigned char* info) {
     char path[PathMax]; Join(path,folder,GameXex);
-    DWORD capacity=launcherSize+0x100000,size=0;
+    // Room for the full launcher a folder had as default.xex before the tile launcher.
+    DWORD capacity=launcherSize+0x800000,size=0;
     unsigned char* old=static_cast<unsigned char*>(malloc(capacity));
     unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
     int result=-1;
@@ -405,6 +407,18 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
 
     // What is already here. A folder is a game folder when its netiso.ini names an ISO.
     storage.MakeFolder(root);
+    // The helper the game folders share. A game folder's own boot.xex from
+    // before goes only once it's there: its tile launcher starts that one
+    // without it.
+    bool helperReady=false;
+    if(boot) {
+        char helperFolder[PathMax],helperPath[PathMax]; Join(helperFolder,root,HelperFolder); Join(helperPath,helperFolder,HelperXex);
+        storage.MakeFolder(helperFolder);
+        int written=RefreshFile(storage,helperFolder,HelperXex,boot,bootSize);
+        if(written<0) { Say(note,"Couldn't write %s (error %lu); the game folders keep their own helper.",helperPath,storage.LastError()); ++result.failed; }
+        else if(written>0) Say(note,"Put the helper the game folders share in %s.",helperPath);
+        helperReady=written>=0;
+    }
     static char names[MaxFolders][FolderNameMax+1];
     static Folder folders[MaxFolders];
     int folderCount=storage.ListFolders(root,names,MaxFolders);
@@ -447,9 +461,10 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
                         continue;
                     }
                 }
-                if(boot && refreshed>=0) {
-                    int helper=RefreshFile(storage,folder,GameBoot,boot,bootSize);
-                    refreshed=helper<0 ? -1 : refreshed|helper;
+                if(helperReady && refreshed>=0) {  // The shared helper does its job now.
+                    char helper[PathMax]; Join(helper,folder,GameBoot);
+                    int removed=storage.RemoveFile(helper);
+                    refreshed=removed<0 ? -1 : refreshed|removed;
                 }
                 if(refreshed>0) { Say(note,"Updated the launcher in %s.",folders[k].name); ++result.updated; }
                 else if(refreshed<0) { Say(note,"Couldn't update the launcher in %s (error %lu).",folders[k].name,storage.LastError()); ++result.failed; }
@@ -494,7 +509,6 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         free(copy);
         Join(path,folder,GameIni);
         written=written && storage.WriteFile(path,text,DWORD(strlen(text)));
-        if(boot) { Join(path,folder,GameBoot); written=written && storage.WriteFile(path,boot,bootSize); }
         if(!written) {
             // One bad name shouldn't stop the rest; the next sync tries it again.
             Say(note,"Skipped %s: couldn't write %s (error %lu).",isos[i],folder,storage.LastError());

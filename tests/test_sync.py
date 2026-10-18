@@ -151,29 +151,54 @@ class Sync(unittest.TestCase):
             self.assertEqual(f.read(), good)
         self.assertIn("updated=0", self.sync())
 
-    def test_boot_helper_is_copied_kept_current_and_removed(self):
+    def test_the_game_folders_share_one_helper(self):
         boot = os.path.join(self.tmp.name, "boot.xex")
         with open(boot, "wb") as f:
             f.write(b"BOOT HELPER 1")
+        helper = os.path.join(self.games, "NetDisc 360", "boot.xex")
         self.add_iso("a.iso", 1, 0x11111111)
-        self.sync()  # Made without the helper, as by an older Sync.
-        self.assertFalse(os.path.exists(os.path.join(self.games, "a", "boot.xex")))
+        self.sync()  # Made without the helper.
+        self.assertFalse(os.path.exists(helper))
+        # A game folder from before has its own copy, which goes once the shared one is there.
+        with open(os.path.join(self.games, "a", "boot.xex"), "wb") as f:
+            f.write(b"OLD HELPER")
         self.add_iso("b.iso", 2, 0x22222222)
         out = self.sync(boot=boot)
         self.assertIn("added=1 kept=1", out)
-        self.assertIn("updated=1", out)  # a got the helper.
+        self.assertIn("updated=1", out)  # a lost its own helper.
+        self.assertIn("Put the helper the game folders share in", out)
+        with open(helper, "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER 1")
         for game in ("a", "b"):
-            with open(os.path.join(self.games, game, "boot.xex"), "rb") as f:
-                self.assertEqual(f.read(), b"BOOT HELPER 1")
-        self.assertIn("updated=0", self.sync(boot=boot))
+            self.assertEqual(sorted(os.listdir(os.path.join(self.games, game))), ["default.xex", "netiso.ini"])
+        out = self.sync(boot=boot)
+        self.assertIn("updated=0", out)
+        self.assertNotIn("Put the helper", out)
         with open(boot, "wb") as f:
             f.write(b"BOOT HELPER 2, longer")
-        self.assertIn("updated=2", self.sync(boot=boot))
-        with open(os.path.join(self.games, "b", "boot.xex"), "rb") as f:
+        out = self.sync(boot=boot)
+        self.assertIn("updated=0", out)  # One file for all of them.
+        self.assertIn("Put the helper the game folders share in", out)
+        with open(helper, "rb") as f:
             self.assertEqual(f.read(), b"BOOT HELPER 2, longer")
+        # Its folder is no game folder, and stays when the games go.
         os.remove(os.path.join(self.isos, "b.iso"))
         self.assertIn("removed=1", self.sync(boot=boot))
-        self.assertEqual(os.listdir(self.games), ["a"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a"])
+
+    def test_a_game_folder_keeps_its_own_helper_while_the_shared_one_cant_be_written(self):
+        boot = os.path.join(self.tmp.name, "boot.xex")
+        with open(boot, "wb") as f:
+            f.write(b"BOOT HELPER")
+        self.add_iso("a.iso", 1, 0x11111111)
+        self.sync()
+        with open(os.path.join(self.games, "a", "boot.xex"), "wb") as f:
+            f.write(b"OLD HELPER")
+        with open(os.path.join(self.games, "NetDisc 360"), "wb") as f:
+            f.write(b"a file where the helper's folder goes")
+        out = self.sync(boot=boot, expect_ok=True)
+        self.assertIn("Couldn't write", out)
+        self.assertTrue(os.path.exists(os.path.join(self.games, "a", "boot.xex")))
 
     def test_removes_folders_of_isos_that_are_gone(self):
         self.add_iso("a.iso", 1, 0x11111111)

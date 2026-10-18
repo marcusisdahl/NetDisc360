@@ -126,6 +126,16 @@ class Generator(unittest.TestCase):
         self.assertIn("title_id=4D5307E6\r\n", ini)
         self.assertIn("media_id=1A2B3C4D\r\n", ini)
 
+    def test_writes_the_shared_helper(self):
+        write_iso(os.path.join(self.isos, "a.iso"), {"default.xex": xex(execution_info(1, 0x11111111))})
+        helper = os.path.join(self.root, "boot.xex")
+        with open(helper, "wb") as f:
+            f.write(b"BOOT HELPER")
+        self.assertEqual(self.run_tool("--helper", helper), 0)
+        self.assertEqual(sorted(os.listdir(self.out)), ["NetDisc 360", "a"])
+        self.assertEqual(self.read_out("NetDisc 360", "boot.xex"), b"BOOT HELPER")
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "a"))), ["default.xex", "netiso.ini"])
+
     def test_xgd2_and_xgd3_layouts(self):
         write_iso(os.path.join(self.isos, "a.iso"), {"default.xex": xex(execution_info(1, 0x11111111))}, partition=(0xFDA0000, 0xFD90000))
         write_iso(os.path.join(self.isos, "b.iso"), {"default.xex": xex(execution_info(2, 0x22222222))}, partition=(0x2090000, 0x2080000))

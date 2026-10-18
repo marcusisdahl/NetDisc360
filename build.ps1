@@ -9,13 +9,18 @@ try {
     $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
     & $msbuild launcher\NetIsoLauncher.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation failed. Check the SDK and RXDK integration.' }
-    # The folder to copy to the console: Sync is the launcher XEX with a netiso.ini that has no iso=.
+    & $msbuild launcher\NetDiscTile.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Xbox compilation of the tile launcher failed.' }
+    # The folder to copy to the console: Sync is the tile launcher with a
+    # netiso.ini that has no iso=, and it copies that tile launcher into each
+    # game folder it makes (see shared/helper.h).
     $sync = 'build\NetISO Sync'
     New-Item -ItemType Directory -Force $sync | Out-Null
-    Copy-Item -LiteralPath build\xbox\NetIsoLauncher.xex -Destination "$sync\default.xex" -Force
+    Copy-Item -LiteralPath build\xbox\NetDiscTile.xex -Destination "$sync\default.xex" -Force
     Copy-Item -LiteralPath launcher\sync.ini -Destination "$sync\netiso.ini" -Force
-    # boot.xex: the same program without execution info (no Title ID), which
-    # mounts and starts the disc for each game's launcher. See launcher/main.cpp.
+    # boot.xex: the full launcher without execution info (no Title ID), the
+    # helper that mounts and starts the disc for every game's tile launcher.
+    # See launcher/main.cpp.
     $sdks = @($env:XEDK, $env:RXDK, 'C:\Program Files (x86)\Microsoft Xbox 360 SDK', 'C:\Program Files\RXDK-360\bin') | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
     $imagexex = Get-ChildItem -Recurse -Filter imagexex.exe -Path $sdks -ErrorAction SilentlyContinue | Select-Object -First 1
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
@@ -25,7 +30,7 @@ try {
     # and the launchers the Docker image downloads (Dockerfile).
     Compress-Archive -Path $sync -DestinationPath build\NetISO-Sync.zip -Force
     # NetDisc.exe (NetDisc 360): the PC server that replaces netiso-srv and keeps the
-    # Xbox's game folders current, with default.xex and boot.xex built in
+    # Xbox's game folders current, with the tile launcher (default.xex) and the helper (boot.xex) built in
     # (server/). Rebuilt every time so it carries the XEXs just made, and the
     # dashboard page (web/index.html, made into server/web_page.h).
     & python tools\make_web.py

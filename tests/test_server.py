@@ -351,9 +351,13 @@ class Push(ServerTest):
         self.add_iso("Gears: Of War?.iso", 0x11111111, 0x4D5307D5)
         out = self.push()
         self.assertIn("2 added, 0 removed", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["Gears_ Of War_", "Halo 3"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears_ Of War_", "Halo 3", "NetDisc 360"])
         folder = os.path.join(self.games, "Halo 3")
-        self.assertEqual(sorted(os.listdir(folder)), ["boot.xex", "default.xex", "netiso.ini"])
+        self.assertEqual(sorted(os.listdir(folder)), ["default.xex", "netiso.ini"])
+        # The helper is one file for all the game folders, in a folder of its own.
+        self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc 360")), ["boot.xex"])
+        with open(os.path.join(self.games, "NetDisc 360", "boot.xex"), "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER")
         with open(os.path.join(folder, "default.xex"), "rb") as f:
             launcher = f.read()
         self.assertIn(b"LAUNCHER CODE", launcher)
@@ -507,6 +511,30 @@ class Push(ServerTest):
         self.assertNotIn("NetISO Sync to this build", out)
         self.assertEqual([p for p in self.ftp.stored if "Sync" in p], [])
 
+    def test_moves_game_folders_from_before_to_the_shared_helper(self):
+        # A folder from before: the full launcher with the game's IDs, and its own helper.
+        folder = os.path.join(self.games, "Halo 3")
+        os.makedirs(folder)
+        old = xex(execution_info(0x1A2B3C4D, 0x4D5307E6), filler=b"FULL LAUNCHER" * 250000)
+        with open(os.path.join(folder, "default.xex"), "wb") as f:
+            f.write(old)
+        with open(os.path.join(folder, "boot.xex"), "wb") as f:
+            f.write(b"OLD HELPER" * 1000)
+        with open(os.path.join(folder, "netiso.ini"), "w") as f:
+            f.write("iso=Halo 3.iso\ntitle_id=4D5307E6\nmedia_id=1A2B3C4D\n")
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push()
+        self.assertIn("Updated the launcher in Halo 3.", out)
+        self.assertIn("1 kept (1 updated)", out)
+        self.assertEqual(sorted(os.listdir(folder)), ["default.xex", "netiso.ini"])
+        with open(os.path.join(folder, "default.xex"), "rb") as f:
+            launcher = f.read()
+        self.assertIn(b"LAUNCHER CODE", launcher)
+        self.assertIn(execution_info(0x1A2B3C4D, 0x4D5307E6), launcher)
+        with open(os.path.join(self.games, "NetDisc 360", "boot.xex"), "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER")
+        self.assertIn("1 kept (0 updated)", self.push())
+
     def test_removes_games_whose_iso_is_gone_and_keeps_other_folders(self):
         self.add_iso("a.iso", 1, 0x11111111)
         path = self.add_iso("b.iso", 2, 0x22222222)
@@ -517,7 +545,7 @@ class Push(ServerTest):
         os.remove(path)
         out = self.push()
         self.assertIn("0 added, 1 removed", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["NetISO Sync", "a"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "NetISO Sync", "a"])
 
     def test_keeps_a_gone_game_for_a_while_after_starting(self):
         # The window restarts the server for each folder added; a game from a
@@ -533,7 +561,7 @@ class Push(ServerTest):
             before = self.logins()
             self.assertTrue(self.wait_for(lambda: self.logins() > before, 10))
             time.sleep(1)
-            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
             self.assertEqual(len(self.ftp.scans), scans)
             self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
             self.assertGreaterEqual(time.time() - started, 6)
@@ -557,7 +585,7 @@ class Push(ServerTest):
                                     "--config", os.path.join(self.tmp.name, "netdisc.ini"), more)
         try:
             self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
-            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
             time.sleep(max(0, started + 16 - time.time()))  # The start's hold is over.
             before = self.logins()
             conn = http.client.HTTPConnection("127.0.0.1", web, timeout=10)
@@ -568,7 +596,7 @@ class Push(ServerTest):
             changed = time.time()
             self.assertTrue(self.wait_for(lambda: self.logins() > before, 20))  # Once the games settled.
             time.sleep(1)
-            self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
             self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
             self.assertGreaterEqual(time.time() - changed, 14)
         finally:
@@ -715,7 +743,7 @@ class Push(ServerTest):
                 f.write(xex(execution_info(0x12345678, title_id, 1, 1)))
         out = self.push()
         self.assertIn("1 added", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3", "NetDisc 360"])
 
     def test_names_the_install_disc_a_game_needs(self):
         def game(folder, media_id, title_id, disc, discs=2, content=None):

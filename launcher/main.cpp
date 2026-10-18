@@ -1,15 +1,18 @@
-// NetISO launcher and NetISO Sync: one XEX, two jobs, picked by the
-// netiso.ini next to it.
+// The helper (see shared/helper.h) and NetISO Sync: one XEX, two jobs,
+// picked by the netiso.ini of the folder the tile launcher (tile.cpp) that
+// started it is in.
 //
-// Game launcher (netiso.ini has iso=): a copy made by NetISO Sync or
-// tools/netiso_aurora.py, carrying the game's Title ID and Media ID in its
-// XEX header so Aurora scans it like an installed game. Started, it asks the
-// NetISO plugin to mount the game's ISO from the server, waits until the
-// emulated disc is that game, and launches the disc's default.xex.
+// A game (netiso.ini has iso=): the game folder, made by NetDisc 360, NetISO
+// Sync or tools/netiso_aurora.py, has the tile launcher as its default.xex,
+// carrying the game's Title ID and Media ID in its XEX header so Aurora scans
+// it like an installed game. It hands the start here. This asks the NetISO
+// plugin to mount the game's ISO from the server, waits until the emulated
+// disc is that game, and launches the disc's default.xex.
 //
 // NetISO Sync (no iso=): talks to the NetISO server directly, makes a game
-// launcher folder for each ISO that has none yet (copying itself), removes
-// the folders of ISOs that are gone, then starts after= or the dashboard.
+// folder for each ISO that has none yet (with a copy of the tile launcher in
+// its own folder), removes the folders of ISOs that are gone, then starts
+// after= or the dashboard.
 // Its own connection has its own mounted ISO on the server, so syncing never
 // changes the disc the plugin has mounted.
 //
@@ -28,6 +31,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include "../shared/library.h"
+#include "../shared/helper.h"
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
 #include "ui.h"
@@ -46,7 +50,11 @@ extern "C" DWORD __stdcall XLaunchNewImageEx(LPCSTR xexName,LPCSTR mountPath,LPC
 typedef VOID (WINAPI* LaunchFunction)(LPCSTR,DWORD);
 static LaunchFunction volatile LaunchImage=XLaunchNewImage;
 
-static const char IniFile[]="game:\\netiso.ini",LogFile[]="game:\\netiso.log";
+// The game folder's files: in the folder the tile launcher that started
+// this names, reached through TileLink (see UseTileFolder), else in game:,
+// the folder this XEX is in (a game folder's own boot.xex from before).
+static const char TileLink[]="\\??\\NIsoG:";
+static char IniFile[32]="game:\\netiso.ini",LogFile[32]="game:\\netiso.log",InstallIni[32]="game:\\install.ini",TileXex[32]="game:\\default.xex";
 static const char IsoLink[]="\\??\\NIsoL:",IsoRoot[]="NIsoL:",IsoDevice[]="\\Device\\NetIso";
 static const char DiscLink[]="\\??\\NIsoD:",DiscXex[]="NIsoD:\\default.xex",DiscDevice[]="\\Device\\Cdrom0";
 static const char DiscMount[]="\\Device\\Cdrom0",DiscXexName[]="default.xex";
@@ -60,10 +68,8 @@ static const char AuroraDiscLink[]="\\??\\Dvd:",AuroraDiscXex[]="Dvd:\\default.x
 // What XLaunchNewImage takes to start whatever disc is in the drive, like
 // the Xbox dashboard does (read from Aurora's copy of XLaunchNewImage).
 static const char DetectMedia[]="XLNI_DET_MEDIA";
-static const char BootXex[]="game:\\boot.xex",BootData[]="NetISO boot";
-// The launch data the tile's launcher hands the helper: BootData, then when
-// the tile was pressed, so the helper's timer counts from there.
-struct BootLaunch { char text[sizeof(BootData)]; DWORD started; };
+// This XEX, which NetISO Sync puts next to the game folders it makes.
+static const char BootXex[]="game:\\boot.xex";
 // GetTickCount when the tile was pressed, for the timer at the top.
 static DWORD Started=0;
 static const char MountFolder[]="Mount";
@@ -239,7 +245,7 @@ static void NoteRun() {
 }
 
 static LONG LinkDrive(const char* name,const char* device) {
-    char nameText[32],deviceText[64]; strcpy_s(nameText,name); strcpy_s(deviceText,device);
+    char nameText[32],deviceText[nia::BootFolderMax]; strcpy_s(nameText,name); strcpy_s(deviceText,device);
     KernelString link={USHORT(strlen(nameText)),USHORT(sizeof(nameText)),nameText};
     KernelString target={USHORT(strlen(deviceText)),USHORT(sizeof(deviceText)),deviceText};
     ObDeleteSymbolicLink(&link); // Left over from an interrupted run.
@@ -674,7 +680,6 @@ static void StartDisc(const char* ini) {
 // install disc is another of the server's discs: that disc, and the packages
 // it puts under Content. GTA V's play disc froze at "Loading story mode"
 // without them (seen on the console); Forza 4 plays without its car packs.
-static const char InstallIni[]="game:\\install.ini";
 static const int MaxPackages=16;
 struct Install {
     Settings disc;
@@ -878,6 +883,11 @@ public:
         }
         return RemoveDirectory(folder)!=FALSE;
     }
+    int RemoveFile(const char* path) {
+        if(DeleteFile(path)) return 1;
+        DWORD error=GetLastError();
+        return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND ? 0 : -1;
+    }
     unsigned long LastError() { return GetLastError(); }
 };
 
@@ -936,13 +946,13 @@ static void Sync(const char* ini) {
     if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,"Hdd1:\\NetISO");
     if(!MapPath(value,games,sizeof(games))) return;
     Note("Games folder %s",value);
-    // This XEX is the template; its execution info is overwritten per game.
+    // The tile launcher that started this is the template; its execution
+    // info is overwritten per game. This XEX is the helper they share.
     XboxStorage storage; DWORD size=0;
-    if(!storage.ReadFile("game:\\default.xex",Launcher,sizeof(Launcher),size)) { Note("Can't read game:\\default.xex."); return; }
-    // The helper each game folder gets (see HandToHelper), if it's here.
+    if(!storage.ReadFile(TileXex,Launcher,sizeof(Launcher),size)) { Note("Can't read %s.",TileXex); return; }
     DWORD bootSize=0;
     bool boot=storage.ReadFile(BootXex,Boot,sizeof(Boot),bootSize);
-    if(!boot) Note("No %s; games will mount from their own launcher.",BootXex);
+    if(!boot) Note("Can't read %s; the game folders won't have a helper to start.",BootXex);
     if(!FindServer(ini,address,port) || !StartNetwork(10000)) return;
     nia::IsvrClient client(10);
     bool connected=false;
@@ -976,35 +986,36 @@ static void LaunchAfterSync(const char* ini) {
     Note("Couldn't start %s (%lu).",path,GetLastError());
 }
 
-// The game's launcher hands the whole start to boot.xex in its folder, a copy
-// of this program built without execution info (no Title ID), like Aurora.
-// The plugin's fake tray cycle, run while the launcher (with the game's Title
-// ID) was the running title, left the Guide dead until reboot, and the game
-// crashed at its storage/profile prompt; mounted while Aurora ran, the same
-// game was fine (seen on the console). The launcher needs the Title ID for
-// Aurora's tile, so the mount happens in the helper instead.
-// Whether this start came with the launch data text given.
-// Whether this start is the helper's, and if so when the tile was pressed
-// (a launcher from before the timer sends no time; then it's now).
-static bool StartedAsHelper(DWORD& started) {
-    BootLaunch data; DWORD size=0;
-    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || (size!=sizeof(BootData) && size!=sizeof(data))) return false;
-    if(XGetLaunchData(&data,size)!=ERROR_SUCCESS || memcmp(data.text,BootData,sizeof(BootData))) return false;
-    if(size==sizeof(data) && GetTickCount()-data.started<60000) started=data.started;
+// The tile launcher hands the whole start to this helper, built without
+// execution info (no Title ID), like Aurora. The plugin's fake tray cycle,
+// run while a launcher with the game's Title ID was the running title, left
+// the Guide dead until reboot, and the game crashed at its storage/profile
+// prompt; mounted while Aurora ran, the same game was fine (seen on the
+// console). The tile launcher needs the Title ID for Aurora's tile, so the
+// mount happens here instead.
+// Whether this start is the helper's, and if so when the tile was pressed (a
+// launcher from before the timer sends no time; then it's now) and the game
+// folder ("" from a game folder's own boot.xex: game: is that folder).
+static bool StartedAsHelper(DWORD& started,char* folder,size_t capacity) {
+    static nia::BootLaunch data; DWORD size=0;
+    folder[0]=0;
+    if(XGetLaunchDataSize(&size)!=ERROR_SUCCESS || size<sizeof(nia::BootData) || size>sizeof(data)) return false;
+    memset(&data,0,sizeof(data));
+    if(XGetLaunchData(&data,size)!=ERROR_SUCCESS || memcmp(data.text,nia::BootData,sizeof(nia::BootData))) return false;
+    if(size>=nia::BootLaunchBefore && GetTickCount()-data.started<60000) started=data.started;
+    if(size==sizeof(data)) { data.folder[sizeof(data.folder)-1]=0; strcpy_s(folder,capacity,data.folder); }
     return true;
 }
-static void HandToHelper() {
-    HANDLE file=CreateFile(BootXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) { Note("No %s; mounting from the launcher.",BootXex); return; }
-    CloseHandle(file);
-    BootLaunch data; memcpy(data.text,BootData,sizeof(BootData)); data.started=Started;
-    DWORD set=XSetLaunchData(&data,sizeof(data));
-    if(set!=ERROR_SUCCESS) { Note("XSetLaunchData failed (%lu); mounting from the launcher.",set); return; }
-    Note("Handing the start to %s",BootXex);
-    CloseLog();
-    LaunchImage(BootXex,0);
-    OpenLog(false);
-    Note("Couldn't start %s (%lu); mounting from the launcher.",BootXex,GetLastError());
+// The game folder's files through TileLink. False if it can't be linked; the
+// files are then looked for in game:.
+static bool UseTileFolder(const char* folder) {
+    if(LinkDrive(TileLink,folder)<0) return false;
+    const char* drive=TileLink+4;
+    sprintf_s(IniFile,"%s\\netiso.ini",drive);
+    sprintf_s(LogFile,"%s\\netiso.log",drive);
+    sprintf_s(InstallIni,"%s\\install.ini",drive);
+    sprintf_s(TileXex,"%s\\default.xex",drive);
+    return true;
 }
 
 void __cdecl main() {
@@ -1013,19 +1024,19 @@ void __cdecl main() {
     MainThread=GetCurrentThreadId();
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);
     Started=GetTickCount();
-    bool helper=StartedAsHelper(Started);
+    static char folder[nia::BootFolderMax];
+    bool helper=StartedAsHelper(Started,folder,sizeof(folder));
+    bool linked=folder[0] && UseTileFolder(folder);
     OpenLog(true);
     NoteRun();
-    if(helper) Note("Started as the helper.");
+    if(linked) Note("Started as the helper for %s.",folder);
+    else if(folder[0]) Note("Started as the helper for %s, which couldn't be linked; using this folder's files.",folder);
+    else if(helper) Note("Started as the helper.");
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
     bool game=nia::IniValue(ini,"iso",iso,sizeof(iso)) && iso[0];
-    // The tile's launcher hands over before it draws anything: a frame of the
-    // loading screen here, then the black of the switch, then the helper's
-    // screen showed as a flicker (seen on the console). The game's name is
-    // there from the first frame, so it doesn't pop in either.
-    if(game && !helper) HandToHelper();
+    // The game's name is there from the first frame, so it doesn't pop in.
     if(game) nia::GameName(iso,Shown.game,sizeof(Shown.game));
     else {
         strcpy_s(Shown.game,"NetISO Sync");
@@ -1042,6 +1053,7 @@ void __cdecl main() {
     }
     UnlinkDrives();
     CloseLog();
+    if(linked) UnlinkDrive(TileLink);
     ScreenStop();
     // A game that didn't start goes back to the default app, which DashLaunch
     // points at its Default (Aurora). Sync goes to the dashboard: it may be
