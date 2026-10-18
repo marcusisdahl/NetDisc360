@@ -80,19 +80,23 @@ static bool OwnFolder(char* folder,size_t capacity) {
 static bool Exists(const char* path) {
     return GetFileAttributes(path)!=DWORD(-1);  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
 }
-// Whether file is in the folder at a device path, which the Win32 calls
-// don't take: looked at through a link.
-static bool ExistsIn(const char* device,const char* file) {
+// The shared helper in the folder at a device path, as a path through a
+// drive linked to that folder ("" if it isn't there). Started by its device
+// path, the helper never ran and the console went to the dashboard (seen on
+// the console), as a disc's default.xex did by \Device\Cdrom0 (see
+// main.cpp); by a drive name, like game:\boot.xex before, it starts. The
+// link stays for the launch, which resolves it while this title still runs.
+static bool LinkHelper(const char* device,char* path,size_t capacity) {
     char name[]="\\??\\NIsoS:",target[nia::BootFolderMax+32];
     strcpy_s(target,device);
     KernelString link={USHORT(strlen(name)),USHORT(sizeof(name)),name};
     KernelString folder={USHORT(strlen(target)),USHORT(sizeof(target)),target};
     ObDeleteSymbolicLink(&link);
     if(ObCreateSymbolicLink(&link,&folder)<0) { Note("Can't link %s.",device); return false; }
-    char path[64]; _snprintf_s(path,sizeof(path),_TRUNCATE,"NIsoS:\\%s",file);
-    bool found=Exists(path);
+    _snprintf_s(path,capacity,_TRUNCATE,"NIsoS:\\%s",nia::HelperXex);
+    if(Exists(path)) return true;
     ObDeleteSymbolicLink(&link);
-    return found;
+    return false;
 }
 
 static void Show(const wchar_t* text) {
@@ -105,18 +109,17 @@ void __cdecl main() {
     memset(&data,0,sizeof(data));
     memcpy(data.text,nia::BootData,sizeof(nia::BootData));
     data.started=GetTickCount();
-    // The shared helper, in HelperFolder next to this game folder, started
-    // by its device path, as the next title resolves it without our links;
-    // else the folder's own boot.xex, from before there was a shared one,
-    // which reads the folder it is in and takes the launch data without one.
-    char helper[nia::BootFolderMax+32]; helper[0]=0;
+    // The shared helper, in HelperFolder next to this game folder; else the
+    // folder's own boot.xex, from before there was a shared one, which reads
+    // the folder it is in and takes the launch data without one.
+    char helper[64]; helper[0]=0;
     DWORD size=sizeof(data);
     if(OwnFolder(data.folder,sizeof(data.folder))) {
         const char* name=strrchr(data.folder,'\\');
-        char games[nia::BootFolderMax]; _snprintf_s(games,sizeof(games),_TRUNCATE,"%.*s",name ? int(name-data.folder) : 0,data.folder);
-        char file[64]; _snprintf_s(file,sizeof(file),_TRUNCATE,"%s\\%s",nia::HelperFolder,nia::HelperXex);
-        if(name && ExistsIn(games,file)) _snprintf_s(helper,sizeof(helper),_TRUNCATE,"%s\\%s",games,file);
-        else Note("No %s in %s.",file,games);
+        char shared[nia::BootFolderMax+32];
+        _snprintf_s(shared,sizeof(shared),_TRUNCATE,"%.*s\\%s",name ? int(name-data.folder) : 0,data.folder,nia::HelperFolder);
+        if(name && LinkHelper(shared,helper,sizeof(helper))) Note("The helper is %s\\%s.",shared,nia::HelperXex);
+        else { Note("No %s in %s.",nia::HelperXex,shared); helper[0]=0; }
     }
     if(!helper[0] && Exists(FolderHelper)) { strcpy_s(helper,FolderHelper); size=nia::BootLaunchBefore; }
     if(helper[0]) {
