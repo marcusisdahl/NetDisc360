@@ -78,7 +78,7 @@ static bool OwnFolder(char* folder,size_t capacity) {
 }
 
 static bool Exists(const char* path) {
-    return GetFileAttributes(path)!=INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributes(path)!=DWORD(-1);  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
 }
 // Whether file is in the folder at a device path, which the Win32 calls
 // don't take: looked at through a link.
