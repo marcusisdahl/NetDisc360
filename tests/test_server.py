@@ -701,6 +701,36 @@ class Dashboard(ServerTest):
         self.assertIn("Halo 3 started on 127.0.0.2", [e["text"] for e in state["events"]])
         self.assertIn("Halo 3 started", [e["text"] for e in console["events"]])  # Under its own card.
 
+    def test_tells_when_a_console_is_back_in_aurora(self):
+        # NetISO keeps its connection and disc after a game ends; Aurora's FTP
+        # server, which never runs during a game, answering again tells.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        ftp_port = free_port()
+        self.start("--xbox", "127.0.0.2", "-v", "--ftp-port", str(ftp_port))
+        console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
+        with connect_from("127.0.0.2", self.port) as plugin:
+            c = Client.__new__(Client)
+            c.conn = plugin
+            self.assertEqual(c.mount("Halo 3.iso"), 1)
+            self.assertTrue(console(self.state_when(lambda s: console(s)["playing"]))["playing"])
+            os.makedirs(os.path.join(self.tmp.name, "xbox"))
+            ftp = aurora_ftp.Server(os.path.join(self.tmp.name, "xbox"), ftp_port, host="127.0.0.2")
+            threading.Thread(target=ftp.serve_forever, daemon=True).start()
+            try:
+                state = self.state_when(lambda s: console(s)["inAurora"], 25)
+                self.assertEqual([console(state)[k] for k in ("playing", "inAurora", "mounted")], [False, True, "Halo 3"])
+                self.assertIn("Back in Aurora after Halo 3", [e["text"] for e in console(state)["events"]])
+                self.assertIn("127.0.0.2 is back in Aurora after Halo 3", [e["text"] for e in state["events"]])
+                self.assertFalse(any(line.startswith("USER") for line in ftp.log))  # Never logged in.
+                # The disc started again from Aurora: its reads show it.
+                for _ in range(33 * 16):
+                    c.read(0, 65536)
+                state = self.state_when(lambda s: console(s)["playing"])
+                self.assertEqual([console(state)[k] for k in ("playing", "inAurora")], [True, False])
+            finally:
+                ftp.shutdown()
+                ftp.server_close()
+
     def test_changes_come_only_from_the_page(self):
         self.start()
         # Another site's page can't send the header, or claim this origin.

@@ -49,6 +49,11 @@ enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4,
 const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, ScanRetrySeconds = 30;
 // A console that connected once (no --xbox) but not for this long is probed only every IdleProbeSeconds.
 const double IdleSeconds = 86400, IdleProbeSeconds = 600;
+// While a console is in a game, its FTP port is tried this long after the
+// mount and then this often, to see when it's back in Aurora (AuroraLoop).
+const double FirstProbeSeconds = 5, GameProbeSeconds = 15;
+// Read after it got back to Aurora: a game started from the disc again.
+const U64 RelaunchBytes = 32ull << 20;
 const int ScanTries = 20;
 const size_t LogKeep = 3000, EventKeep = 100;
 
@@ -338,7 +343,14 @@ struct Console {
     U64 counted;                       // sent at the last second counted.
     long long hiddenAt;                // Forgotten on the dashboard when last seen at this seenAt; -2: not.
     mutable std::deque<Happening> recent;  // Its latest events (XboxEvent), for its card on the dashboard.
-    explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2) {
+    // Back in Aurora since its latest game (AuroraLoop). NetISO keeps its
+    // connection and disc after a game ends, so only Aurora's FTP server,
+    // which never runs during a game, tells.
+    std::atomic<bool> inAurora;
+    std::atomic<U64> sentInAurora;     // sent when it got back.
+    std::atomic<long long> probeAt;    // When AuroraLoop next tries its FTP port, in Now() milliseconds.
+    explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
+                                 inAurora(false), sentInAurora(0), probeAt(0) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
     }
@@ -387,6 +399,33 @@ void XboxEvent(const Console& console, int kind, const std::string& text, const 
     std::lock_guard<std::mutex> hold(ConsoleLock);
     console.recent.push_back(h);
     if(console.recent.size()>ConsoleEventKeep) console.recent.pop_front();
+}
+
+// Tells when a console in a game is back in Aurora: its FTP port is tried
+// (without logging in) FirstProbeSeconds after the mount and then every
+// GameProbeSeconds, only while it's in a game, and answering means Aurora
+// runs again. A game started from the disc in Aurora shows by its reads.
+void AuroraLoop() {
+    for(;;) {
+        int port=Current().ftpPort;
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            if(c.connections<=0 || c.inAurora || Now()*1000<c.probeAt) continue;
+            std::string game;
+            { std::lock_guard<std::mutex> hold(ConsoleLock); game=WithoutIso(c.mounted); }
+            if(game.empty()) continue;
+            c.probeAt=(long long)((Now()+GameProbeSeconds)*1000);
+            FtpClient ftp(c.address,port,"","",3);
+            if(!ftp.Greets()) continue;
+            c.sentInAurora=c.sent.load();
+            c.inAurora=true;
+            c.ftp=2;
+            XboxLog(c,"back in Aurora after %s (its FTP server answers).",game.c_str());
+            XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
+        }
+        Sleep(1000);
+    }
 }
 
 // Each second, what each console was sent in it, for the dashboard's chart.
@@ -483,7 +522,13 @@ private:
             buffer_.resize(length);
             if(length && !iso_.Read(offset,buffer_.data(),length)) { Log("Reading %s failed; closing %s.",mounted_.c_str(),peer_); return false; }
             if(!SendAll(buffer_.data(),length)) return false;
-            if(console_) console_->sent+=length;
+            if(console_) {
+                console_->sent+=length;
+                if(console_->inAurora && console_->sent-console_->sentInAurora>RelaunchBytes) {  // In a game again.
+                    console_->inAurora=false;
+                    console_->probeAt=(long long)((Now()+GameProbeSeconds)*1000);
+                }
+            }
             return true;
         case GetIsoName: {
             if(length>MaxNameBytes) return false;
@@ -527,6 +572,7 @@ private:
         if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); Mounted(); return 0; }
         mounted_=found->name;
         Mounted();
+        if(console_) { console_->inAurora=false; console_->probeAt=(long long)((Now()+FirstProbeSeconds)*1000); }
         if(!quiet_) {
             if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
             else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
@@ -1207,6 +1253,7 @@ void State(web::Reply& out) {
             if(c.hiddenAt!=-2 && at<=c.hiddenAt && !c.connections) continue;  // Forgotten.
             j.Open('{').Set("address",c.text).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
             j.Set("ftp",c.ftp.load()).Set("synced",c.synced.load()).Set("mounted",config::ToUtf8(WithoutIso(c.mounted))).Set("push",c.push.load());
+            j.Set("playing",c.connections>0 && !c.mounted.empty() && !c.inAurora).Set("inAurora",c.inAurora.load());
             j.Set("seen",at<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-at/1000.0));
             j.Key("rate").Open('[');
             for(long long s=last-RateSeconds+1;s<=last;++s) j.Number(c.RateAt(s));
@@ -1221,6 +1268,7 @@ void State(web::Reply& out) {
         for(size_t i=0;i<consoles.size() && !listed;++i) listed=known[k].address==consoles[i]->text;
         if(listed) continue;
         j.Open('{').Set("address",known[k].address).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
+        j.Set("playing",false).Set("inAurora",false);
         j.Set("push",o.xboxes.empty() || std::find(o.xboxes.begin(),o.xboxes.end(),inet_addr(known[k].address.c_str()))!=o.xboxes.end());
         j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
     }
@@ -1810,6 +1858,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     if(o.push && o.xboxes.empty()) Log("Keeping %s up to date on every Xbox that connects (or give --xbox).",o.xboxFolder.c_str());
     std::thread(WatchLoop).detach();
     std::thread(RateLoop).detach();
+    std::thread(AuroraLoop).detach();
     std::thread(SizeLoop).detach();
     Serve(listener);
     return 0;

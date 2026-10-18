@@ -24,6 +24,9 @@ public:
     ~FtpClient();
     // Connects and logs in unless already connected.
     bool Open();
+    // Whether an FTP server answers: connects, reads its greeting and leaves
+    // without logging in.
+    bool Greets();
     bool List(const char* folder, std::vector<FtpEntry>& entries);
     // Whole file into data; false if missing (Missing() is then true) or over limit bytes.
     bool Retrieve(const char* path, std::vector<unsigned char>& data, size_t limit);

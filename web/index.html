@@ -74,6 +74,16 @@ a:hover { text-decoration: underline; }
 .side-foot { margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .side-foot .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .side-foot b { color: var(--text); font-weight: 600; }
+.side-link { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 8px -2px; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-weight: 550; cursor: pointer; }
+.side-link:hover { background: var(--hover); color: var(--text); }
+.releases { display: grid; gap: 10px; }
+.release { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); text-decoration: none; }
+.release:hover { border-color: var(--accent); background: var(--hover); }
+.release .icon { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
+.release .text { flex: 1; min-width: 0; }
+.release .title { font-weight: 600; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.release .title .muted { font-size: 12.5px; font-weight: 500; }
+.release .help { color: var(--muted); font-size: 13px; margin-top: 2px; }
 main { flex: 1; min-width: 0; }
 .page { max-width: 1240px; margin: 0 auto; padding: 28px 32px 48px; }
 .head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
@@ -553,7 +563,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && S)
 
 function playing() {
   const map = {};
-  for (const c of S ? S.consoles : []) if (c.connections > 0 && c.mounted) (map[c.mounted.toLowerCase()] = map[c.mounted.toLowerCase()] || []).push(c.address);
+  for (const c of S ? S.consoles : []) if (c.playing) (map[c.mounted.toLowerCase()] = map[c.mounted.toLowerCase()] || []).push(c.address);
   return map;
 }
 
@@ -564,9 +574,11 @@ function frame() {
     h('aside.side',
       h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc 360'), h('div.brand-sub', 'NetISO server for Aurora'))),
       h('nav.nav', nav),
-      h('div.side-foot', h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
+      h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
+        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
     h('main',
-      h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label))),
+      h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label)),
+        h('a', { href: '#', title: 'Latest releases', onclick: e => { e.preventDefault(); releases(); } }, ic('download', 'sm'), 'Releases')),
       h('div#offline.offline-bar.hidden', ic('wifi-off', 'sm'), h('span')),
       h('div.page#page')));
   route();
@@ -718,8 +730,9 @@ function spark(canvas, values, color) {
 
 // Consoles, as the dashboard and the consoles page show them.
 function consoleStatus(c) {
-  if (c.connections > 0 && c.mounted) return { cls: 'playing', dot: 'play', text: 'Playing' };
-  if (c.connections > 0) return { cls: 'on', dot: 'good', text: 'Connected' };
+  // playing: the server saw no return to Aurora since the game's mount (its FTP server answers again).
+  if (c.playing) return { cls: 'playing', dot: 'play', text: 'Playing' };
+  if (c.connections > 0) return { cls: 'on', dot: 'good', text: c.inAurora || !c.mounted ? 'In Aurora' : 'Connected' };
   if (S.time - c.seen < 120) return { cls: '', dot: '', text: 'Idle' };
   return { cls: 'off', dot: '', text: c.seen ? 'Last seen ' + ago(c.seen) : 'Not seen yet' };
 }
@@ -738,7 +751,7 @@ function consoleCard(c, index, wide) {
     h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
     h('div.name', h('span', c.address), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
     h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
-    h('div.what', c.mounted ? [c.connections > 0 ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : 'Nothing mounted'));
+    h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : 'Nothing mounted'));
   if (wide) {
     const [ftp, tone] = ftpText(c);
     card.classList.add('console-wide');
@@ -795,7 +808,7 @@ Pages.dashboard = root => {
         h('div', h('h2', all ? 'All set! Your games are on their way to Aurora.' : 'Get started'), h('p.lead', all ? 'New games you put in your folders show up in Aurora by themselves.' : 'Three steps, and your games show up in Aurora like installed games.')),
         h('div', h('button.btn' + (all ? '.primary' : '.ghost') + '.small', { onclick: () => save({ setupDone: true }, 'Setup steps hidden') }, all ? 'Done' : 'Hide')),
         h('div.steps', steps.map((s, i) => h('div.step' + (s.done ? '.done' : ''), h('div.n', s.done ? ic('check', 'sm') : String(i + 1)), h('div.t', s.t), h('div.d', s.d), s.done ? null : s.a)))));
-      const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.mounted);
+      const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.playing);
       const missing = S.folders.filter(f => !f.found).length;
       fill(tiles,
         tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
@@ -804,7 +817,7 @@ Pages.dashboard = root => {
         tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
       const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
       chart.set(list.map(x => ({ name: x.c.address, values: x.c.rate, color: x.i })));
-      fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), x.c.address, x.c.mounted && x.c.connections > 0 ? ' \u00b7 ' + x.c.mounted : '')));
+      fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), x.c.address, x.c.playing ? ' \u00b7 ' + x.c.mounted : '')));
       const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || b.c.seen - a.c.seen).slice(0, 4);
       fill(consoles, sorted.length ? sorted.map(x => consoleCard(x.c, x.i)) :
         h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to ', h('code', (S.addresses[0] || 'this computer') + ':' + S.ports.netiso), '.')));
@@ -943,6 +956,28 @@ function modal(title, build, narrow) {
   const first = $('input', back);
   if (first) first.focus();
   return close;
+}
+
+// The newest release of NetDisc 360 and of the console tools that go with it.
+// GitHub's /releases/latest always leads to the newest one; its API names it.
+const Releases = [
+  { repo: 'marcusisdahl/NetDisc-360', name: 'NetDisc 360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
+  { repo: 'marcusisdahl/Xbox360_FastFTP', name: 'FastFTP', icon: 'arrow-down-up', what: 'A fast FTP server app for the Xbox, to copy games and files to it.' },
+  { repo: 'marcusisdahl/CUsbEnet', name: 'CUsbEnet', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster.' },
+];
+function releases() {
+  modal('Latest releases', close => [
+    h('div.modal-body', h('div.releases', Releases.map(r => {
+      const tag = h('span.muted');
+      fetch('https://api.github.com/repos/' + r.repo + '/releases/latest', { referrerPolicy: 'no-referrer' })
+        .then(x => x.ok ? x.json() : null)
+        .then(j => { if (j && j.tag_name) fill(tag, j.tag_name + (j.published_at ? ' \u00b7 ' + ago(Date.parse(j.published_at) / 1000) : '')); })
+        .catch(() => {});
+      return h('a.release', { href: 'https://github.com/' + r.repo + '/releases/latest', target: '_blank', rel: 'noopener noreferrer' },
+        h('div.icon', ic(r.icon)), h('div.text', h('div.title', r.name, tag), h('div.help', r.what)), ic('chevron-right', 'sm'));
+    }))),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Each opens the newest release on GitHub in a new tab.'), h('button.btn.primary', { onclick: close }, 'Close')),
+  ], true);
 }
 
 // Consoles ------------------------------------------------------------------------

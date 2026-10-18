@@ -158,6 +158,14 @@ bool FtpClient::Open() {
     return Command(2,"TYPE I");
 }
 
+bool FtpClient::Greets() {
+    Close();
+    if(!control_->Connect(address_,port_,timeout_)) { code_=0; return Fail("No FTP server answers"); }
+    bool ok=Reply() && code_==220;
+    Close();
+    return ok;
+}
+
 bool FtpClient::Enter(const std::string& folder) {
     if(folder_==folder) return true;
     if(!Command(2,"CWD %s",folder.c_str())) return false;
