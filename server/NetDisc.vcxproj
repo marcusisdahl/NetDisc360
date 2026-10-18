@@ -22,8 +22,8 @@
       <AdditionalDependencies>ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="tray.cpp" /><ClCompile Include="web.cpp" /><ClCompile Include="config.cpp" /><ClCompile Include="discs.cpp" /><ClCompile Include="ftp.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
-  <ItemGroup><ClInclude Include="ftp.h" /><ClInclude Include="discs.h" /><ClInclude Include="app.h" /><ClInclude Include="web.h" /><ClInclude Include="web_page.h" /><ClInclude Include="config.h" /><ClInclude Include="resource.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="tray.cpp" /><ClCompile Include="web.cpp" /><ClCompile Include="config.cpp" /><ClCompile Include="discs.cpp" /><ClCompile Include="discmap.cpp" /><ClCompile Include="ftp.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="ftp.h" /><ClInclude Include="discs.h" /><ClInclude Include="discmap.h" /><ClInclude Include="app.h" /><ClInclude Include="web.h" /><ClInclude Include="web_page.h" /><ClInclude Include="config.h" /><ClInclude Include="resource.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /></ItemGroup>
   <ItemGroup><ResourceCompile Include="server.rc" /></ItemGroup>
   <ItemGroup><Image Include="netiso.ico" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

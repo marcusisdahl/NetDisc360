@@ -863,11 +863,19 @@ static volatile LONG SwapGeneration=0,SwapArmed=0,SwapBusy=0;
 static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
 static volatile HANDLE SwapModule=NULL;
-// What each disc is to the player, for the notices: a game with an install
-// disc (GTA V) has install.ini in its play disc's folder naming that disc
-// (see launcher/main.cpp); any other disc is just its number.
-enum DiscRole { NumberedDisc, InstallDisc, PlayDisc };
+// What each disc is to the player, for the notices: disc_role and
+// disc_label in its folder's netiso.ini, from NetDisc 360's disc map (see
+// server/discmap.h). From a server without one, a game with an install disc
+// (GTA V) has install.ini in its play disc's folder naming that disc (see
+// launcher/main.cpp); any other disc is just its number.
+enum DiscRole { NumberedDisc, InstallDisc, PlayDisc, ContentDisc, NextDisc, OwnDisc };
 static char SwapRoles[MaxDiscs+1];
+static char SwapLabels[MaxDiscs+1][64];
+static char RoleOf(const char* role) {
+    static const char* const names[]={"","install","play","content","next","own"};
+    for(int i=1;i<int(sizeof(names)/sizeof(names[0]));++i) if(!_stricmp(role,names[i])) return char(i);
+    return NumberedDisc;
+}
 
 // A drive path to a device path, for the drives tiles are on; "" for others.
 static void DevicePath(const char* path,char* out,size_t capacity) {
@@ -1037,7 +1045,9 @@ static void PrepareDiscs(const Settings& settings) {
     InterlockedExchange(&SwapArmed,0); // A game armed before keeps nothing of these.
     memset(SwapIsos,0,sizeof(SwapIsos));
     memset(SwapRoles,0,sizeof(SwapRoles));
+    memset(SwapLabels,0,sizeof(SwapLabels));
     char installIso[MAX_PATH]="";
+    bool mapped=false;
     int folders=0,count=0;
     do {
         if(!(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -1052,6 +1062,14 @@ static void PrepareDiscs(const Settings& settings) {
         strcpy_s(SwapIsos[number],other.iso);
         ++count;
         Note("Disc swaps: disc %d is %s (%s).",number,other.iso,found.cFileName);
+        char role[16];
+        if(IniValue(text,"disc_role",role,sizeof(role)) && role[0]) {
+            mapped=true;
+            SwapRoles[number]=RoleOf(role);
+            if(!IniValue(text,"disc_label",SwapLabels[number],sizeof(SwapLabels[number]))) SwapLabels[number][0]=0;
+            Note("Disc swaps: disc %d is %s%s%s%s.",number,role,SwapLabels[number][0] ? " (" : "",SwapLabels[number],SwapLabels[number][0] ? ")" : "");
+            continue;
+        }
         char install[MAX_PATH];
         sprintf_s(path,"%s\\%s\\%s",parent,found.cFileName,InstallName);
         if(ReadText(path,text,sizeof(text)) && IniValue(text,"install_iso",install,sizeof(install)) && install[0]) {
@@ -1059,7 +1077,7 @@ static void PrepareDiscs(const Settings& settings) {
         }
     } while(FindNextFile(find,&found));
     FindClose(find);
-    for(int n=1;n<=MaxDiscs && installIso[0];++n)
+    for(int n=1;n<=MaxDiscs && installIso[0] && !mapped;++n)
         if(SwapIsos[n][0] && !_stricmp(SwapIsos[n],installIso)) { SwapRoles[n]=InstallDisc; Note("Disc swaps: disc %d is the install disc.",n); }
     Note("Disc swaps: %d of the %d discs found among %d folders in %s.",count,discs,folders,parent);
     PreparedDiscs=count; PreparedDisc=disc; PreparedTile=LastTile.at;
@@ -1183,13 +1201,16 @@ static DWORD DiscNumber() {
 // Whether an event is set: its dispatcher header's signal state.
 static bool EventSet(void* event) { return ((volatile LONG*)event)[1]!=0; }
 static bool GameRuns(void* event) { return SwapModule && TitleModule()==SwapModule && MmIsAddressValid(event); }
-// A disc as the notices name it: "the play disc" or "the install disc" where
-// the set has an install disc, which says more than its number, else
-// "disc 2 of 2".
+// A disc as the notices name it, where its role says more than its number:
+// "the play disc", "the install disc", its own name ("Undead Nightmare"),
+// else "disc 2 of 3".
 static void DiscName(DWORD disc,char* text,size_t capacity) {
     char role=disc<=DWORD(MaxDiscs) ? SwapRoles[disc] : NumberedDisc;
+    const char* label=disc<=DWORD(MaxDiscs) ? SwapLabels[disc] : "";
     if(role==PlayDisc) strcpy_s(text,capacity,"the play disc");
     else if(role==InstallDisc) strcpy_s(text,capacity,"the install disc");
+    else if(role==ContentDisc) sprintf_s(text,capacity,"the %s disc",label[0] ? label : "content");
+    else if(label[0]) strcpy_s(text,capacity,label);
     else sprintf_s(text,capacity,"disc %lu of %d",disc,PreparedDiscs);
 }
 // Puts the disc the game asked for in the drive, on a thread of the game's,
@@ -1368,12 +1389,13 @@ static void ArmSwap() {
     InterlockedExchange(&SwapArmed,1);
     SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
     // On the launching title's thread, where notices show (see SwapWatch).
-    // Only an install disc is sure to ask for another disc: its game asks for
-    // the play disc when the install is done, and that goes in by itself.
-    // Other sets' discs can be games of their own that never ask (Red Dead's
-    // disc 2 is Undead Nightmare), so they get no notice until a swap.
-    if(PreparedDisc>=1 && PreparedDisc<=MaxDiscs && SwapRoles[PreparedDisc]==InstallDisc)
-        Show("NetDisc 360 will insert the play disc after the install");
+    // Only for a disc whose game will ask for another: an install disc's asks
+    // for the play disc when the install is done, and a game that goes on
+    // from disc to disc asks for the next. Discs that are games of their own
+    // (Red Dead's disc 2 is Undead Nightmare) never ask, so they get none.
+    char role=PreparedDisc>=1 && PreparedDisc<=MaxDiscs ? SwapRoles[PreparedDisc] : NumberedDisc;
+    if(role==InstallDisc) Show("NetDisc 360 will insert the play disc after the install");
+    else if(role==NextDisc) Show("NetDisc 360 will swap the discs for you");
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {

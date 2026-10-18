@@ -11,6 +11,7 @@
 #include "../shared/library.h"
 #include "app.h"
 #include "config.h"
+#include "discmap.h"
 #include "discs.h"
 #include "ftp.h"
 #include "web.h"
@@ -270,6 +271,42 @@ void NoteConflicts(const std::vector<IsoFile>& dropped, const std::vector<IsoFil
 // The Title ID the launcher XEX carries as built (FFFF4E49, "NI").
 const DWORD LauncherTitleId=0xFFFF4E49;
 
+// The disc map, discs.ini next to the settings file (see discmap.h); in
+// memory only without a settings file.
+DiscMap Map;
+std::mutex MapLock;
+std::string DiscMapPath(const std::string& configPath) {
+    if(configPath.empty()) return std::string();
+    size_t cut=configPath.find_last_of("/\\");
+    return (cut==std::string::npos ? std::string() : configPath.substr(0,cut+1))+"discs.ini";
+}
+// What the disc map says each disc is; a game on more than one disc that
+// the map doesn't have yet is added to it. The map has the last word on
+// install discs: only a play disc needs one, and only from an install or
+// content disc.
+void MapDiscs(std::vector<IsoFile>& isos) {
+    std::string path=DiscMapPath(Current().configPath),error;
+    std::vector<std::string> problems,added;
+    {
+        std::lock_guard<std::mutex> hold(MapLock);
+        Map.Load(path,problems);
+        Map.Learn(isos,added,error);
+        Map.Apply(isos);
+    }
+    for(size_t i=0;i<problems.size();++i) Log("Disc map %s, %s; that line is left out.",config::FromUtf8(path).c_str(),problems[i].c_str());
+    for(size_t i=0;i<added.size();++i) Log("Disc map: added %s.",added[i].c_str());
+    if(!error.empty()) Log("Disc map: %s; the games just added are kept until the server stops.",error.c_str());
+    for(size_t i=0;i<isos.size();++i) {
+        IsoFile& d=isos[i];
+        if(d.installDisc.empty()) continue;
+        const IsoFile* carrier=NULL;
+        for(size_t k=0;k<isos.size() && !carrier;++k) if(isos[k].name==d.installDisc) carrier=&isos[k];
+        bool fits=(d.role.empty() || d.role=="play") &&
+                  (!carrier || carrier->role.empty() || carrier->role=="install" || carrier->role=="content");
+        if(!fits) d.installDisc.clear();
+    }
+}
+
 // Everything in the folders, each game once. A game that is there more than
 // once is reported (once, until that changes) so the copies can be removed or
 // one of them chosen.
@@ -296,6 +333,7 @@ std::vector<IsoFile> Isos() {
     DropDuplicates(isos,dropped,kept,chosen);
     UniqueNames(isos);
     LinkInstallDiscs(isos);
+    MapDiscs(isos);
     for(size_t i=0;i<kept.size();++i)  // With the names just given.
         for(size_t k=0;k<isos.size();++k) if(isos[k].path==kept[i].path) { kept[i]=isos[k]; break; }
     std::string report;
@@ -919,6 +957,19 @@ void InstallFor(const char* iso, InstallNeed& need) {
     memcpy(need.packages,lines.c_str(),lines.size()+1);
 }
 
+// What the disc map says a disc is, for its game folder's netiso.ini.
+void RoleFor(const char* iso, DiscRoleInfo& info) {
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    for(size_t i=0;i<GamesList.size();++i) {
+        const IsoFile& g=GamesList[i];
+        if(_stricmp(g.name.c_str(),iso)) continue;
+        info.known=true;
+        _snprintf_s(info.role,sizeof(info.role),_TRUNCATE,"%s",g.role.c_str());
+        _snprintf_s(info.label,sizeof(info.label),_TRUNCATE,"%s",g.roleLabel.c_str());
+        return;
+    }
+}
+
 bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(o.xboxFolder.c_str());
@@ -936,7 +987,7 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
         std::lock_guard<std::mutex> hold(SyncLock);
         Pushing=&console;
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor);
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor);
     }
     if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
                                     result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
@@ -1515,6 +1566,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     j.Set("name",config::ToUtf8(WithoutIso(g.name))).Set("path",config::ToUtf8(g.path)).Set("kind",KindName(g.kind));
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
     j.Set("disc",g.disc).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
+    j.Set("role",g.role).Set("roleLabel",g.roleLabel);
 }
 
 void Games(web::Reply& out) {
@@ -2024,6 +2076,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
 #endif
     Log("NetDisc 360, built %s %s.",__DATE__,__TIME__);
     if(!o.configPath.empty()) Log("Settings: %s",config::FromUtf8(o.configPath).c_str());
+    if(!o.configPath.empty()) Log("Disc map: %s",config::FromUtf8(DiscMapPath(o.configPath)).c_str());
 
     if(o.push || !o.launcherPath.empty()) {
         CanPush=o.launcherPath.empty() ? BuiltIn(IDR_LAUNCHER,Launcher) : LoadFile(o.launcherPath,Launcher);

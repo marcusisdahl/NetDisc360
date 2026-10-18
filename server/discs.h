@@ -22,9 +22,11 @@ struct Package { std::string path; U64 size; };
 // titleId and disc come from the game's default.xex (0: not known yet, or not a game).
 // packages are those the disc carries for its own game, under content at its
 // top; installDisc is the listed name of the disc whose packages this one's
-// game needs installed (see LinkInstallDiscs).
+// game needs installed (see LinkInstallDiscs). role and roleLabel are what
+// the disc map says the disc is (see discmap.h; the label in UTF-8), empty
+// if it has nothing.
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId; int disc;
-                 std::vector<Package> packages; std::string installDisc; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; };
 
 // The discs in folder and its subfolders, sorted by name, added to out.
 void FindIsos(const std::string& folder, std::vector<IsoFile>& out);
