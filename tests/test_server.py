@@ -110,17 +110,6 @@ def free_port():
         return s.getsockname()[1]
 
 
-def can_ping():
-    """Whether this computer lets a program ping, as the server does (PingLoop)."""
-    for kind in (socket.SOCK_DGRAM, socket.SOCK_RAW):
-        try:
-            socket.socket(socket.AF_INET, kind, socket.IPPROTO_ICMP).close()
-            return True
-        except OSError:
-            pass
-    return False
-
-
 def connect_from(address, port):
     """A connection to the server on port from address, once it listens."""
     deadline = time.time() + 10
@@ -852,11 +841,10 @@ class Dashboard(ServerTest):
                 ftp.server_close()
 
     def test_pings_each_console(self):
-        # A ping now and then shows a console is on, even with no NetISO
-        # connection (one that stops answering goes offline: PingLoop).
-        if not can_ping():
-            self.skipTest("this computer doesn't let programs ping")
-        self.start("--xbox", "127.0.0.2", "--ping", "1")
+        # A ping now and then (a connect to its FTP port, refused here) shows
+        # a console is on, even with no NetISO connection (one that stops
+        # answering goes offline: PingLoop).
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(free_port()))
         console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
         state = self.state_when(lambda s: console(s)["answers"])
         self.assertEqual([console(state)[k] for k in ("answers", "offline", "connections")], [True, False, 0])

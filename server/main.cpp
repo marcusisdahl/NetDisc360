@@ -31,7 +31,6 @@
 #include "resource.h"
 #ifdef _WIN32
 #include <iphlpapi.h>
-#include <icmpapi.h>
 #include <mstcpip.h>
 #pragma comment(lib, "iphlpapi.lib")
 typedef int AddressLength;
@@ -39,7 +38,6 @@ typedef int AddressLength;
 #include <dirent.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <poll.h>
 typedef socklen_t AddressLength;
 #endif
 
@@ -60,7 +58,7 @@ const U64 RelaunchBytes = 32ull << 20;
 // A console that answered pings before is offline after this many unanswered
 // in a row, each waited for this long, and once its NetISO connections end
 // (PingLoop), which a quick keepalive makes them do within SuspectSeconds.
-const int OfflinePings = 3, PingTimeoutMs = 1000;
+const int OfflinePings = 3, PingTimeoutMs = 3000;
 const double SuspectSeconds = 20;
 const int ScanTries = 20;
 const size_t LogKeep = 3000, EventKeep = 100;
@@ -448,61 +446,39 @@ void AuroraLoop() {
     }
 }
 
-// ICMP echo, for PingLoop: on Linux an unprivileged ping socket (allowed by
-// net.ipv4.ping_group_range), else a raw one (root).
-class Pinger {
-public:
+// A ping, for PingLoop: a TCP connect to port at address, answered when it's
+// accepted or refused (a reset, which comes only from a console that's on).
+// The Xbox answers no ICMP ping (seen on the console), in Aurora or in a
+// game. The round trip in ms, or -1 without an answer within timeoutMs.
+int Knock(DWORD address, int port, int timeoutMs) {
+    SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if(s==INVALID_SOCKET) return -1;
+    u_long nonblocking=1;
+    ioctlsocket(s,FIONBIO,&nonblocking);
+    sockaddr_in to; memset(&to,0,sizeof(to)); to.sin_family=AF_INET; to.sin_addr.s_addr=address; to.sin_port=htons(u_short(port));
 #ifdef _WIN32
-    Pinger() : icmp_(IcmpCreateFile()) {}
-    ~Pinger() { if(icmp_!=INVALID_HANDLE_VALUE) IcmpCloseHandle(icmp_); }
-    bool Ready() const { return icmp_!=INVALID_HANDLE_VALUE; }
-    // The round trip in ms, or -1 without an answer within timeoutMs.
-    int Echo(DWORD address, DWORD timeoutMs) {
-        char data[]="NetDisc 360";
-        unsigned char reply[sizeof(ICMP_ECHO_REPLY)+sizeof(data)+8];
-        if(!IcmpSendEcho(icmp_,address,data,WORD(sizeof(data)),NULL,reply,DWORD(sizeof(reply)),timeoutMs)) return -1;
-        const ICMP_ECHO_REPLY* r=reinterpret_cast<const ICMP_ECHO_REPLY*>(reply);
-        return r->Status==IP_SUCCESS && r->Address==address ? int(r->RoundTripTime) : -1;
-    }
-private:
-    HANDLE icmp_;
+    const int refused=WSAECONNREFUSED, refusedNow=WSAECONNREFUSED;
 #else
-    Pinger() : socket_(socket(AF_INET,SOCK_DGRAM,IPPROTO_ICMP)), raw_(false), sequence_(0) {
-        if(socket_<0) { socket_=socket(AF_INET,SOCK_RAW,IPPROTO_ICMP); raw_=true; }
-    }
-    ~Pinger() { if(socket_>=0) close(socket_); }
-    bool Ready() const { return socket_>=0; }
-    int Echo(DWORD address, DWORD timeoutMs) {
-        unsigned short id=(unsigned short)getpid(), sequence=++sequence_;
-        unsigned char packet[20]={8,0,0,0,(unsigned char)(id>>8),(unsigned char)id,(unsigned char)(sequence>>8),(unsigned char)sequence};
-        memcpy(packet+8,"NetDisc 360",11);
-        DWORD sum=0;
-        for(size_t i=0;i<sizeof(packet);i+=2) sum+=(packet[i]<<8)|packet[i+1];
-        while(sum>>16) sum=(sum&0xFFFF)+(sum>>16);
-        packet[2]=(unsigned char)(~sum>>8); packet[3]=(unsigned char)~sum;
-        sockaddr_in to; memset(&to,0,sizeof(to)); to.sin_family=AF_INET; to.sin_addr.s_addr=address;
-        double started=Now();
-        if(sendto(socket_,packet,sizeof(packet),0,reinterpret_cast<sockaddr*>(&to),sizeof(to))!=int(sizeof(packet))) return -1;
-        for(;;) {
-            int left=int(timeoutMs-(Now()-started)*1000);
-            pollfd p={socket_,POLLIN,0};
-            if(left<=0 || poll(&p,1,left)<=0) return -1;
-            unsigned char in[1500]; sockaddr_in from; socklen_t size=sizeof(from);
-            int got=int(recvfrom(socket_,in,sizeof(in),0,reinterpret_cast<sockaddr*>(&from),&size));
-            if(got<=0) return -1;
-            const unsigned char* icmp=in;
-            if(raw_) { int header=(in[0]&15)*4; icmp+=header; got-=header; }  // A raw socket gets the IP header too.
-            if(got<8 || from.sin_addr.s_addr!=address || icmp[0]!=0 || ((icmp[6]<<8)|icmp[7])!=sequence) continue;
-            if(raw_ && ((icmp[4]<<8)|icmp[5])!=id) continue;  // A ping socket's id is the kernel's, and only its own answers reach it.
-            return int((Now()-started)*1000+0.5);
-        }
-    }
-private:
-    int socket_;
-    bool raw_;
-    unsigned short sequence_;
+    const int refused=ECONNREFUSED, refusedNow=20000+ECONNREFUSED;  // WSAGetLastError's code for it (posix_compat.h).
 #endif
-};
+    double started=Now();
+    int status=connect(s,reinterpret_cast<sockaddr*>(&to),sizeof(to)) ? WSAGetLastError() : 0;
+    bool answered=!status || status==refusedNow;
+    while(status==WSAEWOULDBLOCK && (Now()-started)*1000<timeoutMs) {
+        fd_set writable,failed; FD_ZERO(&writable); FD_ZERO(&failed); FD_SET(s,&writable); FD_SET(s,&failed);
+        timeval interval={0,100000};
+        int rc=select(0,NULL,&writable,&failed,&interval);
+        if(rc==SOCKET_ERROR) break;
+        if(rc==0) continue;
+        int error=0; int length=sizeof(error);
+        if(getsockopt(s,SOL_SOCKET,SO_ERROR,reinterpret_cast<char*>(&error),&length)) break;
+        answered=!error || error==refused;
+        break;
+    }
+    if(answered && !status) shutdown(s,SD_SEND);
+    closesocket(s);
+    return answered ? int((Now()-started)*1000+0.5) : -1;
+}
 
 // The keepalive of a NetISO connection to a console that stopped answering
 // pings (quick): a probe a second, so a connection to a console that is gone
@@ -550,8 +526,8 @@ void BackOnline(Console& c, const char* how) {
     XboxEvent(c,EventXbox,"Back online",std::string(c.text)+" is back online");
 }
 
-// Pings each console every pingSeconds (--ping) to tell when one is switched
-// off: a console that's off sends NetISO nothing, and its NetISO connection
+// Pings each console (Knock, on Aurora's FTP port) every pingSeconds (--ping)
+// to tell when one is switched off: a console that's off sends NetISO nothing, and its NetISO connection
 // would only end after the system's TCP keepalive (two hours on Windows), so
 // it showed as connected all that time. A console that sent NetISO a request
 // within pingSeconds isn't pinged. One that answered pings before and then
@@ -561,14 +537,9 @@ void BackOnline(Console& c, const char* how) {
 // on, though not answering pings. A console that never answered a ping is
 // never offline.
 void PingLoop() {
-    if(Current().pingSeconds<=0) return;
-    Pinger pinger;
-    if(!pinger.Ready()) {
-        Log("Can't send pings from here, so a console that's switched off keeps showing as connected until its connection times out.");
-        return;
-    }
     for(;;) {
-        double every=Current().pingSeconds;
+        Options o=Current();
+        double every=o.pingSeconds;
         std::vector<Console*> consoles=AllConsoles();
         for(size_t i=0;i<consoles.size() && every>0;++i) {
             Console& c=*consoles[i];
@@ -588,7 +559,7 @@ void PingLoop() {
             bool idle=now-std::max(c.seenAt.load(),c.answeredAt.load())>=IdleSeconds*1000;
             c.pingAt=now+(long long)(1000*(idle && !c.answers ? IdleProbeSeconds : every));
             if(c.seenAt>=0 && now-c.seenAt<every*1000) { c.missed=0; continue; }  // NetISO shows it's on.
-            int ms=pinger.Echo(c.address,PingTimeoutMs);
+            int ms=Knock(c.address,o.ftpPort,PingTimeoutMs);
             if(ms>=0) {
                 c.pingMs=ms; c.answers=true; c.answered=true; c.missed=0; c.toldNoPings=false;
                 c.answeredAt=(long long)(Now()*1000);

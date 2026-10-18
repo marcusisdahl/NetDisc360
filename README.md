@@ -162,7 +162,6 @@ It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each releas
 
 - The variables from `NETDISC_XBOX` down are only the first start's settings. Once the server has saved its settings in `/config`, what's saved there wins, and you change them on the dashboard. (`NETDISC_WEB_PASSWORD`, the ports and `NETDISC_VERBOSE` always apply.)
 - The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports:` with `4323:4323` and `8360:8360`, as on Docker Desktop), set `NETDISC_XBOX`.
-- The server pings the consoles to see when one is switched off. If its log says it can't send pings, the host doesn't let programs ping; on most Linux systems `sysctl net.ipv4.ping_group_range="0 2147483647"` allows it. Everything else works without.
 - The server runs as user 1000:1000. If it can't read your games, set `user:` in the compose file to an ID that can (and give `config` to that ID).
 - Without Docker Compose: `docker run -d --name netdisc --network host --restart unless-stopped -v /path/to/games:/games:ro -v /path/to/config:/config -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc-360`.
 
@@ -173,6 +172,7 @@ Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc a
 - **B cancels at any step** and goes back to Aurora at once.
 - Right after a reboot the console can't reach the server for a minute or two, and the NetISO plugin needs a little longer still. For the first 4 minutes after boot the screen waits for both instead of failing.
 - When something goes wrong, the screen says what and what to do: the server doesn't answer, the NetISO plugin isn't loaded, the game is no longer on the server, the disc didn't show up, a different game is in the drive, or the game didn't start. **A** goes back to Aurora and **X** tries again; after a minute it goes back to Aurora by itself.
+- **Games with an install disc** (GTA V, Forza Motorsport 4) check for the install first. If the install disc's content isn't on the console's hard drive or USB storage, the screen asks: **A** starts the install disc so you can install it, **X** plays anyway, **B** goes back to Aurora. Without its install, GTA V freezes at "Loading story mode".
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
@@ -221,7 +221,7 @@ What `NetDisc.exe` does, all from one file:
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--online-wait <s>` | 120 | After Aurora's FTP comes back, the longest wait for the console to come online before writing game folders (see below). |
-| `--ping <s>` | 30 | How often each console is pinged to see that it's still on; `0`: never. A console that answered before and stops (and whose connection ends) shows as Offline. |
+| `--ping <s>` | 30 | How often each console is pinged (a connection attempt to its FTP port; the Xbox answers no ordinary ping) to see that it's still on; `0`: never. A console that answered before and stops (and whose connection ends) shows as Offline. |
 | `--remove-wait <s>` | 60 | How long after the server starts (or its game folders change on the dashboard) a game folder whose game is gone stays on the console, so a games folder or drive that isn't there yet (or isn't added on the dashboard yet) doesn't drop its games from Aurora. |
 | `--port`, `--ftp-port` | 4323, 21 | |
 | `-v` | | Log every request. |
@@ -244,6 +244,10 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 - An extracted game is a GDF (XDVDFS) disc built in memory when it's mounted. A disc can't hold a file of 4 GB or more.
 - A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
 - A folder given on the command line is never taken as a game itself, even with a `default.xex` at its top; only what is inside it counts.
+
+### Install discs
+
+Some games come on two discs, one of which only installs content: GTA V's second disc (8.3 GB in 4 packages) and Forza Motorsport 4's (car packs). The server reads the packages each disc carries for its game (`content\0000000000000000\<Title ID>\` on an extracted folder, ISO or GOD package) and writes `install.ini` into the game folder of each other disc of that game, naming the install disc and its packages. Before such a game starts, the launcher looks for each package under `Content` on the hard drive (and USB storage set up for the console) at its full size, and offers to start the install disc if one is missing. A disc you swap to during a game, such as Red Dead Redemption's second disc, carries no packages and gets no `install.ini`.
 
 ## Security
 
