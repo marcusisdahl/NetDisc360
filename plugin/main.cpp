@@ -699,6 +699,53 @@ static Outcome Mount(const Settings& settings) {
     return MountSteps(settings,stop);
 }
 
+// ---- NetISO's read size ----
+
+// NetISO.xex 1.0 splits every disc read into 4 KB requests and sends the next
+// only when the last one's data is in (its read loop at 0x911050cc, read from
+// the binary). Each request costs a round trip, about 0.6 ms through a USB
+// adapter, so games loaded at about 7 MB/s however fast the link was (seen on
+// the console). It receives straight into the caller's buffer, so a bigger
+// limit only means fewer requests; NetDisc serves up to 16 MB in one.
+// read_kb= in NetIsoTiles.ini on the root of Usb0: or Hdd1: sets the limit:
+// 4 (NetISO's own), 16, 64, 256 or 1024.
+static DWORD* const ReadLimit=(DWORD*)0x911050e0;
+// cmplwi cr6,r4,0x1000; blt cr6,+8; li r4,0x1000; bl ReadData
+static const DWORD ReadLimitCode[4]={0x2B041000,0x41980008,0x38801000,0x4BFFE52D};
+static const int DefaultReadKb=64;
+static char ReadLimitNote[160];
+// Set once at start-up, before NetISO has a disc to read, since the three
+// instructions can't change at once under a read in progress; and left set
+// when this plugin unloads, since they don't lead into it.
+static void PatchReadLimit() {
+    int kb=DefaultReadKb; const char* from="default";
+    static const char* const files[]={"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
+    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
+        char text[512],value[16];
+        if(!ReadDeviceText(files[i],text,sizeof(text))) continue;
+        if(IniValue(text,"read_kb",value,sizeof(value))) { kb=atoi(value); from=files[i]; }
+        break;
+    }
+    if(kb!=4 && kb!=16 && kb!=64 && kb!=256 && kb!=1024) {
+        sprintf_s(ReadLimitNote,"read_kb=%d in %s isn't 4, 16, 64, 256 or 1024, so 4 KB per request (NetISO's own)",kb,from);
+        return;
+    }
+    HANDLE module=NULL;
+    if(XexGetModuleHandle("NetISO.xex",&module)<0) { strcpy_s(ReadLimitNote,"4 KB per request; NetISO.xex wasn't loaded before this plugin"); return; }
+    if(!MmIsAddressValid(ReadLimit) || memcmp(ReadLimit,ReadLimitCode,sizeof(ReadLimitCode))) {
+        strcpy_s(ReadLimitNote,"left alone; NetISO's read loop isn't 1.0's"); return;
+    }
+    if(kb==4) { sprintf_s(ReadLimitNote,"4 KB per request, NetISO's own (%s)",from); return; }
+    DWORD bytes=DWORD(kb)*1024,shift=0;
+    while((1u<<shift)<bytes) ++shift;
+    // srwi. r0,r4,shift; beq +8; li or lis r4,bytes
+    ReadLimit[0]=0x5480003F|((32-shift)<<11)|(shift<<6);
+    ReadLimit[1]=0x41820008;
+    ReadLimit[2]=bytes<0x8000 ? 0x38800000|bytes : 0x3C800000|(bytes>>16);
+    FlushCode(ReadLimit,3*4);
+    sprintf_s(ReadLimitNote,"up to %d KB per request (%s)",kb,from);
+}
+
 // ---- Tiles ----
 
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
@@ -720,6 +767,7 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     OpenLog(Folder);
     Note("Tile %s",path);
     Note("ISO %s, Title ID %08X, Media ID %08X",settings.iso,settings.titleId,settings.mediaId);
+    Note("NetISO reads: %s.",ReadLimitNote);
     return true;
 }
 
@@ -817,8 +865,9 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
            && !HookStart(LaunchTitleExHook,LaunchTitleExOrdinal,LaunchTitleExHooked,LaunchTitleExStub))
             Unhook(LaunchTitleHook);
         // NetISO.xex is loaded before this plugin in launch.ini; if not, the
-        // first tile patches it.
+        // first tile patches its unload call, and its read size stays 4 KB.
         PatchUnload();
+        PatchReadLimit();
     } else if(reason==DLL_PROCESS_DETACH) {
         UnpatchUnload();
         Unhook(LaunchTitleExHook);
