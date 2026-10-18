@@ -201,14 +201,14 @@ private:
 enum { GodBlock = 0x1000, GodGroupData = 0xCC, GodPartData = 0xA1C4, GodContentType = 0x7000, GodHeaderRead = 0x600 };
 const U64 GodPartBytes = U64(GodPartData)*GodBlock;
 
-struct GodHeader { DWORD titleId; int disc, discs; std::string title; };
+struct GodHeader { DWORD titleId, mediaId; int disc, discs; std::string title; };
 
 bool ReadGodHeader(const std::string& path, GodHeader& header) {
     File f; unsigned char h[GodHeaderRead];
     if(!f.Open(path) || f.Read(0,h,sizeof(h))!=(long long)sizeof(h)) return false;
     if(memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) return false;
     if(Big32(h+0x344)!=GodContentType) return false;
-    header.titleId=Big32(h+0x360); header.disc=h[0x366]; header.discs=h[0x367];
+    header.titleId=Big32(h+0x360); header.mediaId=Big32(h+0x354); header.disc=h[0x366]; header.discs=h[0x367];
     header.title.clear();
     for(int i=0;i<0x80;++i) {  // UTF-16BE, from 0x411.
         unsigned c=(unsigned(h[0x411+i*2])<<8)|h[0x412+i*2];
@@ -483,34 +483,34 @@ private:
 
 enum { ExecutionInfoKey = 0x40006, ExecutionInfoBytes = 24, XexHeaderMax = 0x100000, RootMax = 0x100000 };
 
-// Title ID and disc number from the execution info in a XEX header.
-bool XexTitle(const unsigned char* xex, DWORD size, DWORD& titleId, int& disc) {
+// Title ID, Media ID and disc number from the execution info in a XEX header.
+bool XexTitle(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) {
     if(size<24 || memcmp(xex,"XEX2",4)) return false;
     DWORD count=Big32(xex+20);
     for(DWORD i=0;i<count && 24+i*8+8<=size;++i) {
         if(Big32(xex+24+i*8)!=ExecutionInfoKey) continue;
         DWORD at=Big32(xex+28+i*8);
         if(at<24 || at+ExecutionInfoBytes>size) return false;
-        titleId=Big32(xex+at+12); disc=xex[at+18] ? xex[at+18] : 1;
+        titleId=Big32(xex+at+12); mediaId=Big32(xex+at); disc=xex[at+18] ? xex[at+18] : 1;
         return titleId!=0;
     }
     return false;
 }
 // Reads default.xex's header, from a file or from inside a disc image.
-template<class Reader> bool HeaderTitle(Reader read, DWORD xexSize, DWORD& titleId, int& disc) {
+template<class Reader> bool HeaderTitle(Reader read, DWORD xexSize, DWORD& titleId, DWORD& mediaId, int& disc) {
     unsigned char start[24];
     if(xexSize<24 || !read(0,start,24)) return false;
     DWORD size=Big32(start+8);
     if(size>xexSize) size=xexSize;
     if(size<24 || size>XexHeaderMax) return false;
     std::vector<unsigned char> header(size);
-    return read(0,&header[0],size) && XexTitle(&header[0],size,titleId,disc);
+    return read(0,&header[0],size) && XexTitle(&header[0],size,titleId,mediaId,disc);
 }
-bool FileTitle(const std::string& path, DWORD& titleId, int& disc) {
+bool FileTitle(const std::string& path, DWORD& titleId, DWORD& mediaId, int& disc) {
     File f; U64 size=0;
     if(!f.Open(path) || !f.Size(size)) return false;
     return HeaderTitle([&](U64 at, unsigned char* data, DWORD n) { return f.Read(at,data,n)==(long long)n; },
-                       size>0xFFFFFFFFULL ? 0xFFFFFFFFu : DWORD(size),titleId,disc);
+                       size>0xFFFFFFFFULL ? 0xFFFFFFFFu : DWORD(size),titleId,mediaId,disc);
 }
 // A disc image's game partition: where it starts and its root directory table.
 struct Volume { U64 start; DWORD rootSector, rootSize; };
@@ -548,7 +548,7 @@ bool ReadTable(DiscImage& image, const Volume& volume, DWORD sector, DWORD size,
     }
     return true;
 }
-bool ImageTitle(DiscImage& image, DWORD& titleId, int& disc) {
+bool ImageTitle(DiscImage& image, DWORD& titleId, DWORD& mediaId, int& disc) {
     Volume volume; std::vector<ImageEntry> root;
     if(!ImageVolume(image,volume) || !volume.rootSize || !ReadTable(image,volume,volume.rootSector,volume.rootSize,root)) return false;
     for(size_t i=0;i<root.size();++i) {
@@ -556,7 +556,7 @@ bool ImageTitle(DiscImage& image, DWORD& titleId, int& disc) {
         U64 xexAt=volume.start+U64(root[i].sector)*Sector;
         DWORD xexSize=root[i].size;
         if(xexAt+xexSize>image.Size()) return false;
-        return HeaderTitle([&](U64 at, unsigned char* data, DWORD n) { return image.Read(xexAt+at,data,n); },xexSize,titleId,disc);
+        return HeaderTitle([&](U64 at, unsigned char* data, DWORD n) { return image.Read(xexAt+at,data,n); },xexSize,titleId,mediaId,disc);
     }
     return false;
 }
@@ -629,7 +629,7 @@ void ImagePackages(DiscImage& image, DWORD titleId, std::vector<Package>& out) {
     },titleId,out);
 }
 
-struct Known { U64 size; long long modified; DWORD titleId; int disc; std::vector<Package> packages; };
+struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; };
 std::mutex TitlesLock;
 std::map<std::string,Known> Titles;
 
@@ -640,7 +640,7 @@ int Rank(DiscKind kind) { return kind==DiscIso ? 0 : kind==DiscGod ? 1 : 2; }
 bool IsIsoName(const std::string& name) { return name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso"); }
 
 void AddFolder(const std::string& path, const std::string& name, const std::vector<Entry>& entries, std::vector<IsoFile>& out) {
-    IsoFile disc; disc.path=path; disc.kind=DiscFolder; disc.size=0; disc.titleId=0; disc.disc=0;
+    IsoFile disc; disc.path=path; disc.kind=DiscFolder; disc.size=0; disc.titleId=0; disc.mediaId=0; disc.disc=0;
     const Entry* xex=Find(entries,"default.xex",false);
     disc.modified=xex ? xex->modified : 0;
     std::string clean=CleanName(name);
@@ -654,7 +654,7 @@ void AddGod(const std::string& folder, int depth, const Entry& header, std::vect
     std::string path=Join(folder,header.name);
     if(!ReadGodHeader(path,h)) return;
     IsoFile disc; disc.path=path; disc.kind=DiscGod; disc.modified=header.modified; disc.size=0;
-    disc.titleId=h.titleId; disc.disc=h.disc ? h.disc : 1;
+    disc.titleId=h.titleId; disc.mediaId=h.mediaId; disc.disc=h.disc ? h.disc : 1;
     std::vector<Entry> parts;
     if(List(path+".data",parts)) for(size_t i=0;i<parts.size();++i) disc.size+=parts[i].size;
     // <game>\<Title ID>\00007000\<header>: the game's folder names it, as the
@@ -691,7 +691,7 @@ void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
         if(e.folder) continue;
         if(IsIsoName(e.name)) {
             IsoFile iso; iso.path=Join(folder,e.name); iso.name=e.name; iso.size=e.size; iso.modified=e.modified; iso.kind=DiscIso;
-            iso.titleId=0; iso.disc=0;
+            iso.titleId=0; iso.mediaId=0; iso.disc=0;
             out.push_back(iso);
         } else if(Find(entries,e.name+".data",true)) AddGod(folder,depth,e,out);
     }
@@ -758,24 +758,24 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::lock_guard<std::mutex> hold(TitlesLock);
             std::map<std::string,Known>::const_iterator k=Titles.find(d.path);
             if(k!=Titles.end() && k->second.size==d.size && k->second.modified==d.modified) {
-                d.titleId=k->second.titleId; d.disc=k->second.disc; d.packages=k->second.packages; continue;
+                d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages; continue;
             }
         }
-        DWORD titleId=0; int disc=0;
+        DWORD titleId=0,mediaId=0; int disc=0;
         if(d.kind==DiscFolder) {
-            FileTitle(Join(d.path,"default.xex"),titleId,disc);
+            FileTitle(Join(d.path,"default.xex"),titleId,mediaId,disc);
             if(titleId) FolderPackages(d.path,titleId,d.packages);
         } else if(d.kind==DiscGod) {  // The Title ID is from its header already.
-            titleId=d.titleId; disc=d.disc;
+            titleId=d.titleId; mediaId=d.mediaId; disc=d.disc;
             std::string error;
             std::unique_ptr<DiscImage> god(OpenGodImage(d.path,error));
             if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
         } else {
             IsoImage iso; std::string error;
-            if(iso.Open(d.path,error) && ImageTitle(iso,titleId,disc)) ImagePackages(iso,titleId,d.packages);
+            if(iso.Open(d.path,error) && ImageTitle(iso,titleId,mediaId,disc)) ImagePackages(iso,titleId,d.packages);
         }
-        d.titleId=titleId; d.disc=titleId ? disc : 0;
-        Known known={ d.size, d.modified, d.titleId, d.disc, d.packages };
+        d.titleId=titleId; d.mediaId=titleId ? mediaId : 0; d.disc=titleId ? disc : 0;
+        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages };
         std::lock_guard<std::mutex> hold(TitlesLock);
         Titles[d.path]=known;
     }

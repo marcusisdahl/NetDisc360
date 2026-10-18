@@ -839,7 +839,7 @@ const char FilterOriginal[] =
     "   -- Add only legit xbox 360 games\n"
     "   return Content.Group == ContentGroup.Xbox360\n"
     "end";
-const char FilterNetIso[] =
+const char FilterNetIsoBefore[] =  // As servers before the install disc filter wrote it.
     "function GameListFilterXbox360(Content)\n"
     "   -- Add only legit xbox 360 games\n"
     "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\n"
@@ -852,6 +852,22 @@ const char FilterNetIso[] =
     "function GameListFilterNetIso(Content)\n"
     "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
     "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
+    "end";
+const char FilterNetIso[] =
+    "function GameListFilterXbox360(Content)\n"
+    "   -- Add only legit xbox 360 games\n"
+    "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\n"
+    "end\n"
+    "\n"
+    "-- NetDisc 360: the game launchers in Hdd1:\\NetISO play retail discs\n"
+    "-- from the NetISO server, so they count as Xbox 360 games here. Aurora files\n"
+    "-- them as Unsigned because they aren't retail-signed. The NetISO Sync app\n"
+    "-- itself stays out, and so do install discs, which their game's tile\n"
+    "-- starts (NetDiscInstallDisc is in User\\Scripts\\Content\\Filters).\n"
+    "function GameListFilterNetIso(Content)\n"
+    "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
+    "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
+    "      and not (NetDiscInstallDisc ~= nil and NetDiscInstallDisc(Content))\n"
     "end";
 
 std::string Lines(const char* text, bool crlf) {
@@ -868,13 +884,27 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
         return;
     }
     std::string text(data.begin(),data.end());
-    if(text.find("GameListFilterNetIso")!=std::string::npos) {
+    bool crlf=text.find("\r\n")!=std::string::npos;
+    if(text.find(Lines(FilterNetIso,crlf))!=std::string::npos) {
         if(announce) XboxLog(console,"Aurora's Xbox 360 category includes the NetISO games.");
         return;
     }
-    bool crlf=text.find("\r\n")!=std::string::npos;
+    // An earlier server's edit gets this one's, without a new backup.
+    std::string before=Lines(FilterNetIsoBefore,crlf);
+    size_t at=text.find(before);
+    if(at!=std::string::npos) {
+        std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+before.size());
+        if(ftp.Store(path.c_str(),edited.data(),edited.size()))
+            XboxLog(console,"Aurora's Xbox 360 category now leaves install discs out (%s). Restart Aurora to see it.",path.c_str());
+        else XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
+        return;
+    }
+    if(text.find("GameListFilterNetIso")!=std::string::npos) {
+        if(announce) XboxLog(console,"Aurora's Xbox 360 category has a NetISO rule this program doesn't know, so it is left alone.");
+        return;
+    }
     std::string original=Lines(FilterOriginal,crlf);
-    size_t at=text.find(original);
+    at=text.find(original);
     if(at==std::string::npos) {
         if(announce) XboxLog(console,"Aurora's Xbox 360 filter isn't the one this program knows, so it is left alone; the NetISO games show under All.");
         return;
@@ -889,6 +919,66 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
     XboxLog(console,"added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
     XboxEvent(console,EventGood,"Games added to Aurora's Xbox 360 category; restart Aurora to see them there",
               std::string("Games added to Aurora's Xbox 360 category on ")+console.text+"; restart Aurora to see them there");
+}
+
+// Install and content discs (see discmap.h) are started from their game's
+// tile, which offers the install, so Aurora needn't list their own tiles.
+// This user filter of ours hides them (Filters, User, "Hide install discs"),
+// and the Xbox 360 category leaves them out (FilterNetIso). They are told
+// apart by Title ID and Media ID, which Aurora reads from their launchers.
+const char InstallFilterScript[] = "/User/Scripts/Content/Filters/NetDiscInstallDiscs.lua";
+std::string InstallFilter() {
+    std::map<DWORD,std::set<DWORD> > discs;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size();++i) {
+            const IsoFile& g=GamesList[i];
+            if((g.role=="install" || g.role=="content") && g.titleId && g.mediaId) discs[g.titleId].insert(g.mediaId);
+        }
+    }
+    if(discs.empty()) return std::string();
+    std::string text=
+        "-- Written by NetDisc 360, which keeps it up to date: the install discs\r\n"
+        "-- and content discs of its games, by Title ID and Media ID. Each is\r\n"
+        "-- started from its game's tile, which offers the install, so this filter\r\n"
+        "-- hides their own tiles. Aurora's Xbox 360 category leaves them out too.\r\n"
+        "NetDiscInstallDiscs = {\r\n";
+    for(std::map<DWORD,std::set<DWORD> >::const_iterator t=discs.begin();t!=discs.end();++t) {
+        char line[64]; _snprintf_s(line,sizeof(line),_TRUNCATE,"   [0x%08X] = {",t->first);
+        text+=line;
+        for(std::set<DWORD>::const_iterator m=t->second.begin();m!=t->second.end();++m) {
+            _snprintf_s(line,sizeof(line),_TRUNCATE," [0x%08X] = true,",*m);
+            text+=line;
+        }
+        text+=" },\r\n";
+    }
+    text+=
+        "}\r\n"
+        "\r\n"
+        "-- Aurora may hand IDs over as signed numbers.\r\n"
+        "local function NetDiscId(id)\r\n"
+        "   if id ~= nil and id < 0 then return id + 4294967296 end\r\n"
+        "   return id\r\n"
+        "end\r\n"
+        "\r\n"
+        "function NetDiscInstallDisc(Content)\r\n"
+        "   local discs = NetDiscInstallDiscs[NetDiscId(Content.TitleId)]\r\n"
+        "   return discs ~= nil and discs[NetDiscId(Content.MediaId)] == true\r\n"
+        "end\r\n"
+        "\r\n"
+        "GameListFilterCategories.User[\"Hide install discs\"] = function(Content)\r\n"
+        "   return not NetDiscInstallDisc(Content)\r\n"
+        "end\r\n";
+    return text;
+}
+int RefreshRemote(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& data);
+void RefreshInstallFilter(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string text=InstallFilter();
+    if(text.empty()) return;
+    std::string path=o.aurora+InstallFilterScript;
+    int written=RefreshRemote(ftp,path,std::vector<unsigned char>(text.begin(),text.end()));
+    if(written>0) XboxLog(console,"wrote Aurora's \"Hide install discs\" filter (%s). Restart Aurora, then pick it under Filters, User.",path.c_str());
+    else if(written<0) XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
 }
 
 // Pushing the game folders ---------------------------------------------------
@@ -1085,6 +1175,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(Push(console,ftp,result,o.pushOnce || Now()-holdFrom>=o.removeWait,o)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
+            if(o.filter) RefreshInstallFilter(console,ftp,o);
             s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
             if(result.added || result.removed) {
                 if(o.scan) { s.scanTries=o.pushOnce ? 1 : ScanTries; s.scanAt=Now(); scanDue=true; }

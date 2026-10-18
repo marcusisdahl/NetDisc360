@@ -618,6 +618,67 @@ class Push(ServerTest):
             result = subprocess.run([LUA, check], capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
 
+    def test_hides_install_discs_in_aurora(self):
+        filters = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters")
+        os.makedirs(filters)
+        # An earlier server's edit of the Xbox 360 category gets this one's.
+        before = FILTER.replace(b"   return Content.Group == ContentGroup.Xbox360\r\nend\r\n", (
+            "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\r\n"
+            "end\r\n"
+            "\r\n"
+            "-- NetDisc 360: the game launchers in Hdd1:\\NetISO play retail discs\r\n"
+            "-- from the NetISO server, so they count as Xbox 360 games here. Aurora files\r\n"
+            "-- them as Unsigned because they aren't retail-signed. The NetISO Sync app\r\n"
+            "-- itself stays out.\r\n"
+            "function GameListFilterNetIso(Content)\r\n"
+            "   local directory = '\\\\' .. string.lower(Content.Directory or '')\r\n"
+            "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and"
+            " string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\r\n"
+            "end\r\n").encode())
+        self.assertNotEqual(before, FILTER)
+        with open(os.path.join(self.aurora, "FilterFunctions.lua"), "wb") as f:
+            f.write(before)
+        write_tree_iso(os.path.join(self.isos, "GTA V - Disc 2.iso"), {
+            "default.xex": xex(execution_info(0x8C48794E, 0x545408A7, 1, 2)),
+            "content": {"0000000000000000": {"545408A7": {"00000002": {"545408A700000000": b"PIRS" + bytes(100)}}}}})
+        write_iso(os.path.join(self.isos, "GTA V.iso"), {"default.xex": xex(execution_info(0x79E465C5, 0x545408A7, 2, 2))})
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push()
+        self.assertIn("now leaves install discs out", out)
+        self.assertIn("wrote Aurora's \"Hide install discs\" filter", out)
+        script = os.path.join(filters, "NetDiscInstallDiscs.lua")
+        with open(script, "rb") as f:
+            text = f.read()
+        self.assertIn(b"NetDiscInstallDiscs = {\r\n   [0x545408A7] = { [0x8C48794E] = true, },\r\n}\r\n", text)
+        with open(os.path.join(self.aurora, "FilterFunctions.lua"), "rb") as f:
+            edited = f.read()
+        self.assertIn(b"and not (NetDiscInstallDisc ~= nil and NetDiscInstallDisc(Content))", edited)
+        self.assertFalse(os.path.exists(os.path.join(self.aurora, "FilterFunctions.lua.before-netiso")))  # No new backup.
+        # Nothing new: neither is written again.
+        self.ftp.stored.clear()
+        out = self.push()
+        self.assertIn("Xbox 360 category includes the NetISO games", out)
+        self.assertEqual([p for p in self.ftp.stored if "Scripts" in p], [])
+        if LUA:
+            check = os.path.join(self.tmp.name, "check.lua")
+            with open(check, "w") as f:
+                f.write("ContentGroup = { Xbox360 = 1, XBLA = 2 }\n"
+                        "GameListFilterCategories = { User = {} }\n"
+                        "dofile(%r)\n"
+                        "dofile(%r)\n"
+                        "local hide = GameListFilterCategories.User['Hide install discs']\n"
+                        "local install = { Group = 5, Directory = '\\\\netiso\\\\gta v - disc 2', TitleId = 0x545408A7, MediaId = 0x8C48794E }\n"
+                        "local play = { Group = 5, Directory = '\\\\netiso\\\\gta v', TitleId = 0x545408A7, MediaId = 0x79E465C5 }\n"
+                        "assert(not hide(install))\n"
+                        "assert(hide(play))\n"
+                        "assert(not hide({ TitleId = 0x545408A7, MediaId = 0x8C48794E - 4294967296 }))\n"
+                        "assert(hide({ TitleId = 0x4D5307E6, MediaId = 1 }))\n"
+                        "assert(not GameListFilterXbox360(install))\n"
+                        "assert(GameListFilterXbox360(play))\n"
+                        "print('lua ok')\n" % (script, os.path.join(self.aurora, "FilterFunctions.lua")))
+            result = subprocess.run([LUA, check], capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
     def test_leaves_an_unknown_filter_alone(self):
         changed = FILTER.replace(b"legit xbox 360", b"retail")
         with open(os.path.join(self.aurora, "FilterFunctions.lua"), "wb") as f:
