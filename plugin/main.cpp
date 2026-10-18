@@ -855,9 +855,10 @@ static __declspec(naked) void SwapPreviousStub() {
 // The tile a launch came from, for the disc start that follows it.
 static char TileDevice[MAX_PATH];
 static struct { char folder[MAX_PATH]; DWORD titleId,at; } LastTile;
+static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.at<10*60*1000; }
 // The armed game: its tile folder, Title ID, discs (by number) and module.
 static volatile LONG SwapGeneration=0,SwapBusy=0;
-static char SwapFolder[MAX_PATH],SwapLog[MAX_PATH];
+static char SwapFolder[MAX_PATH];
 static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
 static volatile HANDLE SwapModule=NULL;
@@ -874,11 +875,63 @@ static void DevicePath(const char* path,char* out,size_t capacity) {
     }
 }
 
-// Appended to the armed tile's netiso.log through the kernel, which takes
-// the device path from any thread, the system's included.
+// The swap's lines go to the netiso.log of the last tile started, through
+// a link to its folder and the Win32 calls OpenLog uses, or else through the
+// kernel's with full write access. (The first build appended through the
+// kernel's with append access only, and nothing came out on the console;
+// why isn't known.) Every line is also kept in SwapTrace, after a marker, so
+// the plugin's memory can be read for them (xbdm's getmem) if no file takes
+// them, with how the last write went.
+static const char SwapLink[]="\\??\\NIsoW:",SwapRoot[]="NIsoW:";
+static char SwapLogDevice[MAX_PATH];
+static struct {
+    char marker[32]; volatile DWORD win32Error; volatile LONG ntStatus; volatile LONG length; char text[16384];
+} SwapTrace={"NetIsoTiles disc swap trace",0,0,0,""};
+static volatile LONG SwapWriting=0;
+static void TraceAdd(const char* text,LONG length) {
+    LONG at=InterlockedExchangeAdd(&SwapTrace.length,length);
+    if(at>=0 && at+length<LONG(sizeof(SwapTrace.text))) memcpy(SwapTrace.text+at,text,length);
+}
+// The log the swap's lines go to: folder's (a device path).
+static void SwapLogTo(const char* folder) {
+    while(InterlockedCompareExchange(&SwapWriting,1,0)) Sleep(1);
+    sprintf_s(SwapLogDevice,"%s\\%s",folder,LogName);
+    LONG status=LinkDrive(SwapLink,folder);
+    if(status<0) SwapTrace.ntStatus=status;
+    InterlockedExchange(&SwapWriting,0);
+}
+static bool SwapAppend(const char* text,DWORD length) {
+    if(!SwapLogDevice[0]) return false;
+    while(InterlockedCompareExchange(&SwapWriting,1,0)) Sleep(1);
+    char path[32]; sprintf_s(path,"%s\\%s",SwapRoot,LogName);
+    DWORD done=0;
+    HANDLE file=CreateFile(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file!=INVALID_HANDLE_VALUE) {
+        SetFilePointer(file,0,NULL,FILE_END);
+        SwapTrace.win32Error=WriteFile(file,text,length,&done,NULL) && done==length ? 0 : GetLastError();
+        CloseHandle(file);
+    } else SwapTrace.win32Error=GetLastError();
+    bool written=SwapTrace.win32Error==0;
+    if(!written) {
+        char device[MAX_PATH]; strcpy_s(device,SwapLogDevice);
+        KernelString name={USHORT(strlen(device)),USHORT(sizeof(device)),device};
+        ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+        IoStatusBlock io={0,0};
+        // GENERIC_WRITE with SYNCHRONIZE, FILE_OPEN_IF, a synchronous file.
+        LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,3,0x60);
+        if(status>=0) {
+            LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
+            status=NtWriteFile(file,NULL,NULL,NULL,&io,text,length,&end);
+            NtClose(file);
+        }
+        SwapTrace.ntStatus=status;
+        written=status>=0;
+    }
+    InterlockedExchange(&SwapWriting,0);
+    return written;
+}
 static void SwapNote(const char* format,...) {
-    if(!SwapLog[0]) return;
-    static char line[512];
+    char line[512];
     SYSTEMTIME t; GetLocalTime(&t);
     int length=sprintf_s(line,"%02u:%02u:%02u.%03u ",t.wHour,t.wMinute,t.wSecond,t.wMilliseconds);
     va_list args; va_start(args,format);
@@ -886,15 +939,12 @@ static void SwapNote(const char* format,...) {
     va_end(args);
     length+=more<0 ? int(strlen(line+length)) : more;
     strcpy_s(line+length,sizeof(line)-length,"\r\n");
-    char path[MAX_PATH]; strcpy_s(path,SwapLog);
-    KernelString name={USHORT(strlen(path)),USHORT(sizeof(path)),path};
-    ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
-    IoStatusBlock status={0,0}; HANDLE file=NULL;
-    // FILE_APPEND_DATA with SYNCHRONIZE, FILE_OPEN_IF, a synchronous file.
-    if(NtCreateFile(&file,0x100004,&attributes,&status,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,3,0x60)<0) return;
-    LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
-    NtWriteFile(file,NULL,NULL,NULL,&status,line,ULONG(strlen(line)),&end);
-    NtClose(file);
+    length+=2;
+    TraceAdd(line,length);
+    if(!SwapAppend(line,DWORD(length))) {
+        char failed[96];
+        TraceAdd(failed,sprintf_s(failed,"  (not in the log: Win32 error %lu, status %08X)\r\n",SwapTrace.win32Error,SwapTrace.ntStatus));
+    }
 }
 
 // The data of an XEX header field (an offset from the header), or NULL.
@@ -916,17 +966,18 @@ static int FindDiscs() {
     if(!cut || cut==parent) return 0;
     *cut=0;
     int count=ListFolder(parent),found=0;
+    if(count<0) SwapNote("Disc swaps: can't list %s.",parent);
     for(int i=0;i<count;++i) {
         char path[MAX_PATH],text[512]; Settings settings;
         sprintf_s(path,"%s\\%s\\%s",parent,Names[i],IniName);
         if(!ReadDeviceText(path,text,sizeof(text)) || !ReadSettings(text,settings) || settings.titleId!=SwapTitle) continue;
         sprintf_s(path,"%s\\%s\\%s",parent,Names[i],GameXex);
         HANDLE file; IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
-        if(OpenPath(path,false,file)<0) continue;
+        if(OpenPath(path,false,file)<0) { SwapNote("Disc swaps: can't open %s.",path); continue; }
         LONG read=NtReadFile(file,NULL,NULL,NULL,&status,DiscHeader,sizeof(DiscHeader),&offset);
         NtClose(file);
         const BYTE* info=read<0 ? NULL : XexField((const BYTE*)DiscHeader,DWORD(status.information),0x40006);
-        if(!info || info+20>(const BYTE*)DiscHeader+status.information) continue;
+        if(!info || info+20>(const BYTE*)DiscHeader+status.information) { SwapNote("Disc swaps: no disc number in %s.",path); continue; }
         int disc=info[18];
         if(disc<1 || disc>MaxDiscs) continue;
         if(SwapIsos[disc][0]) { SwapNote("Disc %d is both %s and %s; using %s.",disc,SwapIsos[disc],settings.iso,SwapIsos[disc]); continue; }
@@ -937,24 +988,52 @@ static int FindDiscs() {
     return found;
 }
 
+// Where a 16-byte thunk jumps: lis rN,high; ori or addi rN,rN,low; mtctr rN;
+// bctr (as xam's loader, Nova and WriteJump write them), or a branch at its
+// start. 0 if it's neither.
+static DWORD JumpTarget(const DWORD* thunk) {
+    DWORD first=thunk[0];
+    if((first>>26)==18 && (first&3)==0) return BranchTarget(first,thunk);
+    DWORD reg=(first>>21)&31,second=thunk[1];
+    if((first>>26)!=15 || ((first>>16)&31)!=0) return 0; // lis rN (addis rN,0)
+    if(((second>>21)&31)!=reg || ((second>>16)&31)!=reg) return 0;
+    if(thunk[2]!=(0x7C0903A6|(reg<<21)) || thunk[3]!=Bctr) return 0; // mtctr rN; bctr
+    DWORD high=(first&0xFFFF)<<16,low=second&0xFFFF;
+    if((second>>26)==24) return high|low; // ori
+    if((second>>26)==14) return high+DWORD(int(short(low))); // addi
+    return 0;
+}
+
 // The game's import of XSwapDisc: the thunk after the import record that xam
 // resolved to the export, in the import libraries of the module named
-// default.xex, if it is SwapTitle. NULL if there is none (yet).
-static DWORD* SwapThunk(HANDLE& module) {
+// default.xex, if it is SwapTitle. NULL if there is none (yet); what was
+// found is in seen, for the log.
+enum SwapLook { NoGame, NoExport, NoHeader, OtherTitle, NoImports, NoImport, BadThunk, Found };
+static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
     HANDLE xam=NULL; void* target=NULL;
+    detail=0;
+    seen=NoGame;
     if(XexGetModuleHandle("default.xex",&module)<0 || !module) return NULL;
+    seen=NoExport;
     if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,SwapDiscOrdinal,&target)<0 || !target) return NULL;
     // The module handle is its loader entry; the XEX header is at 0x58 (read from Nova.xex).
+    seen=NoHeader;
     const BYTE* const* headerAt=(const BYTE* const*)((const BYTE*)module+0x58);
     if(!MmIsAddressValid((void*)headerAt) || !MmIsAddressValid((void*)*headerAt)) return NULL;
     const BYTE* header=*headerAt;
     const DWORD headerSize=0x10000;
     const BYTE* info=XexField(header,headerSize,0x40006);
-    if(!info || !MmIsAddressValid((void*)info) || ((const DWORD*)info)[3]!=SwapTitle) return NULL;
+    if(!info || !MmIsAddressValid((void*)info)) return NULL;
+    detail=((const DWORD*)info)[3];
+    seen=OtherTitle;
+    if(detail!=SwapTitle) return NULL;
+    seen=NoImports;
     const BYTE* imports=XexField(header,headerSize,0x103FF);
     if(!imports || !MmIsAddressValid((void*)imports)) return NULL;
     const DWORD* top=(const DWORD*)imports; // size, string table size, library count
     const BYTE* library=imports+12+top[1];
+    seen=NoImport;
+    detail=top[2];
     for(DWORD l=0;l<top[2] && l<32;++l) {
         if(!MmIsAddressValid((void*)library)) return NULL;
         // size, digest[20], id, version, minimum version, name index (16 bits), record count (16 bits), records
@@ -964,19 +1043,15 @@ static DWORD* SwapThunk(HANDLE& module) {
             const DWORD* slot=(const DWORD*)record[r];
             if(!MmIsAddressValid((void*)slot) || *slot!=DWORD(target)) continue;
             DWORD* thunk=(DWORD*)record[r+1];
-            if(!MmIsAddressValid(thunk) || (thunk[0]>>16)!=0x3D60 || thunk[2]!=0x7D6903A6 || thunk[3]!=Bctr) return NULL;
+            seen=BadThunk; detail=DWORD(thunk);
+            if(!MmIsAddressValid(thunk) || !MmIsAddressValid(thunk+3) || !JumpTarget(thunk)) return NULL;
+            seen=Found;
             return thunk;
         }
         if(size<40) return NULL;
         library+=size;
     }
     return NULL;
-}
-static DWORD JumpTarget(const DWORD* thunk) {
-    DWORD high=(thunk[0]&0xFFFF)<<16,low=thunk[1]&0xFFFF;
-    if((thunk[1]>>16)==0x616B) return high|low; // ori r11,r11,low
-    if((thunk[1]>>16)==0x396B) return high+DWORD(int(short(low))); // addi r11,r11,low
-    return 0;
 }
 
 static struct { DWORD disc; void* event; } SwapRequest;
@@ -1007,7 +1082,7 @@ static DWORD WINAPI SwapThread(void*) {
             if(!in) SwapNote("Disc %lu didn't show up in the drive.",disc);
         }
     }
-    if(in) KeSetEvent(event,1,FALSE);
+    if(in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %lu is in.",disc); }
     else Show("NetISO couldn't put the disc in. Press Guide to go back to Aurora.");
     InterlockedExchange(&SwapBusy,0);
     return 0;
@@ -1023,36 +1098,63 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
         if(ExCreateThread(&thread,0x10000,&id,NULL,SwapThread,NULL,0)>=0) { CloseHandle(thread); return 0; }
         InterlockedExchange(&SwapBusy,0);
         SwapNote("No thread for the swap; handing it on.");
-    }
+    } else SwapNote("The game asks for disc %lu (%08X, %p, %p); not a disc of this tile's, handing it on.",number,disc,event,extra);
     return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
 }
 
 // Finds the tile's discs, then keeps the game's import pointed at
 // SwapDiscHooked while a game of that Title ID runs, also after Nova changes
-// it on a restart. A newer tile's start ends it.
+// it on a restart. A newer tile's start ends it. Each change in what it
+// finds is logged.
 static DWORD WINAPI SwapWatch(void* parameter) {
     LONG generation=(LONG)(LONG_PTR)parameter;
     int discs=FindDiscs();
     if(discs<2) { SwapNote("Disc swaps: %d disc(s) of this game here, nothing to swap.",discs); return 0; }
-    DWORD seen=GetTickCount();
+    SwapNote("Disc swaps: watching for the game.");
+    DWORD seenAt=GetTickCount();
+    SwapLook last=Found; DWORD lastDetail=1;
     while(SwapGeneration==generation) {
-        HANDLE module=NULL;
-        DWORD* thunk=SwapThunk(module);
+        HANDLE module=NULL; SwapLook seen; DWORD detail;
+        DWORD* thunk=SwapThunk(module,seen,detail);
+        if(seen!=last || detail!=lastDetail) {
+            switch(seen) {
+            case NoGame: SwapNote("Disc swaps: no default.xex running."); break;
+            case NoExport: SwapNote("Disc swaps: xam has no export %lu.",SwapDiscOrdinal); break;
+            case NoHeader: SwapNote("Disc swaps: default.xex (%p) has no XEX header in memory.",module); break;
+            case OtherTitle: SwapNote("Disc swaps: default.xex (%p) is Title ID %08X.",module,detail); break;
+            case NoImports: SwapNote("Disc swaps: default.xex (%p) has no import libraries.",module); break;
+            case NoImport: SwapNote("Disc swaps: default.xex (%p), %lu import libraries, doesn't import XSwapDisc.",module,detail); break;
+            case BadThunk: {
+                const DWORD* at=(const DWORD*)detail;
+                if(MmIsAddressValid((void*)at) && MmIsAddressValid((void*)(at+3)))
+                    SwapNote("Disc swaps: the game's XSwapDisc import at %p reads %08X %08X %08X %08X, not a jump.",at,at[0],at[1],at[2],at[3]);
+                else SwapNote("Disc swaps: the game's XSwapDisc import at %p can't be read.",at);
+                break;
+            }
+            case Found: break;
+            }
+            last=seen; lastDetail=detail;
+        }
         if(thunk) {
-            seen=GetTickCount();
+            seenAt=GetTickCount();
             DWORD to=JumpTarget(thunk);
             if(to!=DWORD(SwapDiscHooked)) {
                 HANDLE xam=NULL; void* target=NULL;
                 XexGetModuleHandle("xam.xex",&xam); XexGetProcedureAddress(xam,SwapDiscOrdinal,&target);
-                memcpy((void*)SwapPreviousStub,thunk,4*4);
+                WriteJump((DWORD*)SwapPreviousStub,to);
                 FlushCode((void*)SwapPreviousStub,4*4);
                 SwapModule=module;
                 WriteJump(thunk,DWORD(SwapDiscHooked));
                 FlushCode(thunk,4*4);
-                SwapNote("The game's disc swaps come here now; they went to %s.",to==DWORD(target) ? "xam" : "another plugin (Nova's, from Aurora)");
+                SwapNote("The game's disc swaps (import at %p, module %p) come here now; they went to %08X, %s.",
+                         thunk,module,to,to==DWORD(target) ? "xam" : "another plugin (Nova's, from Aurora)");
+                Show("NetISO: disc swaps ready for this game");
             }
-        } else if(GetTickCount()-seen>SwapIdleMs) {
-            SwapNote("No game with this Title ID and a disc swap import for %lu s; not watching any more.",SwapIdleMs/1000);
+        } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
+            SwapNote("Disc swaps: no game of this Title ID for %lu s; not watching any more.",SwapIdleMs/1000);
+            break;
+        } else if(GetTickCount()-seenAt>SwapIdleMs*5) {
+            SwapNote("Disc swaps: still no XSwapDisc import to take after %lu s; not watching any more.",SwapIdleMs*5/1000);
             break;
         }
         Sleep(thunk ? 1000 : 250);
@@ -1068,14 +1170,18 @@ static bool DiscStart(const char* path,const char* mountPath) {
     return mountPath && !_stricmp(mountPath,DiscDevice) && !_stricmp(path,GameXex);
 }
 static void ArmSwap() {
-    if(!LastTile.folder[0] || GetTickCount()-LastTile.at>10*60*1000) return;
+    if(!TileFresh()) return;
     LONG generation=InterlockedIncrement(&SwapGeneration);
     strcpy_s(SwapFolder,LastTile.folder); SwapTitle=LastTile.titleId; SwapModule=NULL;
-    sprintf_s(SwapLog,"%s\\%s",SwapFolder,LogName);
     HANDLE thread=NULL; DWORD id=0;
     LONG status=ExCreateThread(&thread,0x10000,&id,NULL,SwapWatch,(void*)(LONG_PTR)generation,SystemThread);
     if(status<0) SwapNote("Disc swaps: no system thread (status %08X).",status);
-    else CloseHandle(thread);
+    else { SwapNote("Disc swaps: the disc started; watching from system thread %08X.",id); CloseHandle(thread); }
+}
+// Each launch after a tile's, in that tile's log.
+static void NoteLaunch(const char* path,const char* mountPath,const char* what) {
+    if(!TileFresh()) return;
+    SwapNote("Launch %s%s%s: %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",what);
 }
 
 // ---- Tiles ----
@@ -1159,6 +1265,7 @@ static Handling Handled(const char* path,const char* mountPath) {
     Handling handling=NotTile;
     if(IsTile(path,mountPath,settings)) {
         strcpy_s(LastTile.folder,TileDevice); LastTile.titleId=settings.titleId; LastTile.at=GetTickCount();
+        SwapLogTo(LastTile.folder);
         // The tile's own launcher starts it (see the top of this file);
         // tiles=aurora in netiso.ini mounts from inside Aurora instead.
         char value[16];
@@ -1175,10 +1282,13 @@ static Handling Handled(const char* path,const char* mountPath) {
 }
 // What xam's launch calls get back for a tile that was cancelled.
 static const DWORD CancelledLaunch=ERROR_NOT_READY;
+static const char* LaunchKind(Handling handling,bool disc) { return handling!=NotTile ? "a tile" : disc ? "the disc" : "not a tile"; }
 static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     Handling handling=Handled(path,NULL);
     if(handling==TileCancelled) return CancelledLaunch;
-    if(handling==NotTile && DiscStart(path,NULL)) ArmSwap();
+    bool disc=handling==NotTile && DiscStart(path,NULL);
+    NoteLaunch(path,NULL,LaunchKind(handling,disc));
+    if(disc) ArmSwap();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -1186,7 +1296,9 @@ static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
 static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const char* commandLine,DWORD flags) {
     Handling handling=Handled(path,mountPath);
     if(handling==TileCancelled) return CancelledLaunch;
-    if(handling==NotTile && DiscStart(path,mountPath)) ArmSwap();
+    bool disc=handling==NotTile && DiscStart(path,mountPath);
+    NoteLaunch(path,mountPath,LaunchKind(handling,disc));
+    if(disc) ArmSwap();
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;
