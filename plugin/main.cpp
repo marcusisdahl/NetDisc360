@@ -629,10 +629,10 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
     bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
-    if(!found) { Tell("NetISO: the server doesn't list this game. Is it running?"); return Fallback; }
+    if(!found) { Tell("NetDisc 360: the server doesn't list this game. Is it running?"); return Fallback; }
     if(stop==StepIso) return Cancelled;
     LONG skipped=UnloadsSkipped;
-    if(!ListMountFolder(folder,hold)) { Tell("NetISO couldn't mount this game."); return Fallback; }
+    if(!ListMountFolder(folder,hold)) { Tell("NetDisc 360 couldn't mount this game."); return Fallback; }
     Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
     if(relist) {
         Note("Listing the ISO's folder and the root again (relist).");
@@ -648,7 +648,7 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
-    Tell("NetISO: the game didn't show up in the drive.");
+    Tell("NetDisc 360: the game didn't show up in the drive.");
     return Fallback;
 }
 
@@ -682,7 +682,7 @@ static Outcome MountOnSystemThread(const Settings& settings,int stop) {
         // It still uses Job and keeps its lines to itself.
         ThreadOverran=true;
         Note("The system thread didn't finish in %lu ms.",MountThreadMs);
-        Tell("NetISO: the mount didn't finish.");
+        Tell("NetDisc 360: the mount didn't finish.");
         return Cancelled;
     }
     WriteDeferred();
@@ -695,7 +695,7 @@ static Outcome Mount(const Settings& settings) {
     char where[16]="";
     if(CheckServer(where,sizeof(where))==ServerDown) {
         static char text[96];
-        sprintf_s(text,"NetISO server %s isn't answering. Try again in a minute.",where);
+        sprintf_s(text,"NetDisc 360 server %s isn't answering. Try again in a minute.",where);
         Tell(text);
         return Cancelled;
     }
@@ -1156,7 +1156,7 @@ static DWORD WINAPI SwapThread(void*) {
     bool in=DiscNumber()==disc;
     if(in) SwapNote("Disc %u is already in the drive.",disc);
     else {
-        static char text[64]; sprintf_s(text,"NetISO: putting in disc %lu",disc); Show(text);
+        static char text[64]; sprintf_s(text,"NetDisc 360: putting in disc %lu",disc); Show(text);
         Settings settings; memset(&settings,0,sizeof(settings));
         strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
         char folder[MAX_PATH],isoFolder[MAX_PATH];
@@ -1171,7 +1171,7 @@ static DWORD WINAPI SwapThread(void*) {
             if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
         }
     }
-    if(!in) { static char text[64]; sprintf_s(text,"NetISO couldn't put in disc %lu",disc); Show(text); }
+    if(!in) { static char text[64]; sprintf_s(text,"NetDisc 360 couldn't put in disc %lu",disc); Show(text); }
     InterlockedExchange(&SwapRequest.in,in ? 1 : 0);
     // The game's call stopped waiting: the event is set from here.
     if(!InterlockedExchange(&SwapRequest.waiting,0) && in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %u is in.",disc); }
@@ -1189,7 +1189,7 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     // never goes there.
     if(number<1 || number>DWORD(MaxDiscs) || !SwapIsos[number][0] || !event || !extra) {
         SwapNote("The game asks for disc %u (%X, %X, %X), which this tile has no folder for; told it there's no swap.",number,disc,DWORD(event),DWORD(extra));
-        Show("NetISO: this game asks for a disc it has no tile for");
+        Show("NetDisc 360: this game asks for a disc it has no tile for");
         return SwapRefused;
     }
     if(InterlockedCompareExchange(&SwapBusy,1,0)) { SwapNote("The game asks for disc %u during a swap; told it there's no swap.",number); return SwapRefused; }
@@ -1249,7 +1249,7 @@ static DWORD WINAPI SwapWatch(void*) {
                 if(MmIsAddressValid((void*)at) && MmIsAddressValid((void*)(at+3)))
                     SwapNote("Disc swaps: the game's XSwapDisc import at %X reads %X %X %X %X, not a jump.",detail,at[0],at[1],at[2],at[3]);
                 else SwapNote("Disc swaps: the game's XSwapDisc import at %X can't be read.",detail);
-                Show("NetISO can't take this game's disc swaps.");
+                Show("NetDisc 360 can't take this game's disc swaps.");
                 break;
             }
             case Found: break;
@@ -1267,7 +1267,7 @@ static DWORD WINAPI SwapWatch(void*) {
                 FlushCode(thunk,4*4);
                 SwapNote("Disc swaps: the game's (import at %X, module %X) come here now; they went to %X, %s.",
                          DWORD(thunk),DWORD(module),to,to==DWORD(SwapDiscExport) ? "xam" : "another plugin (Nova's, from Aurora)");
-                Show("NetISO: disc swaps ready for this game");
+                Show("NetDisc 360: disc swaps ready for this game");
             }
         } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
             SwapNote("Disc swaps: no game of this Title ID for %u s; not watching any more.",SwapIdleMs/1000);
@@ -1318,7 +1318,7 @@ static void ArmSwap() {
     InterlockedIncrement(&SwapGeneration);
     InterlockedExchange(&SwapArmed,1);
     SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
-    static char text[64]; sprintf_s(text,"NetISO: disc swaps on for this game (%d discs)",discs); Show(text);
+    static char text[64]; sprintf_s(text,"NetDisc 360: disc swaps on for this game (%d discs)",discs); Show(text);
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {
