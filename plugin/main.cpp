@@ -759,14 +759,17 @@ static void PatchReadLimit() {
 // not measured. The server can't have more than that in flight, which would
 // hold a read near 16 KB per round trip, however big the request. rcv_kb=
 // asks XNet for a bigger buffer on each connection NetISO makes from then on:
-// 16, 32, 64, 128 or 256; left out, NetISO's socket stays as it was.
+// 16, 32, 64, 128 or 256, 64 when left out; 0 leaves NetISO's socket as it
+// was. A GTA V install through a USB adapter with 256 KB reads went from
+// 18 MB/s to 27 MB/s with 64 KB (seen on the console).
 static DWORD* const SocketOptionCall=(DWORD*)0x91103030;
 static const DWORD SocketOptionCode=0x4800905D; // bl 0x9110c08c, NetISO's import of NetDll_setsockopt
 static const DWORD* const SocketOptionThunk=(const DWORD*)0x9110c08c;
 typedef int (*SetSocketOption)(DWORD caller,SOCKET s,int level,int name,const char* value,int length);
 static int ReceiveBytes=0;
 static volatile LONG ReceiveSets=0,ReceiveRefusals=0;
-static char ReceiveNote[160]="XNet's default (no rcv_kb)";
+static const int DefaultReceiveKb=64;
+static char ReceiveNote[160]="XNet's default";
 static int SetSocketOptionHooked(DWORD caller,SOCKET s,int level,int name,const char* value,int length) {
     SetSocketOption set=(SetSocketOption)SocketOptionThunk;
     int result=set(caller,s,level,name,value,length);
@@ -779,8 +782,9 @@ static int SetSocketOptionHooked(DWORD caller,SOCKET s,int level,int name,const 
 static void PatchReceiveBuffer() {
     char value[16];
     const char* from=TuningValue("rcv_kb",value,sizeof(value));
-    if(!from || !value[0]) return;
-    int kb=atoi(value);
+    int kb=DefaultReceiveKb;
+    if(from && value[0]) kb=atoi(value); else from="default";
+    if(kb==0) { sprintf_s(ReceiveNote,"XNet's default (rcv_kb=0 in %s)",from); return; }
     if(kb!=16 && kb!=32 && kb!=64 && kb!=128 && kb!=256) {
         sprintf_s(ReceiveNote,"XNet's default; rcv_kb=%d in %s isn't 16, 32, 64, 128 or 256",kb,from);
         return;
