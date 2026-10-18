@@ -761,7 +761,8 @@ class Dashboard(ServerTest):
         with open(os.path.join(folder, "default.xex"), "wb") as f:
             f.write(xex(execution_info(0x1234, 0x4D5307E6)))
         self.start()
-        state = self.state_when(lambda s: s["library"]["conflicts"] == 1)
+        # The games list comes a moment after the conflict is found.
+        state = self.state_when(lambda s: s["library"]["games"] == 1 and s["library"]["conflicts"] == 1)
         self.assertEqual([state["library"][k] for k in ("games", "duplicates", "conflicts")], [1, 1, 1])
         self.assertIn("Halo 3 is in your folders more than once. Choose which copy to play on the Games page.",
                       [e["text"] for e in state["events"]])

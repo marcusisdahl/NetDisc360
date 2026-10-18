@@ -1151,7 +1151,10 @@ void WatchLoop() {
                 failed=failed || !s.everPushed;
             }
             // --push-once (the tests): ends when every console given is done.
-            if(o.pushOnce && !states.empty() && finished) exit(failed ? 1 : 0);
+            // _Exit, as exit's destructors would pull the settings and lists
+            // from under the threads that still run (AuroraLoop crashed in
+            // Current() on CI).
+            if(o.pushOnce && !states.empty() && finished) { fflush(NULL); _Exit(failed ? 1 : 0); }
         }
         Sleep(1000);
     }
