@@ -18,11 +18,7 @@ jobs:
       - name: The dashboard page is built into the server
         run: python3 tools/make_web.py --check
       - name: Server, discs, Sync and generator tests
-        run: |
-          python3 tests/test_server.py
-          python3 tests/test_discs.py
-          python3 tests/test_sync.py
-          python3 tests/test_generator.py
+        run: python3 tests/run_ci.py
 
   docker:
     runs-on: ubuntu-latest
