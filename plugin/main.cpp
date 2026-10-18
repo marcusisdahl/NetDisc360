@@ -1149,44 +1149,54 @@ static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
 
 // What GTA V's call of XSwapDisc expects (read from its install disc): 0 and
 // its event set once the disc is in, or ERROR_INVALID_PARAMETER for "no
-// swap", which it handles itself; any other value traps. Nova's handler sets
-// the event before it returns, so this one does too: the game's thread waits
-// here while a thread of ours mounts the disc. If that takes longer than
-// SwapWaitMs, the game gets 0 and the thread sets the event once the disc is
-// in.
-static const DWORD SwapRefused=ERROR_INVALID_PARAMETER,SwapWaitMs=QuietMs+MountWaitMs+5000;
-static struct { DWORD disc; void* event; volatile LONG waiting,in; } SwapRequest;
+// swap", which it handles itself; any other value traps.
+//
+// NetISO's mount opens and closes the tray, as changing the disc by hand
+// does, and a tray opened under a running title sends the console to the
+// dashboard (swap9: the game asked for disc 2, the mount went out, and 0.1 s
+// later the console started Aurora). So the swap goes through xam's own
+// XSwapDisc, which lets the title through a disc change: it shows "insert
+// disc 2", the mount opens and closes the tray with disc 2 in, and xam sets
+// the game's event when it sees the disc the game asked for. If xam hasn't
+// after SwapSignalMs with the disc in, the plugin sets it.
+static const DWORD SwapRefused=ERROR_INVALID_PARAMETER,SwapSignalMs=15000;
+static struct { DWORD disc; void* event; } SwapRequest;
+static volatile DWORD SwapStartedAt=0; // See SwapRestart.
 static DWORD DiscNumber() {
     DWORD titleId=0,mediaId=0; int disc=0;
     return DiscIds(titleId,mediaId,&disc) && titleId==SwapTitle ? DWORD(disc) : 0;
 }
+// Whether an event is set: its dispatcher header's signal state.
+static bool EventSet(void* event) { return ((volatile LONG*)event)[1]!=0; }
+static bool GameRuns(void* event) { return SwapModule && TitleModule()==SwapModule && MmIsAddressValid(event); }
 // Puts the disc the game asked for in the drive, on a thread of the game's,
 // so NetISO's unload call is skipped (see UnloadHooked).
 static DWORD WINAPI SwapThread(void*) {
     DWORD disc=SwapRequest.disc; void* event=SwapRequest.event;
-    SwapNote("The game asks for disc %u, %s.",disc,SwapIsos[disc]);
-    bool in=DiscNumber()==disc;
-    if(in) SwapNote("Disc %u is already in the drive.",disc);
+    static char text[64]; sprintf_s(text,"NetDisc 360: putting in disc %lu",disc); Show(text);
+    Sleep(PollMs); // xam's swap is under way before the tray moves.
+    bool in=false;
+    Settings settings; memset(&settings,0,sizeof(settings));
+    strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
+    char folder[MAX_PATH],isoFolder[MAX_PATH];
+    if(!FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
+    else if(!ListMountFolder(folder,false)) SwapNote("Can't open %s.",folder);
     else {
-        static char text[64]; sprintf_s(text,"NetDisc 360: putting in disc %lu",disc); Show(text);
-        Settings settings; memset(&settings,0,sizeof(settings));
-        strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
-        char folder[MAX_PATH],isoFolder[MAX_PATH];
-        if(!FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
-        else if(!ListMountFolder(folder,false)) SwapNote("Can't open %s.",folder);
-        else {
-            Sleep(QuietMs);
-            for(int waited=QuietMs;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
-                in=DiscNumber()==disc;
-                if(in) SwapNote("Disc %u is in the drive %u ms after the mount.",disc,DWORD(waited)); else Sleep(PollMs);
-            }
-            if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
+        for(int waited=0;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
+            in=DiscNumber()==disc;
+            if(in) SwapNote("Disc %u is in the drive %u ms after the mount.",disc,DWORD(waited)); else Sleep(PollMs);
         }
+        if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
     }
-    if(!in) { static char text[64]; sprintf_s(text,"NetDisc 360 couldn't put in disc %lu",disc); Show(text); }
-    InterlockedExchange(&SwapRequest.in,in ? 1 : 0);
-    // The game's call stopped waiting: the event is set from here.
-    if(!InterlockedExchange(&SwapRequest.waiting,0) && in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %u is in.",disc); }
+    if(!in) { sprintf_s(text,"NetDisc 360 couldn't put in disc %lu",disc); Show(text); }
+    else {
+        // The event lives in the game; if the game has ended, it's gone.
+        DWORD waited=0;
+        for(;GameRuns(event) && !EventSet(event) && waited<SwapSignalMs;waited+=PollMs) Sleep(PollMs);
+        if(!GameRuns(event)) SwapNote("The game ended during the swap.");
+        else if(EventSet(event)) SwapNote("xam told the game disc %u is in, %u ms after it was.",disc,waited);
+        else { KeSetEvent(event,1,FALSE); SwapNote("xam didn't tell the game in %u s; told it disc %u is in.",SwapSignalMs/1000,disc); }
+    }
     InterlockedExchange(&SwapBusy,0);
     return 0;
 }
@@ -1205,25 +1215,23 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
         return SwapRefused;
     }
     if(InterlockedCompareExchange(&SwapBusy,1,0)) { SwapNote("The game asks for disc %u during a swap; told it there's no swap.",number); return SwapRefused; }
+    SwapNote("The game asks for disc %u, %s.",number,SwapIsos[number]);
+    DWORD result=((SwapDisc)SwapDiscExport)(disc,event,extra);
+    if(result) {
+        InterlockedExchange(&SwapBusy,0);
+        SwapNote("xam's disc swap answered %X; told the game there's no swap.",result);
+        return SwapRefused;
+    }
     SwapRequest.disc=number; SwapRequest.event=event;
-    InterlockedExchange(&SwapRequest.in,0); InterlockedExchange(&SwapRequest.waiting,1);
+    SwapStartedAt=GetTickCount();
     // CreateThread, for a title thread with the CRT's thread data.
     DWORD id=0;
     HANDLE thread=CreateThread(NULL,0x10000,SwapThread,NULL,0,&id);
-    if(!thread) {
+    if(thread) CloseHandle(thread);
+    else {
         InterlockedExchange(&SwapBusy,0);
-        SwapNote("No thread for the swap; told the game there's no swap.");
-        return SwapRefused;
+        SwapNote("No thread to put disc %u in; xam's \"insert disc\" stays up.",number);
     }
-    DWORD waited=WaitForSingleObject(thread,SwapWaitMs);
-    CloseHandle(thread);
-    if(waited!=WAIT_OBJECT_0 && InterlockedExchange(&SwapRequest.waiting,0)) {
-        SwapNote("Disc %u isn't in after %u s; the game waits for it.",number,SwapWaitMs/1000);
-        return 0;
-    }
-    if(!SwapRequest.in) { SwapNote("Told the game there's no swap to disc %u.",number); return SwapRefused; }
-    KeSetEvent(event,1,FALSE);
-    SwapNote("Told the game disc %u is in.",number);
     return 0;
 }
 
@@ -1438,7 +1446,26 @@ static Handling Handled(const char* path,const char* mountPath) {
 // What xam's launch calls get back for a tile that was cancelled.
 static const DWORD CancelledLaunch=ERROR_NOT_READY;
 static const char* LaunchKind(Handling handling,bool disc) { return handling!=NotTile ? "a tile" : disc ? "the disc" : "not a tile"; }
+// A disc change under a running game can end it the way opening the tray
+// does: xam starts the dashboard, an empty path (flags 2000 on swap9, 0.1 s
+// after the mount). Shortly after a swap of a tile's game, that start
+// becomes the disc's, so the console boots the disc just put in instead of
+// going back to Aurora.
+static const DWORD SwapRestartMs=30000;
+static bool SwapRestart(const char* path,DWORD flags) {
+    if((path && path[0]) || !SwapStartedAt || GetTickCount()-SwapStartedAt>=SwapRestartMs || !TileFresh()) return false;
+    SwapStartedAt=0;
+    SwapNote("Launch %s (flags %X) during a disc swap: starting %s instead.",path ? "\"\"" : "(no path)",flags,AuroraDiscXex);
+    return true;
+}
+static DWORD StartSwappedDisc() {
+    Skip(true);
+    DWORD result=((LaunchTitle)LaunchTitleHook.stub)(AuroraDiscXex,0);
+    Skip(false);
+    return result;
+}
 static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
+    if(SwapRestart(path,flags)) return StartSwappedDisc();
     Handling handling=Handled(path,NULL);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,NULL);
@@ -1449,6 +1476,7 @@ static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     return result;
 }
 static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const char* commandLine,DWORD flags) {
+    if(SwapRestart(path,flags)) return StartSwappedDisc();
     Handling handling=Handled(path,mountPath);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,mountPath);
