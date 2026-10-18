@@ -1088,6 +1088,18 @@ static HANDLE TitleModule() {
 // resolved to the export, in the import libraries of the running title, if
 // it is SwapTitle. NULL if there is none (yet); what was found is in seen,
 // for the log.
+// Nova puts its own XSwapDisc in both the import's slot and its thunk, so
+// once it has, the slot no longer holds xam's export. Its function is known
+// by how it starts (read from the NetISO kit's Nova.xex): mflr r12; bl
+// __savegprlr; stwu r1,-0x90(r1); mr r31,r3; mr r30,r4; mr r29,r5.
+static bool NovaSwapDisc(DWORD address) {
+    static const DWORD start[6]={0x7D8802A6,0,0x9421FF70,0x7C7F1B78,0x7C9E2378,0x7CBD2B78};
+    const DWORD* code=(const DWORD*)address;
+    if(address<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+5))) return false;
+    if((code[1]>>26)!=18 || (code[1]&3)!=1) return false; // bl
+    for(int i=0;i<6;++i) if(i!=1 && code[i]!=start[i]) return false;
+    return true;
+}
 enum SwapLook { NoGame, NoExport, NoHeader, OtherTitle, NoImports, NoImport, BadThunk, Found };
 static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
     void* target=SwapDiscExport;
@@ -1122,7 +1134,7 @@ static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
         const DWORD* record=(const DWORD*)(library+40);
         for(DWORD r=0;r+1<records;++r) {
             const DWORD* slot=(const DWORD*)record[r];
-            if(!MmIsAddressValid((void*)slot) || *slot!=DWORD(target)) continue;
+            if(!MmIsAddressValid((void*)slot) || (*slot!=DWORD(target) && !NovaSwapDisc(*slot))) continue;
             DWORD* thunk=(DWORD*)record[r+1];
             seen=BadThunk; detail=DWORD(thunk);
             if(!MmIsAddressValid(thunk) || !MmIsAddressValid(thunk+3) || !JumpTarget(thunk)) return NULL;
