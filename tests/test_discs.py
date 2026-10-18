@@ -18,6 +18,7 @@ from test_server import ROOT, SERVER, Client, ServerTest, free_port  # noqa: E40
 SECTOR = 2048
 MAGIC = b"MICROSOFT*XBOX*MEDIA"
 XGD2, XGD3 = 0xFD90000, 0x2080000
+XGD2_IMAGE, XGD3_IMAGE = 7838695424, 8738846720  # Whole retail images.
 
 
 def upper_key(name):
@@ -270,8 +271,10 @@ class Discs(ServerTest):
                 self.assertEqual(gdf.read_file(sector, size), data, path)
             self.assertEqual(gdf.lookup(path)[:2], (sector, size), path)
         self.assertEqual(found["empty"][:2], (0, 0))
-        # The end of the last file is the end of the disc.
-        self.assertGreaterEqual(sectors * 2048, XGD2 + max(s * 2048 + n for s, n, _ in found.values()))
+        # As big as a whole XGD2 image, with zeros after the files.
+        self.assertEqual(sectors * 2048, XGD2_IMAGE)
+        end = XGD2 + max((s * 2048 + n + 2047) // 2048 * 2048 for s, n, _ in found.values())
+        self.assertEqual(c.read(end, 4096), bytes(4096))
 
         self.assertEqual(c.mount("Halo Reach - Disc 2.iso"), 1)
         gdf = Gdf(c)
@@ -323,8 +326,7 @@ class Discs(ServerTest):
         # Everything before the partition reads as zeros.
         self.assertEqual(c.read(XGD2 - 4096, 4096), bytes(4096))
         sectors, _ = c.size()
-        end = max(at + len(d) for at, d in chunks.items())
-        self.assertEqual(sectors * 2048, XGD2 + (end + 0xFFF) // 0x1000 * 0x1000)
+        self.assertEqual(sectors * 2048, XGD2_IMAGE)
         c.close()
 
     def test_microsoft_layout_and_names_from_the_package(self):
@@ -417,6 +419,43 @@ class Discs(ServerTest):
         self.assertEqual(c.mount("Game 3.iso"), 1)
         self.assertEqual(Gdf(c).start, XGD2)  # The folder.
         c.close()
+
+    def test_a_folder_too_big_for_xgd2_and_its_last_sector(self):
+        # Like GTA V's install disc: XGD3, and the files end on an odd sector.
+        game = self.make_game("Big", 0x545408A7)
+        for name in ("a.bin", "b.bin"):
+            with open(os.path.join(game, name), "wb") as f:
+                f.truncate(0xF0000000)
+        with open(os.path.join(game, "z.bin"), "wb") as f:
+            f.write(b"end" * 1000)  # One sector and a half: the last file.
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.mount("Big.iso"), 1)
+        gdf = Gdf(c)
+        self.assertEqual(gdf.start, XGD3)
+        self.assertEqual(c.size()[0] * 2048, XGD3_IMAGE)
+        sector, size, _ = gdf.walk()["z.bin"]
+        self.assertEqual(gdf.read_file(sector, size), b"end" * 1000)
+        last = XGD3 + (sector + 1) * 2048  # The file's second and last sector.
+        self.assertEqual(c.read(last, 4096), (b"end" * 1000)[2048:] + bytes(4096 - 952))
+        c.close()
+
+    def test_a_read_past_the_end_of_an_iso(self):
+        iso = self.add_iso("Odd.iso", 1, 0x11111111)
+        with open(iso, "r+b") as f:  # An odd number of sectors, ending in a known one.
+            sectors = (os.path.getsize(iso) + 2047) // 2048 | 1
+            f.truncate(sectors * 2048)
+            f.seek((sectors - 1) * 2048)
+            f.write(b"L" * 2048)
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.mount("Odd.iso"), 1)
+        self.assertEqual(c.size()[0], sectors)
+        self.assertEqual(c.read((sectors - 1) * 2048, 4096), b"L" * 2048 + bytes(2048))
+        self.assertEqual(c.read(sectors * 2048 + 8192, 4096), bytes(4096))
+        self.assertEqual(c.ping(), b"ISVRokOK")  # Still connected.
+        c.close()
+        self.assertEqual(self.log().count("sending zeros past its end"), 1)
 
     def test_a_file_too_big_for_a_disc(self):
         game = self.make_game("Huge", 0x44444444)

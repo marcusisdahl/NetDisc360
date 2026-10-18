@@ -20,7 +20,8 @@ const size_t MagicSize = 20;
 // the retail ISOs the plugin already plays. Before it is only zeros here: the
 // video partition and the security sectors aren't in a folder or GOD package.
 const U64 Xgd2Partition = 0xFD90000, Xgd3Partition = 0x2080000;
-const U64 Xgd2PartitionMax = 7838695424ULL - Xgd2Partition;  // An XGD2 image is 7,838,695,424 bytes.
+const U64 Xgd2Image = 7838695424ULL, Xgd3Image = 8738846720ULL;  // Whole retail images.
+const U64 Xgd2PartitionMax = Xgd2Image - Xgd2Partition;
 U64 PartitionStart(U64 partitionBytes) { return partitionBytes<=Xgd2PartitionMax ? Xgd2Partition : Xgd3Partition; }
 
 #ifdef _WIN32
@@ -38,6 +39,14 @@ std::string Parent(const std::string& path) {
     return at==std::string::npos ? std::string() : path.substr(0,at);
 }
 U64 RoundUp(U64 value, U64 unit) { return (value+unit-1)/unit*unit; }
+// As big as a retail image of its layout, with zeros after the data as on a
+// disc. Ending right after the data, an extracted GTA V install disc had an
+// odd number of sectors, and the console's 4 KB read of its last sector ran
+// past the end (seen on the console).
+U64 ImageSize(U64 partition, U64 end) {
+    U64 whole=partition==Xgd2Partition ? Xgd2Image : Xgd3Image;
+    return end<=whole ? whole : RoundUp(end,0x10000);
+}
 DWORD Little32(const unsigned char* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
 void PutLittle16(unsigned char* p, DWORD v) { p[0]=BYTE(v); p[1]=BYTE(v>>8); }
 void PutLittle32(unsigned char* p, DWORD v) { p[0]=BYTE(v); p[1]=BYTE(v>>8); p[2]=BYTE(v>>16); p[3]=BYTE(v>>24); }
@@ -243,7 +252,7 @@ public:
         if(!found) { error="it holds no Xbox 360 disc"; return false; }
         U64 partition=PartitionStart(dataBytes_+0x10000-magicAt_);
         base_=partition+0x10000-magicAt_;
-        size_=RoundUp(base_+dataBytes_,Sector);
+        size_=ImageSize(partition,base_+dataBytes_);
         return true;
     }
     U64 Size() const { return size_; }
@@ -338,7 +347,7 @@ public:
         memcpy(volume+0x7EC,Magic,MagicSize);
         WriteTables(root);
         partition_=PartitionStart(U64(next)*Sector);
-        size_=partition_+U64(next)*Sector;
+        size_=ImageSize(partition_,partition_+U64(next)*Sector);
         char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"folder, %d file(s), read in %.1f s",int(paths_.size()),Seconds()-started);
         description_=text;
         return true;

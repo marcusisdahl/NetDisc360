@@ -247,12 +247,13 @@ class Protocol(ServerTest):
         self.assertEqual(c.names(), ["c.iso"])
         c.close()
 
-    def test_read_past_the_end_closes_the_connection(self):
-        path = self.add_iso("a.iso", 1, 0x11111111)
+    def test_a_read_over_16_mb_closes_the_connection(self):
+        # Past the end is zeros instead (test_discs.py).
+        self.add_iso("a.iso", 1, 0x11111111)
         self.start()
         c = Client(self.port)
         self.assertEqual(c.mount("a.iso"), 1)
-        c.request(3, offset=os.path.getsize(path) - 10, length=20)
+        c.request(3, offset=0, length=(16 << 20) + 1)
         self.assertEqual(c.conn.recv(10), b"")
         c.close()
         c = Client(self.port)  # The server carries on.

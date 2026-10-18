@@ -456,10 +456,11 @@ void RateLoop() {
 // One client connection, speaking the protocol as tuxuser/netiso-srv does
 // (src/main.rs), except that every request and reply is read and sent whole,
 // the ISO list is read again whenever a client starts listing (index 0), so
-// new ISOs show up without a restart, and an empty mount name mounts nothing.
+// new ISOs show up without a restart, an empty mount name mounts nothing, and
+// a read past the end gets zeros there instead of a closed connection.
 class Connection {
 public:
-    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(ConsoleAt(address)) {
+    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(ConsoleAt(address)), pastEnd_(false) {
         AddressText(address,peer_,sizeof(peer_));
         quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
         if(console_) ++console_->connections;
@@ -511,16 +512,21 @@ private:
             return SendAll(reply,8);
         }
         case HasType1File: return Send32(0);
-        case ReadData:
-            // Like netiso-srv: nothing mounted gets no reply, and a read
-            // outside the ISO ends the connection.
+        case ReadData: {
+            // Like netiso-srv, nothing mounted gets no reply. Bytes past the
+            // end are zeros: netiso-srv closes the connection, which takes the
+            // disc away from a game that read 4 KB at an ISO's last sector.
             if(!iso_.IsOpen()) return true;
-            if(length>MaxReadBytes || offset>iso_.Size() || length>iso_.Size()-offset) {
-                Log("%s asked for bytes %llu-%llu of a %llu-byte ISO; closing.",peer_,(unsigned long long)offset,(unsigned long long)(offset+length),(unsigned long long)iso_.Size());
-                return false;
-            }
+            if(length>MaxReadBytes) { Log("%s asked for %u bytes at once; closing.",peer_,length); return false; }
+            U64 size=iso_.Size();
+            DWORD inside=offset>=size ? 0 : DWORD(std::min<U64>(length,size-offset));
             buffer_.resize(length);
-            if(length && !iso_.Read(offset,buffer_.data(),length)) { Log("Reading %s failed; closing %s.",mounted_.c_str(),peer_); return false; }
+            if(inside && !iso_.Read(offset,buffer_.data(),inside)) { Log("Reading %s failed; closing %s.",mounted_.c_str(),peer_); return false; }
+            if(inside<length) {
+                memset(buffer_.data()+inside,0,length-inside);
+                if(!pastEnd_) Log("%s asked for bytes %llu-%llu of a %llu-byte disc; sending zeros past its end.",peer_,(unsigned long long)offset,(unsigned long long)(offset+length),(unsigned long long)size);
+                pastEnd_=true;
+            }
             if(!SendAll(buffer_.data(),length)) return false;
             if(console_) {
                 console_->sent+=length;
@@ -530,6 +536,7 @@ private:
                 }
             }
             return true;
+        }
         case GetIsoName: {
             if(length>MaxNameBytes) return false;
             if(!index || index>listing_.size()) listing_=Isos();
@@ -570,7 +577,7 @@ private:
             if(isos[i].name.size()>=name.size() && !_stricmp(isos[i].name.c_str()+isos[i].name.size()-name.size(),name.c_str())) found=&isos[i];
         if(!found) { Log("%s asked to mount \"%s\", which isn't here.",peer_,name.c_str()); return 0; }
         if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); Mounted(); return 0; }
-        mounted_=found->name;
+        mounted_=found->name; pastEnd_=false;
         Mounted();
         if(console_) { console_->inAurora=false; console_->probeAt=(long long)((Now()+FirstProbeSeconds)*1000); }
         if(!quiet_) {
@@ -596,6 +603,7 @@ private:
     IsoReader iso_;
     std::string mounted_;
     std::vector<unsigned char> buffer_;
+    bool pastEnd_;  // A read past the end of this mount was logged.
 };
 
 void Serve(SOCKET listener) {
