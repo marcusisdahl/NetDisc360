@@ -881,11 +881,12 @@ static void DevicePath(const char* path,char* out,size_t capacity) {
 // kernel's with append access only, and nothing came out on the console;
 // why isn't known.) Every line is also kept in SwapTrace, after a marker, so
 // the plugin's memory can be read for them (xbdm's getmem) if no file takes
-// them, with how the last write went.
+// them, with how the last write went. (Kept small: with .data past 128 KB
+// the image grows by a 64 KB page, up to hud.xex's base at 0x913E0000.)
 static const char SwapLink[]="\\??\\NIsoW:",SwapRoot[]="NIsoW:";
 static char SwapLogDevice[MAX_PATH];
 static struct {
-    char marker[32]; volatile DWORD win32Error; volatile LONG ntStatus; volatile LONG length; char text[16384];
+    char marker[32]; volatile DWORD win32Error; volatile LONG ntStatus; volatile LONG length; char text[8192];
 } SwapTrace={"NetIsoTiles disc swap trace",0,0,0,""};
 static volatile LONG SwapWriting=0;
 static void TraceAdd(const char* text,LONG length) {
@@ -958,7 +959,7 @@ static const BYTE* XexField(const BYTE* header,DWORD size,DWORD key) {
 
 // The discs of SwapTitle: the tile folders in the tile's own folder's
 // parent. Returns how many it found.
-static DWORD DiscHeader[4096];
+static DWORD DiscHeader[1024]; // 4 KB: the launchers' execution info is near the start.
 static int FindDiscs() {
     memset(SwapIsos,0,sizeof(SwapIsos));
     char parent[MAX_PATH]; strcpy_s(parent,SwapFolder);
