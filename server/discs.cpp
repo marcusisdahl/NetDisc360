@@ -679,14 +679,19 @@ void ReadTitles(std::vector<IsoFile>& discs) {
     }
 }
 
-void DropDuplicates(std::vector<IsoFile>& discs, std::vector<IsoFile>& dropped, std::vector<IsoFile>& kept) {
+void DropDuplicates(std::vector<IsoFile>& discs, std::vector<IsoFile>& dropped, std::vector<IsoFile>& kept,
+                    const std::set<std::string>& chosen) {
     dropped.clear(); kept.clear();
     std::vector<bool> drop(discs.size(),false);
     for(size_t i=0;i<discs.size();++i) {
         if(!discs[i].titleId || drop[i]) continue;
         size_t best=i;
-        for(size_t k=i+1;k<discs.size();++k)
-            if(discs[k].titleId==discs[i].titleId && discs[k].disc==discs[i].disc && Rank(discs[k].kind)<Rank(discs[best].kind)) best=k;
+        bool picked=chosen.count(discs[i].path)!=0;
+        for(size_t k=i+1;k<discs.size() && !picked;++k) {
+            if(discs[k].titleId!=discs[i].titleId || discs[k].disc!=discs[i].disc) continue;
+            if(chosen.count(discs[k].path)) { best=k; picked=true; }
+            else if(Rank(discs[k].kind)<Rank(discs[best].kind)) best=k;
+        }
         for(size_t k=i;k<discs.size();++k) {
             if(k==best || drop[k] || discs[k].titleId!=discs[i].titleId || discs[k].disc!=discs[i].disc) continue;
             drop[k]=true; dropped.push_back(discs[k]); kept.push_back(discs[best]);

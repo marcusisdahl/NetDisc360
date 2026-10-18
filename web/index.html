@@ -89,6 +89,7 @@ main { flex: 1; min-width: 0; }
 .card-head .sub { color: var(--muted); font-size: 13px; }
 .card-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .card-body { padding: 14px 18px 18px; }
+.card-foot { padding: 12px 18px 14px; border-top: 1px solid var(--line); font-size: 13px; }
 .grid { display: grid; gap: 16px; }
 .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .two { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
@@ -221,6 +222,11 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .console .rate .s { color: var(--faint); font-size: 12px; }
 .console canvas { width: 110px; height: 30px; display: block; margin-left: auto; }
 .console-wide { grid-template-columns: auto 1fr auto; }
+.console-events { grid-column: 1 / -1; margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.console-events .events li { padding: 6px 0; border-top: 0; align-items: center; font-size: 13px; }
+.console-events .events .badge { width: 22px; height: 22px; border-radius: 6px; }
+.console-events .events .badge .i { width: 13px; height: 13px; }
+.console-events h3 { margin: 4px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .console-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .fact .k { color: var(--faint); font-size: 12px; }
 .fact .v { font-weight: 550; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -266,8 +272,21 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .thumb .art .t, .thumb .art .ring { display: none; }
 .cell-name { display: flex; gap: 12px; align-items: center; font-weight: 600; }
 .kind-text { font-size: 12px; font-weight: 650; color: var(--muted); }
-.dupes li { padding: 10px 0; border-top: 1px solid var(--line); }
-.dupes li:first-child { border-top: 0; }
+.nav .count .flag { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--warn); color: var(--panel); font-size: 11.5px; font-weight: 700; }
+.conflicts .card-body { padding-top: 4px; padding-bottom: 4px; }
+.conflict { padding: 14px 0; border-top: 1px solid var(--line); }
+.conflict:first-child { border-top: 0; }
+.conflict-head { display: flex; align-items: center; gap: 12px; }
+.conflict-head .what { flex: 1; min-width: 0; }
+.conflict-head .what b { overflow-wrap: anywhere; }
+.conflict-head .what .muted { font-size: 12.5px; }
+.copies { list-style: none; margin: 10px 0 0 46px; padding: 0; display: grid; gap: 6px; }
+.copies li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+.copies li.on { border-color: var(--line-strong); background: var(--hover); }
+.copies .kind-text { width: 68px; flex: none; }
+.copies .size { width: 64px; flex: none; font-size: 12.5px; color: var(--muted); }
+.copies .path { flex: 1 1 200px; min-width: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .copies { margin-left: 0; } }
 
 /* Folders and the folder browser */
 .folder-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
@@ -500,7 +519,7 @@ function cover(game, small) {
 // State -------------------------------------------------------------------------
 
 let S = null;                // /api/state
-let G = { version: -1, games: [], duplicates: [] };  // /api/games
+let G = { version: -1, games: [], conflicts: [] };  // /api/games
 let page = null, view = null, failed = 0, timer = 0;
 const Pages = {};
 const Nav = [
@@ -571,12 +590,13 @@ function updateFrame(problem) {
   const counts = { games: S.library.games, consoles: S.consoles.length ? online + '/' + S.consoles.length : '', folders: S.folders.length };
   for (const a of document.querySelectorAll('.nav a')) {
     const n = counts[a.dataset.page];
-    fill($('.count', a), n === undefined || n === '' ? '' : n);
+    if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
+    else fill($('.count', a), n === undefined || n === '' ? '' : n);
   }
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
-  document.title = (online ? '\u25b6 ' : '') + 'NetDisc 360';
+  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc 360';
 }
 
 function route() {
@@ -727,6 +747,9 @@ function consoleCard(c, index, wide) {
       fact('Aurora\u2019s FTP', ftp, tone),
       fact('Game folders updated', c.synced ? ago(c.synced) : c.push && S.settings.push ? 'Not yet' : '\u2014'),
       fact('Last connected', c.connections > 0 ? 'Now' : ago(c.seen))));
+    // Its last five events, newest first.
+    if (c.events && c.events.length) card.appendChild(h('div.console-events', h('h3', 'Recent activity'),
+      h('ul.events', c.events.slice().reverse().map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))))));
   }
   requestAnimationFrame(() => { if (canvas.isConnected) spark(canvas, c.rate, seriesColor(index)); });
   return card;
@@ -738,11 +761,11 @@ const EventIcons = { good: 'circle-check', play: 'play', xbox: 'monitor', info: 
 // Dashboard -----------------------------------------------------------------------
 
 Pages.dashboard = root => {
-  const open = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
+  const open = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
   const consoles = h('div.consoles'), events = h('ul.events');
   root.append(
     header('Dashboard', null),
-    h('div.stack', open, setup, tiles,
+    h('div.stack', open, copies, setup, tiles,
       h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
         h('div.card-body', chartWrap, legend)),
       h('div.grid.two',
@@ -757,6 +780,10 @@ Pages.dashboard = root => {
       // Open to the network with no password: anyone there can change the settings.
       if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings' }, 'Set a password')));
       else open.replaceChildren();
+      // A game in the folders more than once, with no copy chosen yet.
+      const n = S.library.conflicts;
+      if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
+      else copies.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell NetISO where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetISO.xex.txt'), ' next to NetISO.xex on your USB drive, with one line: ', h('code', S.addresses[0] || 'this computer\u2019s address'), '. Then restart the Xbox.'] },
@@ -771,7 +798,7 @@ Pages.dashboard = root => {
       const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.mounted);
       const missing = S.folders.filter(f => !f.found).length;
       fill(tiles,
-        tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.duplicates),
+        tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
         tile('monitor', 'Consoles connected', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
         tile('gauge', 'Streaming now', rate(S.totals.rate), 'peak ' + rate(S.totals.peak)),
         tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
@@ -792,14 +819,14 @@ Pages.dashboard = root => {
 const KindNames = { iso: 'ISO', folder: 'Extracted', god: 'GOD' };
 Pages.games = root => {
   let mode = store('games.view') || 'covers', kind = 'all', sort = store('games.sort') || 'name', query = '';
-  const list = h('div'), dupes = h('div'), count = h('span.muted');
+  const list = h('div'), open = h('div'), dupes = h('div'), count = h('span.muted');
   const search = h('input.input', { type: 'search', placeholder: 'Search games', oninput: e => { query = e.target.value.toLowerCase(); draw(); } });
   const kinds = h('div.segmented', ['all', 'iso', 'folder', 'god'].map(k => h('button', { 'data-kind': k, class: k === kind ? 'on' : '', onclick: () => { kind = k; draw(); } }, k === 'all' ? 'All' : KindNames[k])));
   const views = h('div.segmented', [['covers', 'layout-grid'], ['list', 'list']].map(([m, icon]) => h('button', { 'data-mode': m, title: m === 'covers' ? 'Covers' : 'List', class: m === mode ? 'on' : '', onclick: () => { mode = m; store('games.view', m); draw(); } }, ic(icon, 'sm'))));
   const sorts = h('select.input', { style: { width: 'auto' }, onchange: e => { sort = e.target.value; store('games.sort', sort); draw(); } },
     [['name', 'Name'], ['size', 'Size'], ['kind', 'Format'], ['folder', 'Folder']].map(([v, l]) => h('option', { value: v, selected: v === sort }, 'Sort by ' + l.toLowerCase())));
   root.append(header('Games', h('span', count), h('button.btn', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')),
-    h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
+    open, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
   let drawn = '';
   function draw() {
     for (const b of kinds.children) b.classList.toggle('on', b.dataset.kind === kind);
@@ -808,7 +835,7 @@ Pages.games = root => {
     let games = G.games.filter(g => (kind === 'all' || g.kind === kind) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
     const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     games.sort(sort === 'size' ? (a, b) => b.size - a.size || byName(a, b) : sort === 'kind' ? (a, b) => a.kind.localeCompare(b.kind) || byName(a, b) : sort === 'folder' ? (a, b) => a.folder - b.folder || byName(a, b) : byName);
-    const key = JSON.stringify([G.version, mode, kind, sort, query, now, store('covers')]);
+    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers')]);
     if (key === drawn) return;
     drawn = key;
     const total = G.games.reduce((n, g) => n + g.size, 0);
@@ -840,18 +867,49 @@ Pages.games = root => {
             h('td.hide-narrow.path', g.path));
         })))));
     }
-    if (G.duplicates.length) {
-      fill(dupes, h('div.card', { style: { marginTop: '20px' } },
-        h('div.card-head', ic('copy', 'sm'), h('h2', 'Extra copies'), h('span.sub', 'the same game more than once; only one copy is served')),
-        h('div.card-body', h('ul.dupes', { style: { listStyle: 'none', margin: 0, padding: 0 } }, G.duplicates.map(d => h('li',
-          h('div', h('b', d.name), ' ', h('span.kind-text', '(' + KindNames[d.kind] + ')')),
-          h('div.path.muted', { style: { fontSize: '12.5px', overflowWrap: 'anywhere' } }, d.path),
-          h('div.muted', { style: { fontSize: '12.5px', overflowWrap: 'anywhere' } }, 'Served instead: ', d.keptPath, ' (' + KindNames[d.keptKind] + ')')))),
-          h('p.muted', { style: { margin: '10px 0 0', fontSize: '13px' } }, 'Remove the copies you don\u2019t need from your folders to save space.'))));
-    } else dupes.replaceChildren();
+    // Games there more than once: the open ones first, above the list.
+    const waiting = G.conflicts.filter(c => c.open), settled = G.conflicts.filter(c => !c.open);
+    if (waiting.length) fill(open, h('div.card.conflicts', { style: { marginBottom: '20px' } },
+      h('div.card-head', ic('copy', 'sm'), h('h2', 'Choose which copy to play'), h('span.sub', waiting.length === 1 ? 'this game is in your folders more than once' : 'these games are in your folders more than once')),
+      h('div.card-body', waiting.map(conflict)),
+      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc 360 remembers your choice, and asks again if another copy turns up.')));
+    else open.replaceChildren();
+    if (settled.length) fill(dupes, h('div.card.conflicts', { style: { marginTop: '20px' } },
+      h('div.card-head', ic('copy', 'sm'), h('h2', 'Games with more than one copy'), h('span.sub', 'the copy you chose plays')),
+      h('div.card-body', settled.map(conflict)),
+      h('div.card-foot.muted', 'Delete the copies you don\u2019t play from your folders to free up space.')));
+    else dupes.replaceChildren();
   }
   return { update: draw, games: draw };
 };
+
+const choosePhrase = n => n === 1 ? '1 game to choose a copy of' : n + ' games to choose a copy of';
+
+// One game that is in the folders more than once, with a button to play each copy.
+function conflict(c) {
+  const first = c.copies[0];
+  return h('div.conflict',
+    h('div.conflict-head', cover({ name: c.name, titleId: first.titleId }, true),
+      h('div.what', h('b', c.name), h('div.muted', 'Title ID ' + first.titleId + (first.disc > 1 ? ' \u00b7 Disc ' + first.disc : '') + ' \u00b7 ' + plural(c.copies.length, 'copy', 'copies'))),
+      c.open ? h('span.pill.warn', ic('triangle-alert', 'sm'), 'Choose a copy') : h('span.pill.good', ic('check', 'sm'), 'Chosen')),
+    h('ul.copies', c.copies.map(g => {
+      const served = g.path === c.served;
+      return h('li' + (served ? '.on' : ''),
+        h('span.kind-text', KindNames[g.kind]), h('span.size', g.sizeKnown ? bytes(g.size) : '\u2026'), h('span.path', g.path),
+        served ? h('span.pill' + (c.open ? '.info' : '.good'), ic('play', 'sm'), 'Plays now') : null,
+        served && c.open ? h('button.btn.small.primary', { onclick: e => choose(c, g, e.target) }, 'Keep this one') : null,
+        served ? null : h('button.btn.small', { onclick: e => choose(c, g, e.target) }, 'Play this one'));
+    })));
+}
+
+async function choose(c, g, button) {
+  button.disabled = true;
+  try {
+    await api('conflict', { key: c.key, path: g.path });
+    toast(c.name + ': the ' + { iso: 'ISO', folder: 'extracted', god: 'Games on Demand' }[g.kind] + ' copy plays from now on');
+    await refresh();
+  } catch (e) { toast(e.message, true); button.disabled = false; }
+}
 
 function details(g) {
   const on = playing()[g.name.toLowerCase()];

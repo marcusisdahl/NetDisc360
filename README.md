@@ -112,8 +112,8 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
 
 - The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with **Add a folder**. Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
 - The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
-- The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details.
-- The **Consoles** page lists every console that has used the server: what it plays, what it was sent, whether its Aurora answers and when its game folders were updated. Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
+- The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details. A game that is in your folders more than once shows at the top, where you choose which copy to play.
+- The **Consoles** page lists every console that has used the server: what it plays, what it was sent, whether its Aurora answers, when its game folders were updated, and its last five events (a game started, games added, launchers updated to a new version). Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
 - The **Settings** page has **Aurora's FTP login** (enter it if you changed it in Aurora) and **Start with Windows**, to have the server start, hidden, every time you sign in.
 - **Close the browser tab and forget about it.** The server keeps running. Click its icon to open the dashboard again (starting `NetDisc.exe` again does the same); right-click it and pick **Quit NetDisc 360** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
@@ -187,7 +187,7 @@ Both are separate homebrew projects that work well alongside NetISO.
 - **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the dashboard shows, and that Windows Firewall allows `NetDisc.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
 - **A game has no cover art.** Rename its folder in `Hdd1:\NetISO` (for example over FTP); at the next scan Aurora looks it up again. See [Cover art](#cover-art).
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
-- **A game is listed under Extra copies on the Games page.** The same game is in your folders more than once; the page shows where, so you can remove the copy you don't need.
+- **"Choose which copy to play" on the Games page.** The same game is in your folders more than once. Pick the copy to play there; NetDisc 360 remembers it. To free up space, delete the copies you don't play.
 - **The dashboard doesn't open.** Another program may be using port 8360; the log says so. Start the server with `--web-port` and another port. Opened from another device by a name rather than an address, it says to use the address until it has a password.
 
 ## Updating
@@ -202,7 +202,7 @@ What `NetDisc.exe` does, all from one file:
 - **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
-- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is served as an ISO before a GOD package before a folder, and the dashboard's **Games** page lists the other copies with their paths so you can remove them.
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is a conflict: the dashboard shows a notice and a badge on **Games**, the activity list says so, and on Windows the icon shows a notification. The **Games** page lists every copy with its path; **Play this one** picks the copy to serve, and the choice is kept in the settings file. Until you choose, an ISO is served before a GOD package before a folder. A copy that turns up later, or the chosen copy going, asks again.
 - **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
 
 | Option | Default | |

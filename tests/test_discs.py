@@ -220,7 +220,7 @@ class Discs(ServerTest):
             self.startup += line
             if "Listening on port" in line:
                 return
-        self.fail("server didn't start")
+        self.fail("server didn't start:\n" + self.startup)
 
     def log(self):
         """Everything the server printed, once it is stopped."""

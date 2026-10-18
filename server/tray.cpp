@@ -34,7 +34,7 @@ const wchar_t OldRunValue[] = L"NetISO server for Aurora";
 const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t RunValue[] = L"NetDisc 360";
 const int IconId = 1;  // server.rc
-enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD };
+enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD, WM_NOTE };
 enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1 };
 
 HWND Window;
@@ -42,8 +42,10 @@ NOTIFYICONDATAW Tray;
 UINT TaskbarCreated;
 std::wstring Url;     // The dashboard, once it listens.
 bool OpenWhenReady;   // Open it as soon as it does.
+std::wstring BalloonPage;  // Where clicking the last balloon goes: "" the dashboard, "#games" a page.
 
 struct Ready { std::string url, problem; };
+struct Note { std::string title, text; };
 
 std::wstring Wide(const std::string& text, UINT page) {
     int n = MultiByteToWideChar(page, 0, text.data(), int(text.size()), NULL, 0);
@@ -140,17 +142,18 @@ void SetTip() {
     Shell_NotifyIconW(NIM_MODIFY, &Tray);
 }
 
-void Balloon(const wchar_t* title, const wchar_t* text) {
+void Balloon(const wchar_t* title, const wchar_t* text, DWORD icon = NIIF_INFO, const wchar_t* page = L"") {
     Tray.uFlags = NIF_INFO;
     wcsncpy_s(Tray.szInfoTitle, title, _TRUNCATE);
     wcsncpy_s(Tray.szInfo, text, _TRUNCATE);
-    Tray.dwInfoFlags = NIIF_INFO;
+    Tray.dwInfoFlags = icon;
+    BalloonPage = page;
     Shell_NotifyIconW(NIM_MODIFY, &Tray);
 }
 
-void OpenDashboard() {
+void OpenDashboard(const std::wstring& page = L"") {
     if (Url.empty()) OpenWhenReady = true;
-    else ShellExecuteW(NULL, L"open", Url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    else ShellExecuteW(NULL, L"open", (Url + page).c_str(), NULL, NULL, SW_SHOWNORMAL);
 }
 
 void Quit() {
@@ -182,6 +185,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     case WM_TRAY:
         switch (LOWORD(lParam)) {
         case WM_LBUTTONUP: case NIN_SELECT: case NIN_KEYSELECT: OpenDashboard(); break;
+        case NIN_BALLOONUSERCLICK: OpenDashboard(BalloonPage); break;
         case WM_CONTEXTMENU: Menu(short(LOWORD(wParam)), short(HIWORD(wParam))); break;
         }
         return 0;
@@ -209,6 +213,12 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
             MessageBoxW(NULL, text.c_str(), AppName, MB_ICONWARNING);
         }
         delete ready;
+        return 0;
+    }
+    case WM_NOTE: {
+        Note* note = (Note*)lParam;
+        Balloon(Wide(note->title, CP_UTF8).c_str(), Wide(note->text, CP_UTF8).c_str(), NIIF_WARNING, L"#games");
+        delete note;
         return 0;
     }
     case WM_STOPPED: {
@@ -243,6 +253,13 @@ void DashboardReady(const std::string& url, const std::string& problem) {
     ready->url = url;
     ready->problem = problem;
     if (!PostMessageW(Window, WM_READY, 0, (LPARAM)ready)) delete ready;
+}
+
+void Notify(const std::string& title, const std::string& text) {
+    Note* note = new Note;
+    note->title = title;
+    note->text = text;
+    if (!PostMessageW(Window, WM_NOTE, 0, (LPARAM)note)) delete note;
 }
 
 bool StartsWithWindows() { return !StartupEntry().empty(); }

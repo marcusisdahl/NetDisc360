@@ -164,9 +164,41 @@ bool Within(const std::string& path, const std::string& folder) {
 }
 
 // The discs (ISOs, extracted games, GOD packages) are found and read in discs.cpp.
+
+// The games as the dashboard shows them: the latest list, and the size of
+// each extracted game (counted by SizeLoop, since that reads every folder).
+std::mutex GamesListLock;
+std::vector<IsoFile> GamesList;
+std::map<std::string,std::pair<long long,U64> > FolderSizes;  // Path: the default.xex time it was counted for, and the bytes.
+long long GamesVersion;  // Changes with either, or with the conflicts.
+bool GamesScanned;       // The folders were read once.
+
+// Games that are in the folders more than once. Each is a conflict: every
+// copy of one game (Title ID and disc), and the one served. Until the user
+// chooses a copy on the dashboard, the server serves one by itself (an ISO
+// over a GOD package over a folder) and the conflict is open: the dashboard
+// shows it, and on Windows the icon says so once. A choice is kept in the
+// settings file with the copies there were then, so a copy that turns up
+// later, or the chosen one going, opens the conflict again.
+struct Choice { std::string path; std::set<std::string> copies; };  // The chosen copy, and CopyId of each copy then.
+struct Conflict { std::string key, name; IsoFile served; std::vector<IsoFile> copies; bool chosen, open; };
 std::mutex DuplicatesLock;
-std::string DuplicatesReported;
-std::vector<std::pair<IsoFile,IsoFile> > Duplicates;  // Each extra copy and the one served, under DuplicatesLock.
+std::map<std::string,Choice> Choices;     // By ConflictKey, under DuplicatesLock.
+std::vector<Conflict> Conflicts;          // The latest, served copy first in each, under DuplicatesLock.
+std::string DuplicatesReported, ConflictsShown;
+std::set<std::string> Announced;          // Open conflicts already announced (key and copies).
+
+std::string ConflictKey(const IsoFile& disc) {
+    char key[16]; _snprintf_s(key,sizeof(key),_TRUNCATE,"%08X-%d",disc.titleId,disc.disc);
+    return key;
+}
+// A short name for a copy's path, for the settings file.
+std::string CopyId(const std::string& path) {
+    unsigned int h=2166136261u;
+    for(size_t i=0;i<path.size();++i) { h^=(unsigned char)path[i]; h*=16777619u; }
+    char id[12]; _snprintf_s(id,sizeof(id),_TRUNCATE,"%08x",h);
+    return id;
+}
 
 // Where a disc is, as the user would remove it: a GOD package by its Title ID folder.
 std::string Location(const IsoFile& disc) {
@@ -176,8 +208,56 @@ std::string Location(const IsoFile& disc) {
     return path+" (GOD package)";
 }
 
+std::string Count(int n, const char* one, const char* many);
+
+// Brings Conflicts up to date with what Isos() found, under DuplicatesLock,
+// and tells about conflicts that are newly open.
+void NoteConflicts(const std::vector<IsoFile>& dropped, const std::vector<IsoFile>& kept) {
+    std::map<std::string,Conflict> found;
+    for(size_t i=0;i<dropped.size();++i) {
+        Conflict& c=found[ConflictKey(kept[i])];
+        if(c.copies.empty()) { c.key=ConflictKey(kept[i]); c.served=kept[i]; c.name=WithoutIso(kept[i].name); c.copies.push_back(kept[i]); }
+        c.copies.push_back(dropped[i]);
+    }
+    std::vector<Conflict> now;
+    std::vector<std::string> fresh;
+    std::set<std::string> announced;
+    std::string shown;
+    for(std::map<std::string,Conflict>::iterator f=found.begin();f!=found.end();++f) {
+        Conflict& c=f->second;
+        std::string copies;
+        for(size_t i=0;i<c.copies.size();++i) copies+="|"+CopyId(c.copies[i].path);
+        std::map<std::string,Choice>::const_iterator choice=Choices.find(c.key);
+        c.chosen=choice!=Choices.end() && choice->second.path==c.served.path;
+        c.open=!c.chosen;
+        for(size_t i=0;i<c.copies.size() && !c.open;++i) c.open=!choice->second.copies.count(CopyId(c.copies[i].path));
+        shown+=c.key+copies+(c.open ? "?" : "")+c.served.path+"\n";
+        if(c.open) {
+            announced.insert(c.key+copies);
+            if(!Announced.count(c.key+copies)) fresh.push_back(c.name);
+        }
+        now.push_back(c);
+    }
+    std::sort(now.begin(),now.end(),[](const Conflict& a, const Conflict& b) { return _stricmp(a.name.c_str(),b.name.c_str())<0; });
+    Conflicts.swap(now);
+    Announced.swap(announced);
+    if(shown!=ConflictsShown) {
+        ConflictsShown=shown;
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        ++GamesVersion;
+    }
+    if(fresh.empty()) return;
+    std::string text=fresh.size()==1 ? fresh[0]+" is in your folders more than once"
+                                     : Count(int(fresh.size()),"game is","games are")+" in your folders more than once";
+    Event(EventWarning,"%s. Choose which copy to play on the Games page.",text.c_str());
+#ifdef _WIN32
+    if(InTray) Notify("Choose which copy to play",config::ToUtf8(text)+". Click here to choose.");
+#endif
+}
+
 // Everything in the folders, each game once. A game that is there more than
-// once is reported (once, until that changes) so the copies can be removed.
+// once is reported (once, until that changes) so the copies can be removed or
+// one of them chosen.
 std::vector<IsoFile> Isos() {
     std::vector<std::string> folders=Current().folders;
     std::vector<IsoFile> isos;
@@ -191,25 +271,27 @@ std::vector<IsoFile> Isos() {
         for(size_t k=0;k<found.size();++k) if(paths.insert(found[k].path).second) isos.push_back(found[k]);
     }
     ReadTitles(isos);
+    std::lock_guard<std::mutex> hold(DuplicatesLock);
+    std::set<std::string> chosen;
+    for(std::map<std::string,Choice>::const_iterator c=Choices.begin();c!=Choices.end();++c) chosen.insert(c->second.path);
     std::vector<IsoFile> dropped,kept;
-    DropDuplicates(isos,dropped,kept);
+    DropDuplicates(isos,dropped,kept,chosen);
     UniqueNames(isos);
+    for(size_t i=0;i<kept.size();++i)  // With the names just given.
+        for(size_t k=0;k<isos.size();++k) if(isos[k].path==kept[i].path) { kept[i]=isos[k]; break; }
     std::string report;
     for(size_t i=0;i<dropped.size();++i) {
         char line[96]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Title ID %08X, disc %d",dropped[i].titleId,dropped[i].disc);
         report+="  "+Location(dropped[i])+"\n    is the same game as "+Location(kept[i])+" ("+line+"); only that one is served.\n";
     }
-    std::lock_guard<std::mutex> hold(DuplicatesLock);
     if(report!=DuplicatesReported) {
         DuplicatesReported=report;
-        Duplicates.clear();
-        for(size_t i=0;i<dropped.size();++i) Duplicates.push_back(std::make_pair(dropped[i],kept[i]));
         if(!report.empty()) {
             report.erase(report.size()-1);
-            Log("%d game(s) are here more than once. Remove the extra copies:\n%s",int(dropped.size()),report.c_str());
-            Event(EventWarning,"%d %s in your folders more than once; only one copy of each is served",int(dropped.size()),dropped.size()==1 ? "game is" : "games are");
+            Log("%d game(s) are here more than once. Choose which copy to play on the dashboard's Games page, or remove the extra copies:\n%s",int(dropped.size()),report.c_str());
         }
     }
+    NoteConflicts(dropped,kept);
     return isos;
 }
 
@@ -222,14 +304,6 @@ std::string Fingerprint(const std::vector<IsoFile>& isos) {
     }
     return text;
 }
-
-// The games as the dashboard shows them: the latest list, and the size of
-// each extracted game (counted by SizeLoop, since that reads every folder).
-std::mutex GamesListLock;
-std::vector<IsoFile> GamesList;
-std::map<std::string,std::pair<long long,U64> > FolderSizes;  // Path: the default.xex time it was counted for, and the bytes.
-long long GamesVersion;  // Changes with either.
-bool GamesScanned;       // The folders were read once.
 
 // The NetISO server ----------------------------------------------------------
 
@@ -263,6 +337,7 @@ struct Console {
     long long rateSecond[RateSeconds]; // which is in rateSecond.
     U64 counted;                       // sent at the last second counted.
     long long hiddenAt;                // Forgotten on the dashboard when last seen at this seenAt; -2: not.
+    mutable std::deque<Happening> recent;  // Its latest events (XboxEvent), for its card on the dashboard.
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
@@ -301,6 +376,17 @@ void XboxLog(const Console& console, const char* format, ...) {
     char text[2048];
     va_list a; va_start(a,format); _vsnprintf_s(text,sizeof(text),_TRUNCATE,format,a); va_end(a);
     Log("Xbox %s: %s",console.text,text);
+}
+
+const size_t ConsoleEventKeep = 5;
+// An event about one console: in the activity list as "text on <address>"
+// (or as global, if given), and as text under the console's own card.
+void XboxEvent(const Console& console, int kind, const std::string& text, const std::string& global = std::string()) {
+    Event(kind,"%s",(global.empty() ? text+" on "+console.text : global).c_str());
+    Happening h = {0, (long long)time(NULL), kind, text};
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    console.recent.push_back(h);
+    if(console.recent.size()>ConsoleEventKeep) console.recent.pop_front();
 }
 
 // Each second, what each console was sent in it, for the dashboard's chart.
@@ -444,7 +530,8 @@ private:
         if(!quiet_) {
             if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
             else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
-            Event(EventPlay,"%s started on %s",WithoutIso(found->name).c_str(),peer_);
+            if(console_) XboxEvent(*console_,EventPlay,WithoutIso(found->name)+" started");
+            else Event(EventPlay,"%s started on %s",WithoutIso(found->name).c_str(),peer_);
         }
         return 1;
     }
@@ -480,7 +567,7 @@ void Serve(SOCKET listener) {
         if(added) {
             if(Current().push && console->push) Log("Found an Xbox at %s; its game folders are kept up to date.",console->text);
             else Log("Found an Xbox at %s.",console->text);
-            Event(EventXbox,"New console at %s",console->text);
+            XboxEvent(*console,EventXbox,"Connected for the first time",std::string("New console at ")+console->text);
         }
         std::thread([client,address]() { Connection(client,address).Run(); }).detach();
     }
@@ -542,11 +629,12 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
     std::string backup=path+".before-netiso";
     if(!ftp.Store(backup.c_str(),text.data(),text.size()) || !ftp.Store(path.c_str(),edited.data(),edited.size())) {
         XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
-        Event(EventWarning,"Couldn't add the games to Aurora's Xbox 360 category on %s",console.text);
+        XboxEvent(console,EventWarning,"Couldn't add the games to Aurora's Xbox 360 category");
         return;
     }
     XboxLog(console,"added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
-    Event(EventGood,"Games added to Aurora's Xbox 360 category on %s; restart Aurora to see them there",console.text);
+    XboxEvent(console,EventGood,"Games added to Aurora's Xbox 360 category; restart Aurora to see them there",
+              std::string("Games added to Aurora's Xbox 360 category on ")+console.text+"; restart Aurora to see them there");
 }
 
 // Pushing the game folders ---------------------------------------------------
@@ -577,7 +665,10 @@ void RefreshSyncApp(const Console& console, FtpClient& ftp, const std::vector<Ft
         int launcher=RefreshRemote(ftp,folder+"/default.xex",Launcher);
         int boot=Boot.empty() ? 0 : RefreshRemote(ftp,folder+"/boot.xex",Boot);
         if(launcher<0 || boot<0) XboxLog(console,"couldn't update %s: %s",folder.c_str(),ftp.Error());
-        else if(launcher || boot) XboxLog(console,"updated %s to this build.",folder.c_str());
+        else if(launcher || boot) {
+            XboxLog(console,"updated %s to this build.",folder.c_str());
+            XboxEvent(console,EventGood,"NetISO Sync updated to this version");
+        }
         return;
     }
 }
@@ -592,7 +683,7 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
     ftp.MakeFolder(o.xboxFolder.c_str());
     if(!ftp.List(o.xboxFolder.c_str(),entries)) {
         XboxLog(console,"couldn't list %s: %s",o.xboxFolder.c_str(),ftp.Error());
-        Event(EventWarning,"Couldn't open %s on %s",o.xboxFolder.c_str(),console.text);
+        XboxEvent(console,EventWarning,"Couldn't open "+o.xboxFolder);
         return false;
     }
     RefreshSyncApp(console,ftp,entries,o);
@@ -610,13 +701,16 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
     if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
         XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
-        Event(EventWarning,"Updating the game folders on %s stopped; the log says why",console.text);
+        XboxEvent(console,EventWarning,"Updating the game folders stopped; the log says why",
+                  std::string("Updating the game folders on ")+console.text+" stopped; the log says why");
     }
-    if(ok && (result.added || result.removed)) {
+    // Launchers updated: game folders whose launcher was rewritten with this version.
+    if(ok && (result.added || result.removed || result.updated)) {
         std::string change;
         if(result.added) change=Count(result.added,"game","games")+" added";
         if(result.removed) change+=(change.empty() ? "" : ", ")+Count(result.removed,"game","games")+" removed";
-        Event(EventGood,"%s on %s",change.c_str(),console.text);
+        if(result.updated) change+=(change.empty() ? "" : ", ")+Count(result.updated,"launcher","launchers")+" updated";
+        XboxEvent(console,EventGood,change);
     }
     return ok;
 }
@@ -630,7 +724,7 @@ bool StartScan(const Console& console, FtpClient& ftp, const Options& o) {
     bool ok=ftp.Site(("INITIATESCAN "+o.xboxFolder).c_str(),reply) && reply.find("Unable")==std::string::npos;
     if(ok) {
         XboxLog(console,"asked Aurora to scan %s, so it lists the changes now and downloads the new games' art.",o.xboxFolder.c_str());
-        Event(EventInfo,"Aurora on %s is looking up the new games",console.text);
+        XboxEvent(console,EventInfo,"Aurora is looking up the new games",std::string("Aurora on ")+console.text+" is looking up the new games");
     }
     else XboxLog(console,"Aurora didn't start a scan: %s",reply.empty() ? ftp.Error() : reply.c_str());
     return ok;
@@ -662,7 +756,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     if(!ftp.Open()) {
         if(s.reachable || !s.toldDown) {
             XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
-            Event(EventInfo,"Waiting for Aurora on %s",console.text);
+            XboxEvent(console,EventInfo,"Waiting for Aurora");
         }
         if(s.reachable || !s.downSince) s.downSince=Now();
         s.reachable=false; s.toldDown=true; s.toldWaiting=false; s.nextProbe=Now()+ProbeDownSeconds;
@@ -675,7 +769,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     console.ftp=2;
     if(back) {
         XboxLog(console,"its FTP server answers.");
-        Event(EventXbox,"Aurora on %s answers",console.text);
+        XboxEvent(console,EventXbox,"Aurora answers",std::string("Aurora on ")+console.text+" answers");
         s.upSince=Now();
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
@@ -826,6 +920,10 @@ void SizeLoop() {
     for(;;) {
         std::vector<IsoFile> games;
         { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; }
+        {   // And the copies not served, for the dashboard's conflicts.
+            std::lock_guard<std::mutex> hold(DuplicatesLock);
+            for(size_t i=0;i<Conflicts.size();++i) games.insert(games.end(),Conflicts[i].copies.begin()+1,Conflicts[i].copies.end());
+        }
         for(size_t i=0;i<games.size();++i) {
             if(games[i].kind!=DiscFolder) continue;
             {
@@ -898,6 +996,17 @@ bool Save() {
     f.Set("told_tray",o.toldTray ? "1" : "0");
     f.Set("web_lan",o.webLan ? "1" : "0");
     if(!PasswordFixed) f.Set("web_password",web::PasswordHash());
+    std::map<std::string,Choice> choices;
+    { std::lock_guard<std::mutex> hold(DuplicatesLock); choices=Choices; }
+    before=f.Number("choices",0);
+    f.Set("choices",Number((long long)choices.size()));
+    long long n=0;
+    for(std::map<std::string,Choice>::const_iterator c=choices.begin();c!=choices.end();++c) {
+        std::string copies;
+        for(std::set<std::string>::const_iterator k=c->second.copies.begin();k!=c->second.copies.end();++k) copies+=(copies.empty() ? "" : ",")+*k;
+        f.Set(("choice"+Number(++n)).c_str(),c->first+"|"+copies+"|"+config::ToUtf8(c->second.path));
+    }
+    for(long long i=n+1;i<=before;++i) f.Remove(("choice"+Number(i)).c_str());
     before=f.Number("consoles",0);
     f.Set("consoles",Number((long long)known.size()));
     for(size_t i=0;i<known.size();++i) f.Set(("console"+Number((long long)i+1)).c_str(),known[i].address+"|"+Number(known[i].seen));
@@ -962,6 +1071,25 @@ bool LoadConfig(Options& o) {
     o.webLan=Flag(f,"web_lan",o.webLan);
     if(f.Has("web_port")) o.webPort=int(f.Number("web_port",o.webPort));
     web::SetPasswordHash(f.Get("web_password"));
+    // Which copy of a game to play: "key|copy ids|path" (see Choice).
+    {
+        std::lock_guard<std::mutex> hold(DuplicatesLock);
+        for(long long i=1,n=f.Number("choices",0);i<=n;++i) {
+            std::string value=f.Get(("choice"+Number(i)).c_str());
+            size_t bar=value.find('|'), second=bar==std::string::npos ? bar : value.find('|',bar+1);
+            if(second==std::string::npos || !bar || second+1>=value.size()) continue;
+            Choice choice;
+            choice.path=config::FromUtf8(value.substr(second+1));
+            std::string copies=value.substr(bar+1,second-bar-1);
+            for(size_t at=0;at<copies.size();) {
+                size_t comma=copies.find(',',at);
+                if(comma==std::string::npos) comma=copies.size();
+                if(comma>at) choice.copies.insert(copies.substr(at,comma-at));
+                at=comma+1;
+            }
+            Choices[value.substr(0,bar)]=choice;
+        }
+    }
     for(long long i=1,n=f.Number("consoles",0);i<=n;++i) {
         std::string value=f.Get(("console"+Number(i)).c_str());
         size_t bar=value.find('|');
@@ -1048,9 +1176,14 @@ void State(web::Reply& out) {
     long long version;
     bool scanned;
     { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; version=GamesVersion; scanned=GamesScanned; }
-    int duplicates;
-    { std::lock_guard<std::mutex> hold(DuplicatesLock); duplicates=int(Duplicates.size()); }
-    j.Key("library").Open('{').Set("games",int(games.size())).Set("duplicates",duplicates).Set("version",version).Set("scanned",scanned).Close('}');
+    int duplicates=0,conflicts=0;
+    {
+        std::lock_guard<std::mutex> hold(DuplicatesLock);
+        for(size_t i=0;i<Conflicts.size();++i) { duplicates+=int(Conflicts[i].copies.size())-1; conflicts+=Conflicts[i].open; }
+    }
+    { std::lock_guard<std::mutex> hold(GamesListLock); version=GamesVersion; }
+    j.Key("library").Open('{').Set("games",int(games.size())).Set("duplicates",duplicates).Set("conflicts",conflicts);
+    j.Set("version",version).Set("scanned",scanned).Close('}');
     j.Key("folders").Open('[');
     for(size_t i=0;i<o.folders.size();++i) {
         int count=0;
@@ -1077,6 +1210,9 @@ void State(web::Reply& out) {
             j.Set("seen",at<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-at/1000.0));
             j.Key("rate").Open('[');
             for(long long s=last-RateSeconds+1;s<=last;++s) j.Number(c.RateAt(s));
+            j.Close(']').Key("events").Open('[');
+            for(size_t e=0;e<c.recent.size();++e)
+                j.Open('{').Set("time",c.recent[e].time).Set("kind",EventKinds[c.recent[e].kind]).Set("text",config::ToUtf8(c.recent[e].text)).Close('}');
             j.Close(']').Close('}');
         }
     }
@@ -1086,7 +1222,7 @@ void State(web::Reply& out) {
         if(listed) continue;
         j.Open('{').Set("address",known[k].address).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
         j.Set("push",o.xboxes.empty() || std::find(o.xboxes.begin(),o.xboxes.end(),inet_addr(known[k].address.c_str()))!=o.xboxes.end());
-        j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Close('}');
+        j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
     }
     j.Close(']');
     double peak;
@@ -1134,15 +1270,17 @@ void Games(web::Reply& out) {
         for(size_t i=0;i<GamesList.size();++i) { j.Open('{'); GameJson(j,GamesList[i],folders); j.Close('}'); }
         j.Close(']');
     }
-    j.Key("duplicates").Open('[');
+    // Each game that is there more than once, with every copy, the served one first.
+    j.Key("conflicts").Open('[');
     {
         std::lock_guard<std::mutex> hold(DuplicatesLock);
-        for(size_t i=0;i<Duplicates.size();++i) {
-            j.Open('{');
-            std::lock_guard<std::mutex> sizes(GamesListLock);
-            GameJson(j,Duplicates[i].first,folders);
-            j.Set("keptPath",config::ToUtf8(Duplicates[i].second.path)).Set("keptKind",KindName(Duplicates[i].second.kind));
-            j.Close('}');
+        std::lock_guard<std::mutex> sizes(GamesListLock);
+        for(size_t i=0;i<Conflicts.size();++i) {
+            const Conflict& c=Conflicts[i];
+            j.Open('{').Set("key",c.key).Set("name",config::ToUtf8(c.name)).Set("served",config::ToUtf8(c.served.path));
+            j.Set("chosen",c.chosen).Set("open",c.open).Key("copies").Open('[');
+            for(size_t k=0;k<c.copies.size();++k) { j.Open('{'); GameJson(j,c.copies[k],folders); j.Close('}'); }
+            j.Close(']').Close('}');
         }
     }
     j.Close(']').Close('}');
@@ -1405,6 +1543,37 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     return true;
 }
 
+// The copy of a game to play, chosen on the dashboard: served from the next
+// look at the folders (within a second), and kept in the settings file.
+bool ChooseCopy(const web::Value& v, std::string& error) {
+    std::string key,path;
+    if(!Text(v,"key",key) || !Text(v,"path",path)) { error="Send the game's key and the path of the copy to play."; return false; }
+    path=config::FromUtf8(path);
+    std::string name,kind;
+    {
+        std::lock_guard<std::mutex> hold(DuplicatesLock);
+        Conflict* c=NULL;
+        for(size_t i=0;i<Conflicts.size() && !c;++i) if(Conflicts[i].key==key) c=&Conflicts[i];
+        if(!c) { error="That game isn't in your folders more than once any more."; return false; }
+        const IsoFile* copy=NULL;
+        for(size_t i=0;i<c->copies.size() && !copy;++i) if(c->copies[i].path==path) copy=&c->copies[i];
+        if(!copy) { error="That copy isn't in your folders any more."; return false; }
+        Choice choice;
+        choice.path=path;
+        for(size_t i=0;i<c->copies.size();++i) choice.copies.insert(CopyId(c->copies[i].path));
+        Choices[key]=choice;
+        name=c->name; kind=copy->kind==DiscIso ? "ISO" : copy->kind==DiscGod ? "Games on Demand" : "extracted";
+        // Shown as chosen right away; the served copy changes at the next look at the folders.
+        c->chosen=true; c->open=false;
+        std::lock_guard<std::mutex> games(GamesListLock);
+        ++GamesVersion;
+    }
+    Log("%s: the copy at %s is played from now on (chosen on the dashboard).",name.c_str(),path.c_str());
+    Event(EventInfo,"%s: playing the %s copy from now on",name.c_str(),kind.c_str());
+    Save();
+    return true;
+}
+
 void Api(const web::Request& r, web::Reply& out) {
     web::Value body;
     if(r.method=="POST" && !web::Parse(r.body,body)) { out.Error(400,"That isn't JSON."); return; }
@@ -1415,6 +1584,9 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
     else if(r.method=="POST" && r.path=="/api/settings") {
         if(ChangeSettings(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/conflict") {
+        if(ChooseCopy(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
     } else if(r.method=="POST" && r.path=="/api/password") {
         std::string password;
@@ -1649,8 +1821,11 @@ std::string ServerSummary() {
     int playing=0;
     std::vector<Console*> consoles=AllConsoles();
     for(size_t i=0;i<consoles.size();++i) if(consoles[i]->connections>0) ++playing;
+    int open=0;
+    { std::lock_guard<std::mutex> hold(DuplicatesLock); for(size_t i=0;i<Conflicts.size();++i) open+=Conflicts[i].open; }
     std::string text=Count(games,"game","games");
     if(playing) text+=", "+Count(playing,"console","consoles")+" connected";
+    if(open) text+=", "+Count(open,"game","games")+" to choose a copy of";
     return text;
 }
 

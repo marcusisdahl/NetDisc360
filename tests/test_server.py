@@ -172,6 +172,45 @@ class ServerTest(unittest.TestCase):
         write_iso(path, {"default.xex": xex(execution_info(media_id, title_id))})
         return path
 
+    # The dashboard's API on port self.web.
+    def call(self, method, path, body=None, page=True, cookie=None, headers=None):
+        """(status, response, data); a POST comes from the page unless page is False."""
+        sent = {"Host": "127.0.0.1:%d" % self.web}
+        if method == "POST":
+            sent["Content-Type"] = "application/json"
+            if page:
+                sent["X-NetDisc"] = "1"
+        if cookie:
+            sent["Cookie"] = cookie
+        sent.update(headers or {})
+        data = None if body is None else json.dumps(body)
+        deadline = time.time() + 10
+        while True:  # The dashboard starts just after the NetISO port.
+            conn = http.client.HTTPConnection("127.0.0.1", self.web, timeout=10)
+            try:
+                conn.request(method, path, data, sent)
+                response = conn.getresponse()
+                return response.status, response, response.read()
+            except ConnectionRefusedError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.2)
+            finally:
+                conn.close()
+
+    def json(self, method, path, body=None, **options):
+        status, _, data = self.call(method, path, body, **options)
+        self.assertEqual(status, 200, data)
+        return json.loads(data)
+
+    def state_when(self, condition, seconds=10):
+        deadline = time.time() + seconds
+        while True:
+            state = self.json("GET", "/api/state")
+            if condition(state) or time.time() > deadline:
+                return state
+            time.sleep(0.2)
+
 
 class Protocol(ServerTest):
     def test_lists_mounts_and_reads(self):
@@ -550,6 +589,21 @@ class Push(ServerTest):
         with open(os.path.join(self.aurora, "FilterFunctions.lua"), "rb") as f:
             self.assertEqual(f.read(), changed)
 
+    def test_tells_when_launchers_are_updated(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.push()
+        with open(self.launcher, "wb") as f:  # A newer build's launcher.
+            f.write(xex(execution_info(0, 0xFFFF4E49), filler=b"NEWER LAUNCHER" * 100))
+        self.web, self.port = free_port(), free_port()
+        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--xbox", "127.0.0.1", "--web-port", str(self.web),
+                                        "--ftp-port", str(self.ftp.server_address[1]), "--launcher", self.launcher, "--boot", self.boot,
+                                        "--online-wait", "0"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        state = self.state_when(lambda s: any("launcher" in e["text"] for e in s["events"]), 20)
+        self.assertIn("1 launcher updated on 127.0.0.1", [e["text"] for e in state["events"]])
+        console = [c for c in state["consoles"] if c["address"] == "127.0.0.1"][0]
+        self.assertIn("1 launcher updated", [e["text"] for e in console["events"]])
+        self.assertLessEqual(len(console["events"]), 5)
+
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push(expect=1, ftp_port=free_port())
@@ -574,44 +628,6 @@ class Dashboard(ServerTest):
         self.server.stdout.close()
         self.start(*extra)
 
-    def call(self, method, path, body=None, page=True, cookie=None, headers=None):
-        """(status, response, data); a POST comes from the page unless page is False."""
-        sent = {"Host": "127.0.0.1:%d" % self.web}
-        if method == "POST":
-            sent["Content-Type"] = "application/json"
-            if page:
-                sent["X-NetDisc"] = "1"
-        if cookie:
-            sent["Cookie"] = cookie
-        sent.update(headers or {})
-        data = None if body is None else json.dumps(body)
-        deadline = time.time() + 10
-        while True:  # The dashboard starts just after the NetISO port.
-            conn = http.client.HTTPConnection("127.0.0.1", self.web, timeout=10)
-            try:
-                conn.request(method, path, data, sent)
-                response = conn.getresponse()
-                return response.status, response, response.read()
-            except ConnectionRefusedError:
-                if time.time() > deadline:
-                    raise
-                time.sleep(0.2)
-            finally:
-                conn.close()
-
-    def json(self, method, path, body=None, **options):
-        status, _, data = self.call(method, path, body, **options)
-        self.assertEqual(status, 200, data)
-        return json.loads(data)
-
-    def state_when(self, condition, seconds=10):
-        deadline = time.time() + seconds
-        while True:
-            state = self.json("GET", "/api/state")
-            if condition(state) or time.time() > deadline:
-                return state
-            time.sleep(0.2)
-
     def test_serves_the_page_and_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.start()
@@ -629,6 +645,45 @@ class Dashboard(ServerTest):
         self.assertEqual([(g["name"], g["kind"], g["titleId"]) for g in games], [("Halo 3", "iso", "4D5307E6")])
         self.assertEqual(self.call("GET", "/api/nothing")[0], 404)
 
+    def test_a_game_there_twice_waits_for_a_choice(self):
+        iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        folder = os.path.join(self.isos, "Halo 3 extracted")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(0x1234, 0x4D5307E6)))
+        self.start()
+        state = self.state_when(lambda s: s["library"]["conflicts"] == 1)
+        self.assertEqual([state["library"][k] for k in ("games", "duplicates", "conflicts")], [1, 1, 1])
+        self.assertIn("Halo 3 is in your folders more than once. Choose which copy to play on the Games page.",
+                      [e["text"] for e in state["events"]])
+        conflict = self.json("GET", "/api/games")["conflicts"][0]
+        self.assertEqual([conflict[k] for k in ("key", "name", "served", "open", "chosen")], ["4D5307E6-1", "Halo 3", iso, True, False])
+        self.assertEqual([(c["kind"], c["path"]) for c in conflict["copies"]], [("iso", iso), ("folder", folder)])
+        # Only a copy that is there can be chosen.
+        self.assertEqual(self.call("POST", "/api/conflict", {"key": "4D5307E6-1", "path": "/nowhere"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/conflict", {"key": "4D5307E6-1", "path": folder}, page=False)[0], 403)
+        self.json("POST", "/api/conflict", {"key": "4D5307E6-1", "path": folder})
+        self.assertEqual(self.json("GET", "/api/state")["library"]["conflicts"], 0)
+        state = self.state_when(lambda s: self.json("GET", "/api/games")["conflicts"][0]["served"] == folder)
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Halo 3 extracted.iso"])
+        c.close()
+        # Kept across a restart, with the copies it was made for.
+        with open(self.config) as f:
+            self.assertIn("choice1=4D5307E6-1|", f.read())
+        self.restart()
+        state = self.state_when(lambda s: s["library"]["scanned"] and s["library"]["duplicates"] == 1)
+        self.assertEqual(state["library"]["conflicts"], 0)
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Halo 3 extracted.iso"])
+        c.close()
+        # A copy that turns up later asks again; the chosen one still plays until then.
+        self.add_iso("Halo 3 again.iso", 0x1A2B3C4D, 0x4D5307E6)
+        state = self.state_when(lambda s: s["library"]["conflicts"] == 1)
+        self.assertEqual(state["library"]["duplicates"], 2)
+        conflict = self.json("GET", "/api/games")["conflicts"][0]
+        self.assertEqual([conflict[k] for k in ("served", "open", "chosen")], [folder, True, True])
+
     def test_reports_each_console(self):
         # What each console was sent, second by second, and its disc.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
@@ -644,6 +699,7 @@ class Dashboard(ServerTest):
         self.assertEqual(sum(console["rate"]), 65536)
         self.assertGreaterEqual(state["totals"]["peak"], 65536)
         self.assertIn("Halo 3 started on 127.0.0.2", [e["text"] for e in state["events"]])
+        self.assertIn("Halo 3 started", [e["text"] for e in console["events"]])  # Under its own card.
 
     def test_changes_come_only_from_the_page(self):
         self.start()
@@ -721,6 +777,7 @@ class Dashboard(ServerTest):
         cookie = response.getheader("Set-Cookie").split(";")[0]
         self.assertEqual(self.call("POST", "/api/password", {"password": "x"}, cookie=cookie)[0], 400)
         self.assertTrue(self.json("GET", "/api/state", cookie=cookie)["settings"]["passwordFixed"])
+
 
 
 if __name__ == "__main__":

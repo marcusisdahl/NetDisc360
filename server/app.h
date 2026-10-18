@@ -23,6 +23,8 @@ bool FirstTrayStart();         // True only the first time the icon shows, for i
 int TrayMain(int argc, char** argv);
 // The server calls this when its dashboard listens (url) or can't (problem).
 void DashboardReady(const std::string& url, const std::string& problem);
+// A notification from the icon (UTF-8); clicking it opens the dashboard's Games page.
+void Notify(const std::string& title, const std::string& text);
 bool StartsWithWindows();
 void SetStartWithWindows(bool on);
 #endif
