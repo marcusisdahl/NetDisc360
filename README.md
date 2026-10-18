@@ -22,7 +22,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
+  <img src="docs/images/aurora.jpg" alt="Aurora's game list on an Xbox 360, showing Call of Duty: Black Ops and other games served by NetDisc 360 with their covers" width="800">
+  <br>
+  <sub>Aurora on the Xbox: games from your PC sit in the game list with their covers, just like installed games.</sub>
 </p>
 
 Keep your games on your PC or NAS and play them on your Xbox 360 just like installed games. Each one appears in Aurora with its name, cover art, title updates and DLC; pick it and it starts.
@@ -36,10 +38,9 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Faster than the disc.** With a gigabit USB network adapter, games read at up to about 26 MB/s, where the console's own DVD drive manages about 16 MB/s at best and NetISO on its own about 7 MB/s.
 
 <p align="center">
-  <img src="docs/images/loading-screen.png" alt="The loading screen: Skate 3 at the Disc step, 62%, with B to cancel" width="49%">
-  <img src="docs/images/install-notice.png" alt="GTA V's install notice: A starts the install disc, X plays anyway, B goes back to Aurora" width="49%">
+  <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
   <br>
-  <sub>What you see on the Xbox: the loading screen after you pick a game, and the notice when a game's install disc hasn't been installed yet.</sub>
+  <sub>The dashboard on your PC or NAS: your games, every console and what it's playing, and how fast each game streams.</sub>
 </p>
 
 **For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
@@ -198,6 +199,13 @@ It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each releas
 ## Playing
 
 Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
+
+<p align="center">
+  <img src="docs/images/loading-screen.png" alt="The loading screen: Skate 3 at the Disc step, 62%, with B to cancel" width="49%">
+  <img src="docs/images/install-notice.png" alt="GTA V's install notice: A starts the install disc, X plays anyway, B goes back to Aurora" width="49%">
+  <br>
+  <sub>The loading screen, and the notice for a game whose install disc hasn't been installed yet.</sub>
+</p>
 
 - **B cancels at any step** and goes back to Aurora at once.
 - Right after a reboot the console can't reach the server for a minute or two, and the NetISO plugin needs a little longer still. For the first 4 minutes after boot the screen waits for both instead of failing.
