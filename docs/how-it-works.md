@@ -27,11 +27,11 @@ The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLa
 
 ## Disc swaps
 
-A game asks for another of its discs with `XSwapDisc` (xam.xex ordinal 2600): the disc number, and a kernel event to set once that disc is in. When Aurora starts a game whose disc is 1 of 2 or more, the NetISO kit's `Nova.xex` points the game's import of that call at its own swap, which links the game's `GAME:` and `D:` to the other disc's folder. A tile's folder holds only its launcher, so GTA V hung at "Loading story mode" after its install disc asked for the play disc.
+A game asks for another of its discs with `XSwapDisc` (xam.xex ordinal 2600): the disc number, and a kernel event to set once that disc is in. The NetISO kit's `Nova.xex` points every game's import of that call at its own swap. For a game whose disc is 1 of 2 or more, that links the game's `GAME:` and `D:` to the other disc's folder; a tile's folder holds only its launcher, so GTA V hung at "Loading story mode" after its install disc asked for the play disc. For a single-disc tile, Nova's swap fails, and its failure path crashes the game.
 
 So when a game starts from a tile, `NetIsoTiles.xex` finds its other discs: the tile folders next to its own with the same Title ID in `netiso.ini`, numbered by their launcher's execution info, as Aurora numbers them. Once the game is loaded, and after Nova's change, the plugin points the game's import of `XSwapDisc` at its own function, which puts in the disc the game asked for. NetISO's mount opens and closes the tray, and a tray opened under a running title sends the console to the dashboard, so the function first calls xam's real `XSwapDisc`, which shows "insert disc 2" and lets the title through a disc change. Then it mounts the other disc's ISO through NetISO and waits until the drive has it. xam tells the game the disc is in; if it hasn't within 15 s, the plugin sets the event itself.
 
-If the console still heads for the dashboard within 30 s of a swap, the plugin starts `Dvd:\default.xex` instead, so the console boots the disc just put in. A notice shows at each step ("NetDisc 360: putting in disc 2"), and the swap's lines go to the game's `netiso.log`. Tested on a console with GTA V, whose install disc asks for the play disc when it has finished.
+If the console still heads for the dashboard within 30 s of a swap, the plugin starts `Dvd:\default.xex` instead, so the console boots the disc just put in. A Guide notice says when the game is ready to swap and when the other disc goes in, and the swap's lines go to the game's `netiso.log`. Tested on a console with GTA V, whose install disc asks for the play disc when it has finished.
 
 ## Read speed
 
