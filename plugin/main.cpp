@@ -1117,7 +1117,15 @@ static DWORD* SwapThunk(HANDLE& module,SwapLook& seen,DWORD& detail) {
     return NULL;
 }
 
-static struct { DWORD disc; void* event; } SwapRequest;
+// What GTA V's call of XSwapDisc expects (read from its install disc): 0 and
+// its event set once the disc is in, or ERROR_INVALID_PARAMETER for "no
+// swap", which it handles itself; any other value traps. Nova's handler sets
+// the event before it returns, so this one does too: the game's thread waits
+// here while a thread of ours mounts the disc. If that takes longer than
+// SwapWaitMs, the game gets 0 and the thread sets the event once the disc is
+// in.
+static const DWORD SwapRefused=ERROR_INVALID_PARAMETER,SwapWaitMs=QuietMs+MountWaitMs+5000;
+static struct { DWORD disc; void* event; volatile LONG waiting,in; } SwapRequest;
 static DWORD DiscNumber() {
     DWORD titleId=0,mediaId=0; int disc=0;
     return DiscIds(titleId,mediaId,&disc) && titleId==SwapTitle ? DWORD(disc) : 0;
@@ -1145,26 +1153,48 @@ static DWORD WINAPI SwapThread(void*) {
             if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
         }
     }
-    if(in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %u is in.",disc); }
-    else Show("NetISO couldn't put the disc in. Press Guide to go back to Aurora.");
+    if(!in) { static char text[64]; sprintf_s(text,"NetISO couldn't put in disc %lu",disc); Show(text); }
+    InterlockedExchange(&SwapRequest.in,in ? 1 : 0);
+    // The game's call stopped waiting: the event is set from here.
+    if(!InterlockedExchange(&SwapRequest.waiting,0) && in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %u is in.",disc); }
     InterlockedExchange(&SwapBusy,0);
     return 0;
 }
 static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     DWORD number=disc&0xFF;
     HANDLE module=NULL;
-    if(number>=1 && number<=DWORD(MaxDiscs) && SwapIsos[number][0] && event && extra
-       && XexGetModuleHandle("default.xex",&module)>=0 && module==SwapModule) {
-        if(InterlockedCompareExchange(&SwapBusy,1,0)) return 0; // The swap under way sets its event.
-        SwapRequest.disc=number; SwapRequest.event=event;
-        // CreateThread, for a title thread with the CRT's thread data.
-        DWORD id=0;
-        HANDLE thread=CreateThread(NULL,0x10000,SwapThread,NULL,0,&id);
-        if(thread) { CloseHandle(thread); return 0; }
+    if(XexGetModuleHandle("default.xex",&module)<0 || module!=SwapModule) {
+        SwapNote("The game asks for disc %u (%X, %X, %X), but it isn't this tile's game; handing it on.",number,disc,DWORD(event),DWORD(extra));
+        return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
+    }
+    // Nova's handler can't put in a disc from the server, so a tile's game
+    // never goes there.
+    if(number<1 || number>DWORD(MaxDiscs) || !SwapIsos[number][0] || !event || !extra) {
+        SwapNote("The game asks for disc %u (%X, %X, %X), which this tile has no folder for; told it there's no swap.",number,disc,DWORD(event),DWORD(extra));
+        Show("NetISO: this game asks for a disc it has no tile for");
+        return SwapRefused;
+    }
+    if(InterlockedCompareExchange(&SwapBusy,1,0)) { SwapNote("The game asks for disc %u during a swap; told it there's no swap.",number); return SwapRefused; }
+    SwapRequest.disc=number; SwapRequest.event=event;
+    InterlockedExchange(&SwapRequest.in,0); InterlockedExchange(&SwapRequest.waiting,1);
+    // CreateThread, for a title thread with the CRT's thread data.
+    DWORD id=0;
+    HANDLE thread=CreateThread(NULL,0x10000,SwapThread,NULL,0,&id);
+    if(!thread) {
         InterlockedExchange(&SwapBusy,0);
-        SwapNote("No thread for the swap; handing it on.");
-    } else SwapNote("The game asks for disc %u (%X, %X, %X); not a disc of this tile's, handing it on.",number,disc,DWORD(event),DWORD(extra));
-    return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
+        SwapNote("No thread for the swap; told the game there's no swap.");
+        return SwapRefused;
+    }
+    DWORD waited=WaitForSingleObject(thread,SwapWaitMs);
+    CloseHandle(thread);
+    if(waited!=WAIT_OBJECT_0 && InterlockedExchange(&SwapRequest.waiting,0)) {
+        SwapNote("Disc %u isn't in after %u s; the game waits for it.",number,SwapWaitMs/1000);
+        return 0;
+    }
+    if(!SwapRequest.in) { SwapNote("Told the game there's no swap to disc %u.",number); return SwapRefused; }
+    KeSetEvent(event,1,FALSE);
+    SwapNote("Told the game disc %u is in.",number);
+    return 0;
 }
 
 // The watcher: one system thread, started with the plugin, that keeps the
