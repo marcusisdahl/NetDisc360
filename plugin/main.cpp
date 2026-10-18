@@ -856,8 +856,10 @@ static __declspec(naked) void SwapPreviousStub() {
 static char TileDevice[MAX_PATH];
 static struct { char folder[MAX_PATH]; DWORD titleId,at; } LastTile;
 static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.at<10*60*1000; }
-// The armed game: its tile folder, Title ID, discs (by number) and module.
-static volatile LONG SwapGeneration=0,SwapBusy=0;
+// The armed game: its tile folder, Title ID and discs (by number), set on
+// the launching title's thread before the watcher is told; and the module
+// the watcher hooked.
+static volatile LONG SwapGeneration=0,SwapArmed=0,SwapBusy=0;
 static char SwapFolder[MAX_PATH];
 static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
@@ -876,75 +878,99 @@ static void DevicePath(const char* path,char* out,size_t capacity) {
 }
 
 // The swap's lines go to the netiso.log of the last tile started, through
-// a link to its folder and the Win32 calls OpenLog uses, or else through the
-// kernel's with full write access. (The first build appended through the
-// kernel's with append access only, and nothing came out on the console;
-// why isn't known.) Every line is also kept in SwapTrace, after a marker, so
-// the plugin's memory can be read for them (xbdm's getmem) if no file takes
-// them, with how the last write went. (Kept small: with .data past 128 KB
-// the image grows by a 64 KB page, up to hud.xex's base at 0x913E0000.)
-static const char SwapLink[]="\\??\\NIsoW:",SwapRoot[]="NIsoW:";
+// the kernel's file calls with its device path (a drive link made on a
+// title's thread was gone by the time the game ran: "path not found", seen
+// over xbdm), and to SwapTrace in memory, after a marker, for xbdm's getmem.
+// The watcher runs on a system thread that has none of the CRT's per-thread
+// data, so the lines are put together without the CRT's formatting: %s, %u
+// (decimal) and %X (8 hex digits) only. A system thread's times carry on
+// from the last title thread's clock by the tick count.
 static char SwapLogDevice[MAX_PATH];
 static struct {
-    char marker[32]; volatile DWORD win32Error; volatile LONG ntStatus; volatile LONG length; char text[8192];
+    char marker[32]; volatile DWORD unused; volatile LONG ntStatus; volatile LONG length; char text[8192];
 } SwapTrace={"NetIsoTiles disc swap trace",0,0,0,""};
 static volatile LONG SwapWriting=0;
+static volatile DWORD ClockMs=0,ClockTick=0;
 static void TraceAdd(const char* text,LONG length) {
     LONG at=InterlockedExchangeAdd(&SwapTrace.length,length);
     if(at>=0 && at+length<LONG(sizeof(SwapTrace.text))) memcpy(SwapTrace.text+at,text,length);
 }
-// The log the swap's lines go to: folder's (a device path).
+static size_t Put(char* out,size_t at,size_t capacity,const char* text) {
+    while(text && *text && at+1<capacity) out[at++]=*text++;
+    out[at]=0;
+    return at;
+}
+static size_t PutNumber(char* out,size_t at,size_t capacity,DWORD value,DWORD base,int width) {
+    char digits[12]; int count=0;
+    do { digits[count++]="0123456789ABCDEF"[value%base]; value/=base; } while(value && count<12);
+    while(count<width && count<12) digits[count++]='0';
+    while(count && at+1<capacity) out[at++]=digits[--count];
+    out[at]=0;
+    return at;
+}
+static size_t Format(char* out,size_t at,size_t capacity,const char* format,va_list args) {
+    for(const char* f=format;*f && at+1<capacity;++f) {
+        if(*f!='%' || !f[1]) { out[at++]=*f; continue; }
+        char kind=*++f;
+        if(kind=='s') { const char* text=va_arg(args,const char*); at=Put(out,at,capacity,text ? text : "(null)"); }
+        else if(kind=='u') at=PutNumber(out,at,capacity,va_arg(args,DWORD),10,1);
+        else if(kind=='X') at=PutNumber(out,at,capacity,va_arg(args,DWORD),16,8);
+        else out[at++]=kind;
+    }
+    out[at]=0;
+    return at;
+}
+// The log the swap's lines go to: folder's (a device path). On a title thread.
 static void SwapLogTo(const char* folder) {
     while(InterlockedCompareExchange(&SwapWriting,1,0)) Sleep(1);
     sprintf_s(SwapLogDevice,"%s\\%s",folder,LogName);
-    LONG status=LinkDrive(SwapLink,folder);
-    if(status<0) SwapTrace.ntStatus=status;
     InterlockedExchange(&SwapWriting,0);
 }
 static bool SwapAppend(const char* text,DWORD length) {
-    if(!SwapLogDevice[0]) return false;
     while(InterlockedCompareExchange(&SwapWriting,1,0)) Sleep(1);
-    char path[32]; sprintf_s(path,"%s\\%s",SwapRoot,LogName);
-    DWORD done=0;
-    HANDLE file=CreateFile(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file!=INVALID_HANDLE_VALUE) {
-        SetFilePointer(file,0,NULL,FILE_END);
-        SwapTrace.win32Error=WriteFile(file,text,length,&done,NULL) && done==length ? 0 : GetLastError();
-        CloseHandle(file);
-    } else SwapTrace.win32Error=GetLastError();
-    bool written=SwapTrace.win32Error==0;
-    if(!written) {
-        char device[MAX_PATH]; strcpy_s(device,SwapLogDevice);
-        KernelString name={USHORT(strlen(device)),USHORT(sizeof(device)),device};
+    char device[MAX_PATH];
+    size_t size=Put(device,0,sizeof(device),SwapLogDevice);
+    LONG status=-1;
+    if(size) {
+        KernelString name={USHORT(size),USHORT(sizeof(device)),device};
         ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
-        IoStatusBlock io={0,0};
+        IoStatusBlock io={0,0}; HANDLE file=NULL;
         // GENERIC_WRITE with SYNCHRONIZE, FILE_OPEN_IF, a synchronous file.
-        LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,3,0x60);
+        status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,3,0x60);
         if(status>=0) {
             LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
             status=NtWriteFile(file,NULL,NULL,NULL,&io,text,length,&end);
             NtClose(file);
         }
         SwapTrace.ntStatus=status;
-        written=status>=0;
     }
     InterlockedExchange(&SwapWriting,0);
-    return written;
+    return status>=0;
 }
 static void SwapNote(const char* format,...) {
+    DWORD ms;
+    if(KeGetCurrentProcessType()!=SystemProcess) {
+        SYSTEMTIME t; GetLocalTime(&t);
+        ms=((t.wHour*60+t.wMinute)*60+t.wSecond)*1000+t.wMilliseconds;
+        ClockTick=GetTickCount(); ClockMs=ms;
+    } else ms=(ClockMs+(GetTickCount()-ClockTick))%86400000;
     char line[512];
-    SYSTEMTIME t; GetLocalTime(&t);
-    int length=sprintf_s(line,"%02u:%02u:%02u.%03u ",t.wHour,t.wMinute,t.wSecond,t.wMilliseconds);
+    size_t at=PutNumber(line,0,sizeof(line),ms/3600000,10,2);
+    at=Put(line,at,sizeof(line),":"); at=PutNumber(line,at,sizeof(line),ms/60000%60,10,2);
+    at=Put(line,at,sizeof(line),":"); at=PutNumber(line,at,sizeof(line),ms/1000%60,10,2);
+    at=Put(line,at,sizeof(line),"."); at=PutNumber(line,at,sizeof(line),ms%1000,10,3);
+    at=Put(line,at,sizeof(line)," ");
     va_list args; va_start(args,format);
-    int more=_vsnprintf_s(line+length,sizeof(line)-length-2,_TRUNCATE,format,args);
+    at=Format(line,at,sizeof(line)-2,format,args);
     va_end(args);
-    length+=more<0 ? int(strlen(line+length)) : more;
-    strcpy_s(line+length,sizeof(line)-length,"\r\n");
-    length+=2;
-    TraceAdd(line,length);
-    if(!SwapAppend(line,DWORD(length))) {
-        char failed[96];
-        TraceAdd(failed,sprintf_s(failed,"  (not in the log: Win32 error %lu, status %08X)\r\n",SwapTrace.win32Error,SwapTrace.ntStatus));
+    at=Put(line,at,sizeof(line),"\r\n");
+    TraceAdd(line,LONG(at));
+    if(!SwapAppend(line,DWORD(at))) {
+        char failed[64];
+        size_t n=Put(failed,0,sizeof(failed),"  (not in the log: status ");
+        n=PutNumber(failed,n,sizeof(failed),DWORD(SwapTrace.ntStatus),16,8);
+        n=Put(failed,n,sizeof(failed),")\r\n");
+        TraceAdd(failed,LONG(n));
     }
 }
 
@@ -981,9 +1007,9 @@ static int FindDiscs() {
         if(!info || info+20>(const BYTE*)DiscHeader+status.information) { SwapNote("Disc swaps: no disc number in %s.",path); continue; }
         int disc=info[18];
         if(disc<1 || disc>MaxDiscs) continue;
-        if(SwapIsos[disc][0]) { SwapNote("Disc %d is both %s and %s; using %s.",disc,SwapIsos[disc],settings.iso,SwapIsos[disc]); continue; }
+        if(SwapIsos[disc][0]) { SwapNote("Disc %u is both %s and %s; using %s.",DWORD(disc),SwapIsos[disc],settings.iso,SwapIsos[disc]); continue; }
         strcpy_s(SwapIsos[disc],settings.iso);
-        SwapNote("Disc %d of this game: %s (%s).",disc,settings.iso,Names[i]);
+        SwapNote("Disc %u of this game: %s (%s).",DWORD(disc),settings.iso,Names[i]);
         ++found;
     }
     return found;
@@ -1064,9 +1090,9 @@ static DWORD DiscNumber() {
 // so NetISO's unload call is skipped (see UnloadHooked).
 static DWORD WINAPI SwapThread(void*) {
     DWORD disc=SwapRequest.disc; void* event=SwapRequest.event;
-    SwapNote("The game asks for disc %lu, %s.",disc,SwapIsos[disc]);
+    SwapNote("The game asks for disc %u, %s.",disc,SwapIsos[disc]);
     bool in=DiscNumber()==disc;
-    if(in) SwapNote("Disc %lu is already in the drive.",disc);
+    if(in) SwapNote("Disc %u is already in the drive.",disc);
     else {
         static char text[64]; sprintf_s(text,"NetISO: putting in disc %lu",disc); Show(text);
         Settings settings; memset(&settings,0,sizeof(settings));
@@ -1078,12 +1104,12 @@ static DWORD WINAPI SwapThread(void*) {
             Sleep(QuietMs);
             for(int waited=QuietMs;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
                 in=DiscNumber()==disc;
-                if(in) SwapNote("Disc %lu is in the drive %d ms after the mount.",disc,waited); else Sleep(PollMs);
+                if(in) SwapNote("Disc %u is in the drive %u ms after the mount.",disc,DWORD(waited)); else Sleep(PollMs);
             }
-            if(!in) SwapNote("Disc %lu didn't show up in the drive.",disc);
+            if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
         }
     }
-    if(in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %lu is in.",disc); }
+    if(in) { KeSetEvent(event,1,FALSE); SwapNote("Told the game disc %u is in.",disc); }
     else Show("NetISO couldn't put the disc in. Press Guide to go back to Aurora.");
     InterlockedExchange(&SwapBusy,0);
     return 0;
@@ -1095,41 +1121,51 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
        && XexGetModuleHandle("default.xex",&module)>=0 && module==SwapModule) {
         if(InterlockedCompareExchange(&SwapBusy,1,0)) return 0; // The swap under way sets its event.
         SwapRequest.disc=number; SwapRequest.event=event;
-        HANDLE thread=NULL; DWORD id=0;
-        if(ExCreateThread(&thread,0x10000,&id,NULL,SwapThread,NULL,0)>=0) { CloseHandle(thread); return 0; }
+        // CreateThread, for a title thread with the CRT's thread data.
+        DWORD id=0;
+        HANDLE thread=CreateThread(NULL,0x10000,SwapThread,NULL,0,&id);
+        if(thread) { CloseHandle(thread); return 0; }
         InterlockedExchange(&SwapBusy,0);
         SwapNote("No thread for the swap; handing it on.");
-    } else SwapNote("The game asks for disc %lu (%08X, %p, %p); not a disc of this tile's, handing it on.",number,disc,event,extra);
+    } else SwapNote("The game asks for disc %u (%X, %X, %X); not a disc of this tile's, handing it on.",number,disc,DWORD(event),DWORD(extra));
     return ((SwapDisc)(void*)SwapPreviousStub)(disc,event,extra);
 }
 
-// Finds the tile's discs, then keeps the game's import pointed at
-// SwapDiscHooked while a game of that Title ID runs, also after Nova changes
-// it on a restart. A newer tile's start ends it. Each change in what it
-// finds is logged.
-static DWORD WINAPI SwapWatch(void* parameter) {
-    LONG generation=(LONG)(LONG_PTR)parameter;
-    int discs=FindDiscs();
-    if(discs<2) { SwapNote("Disc swaps: %d disc(s) of this game here, nothing to swap.",discs); return 0; }
-    SwapNote("Disc swaps: watching for the game.");
-    DWORD seenAt=GetTickCount();
-    SwapLook last=Found; DWORD lastDetail=1;
-    while(SwapGeneration==generation) {
+// The watcher: one system thread, started with the plugin, that keeps the
+// armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
+// that Title ID runs, also after Nova changes it on a restart. (Watchers
+// created during the launch, as the first builds did, were parked in the
+// kernel and never ran; seen over xbdm.) ArmSwap gives it a new generation;
+// it stops watching after SwapIdleMs without the game. Each change in what it
+// finds is logged. No CRT calls here (see SwapNote).
+static volatile LONG WatcherLoops=0,WatcherStop=0;
+static HANDLE Watcher=NULL;
+static DWORD WINAPI SwapWatch(void*) {
+    LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
+    while(!WatcherStop) {
+        InterlockedIncrement(&WatcherLoops);
+        if(!SwapArmed) { Sleep(500); continue; }
+        LONG generation=SwapGeneration;
+        if(generation!=watching) {
+            watching=generation; seenAt=GetTickCount(); last=Found; lastDetail=1;
+            SwapNote("Disc swaps: watching for Title ID %X.",SwapTitle);
+        }
         HANDLE module=NULL; SwapLook seen; DWORD detail;
         DWORD* thunk=SwapThunk(module,seen,detail);
         if(seen!=last || detail!=lastDetail) {
             switch(seen) {
             case NoGame: SwapNote("Disc swaps: no default.xex running."); break;
-            case NoExport: SwapNote("Disc swaps: xam has no export %lu.",SwapDiscOrdinal); break;
-            case NoHeader: SwapNote("Disc swaps: default.xex (%p) has no XEX header in memory.",module); break;
-            case OtherTitle: SwapNote("Disc swaps: default.xex (%p) is Title ID %08X.",module,detail); break;
-            case NoImports: SwapNote("Disc swaps: default.xex (%p) has no import libraries.",module); break;
-            case NoImport: SwapNote("Disc swaps: default.xex (%p), %lu import libraries, doesn't import XSwapDisc.",module,detail); break;
+            case NoExport: SwapNote("Disc swaps: xam has no export %u.",SwapDiscOrdinal); break;
+            case NoHeader: SwapNote("Disc swaps: default.xex (%X) has no XEX header in memory.",DWORD(module)); break;
+            case OtherTitle: SwapNote("Disc swaps: default.xex (%X) is Title ID %X.",DWORD(module),detail); break;
+            case NoImports: SwapNote("Disc swaps: default.xex (%X) has no import libraries.",DWORD(module)); break;
+            case NoImport: SwapNote("Disc swaps: default.xex (%X), %u import libraries, doesn't import XSwapDisc.",DWORD(module),detail); break;
             case BadThunk: {
                 const DWORD* at=(const DWORD*)detail;
                 if(MmIsAddressValid((void*)at) && MmIsAddressValid((void*)(at+3)))
-                    SwapNote("Disc swaps: the game's XSwapDisc import at %p reads %08X %08X %08X %08X, not a jump.",at,at[0],at[1],at[2],at[3]);
-                else SwapNote("Disc swaps: the game's XSwapDisc import at %p can't be read.",at);
+                    SwapNote("Disc swaps: the game's XSwapDisc import at %X reads %X %X %X %X, not a jump.",detail,at[0],at[1],at[2],at[3]);
+                else SwapNote("Disc swaps: the game's XSwapDisc import at %X can't be read.",detail);
+                Show("NetISO can't take this game's disc swaps.");
                 break;
             }
             case Found: break;
@@ -1147,20 +1183,31 @@ static DWORD WINAPI SwapWatch(void* parameter) {
                 SwapModule=module;
                 WriteJump(thunk,DWORD(SwapDiscHooked));
                 FlushCode(thunk,4*4);
-                SwapNote("The game's disc swaps (import at %p, module %p) come here now; they went to %08X, %s.",
-                         thunk,module,to,to==DWORD(target) ? "xam" : "another plugin (Nova's, from Aurora)");
+                SwapNote("Disc swaps: the game's (import at %X, module %X) come here now; they went to %X, %s.",
+                         DWORD(thunk),DWORD(module),to,to==DWORD(target) ? "xam" : "another plugin (Nova's, from Aurora)");
                 Show("NetISO: disc swaps ready for this game");
             }
         } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
-            SwapNote("Disc swaps: no game of this Title ID for %lu s; not watching any more.",SwapIdleMs/1000);
-            break;
+            SwapNote("Disc swaps: no game of this Title ID for %u s; not watching any more.",SwapIdleMs/1000);
+            InterlockedExchange(&SwapArmed,0);
         } else if(GetTickCount()-seenAt>SwapIdleMs*5) {
-            SwapNote("Disc swaps: still no XSwapDisc import to take after %lu s; not watching any more.",SwapIdleMs*5/1000);
-            break;
+            SwapNote("Disc swaps: still no XSwapDisc import to take after %u s; not watching any more.",SwapIdleMs*5/1000);
+            InterlockedExchange(&SwapArmed,0);
         }
         Sleep(thunk ? 1000 : 250);
     }
     return 0;
+}
+static void StartWatcher() {
+    DWORD id=0;
+    if(ExCreateThread(&Watcher,0x10000,&id,NULL,SwapWatch,NULL,SystemThread)<0) Watcher=NULL;
+}
+static void StopWatcher() {
+    if(!Watcher) return;
+    InterlockedExchange(&WatcherStop,1);
+    WaitForSingleObject(Watcher,3000);
+    CloseHandle(Watcher);
+    Watcher=NULL;
 }
 
 // Called when a disc is started: if a tile was started just before, watch
@@ -1170,19 +1217,30 @@ static bool DiscStart(const char* path,const char* mountPath) {
     if(!_stricmp(path,AuroraDiscXex) || !_stricmp(path,"XLNI_DET_MEDIA") || !_stricmp(path,DiscXex)) return true;
     return mountPath && !_stricmp(mountPath,DiscDevice) && !_stricmp(path,GameXex);
 }
+// On the launching title's thread: finds the discs of the tile just
+// started and hands them to the watcher. Once per start: XamLoaderLaunchTitle
+// goes on through XamLoaderLaunchTitleEx, so both hooks see it (seen in the
+// trace).
+static DWORD ArmedTile=0,ArmedAt=0;
 static void ArmSwap() {
     if(!TileFresh()) return;
-    LONG generation=InterlockedIncrement(&SwapGeneration);
+    if(ArmedTile==LastTile.at && GetTickCount()-ArmedAt<10000) return;
+    ArmedTile=LastTile.at; ArmedAt=GetTickCount();
+    InterlockedExchange(&SwapArmed,0);
     strcpy_s(SwapFolder,LastTile.folder); SwapTitle=LastTile.titleId; SwapModule=NULL;
-    HANDLE thread=NULL; DWORD id=0;
-    LONG status=ExCreateThread(&thread,0x10000,&id,NULL,SwapWatch,(void*)(LONG_PTR)generation,SystemThread);
-    if(status<0) SwapNote("Disc swaps: no system thread (status %08X).",status);
-    else { SwapNote("Disc swaps: the disc started; watching from system thread %08X.",id); CloseHandle(thread); }
+    int discs=FindDiscs();
+    if(discs<2) { SwapNote("Disc swaps: %u disc(s) of this game here, nothing to swap.",DWORD(discs)); return; }
+    if(!Watcher) { SwapNote("Disc swaps: the watcher didn't start with the plugin, so no swaps."); return; }
+    __sync(); // The discs before the generation, for the watcher.
+    InterlockedIncrement(&SwapGeneration);
+    InterlockedExchange(&SwapArmed,1);
+    SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
+    static char text[64]; sprintf_s(text,"NetISO: disc swaps on for this game (%d discs)",discs); Show(text);
 }
 // Each launch after a tile's, in that tile's log.
-static void NoteLaunch(const char* path,const char* mountPath,const char* what) {
+static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {
     if(!TileFresh()) return;
-    SwapNote("Launch %s%s%s: %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",what);
+    SwapNote("Launch %s%s%s (flags %X): %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",flags,what);
 }
 
 // ---- Tiles ----
@@ -1288,7 +1346,7 @@ static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     Handling handling=Handled(path,NULL);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,NULL);
-    NoteLaunch(path,NULL,LaunchKind(handling,disc));
+    NoteLaunch(path,NULL,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
@@ -1298,7 +1356,7 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     Handling handling=Handled(path,mountPath);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,mountPath);
-    NoteLaunch(path,mountPath,LaunchKind(handling,disc));
+    NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
@@ -1321,7 +1379,9 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         PatchUnload();
         PatchReadLimit();
         PatchReceiveBuffer();
+        StartWatcher();
     } else if(reason==DLL_PROCESS_DETACH) {
+        StopWatcher();
         UnpatchReceiveBuffer();
         UnpatchUnload();
         Unhook(LaunchTitleExHook);
