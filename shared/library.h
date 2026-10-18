@@ -30,8 +30,9 @@ public:
     virtual unsigned long LastError() = 0;
 };
 
-// updated counts kept folders whose launcher was rewritten with this version.
-struct SyncResult { int added, kept, updated, removed, skipped, held; };
+// updated counts kept folders whose launcher was rewritten with this version;
+// failed counts files of kept folders that couldn't be written or removed.
+struct SyncResult { int added, kept, updated, removed, skipped, held, failed; };
 
 // Value of key in an ini text ("key=value" lines), or false.
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);

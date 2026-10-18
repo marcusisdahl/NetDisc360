@@ -47,7 +47,7 @@ namespace {
 enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, Header = 20,
        MaxReadBytes = 16 << 20, MaxNameBytes = 4096, MaxDepth = 8, RateSeconds = 120, WebPort = 8360 };
 // An ISO counts as settled, and gets pushed, when nothing about it changed for this long.
-const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, ScanRetrySeconds = 30;
+const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, RetryFailedSeconds = 60, ScanRetrySeconds = 30;
 // A console that connected once (no --xbox) but not for this long is probed only every IdleProbeSeconds.
 const double IdleSeconds = 86400, IdleProbeSeconds = 600;
 // While a console is in a game, its FTP port is tried this long after the
@@ -932,7 +932,9 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor);
     }
-    if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
+    if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
+                                    result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
+    else if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
     if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
         XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
@@ -984,6 +986,12 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     bool scanDue=s.scanTries && Now()>=s.scanAt;
     bool online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=o.onlineWait;
     if(!(pushDue || scanDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
+    // Not while it plays a game: Aurora's FTP server isn't there to write
+    // to, and a push then failed file by file (seen on the console). It goes
+    // on once AuroraLoop sees Aurora again.
+    bool playing;
+    { std::lock_guard<std::mutex> hold(ConsoleLock); playing=console.connections>0 && !console.mounted.empty() && !console.inAurora; }
+    if(playing && !o.pushOnce) return;
     bool idle=o.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
     if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
     s.probedAt=Now();
@@ -1020,7 +1028,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(Push(console,ftp,result,o.pushOnce || Now()-holdFrom>=o.removeWait,o)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
-            s.retryAt=result.held ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
+            s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
             if(result.added || result.removed) {
                 if(o.scan) { s.scanTries=o.pushOnce ? 1 : ScanTries; s.scanAt=Now(); scanDue=true; }
                 else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());

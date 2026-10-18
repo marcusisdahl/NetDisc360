@@ -318,7 +318,7 @@ static int RefreshFile(Storage& storage, const char* folder, const char* name, c
 // Writes, or empties, a game folder's install.ini as the caller's findInstall
 // says (see library.h).
 static void RefreshInstall(Storage& storage, const char* root, const Folder* folders, int folderCount, const Folder& game,
-                           FindInstall findInstall, Note note) {
+                           FindInstall findInstall, Note note, SyncResult& result) {
     static InstallNeed need;
     memset(&need,0,sizeof(need));
     findInstall(game.iso,need);
@@ -342,7 +342,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
         text[0]=0;
     }
     int written=RefreshFile(storage,folder,GameInstall,reinterpret_cast<const unsigned char*>(text),DWORD(strlen(text)));
-    if(written<0) Say(note,"Couldn't write %s (error %lu).",path,storage.LastError());
+    if(written<0) { Say(note,"Couldn't write %s (error %lu).",path,storage.LastError()); ++result.failed; }
     else if(written && need.iso[0]) Say(note,"%s needs %s installed first; its install.ini says so.",game.name,need.iso);
     else if(written) Say(note,"%s needs no install disc any more; emptied its install.ini.",game.name);
 }
@@ -409,7 +409,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
                     refreshed=helper<0 ? -1 : refreshed|helper;
                 }
                 if(refreshed>0) { Say(note,"Updated the launcher in %s.",folders[k].name); ++result.updated; }
-                else if(refreshed<0) Say(note,"Couldn't update the launcher in %s (error %lu).",folders[k].name,storage.LastError());
+                else if(refreshed<0) { Say(note,"Couldn't update the launcher in %s (error %lu).",folders[k].name,storage.LastError()); ++result.failed; }
             }
             continue;
         }
@@ -456,7 +456,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     }
 
     if(findInstall) for(int k=0;k<folderCount;++k)
-        if(folders[k].game && folders[k].keep) RefreshInstall(storage,root,folders,folderCount,folders[k],findInstall,note);
+        if(folders[k].game && folders[k].keep) RefreshInstall(storage,root,folders,folderCount,folders[k],findInstall,note,result);
 
     // Folders whose ISO is gone. An empty listing could be a server problem,
     // so nothing is removed then.
@@ -465,7 +465,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!removeGone) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
         if(storage.RemoveGame(folder)) { Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso); ++result.removed; }
-        else Say(note,"Couldn't remove %s.",folder);
+        else { Say(note,"Couldn't remove %s.",folder); ++result.failed; }
     }
     return true;
 }
