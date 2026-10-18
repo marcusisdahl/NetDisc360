@@ -989,18 +989,28 @@ static const BYTE* XexField(const BYTE* header,DWORD size,DWORD key) {
 // the tile folders next to the tile's own with the same Title ID in
 // netiso.ini, numbered by their launcher's execution info, as Aurora finds
 // them. Each step goes to the tile's log.
-static DWORD DiscHeader[1024]; // 4 KB: the launchers' execution info is near the start.
+static DWORD DiscHeader[1024]; // 4 KB: the XEX header's field directory.
 static DWORD PreparedTile=0;
 static int PreparedDiscs=0;
 // The disc number in an XEX's execution info, and how many discs the set
-// has; 0 without one, -1 if the file can't be read.
+// has; 0 without one, -1 if the file can't be read. The directory is at the
+// start, but the field itself can be further in: the launchers' is at
+// 0x1490 of a 0x3000-byte header (seen on GTA V's tiles), so it's read
+// where the directory points.
 static int DiscOfXex(const char* path,int* discs=NULL) {
     HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     if(file==INVALID_HANDLE_VALUE) return -1;
-    DWORD done=0; BOOL ok=ReadFile(file,DiscHeader,sizeof(DiscHeader),&done,NULL);
+    DWORD done=0,at=0;
+    if(ReadFile(file,DiscHeader,sizeof(DiscHeader),&done,NULL) && done>=24 && !memcmp(DiscHeader,"XEX2",4)) {
+        DWORD headerSize=DiscHeader[2];
+        for(DWORD i=0;i<DiscHeader[5] && 24+i*8+8<=done;++i)
+            if(DiscHeader[6+i*2]==0x40006) { at=DiscHeader[7+i*2]; break; }
+        if(at<24 || at+24>headerSize) at=0;
+    }
+    BYTE info[24]; DWORD got=0;
+    bool read=at && SetFilePointer(file,LONG(at),NULL,FILE_BEGIN)==at && ReadFile(file,info,sizeof(info),&got,NULL) && got==sizeof(info);
     CloseHandle(file);
-    const BYTE* info=ok ? XexField((const BYTE*)DiscHeader,done,0x40006) : NULL;
-    if(!info || info+20>(const BYTE*)DiscHeader+done) return 0;
+    if(!read) return 0;
     if(discs) *discs=info[19];
     return info[18];
 }
@@ -1008,6 +1018,7 @@ static void PrepareDiscs(const Settings& settings) {
     PreparedTile=0; PreparedDiscs=0;
     char path[MAX_PATH]; sprintf_s(path,"%s\\%s",Folder,GameXex);
     int discs=0,disc=DiscOfXex(path,&discs);
+    if(disc<=0) { Note("Disc swaps: no disc number in %s (%d).",path,disc); return; }
     if(discs<2) return;
     Note("Disc swaps: this tile is disc %d of %d.",disc,discs);
     char parent[MAX_PATH]; strcpy_s(parent,Folder);
