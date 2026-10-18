@@ -1173,7 +1173,7 @@ static bool GameRuns(void* event) { return SwapModule && TitleModule()==SwapModu
 // so NetISO's unload call is skipped (see UnloadHooked).
 static DWORD WINAPI SwapThread(void*) {
     DWORD disc=SwapRequest.disc; void* event=SwapRequest.event;
-    static char text[64]; sprintf_s(text,"NetDisc 360: putting in disc %lu",disc); Show(text);
+    static char text[64]; sprintf_s(text,"NetDisc 360: inserting disc %lu of %d",disc,PreparedDiscs); Show(text);
     Sleep(PollMs); // xam's swap is under way before the tray moves.
     bool in=false;
     Settings settings; memset(&settings,0,sizeof(settings));
@@ -1188,7 +1188,7 @@ static DWORD WINAPI SwapThread(void*) {
         }
         if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
     }
-    if(!in) { sprintf_s(text,"NetDisc 360 couldn't put in disc %lu",disc); Show(text); }
+    if(!in) { sprintf_s(text,"NetDisc 360 couldn't insert disc %lu",disc); Show(text); }
     else {
         // The event lives in the game; if the game has ended, it's gone.
         DWORD waited=0;
@@ -1211,7 +1211,10 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     // never goes there.
     if(number<1 || number>DWORD(MaxDiscs) || !SwapIsos[number][0] || !event || !extra) {
         SwapNote("The game asks for disc %u (%X, %X, %X), which this tile has no folder for; told it there's no swap.",number,disc,DWORD(event),DWORD(extra));
-        Show("NetDisc 360: this game asks for a disc it has no tile for");
+        // The game's thread: no CRT here (see SwapNote).
+        char text[64]; size_t at=Put(text,0,sizeof(text),"NetDisc 360 has no tile for disc ");
+        at=PutNumber(text,at,sizeof(text),number,10,1); Put(text,at,sizeof(text)," of this game");
+        Show(text);
         return SwapRefused;
     }
     if(InterlockedCompareExchange(&SwapBusy,1,0)) { SwapNote("The game asks for disc %u during a swap; told it there's no swap.",number); return SwapRefused; }
@@ -1287,7 +1290,7 @@ static DWORD WINAPI SwapWatch(void*) {
                 FlushCode(thunk,4*4);
                 SwapNote("Disc swaps: the game's (import at %X, module %X) come here now; they went to %X, %s.",
                          DWORD(thunk),DWORD(module),to,to==DWORD(SwapDiscExport) ? "xam" : "another plugin (Nova's, from Aurora)");
-                Show("NetDisc 360: disc swaps ready for this game");
+                Show("NetDisc 360: ready to swap discs");
             }
         } else if(seen!=OtherTitle && seen!=NoImport && GetTickCount()-seenAt>SwapIdleMs) {
             SwapNote("Disc swaps: no game of this Title ID for %u s; not watching any more.",SwapIdleMs/1000);
@@ -1338,7 +1341,6 @@ static void ArmSwap() {
     InterlockedIncrement(&SwapGeneration);
     InterlockedExchange(&SwapArmed,1);
     SwapNote("Disc swaps: on for this start (the watcher has looked %u times since the plugin started).",DWORD(WatcherLoops));
-    static char text[64]; sprintf_s(text,"NetDisc 360: disc swaps on for this game (%d discs)",discs); Show(text);
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {
