@@ -6,8 +6,10 @@ Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 
     python tests/test_server.py
 """
+import base64
 import gzip
 import http.client
+import io
 import json
 import os
 import re
@@ -20,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -48,7 +51,8 @@ def build_server():
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
-                                               "server/web.cpp", "server/config.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -1074,6 +1078,112 @@ class Dashboard(ServerTest):
         state = self.json("GET", "/api/state")
         self.assertEqual(state["settings"]["xboxes"], ["192.168.1.30"])
         self.assertEqual([f["path"] for f in state["folders"]], [self.isos, more])
+
+    def backups(self):
+        return self.json("GET", "/api/backups")["backups"]
+
+    def test_backs_up_and_restores_the_settings(self):
+        self.start()
+        self.json("POST", "/api/settings", {"scan": False, "xboxes": "192.168.1.20"})
+        name = self.json("POST", "/api/backup", {})["name"]
+        self.assertTrue(re.match(r"NetDisc360_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_manual\.zip$", name), name)
+        listed = self.backups()
+        self.assertEqual([(b["name"], b["kind"], b["version"]) for b in listed], [(name, "manual", self.json("GET", "/api/state")["version"])])
+        # Downloaded as a zip that holds the settings file, and what made it.
+        status, response, data = self.call("GET", "/api/backup?name=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "application/zip")
+        self.assertIn('attachment; filename="%s"' % name, response.getheader("Content-Disposition"))
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertEqual(sorted(z.namelist()), ["backup.ini", "netdisc.ini"])
+            self.assertIn(b"scan=0\n", z.read("netdisc.ini"))
+            self.assertIn(b"kind=manual\n", z.read("backup.ini"))
+        self.assertEqual(self.call("GET", "/api/backup?name=../netdisc.ini")[0], 404)
+        # Restored by name: at once, with the settings before kept as a backup.
+        self.json("POST", "/api/settings", {"scan": True, "xboxes": "192.168.1.30"})
+        self.assertEqual(self.json("POST", "/api/restore", {"name": name})["notes"], [])
+        settings = self.json("GET", "/api/state")["settings"]
+        self.assertEqual((settings["scan"], settings["xboxes"]), (False, ["192.168.1.20"]))
+        with open(self.config) as f:
+            self.assertIn("xbox=192.168.1.20\n", f.read())
+        self.assertEqual(sorted(b["kind"] for b in self.backups()), ["manual", "restore"])
+        # Restored from a file: the zip as downloaded, or a netdisc.ini by itself.
+        self.json("POST", "/api/restore", {"file": base64.b64encode(b"[Server]\nxbox=192.168.1.77\nscan=1\n").decode()})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.77"])
+        self.json("POST", "/api/restore", {"file": base64.b64encode(data).decode()})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
+        # Anything else is refused, and changes nothing.
+        squeezed = io.BytesIO()
+        with zipfile.ZipFile(squeezed, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("netdisc.ini", "[Server]\nxbox=192.168.1.99\n")
+        for wrong, why in [(b"hello", "isn't a NetDisc 360 backup"), (squeezed.getvalue(), "compressed"), (data[:-30], "zip")]:
+            status, _, answer = self.call("POST", "/api/restore", {"file": base64.b64encode(wrong).decode()})
+            self.assertEqual(status, 400)
+            self.assertIn(why, json.loads(answer)["error"])
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
+        # Deleted.
+        before = len(self.backups())
+        self.json("POST", "/api/backup/delete", {"name": name})
+        self.assertEqual(len(self.backups()), before - 1)
+        self.assertNotIn(name, [b["name"] for b in self.backups()])
+
+    def test_keeps_the_newest_automatic_backups(self):
+        self.start()
+        folder = os.path.join(self.tmp.name, "Backups")
+        os.makedirs(folder)
+        with open(self.config, "rb") as f:
+            settings = f.read()
+        for days in range(1, 5):
+            when = int(time.time()) - days * 86400
+            stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(when))
+            with zipfile.ZipFile(os.path.join(folder, "NetDisc360_%s_scheduled.zip" % stamp), "w") as z:
+                z.writestr("backup.ini", "[Backup]\nkind=scheduled\nversion=0.9\ntime=%d\n" % when)
+                z.writestr("netdisc.ini", settings)
+        self.json("POST", "/api/settings", {"backupKeep": 2, "backupEvery": 1})
+        self.assertEqual(self.call("POST", "/api/settings", {"backupKeep": 0})[0], 400)
+        self.json("POST", "/api/backup", {})
+        kinds = [b["kind"] for b in self.backups()]
+        self.assertEqual(kinds, ["manual", "scheduled", "scheduled"])  # Newest first; yours are never deleted.
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("backup_keep=2\n", saved)
+        self.assertIn("backup_every=1\n", saved)
+
+    def test_finds_the_newest_release(self):
+        releases = os.path.join(self.tmp.name, "releases.json")
+
+        def release(tag, prerelease=False, draft=False):
+            return {"tag_name": tag, "name": tag, "body": "## New\n- Things", "html_url": "https://example.com/" + tag,
+                    "published_at": "2026-10-18T10:00:00Z", "draft": draft, "prerelease": prerelease,
+                    "assets": [{"name": "NetDisc.exe", "size": 1234, "browser_download_url": "https://example.com/NetDisc.exe",
+                                "digest": "sha256:" + "0" * 64}]}
+        with open(releases, "w") as f:
+            json.dump([release("v99.1.0-beta.2", prerelease=True), release("v99.9.0"), release("v99.10.0"),
+                       release("v100.0.0", draft=True), release("v0.1.0")], f)
+        self.start("--releases", releases)
+        state = self.json("GET", "/api/state")
+        self.assertRegex(state["version"], r"^\d+\.\d+\.\d+")
+        self.assertEqual((state["update"]["how"], state["update"]["checks"], state["update"]["newer"]), ("manual", True, False))
+        # Drafts and pre-releases aren't updates; 99.10 is newer than 99.9.
+        update = self.json("POST", "/api/update/check", {})["update"]
+        self.assertEqual((update["newer"], update["latest"]["version"], update["latest"]["exe"]), (True, "99.10.0", True))
+        self.assertIn("## New", update["latest"]["notes"])
+        self.assertNotIn("notes", self.json("GET", "/api/state")["update"]["latest"])
+        self.json("POST", "/api/settings", {"updatePrerelease": True})
+        self.assertEqual(self.json("POST", "/api/update/check", {})["update"]["latest"]["version"], "99.10.0")
+        with open(releases, "w") as f:
+            json.dump([release("v99.11.0-rc.1", prerelease=True), release("v99.10.0")], f)
+        self.assertEqual(self.json("POST", "/api/update/check", {})["update"]["latest"]["version"], "99.11.0-rc.1")
+        # Here (not NetDisc.exe in the notification area) it's updated by hand.
+        status, _, data = self.call("POST", "/api/update/install", {})
+        self.assertEqual(status, 400)
+        self.assertIn("by hand", json.loads(data)["error"])
+        self.assertEqual(self.call("POST", "/api/settings", {"updateAuto": True})[0], 400)
+        with open(releases, "w") as f:
+            f.write("[]")
+        update = self.json("POST", "/api/update/check", {})["update"]
+        self.assertEqual((update["newer"], update["latest"]), (False, None))
+        self.assertIn("no releases", update["error"])
 
     def test_a_password_locks_it(self):
         self.start()

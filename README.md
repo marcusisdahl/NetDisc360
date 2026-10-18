@@ -151,11 +151,11 @@ NetDisc 360 brings the PC side and the console plugin that ties it to Aurora. Th
 - The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
 - The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details. A game that is in your folders more than once shows at the top, where you choose which copy to play.
 - The **Consoles** page lists every console that has used the server: whether it's on (the server pings each console every 30 seconds, so one that's switched off shows as Offline), what it plays, what it was sent, whether its Aurora answers, when its game folders were updated, and its last five events (a game started, games added, launchers updated to a new version). Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
-- The **Settings** page has **Aurora's FTP login** (enter it if you changed it in Aurora) and **Start with Windows**, to have the server start, hidden, every time you sign in.
+- **Settings > Xbox & Aurora** has **Aurora's FTP login** (enter it if you changed it in Aurora), and **Settings > Windows** has **Start with Windows**, to have the server start, hidden, every time you sign in. **Settings** also has [updates and backups](#updating).
 - **Latest releases**, at the bottom of the sidebar, links to the newest NetDisc 360, [FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP) and [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet) downloads.
 - **Close the browser tab and forget about it.** The server keeps running. Click its icon to open the dashboard again (starting `NetDisc.exe` again does the same); right-click it and pick **Quit NetDisc 360** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
-- **From your phone or another computer:** on the **Settings** page, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
+- **From your phone or another computer:** under **Settings > Dashboard**, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
 
 Settings are saved in `%APPDATA%\NetDisc 360\netdisc.ini`, with the FTP password encrypted for your Windows user. The **Log** page shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), with the same dashboard.
 
@@ -288,7 +288,7 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Troubleshooting
 
-- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login on the dashboard's **Settings** page matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
+- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login under the dashboard's **Settings > Xbox & Aurora** matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
 - **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the dashboard shows, and that Windows Firewall allows `NetDisc.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
 - **A game has no cover art.** Rename its folder in `Hdd1:\NetISO` (for example over FTP); at the next scan Aurora looks it up again. See [Cover art](#cover-art).
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
@@ -299,7 +299,15 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Updating
 
-Replace `NetDisc.exe` with the new one (quit the old one first from its notification-area icon) and start it again; the settings stay. On its next visit to the console it replaces the launchers in `Hdd1:\NetISO` with the new build by itself. Copy the new `NetIsoTiles.xex` over the old one on your USB drive and reboot the console. With Docker: `docker compose pull && docker compose up -d`.
+**On Windows** NetDisc 360 looks for a new version on GitHub twice a day. When one is out, the dashboard says so and **Settings > Updates** shows what's new; **Install and restart** backs up your settings, downloads the new `NetDisc.exe`, checks it against the release's checksum, puts it in place of the old one and starts it again. Turn on **Install updates by themselves** and it does that on its own while no console is playing. **Include test versions** offers pre-releases too. To update by hand instead, quit NetDisc 360 from its notification-area icon, replace `NetDisc.exe` with the new one and start it again; the settings stay either way.
+
+**With Docker** the dashboard shows that a new version is out, and you update the image yourself: `docker compose pull && docker compose up -d`.
+
+On its next visit to the console the new version replaces the launchers in `Hdd1:\NetISO` with its own by itself. Only `NetIsoTiles.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
+
+### Backups
+
+**Settings > Backups** keeps copies of your settings: `netdisc.ini` and the disc map, never your games. NetDisc 360 backs them up by itself once a week (or every day, or turn it off), and before every update and every restore, keeping the newest five of those. **Back up now** makes one that stays until you delete it. Each backup can be downloaded, restored or deleted, and **Restore from a file** brings back one you downloaded, or a `netdisc.ini` by itself, for example on a new PC or from the Windows app into Docker. Restored settings apply at once; a changed port takes effect at the next start. The backups are zips in the `Backups` folder next to the settings file (`%APPDATA%\NetDisc 360\Backups`, or `/config/Backups` in Docker).
 
 ## The server in detail
 
@@ -359,7 +367,9 @@ Some games come on two discs, one of which only installs content: GTA V's second
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
 - **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and settings only change from its own page. Don't forward port 8360 from the internet either.
-- **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn it off under **Settings > Cover art**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc 360, FastFTP and CUsbEnet only when you open it. The server itself never goes online.
+- **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc 360, FastFTP and CUsbEnet only when you open it. Apart from the update check below, the server itself never goes online.
+- **Backups hold Aurora's FTP login and the dashboard password's hash**, like the settings file (the FTP password is encrypted on Windows, so a backup restored on another PC or in Docker keeps the FTP password already set there). Keep downloaded backups where only you can read them.
+- **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc.exe` over HTTPS and installs it only if its size and SHA-256 match what GitHub lists for the release. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
 
 ## Limitations

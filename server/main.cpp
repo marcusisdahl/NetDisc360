@@ -10,10 +10,13 @@
 //   netdisc [options] [game folder ...]      (netdisc -h lists them)
 #include "../shared/library.h"
 #include "app.h"
+#include "backup.h"
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
 #include "ftp.h"
+#include "update.h"
+#include "version.h"
 #include "web.h"
 #include <algorithm>
 #include <atomic>
@@ -79,9 +82,17 @@ struct Options {
     // to show it's online before game folders are written (see WatchLoop).
     double onlineWait, removeWait;
     double pingSeconds;  // How often each console is pinged to see it's still on (PingLoop); 0: never.
+    // Backups of the settings (BackupLoop): every so many days (0: only by
+    // hand), keeping the newest so many but those made by hand.
+    int backupEvery, backupKeep;
+    // Updates (UpdateLoop): whether to look for them, install them by
+    // themselves (NetDisc.exe), and count test versions (pre-releases) too.
+    bool updateCheck, updateAuto, updatePrerelease;
+    std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30) {}
+                webLan(false), setupDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
+                backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -93,7 +104,14 @@ std::vector<unsigned char> Launcher, Boot;
 bool CanPush;         // A launcher is built in (or given), so game folders can be written.
 bool InTray;          // NetDisc.exe behind its notification-area icon (tray.cpp).
 bool PasswordFixed;   // The dashboard's password comes from NETDISC_WEB_PASSWORD.
+bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated by pulling it.
 double StartedAt;
+// The command line's options, under the settings file's: what a restored
+// backup's settings go over (Reload).
+Options CommandLine;
+// The version before an update, kept in the settings file until the new
+// version has started and said so.
+std::string UpdatedFrom;
 // Raised by a settings change that needs every console's game folders checked again.
 std::atomic<int> PushGeneration(0);
 // When the game folders were last changed on the dashboard, in Now() ms: like
@@ -1390,6 +1408,16 @@ bool Save() {
     f.Set("told_tray",o.toldTray ? "1" : "0");
     f.Set("web_lan",o.webLan ? "1" : "0");
     if(!PasswordFixed) f.Set("web_password",web::PasswordHash());
+    f.Set("backup_every",Number(o.backupEvery));
+    f.Set("backup_keep",Number(o.backupKeep));
+    f.Set("update_check",o.updateCheck ? "1" : "0");
+    f.Set("update_auto",o.updateAuto ? "1" : "0");
+    f.Set("update_prerelease",o.updatePrerelease ? "1" : "0");
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        if(UpdatedFrom.empty()) f.Remove("updated_from");
+        else f.Set("updated_from",UpdatedFrom);
+    }
     std::map<std::string,Choice> choices;
     { std::lock_guard<std::mutex> hold(DuplicatesLock); choices=Choices; }
     before=f.Number("choices",0);
@@ -1464,10 +1492,19 @@ bool LoadConfig(Options& o) {
     o.toldTray=Flag(f,"told_tray",o.toldTray);
     o.webLan=Flag(f,"web_lan",o.webLan);
     if(f.Has("web_port")) o.webPort=int(f.Number("web_port",o.webPort));
-    web::SetPasswordHash(f.Get("web_password"));
+    if(!PasswordFixed) web::SetPasswordHash(f.Get("web_password"));
+    if(f.Has("backup_every")) o.backupEvery=std::max(0,std::min(365,int(f.Number("backup_every",o.backupEvery))));
+    if(f.Has("backup_keep")) o.backupKeep=std::max(1,std::min(100,int(f.Number("backup_keep",o.backupKeep))));
+    o.updateCheck=Flag(f,"update_check",o.updateCheck);
+    o.updateAuto=Flag(f,"update_auto",o.updateAuto);
+    o.updatePrerelease=Flag(f,"update_prerelease",o.updatePrerelease);
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        UpdatedFrom=f.Get("updated_from");
+    }
     // Which copy of a game to play: "key|copy ids|path" (see Choice).
     {
-        std::lock_guard<std::mutex> hold(DuplicatesLock);
+        std::map<std::string,Choice> choices;
         for(long long i=1,n=f.Number("choices",0);i<=n;++i) {
             std::string value=f.Get(("choice"+Number(i)).c_str());
             size_t bar=value.find('|'), second=bar==std::string::npos ? bar : value.find('|',bar+1);
@@ -1481,16 +1518,21 @@ bool LoadConfig(Options& o) {
                 if(comma>at) choice.copies.insert(copies.substr(at,comma-at));
                 at=comma+1;
             }
-            Choices[value.substr(0,bar)]=choice;
+            choices[value.substr(0,bar)]=choice;
         }
+        std::lock_guard<std::mutex> hold(DuplicatesLock);
+        Choices.swap(choices);
     }
+    std::vector<KnownConsole> known;
     for(long long i=1,n=f.Number("consoles",0);i<=n;++i) {
         std::string value=f.Get(("console"+Number(i)).c_str());
         size_t bar=value.find('|');
         if(bar==std::string::npos || !bar) continue;
         KnownConsole c = {value.substr(0,bar), atoll(value.c_str()+bar+1)};
-        Known.push_back(c);
+        known.push_back(c);
     }
+    std::lock_guard<std::mutex> hold(SettingsLock);
+    Known.swap(known);
     return true;
 }
 
@@ -1534,12 +1576,61 @@ std::vector<std::string> PcAddresses() {
     return out;
 }
 
+// Updates ------------------------------------------------------------------
+
+// What the update check found and how an install goes (UpdateLoop,
+// InstallUpdate), for the dashboard.
+struct UpdateStatus {
+    bool checking, installing;
+    long long checkedAt;     // When a check last got GitHub's answer (Unix time); 0: not yet.
+    std::string error;       // Why the last check got none.
+    bool found;              // latest is GitHub's newest release.
+    update::Release latest;
+    std::string stage;       // While installing: download, check or restart.
+    long long got, total;    // Of the download.
+    std::string installError;
+    std::string told;        // The version the log and the icon told about.
+    UpdateStatus() : checking(false), installing(false), checkedAt(0), found(false), got(0), total(0) {}
+};
+UpdateStatus Updates;
+std::mutex UpdateLock;
+std::atomic<bool> CheckSoon(false);  // UpdateLoop checks within seconds.
+
+// How this copy is updated: app (NetDisc.exe installs it), docker (pull the
+// image) or manual (download it, or build it, by hand).
+const char* UpdateHow() {
+#ifdef _WIN32
+    if(InTray) return "app";
+#endif
+    return InDocker ? "docker" : "manual";
+}
+
+// Whether the server asks GitHub itself; if not, the page does.
+bool ChecksUpdates(const Options& o) { return update::CanFetch() || !o.releasesFile.empty(); }
+
+void UpdateJson(web::Json& j, const Options& o, bool notes) {
+    std::lock_guard<std::mutex> hold(UpdateLock);
+    const UpdateStatus& u=Updates;
+    bool newer=u.found && update::Compare(u.latest.version,NETDISC_VERSION)>0;
+    j.Key("update").Open('{').Set("how",UpdateHow()).Set("checks",ChecksUpdates(o)).Set("checking",u.checking);
+    j.Set("checkedAt",u.checkedAt).Set("error",u.error).Set("newer",newer);
+    j.Set("installing",u.installing).Set("stage",u.stage).Set("got",u.got).Set("total",u.total).Set("installError",u.installError);
+    if(u.found) {
+        j.Key("latest").Open('{').Set("tag",u.latest.tag).Set("version",u.latest.version).Set("name",u.latest.name);
+        j.Set("page",u.latest.page).Set("published",u.latest.published).Set("prerelease",u.latest.prerelease);
+        j.Set("size",u.latest.exeSize).Set("exe",!u.latest.exeUrl.empty());
+        if(notes) j.Set("notes",u.latest.notes);
+        j.Close('}');
+    } else j.Key("latest").Null();
+    j.Close('}');
+}
+
 void State(web::Reply& out) {
     Options o;
     std::vector<KnownConsole> known;
     { std::lock_guard<std::mutex> hold(SettingsLock); o=Settings; known=Known; }
     web::Json j;
-    j.Open('{').Set("name","NetDisc 360").Set("built",__DATE__ " " __TIME__);
+    j.Open('{').Set("name","NetDisc 360").Set("version",NETDISC_VERSION).Set("built",__DATE__ " " __TIME__);
 #ifdef _WIN32
     j.Set("platform","windows");
 #else
@@ -1561,10 +1652,15 @@ void State(web::Reply& out) {
     j.Set("xboxFolder",o.xboxFolder).Set("aurora",o.aurora).Set("setupDone",o.setupDone);
     j.Set("saved",!o.configPath.empty()).Set("webLan",o.webLan).Set("webAddress",WebAddress(o)).Set("lanSwitch",o.webAddress=="127.0.0.1");
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
+    j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
+    j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
 #ifdef _WIN32
     if(InTray) j.Set("startWithWindows",StartsWithWindows());
 #endif
     j.Close('}');
+    j.Key("files").Open('{').Set("settings",o.configPath).Set("discMap",DiscMapPath(o.configPath));
+    j.Set("backups",o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Backups").Close('}');
+    UpdateJson(j,o,false);
 
     std::vector<IsoFile> games;
     long long version;
@@ -1843,6 +1939,18 @@ bool Bool(const web::Value& v, const char* key, bool& out) {
     return true;
 }
 
+// A whole number from low to high; false if it isn't there, and error if it isn't one.
+bool Whole(const web::Value& v, const char* key, int low, int high, int& out, std::string& error) {
+    const web::Value* f=v.Get(key);
+    if(!f) return false;
+    if(f->type!=web::Value::Number || f->number!=double(int(f->number)) || f->number<low || f->number>high) {
+        error=std::string(key)+" is a whole number from "+Number(low)+" to "+Number(high)+".";
+        return false;
+    }
+    out=int(f->number);
+    return true;
+}
+
 std::string FtpFolder(std::string path) {
     while(path.size()>1 && path[path.size()-1]=='/') path.erase(path.size()-1);
     return path;
@@ -1898,6 +2006,15 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Bool(v,"category",next.filter);
     Bool(v,"scan",next.scan);
     Bool(v,"setupDone",next.setupDone);
+    Whole(v,"backupEvery",0,365,next.backupEvery,error);
+    Whole(v,"backupKeep",1,100,next.backupKeep,error);
+    if(!error.empty()) return false;
+    Bool(v,"updateCheck",next.updateCheck);
+    if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
+        error=InDocker ? "The Docker image is updated by pulling the new one, not by itself." : "Only NetDisc.exe in the notification area installs updates by itself.";
+        return false;
+    }
+    Bool(v,"updatePrerelease",next.updatePrerelease);
     if(Bool(v,"webLan",next.webLan) && next.webLan && !was.webLan && web::PasswordHash().empty()) {
         error="Set a password for the dashboard first, so only you can change it from another device.";
         return false;
@@ -1922,12 +2039,22 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.filter!=was.filter) changed.push_back(next.filter ? "Xbox 360 category on" : "Xbox 360 category off");
     if(next.scan!=was.scan) changed.push_back(next.scan ? "Aurora scan on" : "Aurora scan off");
     if(next.webLan!=was.webLan) changed.push_back(next.webLan ? "dashboard open to other devices" : "dashboard on this computer only");
+    if(next.backupEvery!=was.backupEvery)
+        changed.push_back(next.backupEvery ? "settings backed up every "+Count(next.backupEvery,"day","days") : "settings backed up only by hand");
+    if(next.backupKeep!=was.backupKeep) changed.push_back("keeping the newest "+Count(next.backupKeep,"automatic backup","automatic backups"));
+    if(next.updateCheck!=was.updateCheck) changed.push_back(next.updateCheck ? "looking for updates" : "not looking for updates");
+    if(next.updateAuto!=was.updateAuto) changed.push_back(next.updateAuto ? "updates install by themselves" : "updates install when you say");
+    if(next.updatePrerelease!=was.updatePrerelease) changed.push_back(next.updatePrerelease ? "test versions count as updates" : "only full releases count as updates");
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings.folders=next.folders; Settings.xboxes=next.xboxes; Settings.ftpUser=next.ftpUser; Settings.ftpPassword=next.ftpPassword;
         Settings.xboxFolder=next.xboxFolder; Settings.aurora=next.aurora; Settings.push=next.push; Settings.filter=next.filter;
         Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.webLan=next.webLan;
+        Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
+        Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
     }
+    // Pre-releases in or out changes which release is the newest.
+    if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
     if(next.xboxes!=was.xboxes) UpdateConsoles(next.xboxes);
     // Anything the push depends on writes every console's folders again (only what differs).
     if(next.xboxes!=was.xboxes || login || next.xboxFolder!=was.xboxFolder || next.aurora!=was.aurora ||
@@ -1974,6 +2101,311 @@ bool ChooseCopy(const web::Value& v, std::string& error) {
     return true;
 }
 
+// Backups of the settings ---------------------------------------------------------
+
+std::mutex BackupLock;
+
+// Backups next to the settings file; "" without one.
+std::string BackupFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Backups"; }
+
+// A backup of the settings file and the disc map as they are now.
+bool MakeBackup(const char* kind, std::string& name, std::string& error) {
+    Options o=Current();
+    if(o.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so there's nothing to back up."; return false; }
+    Save();
+    std::map<std::string,std::string> files;
+    std::string text;
+    if(!config::ReadFile(o.configPath,text,1<<20)) { error="Can't read "+o.configPath+"."; return false; }
+    files["netdisc.ini"]=text;
+    if(config::ReadFile(DiscMapPath(o.configPath),text,1<<20)) files["discs.ini"]=text;
+    std::lock_guard<std::mutex> hold(BackupLock);
+    if(!backup::Make(BackupFolder(o),kind,files,name,error)) {
+        Log("Couldn't back up the settings: %s",config::FromUtf8(error).c_str());
+        return false;
+    }
+    Log("Settings backed up (%s): %s",kind,config::FromUtf8(name).c_str());
+    int removed=backup::Prune(BackupFolder(o),o.backupKeep);
+    if(removed) Log("Deleted the %s oldest automatic backup%s, keeping the newest %d.",Number(removed).c_str(),removed==1 ? "" : "s",o.backupKeep);
+    return true;
+}
+
+void Backups(web::Reply& out) {
+    Options o=Current();
+    std::string folder=BackupFolder(o);
+    std::vector<backup::Info> list;
+    if(!folder.empty()) { std::lock_guard<std::mutex> hold(BackupLock); list=backup::List(folder); }
+    web::Json j;
+    j.Open('{').Set("available",!folder.empty()).Set("folder",folder).Set("platform",backup::Platform()).Key("backups").Open('[');
+    for(size_t i=0;i<list.size();++i) {
+        const backup::Info& b=list[i];
+        j.Open('{').Set("name",b.name).Set("kind",b.kind).Set("version",b.version).Set("platform",b.platform);
+        j.Set("time",b.time).Set("size",b.size).Close('}');
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
+std::string BackupPath(const std::string& name) {
+#ifdef _WIN32
+    return BackupFolder(Current())+"\\"+name;
+#else
+    return BackupFolder(Current())+"/"+name;
+#endif
+}
+
+// A backup in the folder, by its file name, as its bytes.
+bool ReadBackup(const std::string& name, std::string& data, std::string& error) {
+    std::string folder=BackupFolder(Current());
+    if(folder.empty() || !backup::Named(name)) { error="There's no backup by that name."; return false; }
+    std::lock_guard<std::mutex> hold(BackupLock);
+    if(!config::ReadFile(BackupPath(name),data,8<<20)) { error="That backup isn't there any more."; return false; }
+    return true;
+}
+
+// The settings from the file again, after a restore: the command line's
+// options under what the file says, as at a start (the ports stay until the
+// next start).
+void Reload(std::vector<std::string>& notes) {
+    Options was=Current(), o=CommandLine;
+    o.configPath=was.configPath;
+    LoadConfig(o);
+    if(!CanPush) o.push=false;
+    if(o.webLan && web::PasswordHash().empty()) {
+        o.webLan=false;
+        notes.push_back("The backup lets other devices open the dashboard but has no password, so it's on this computer only until you set one.");
+    }
+    if(o.webPort!=was.webPort) notes.push_back("The backup's dashboard port ("+Number(o.webPort)+") is used from the next start.");
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        Settings.folders=o.folders; Settings.xboxes=o.xboxes; Settings.ftpUser=o.ftpUser; Settings.ftpPassword=o.ftpPassword;
+        Settings.xboxFolder=o.xboxFolder; Settings.aurora=o.aurora; Settings.push=o.push; Settings.filter=o.filter; Settings.scan=o.scan;
+        Settings.setupDone=o.setupDone; Settings.toldTray=o.toldTray; Settings.webLan=o.webLan;
+        Settings.backupEvery=o.backupEvery; Settings.backupKeep=o.backupKeep;
+        Settings.updateCheck=o.updateCheck; Settings.updateAuto=o.updateAuto && !strcmp(UpdateHow(),"app"); Settings.updatePrerelease=o.updatePrerelease;
+    }
+    UpdateConsoles(o.xboxes);
+    FoldersChangedAt=(long long)(Now()*1000);
+    ++PushGeneration;
+    { std::lock_guard<std::mutex> hold(GamesListLock); ++GamesVersion; }
+    if(o.webLan!=was.webLan) StartWeb(Current(),true);
+    CheckSoon=true;
+    Save();
+}
+
+// Puts a backup's settings (data: the backup's bytes) in place of the ones
+// now, which are backed up first, and uses them at once.
+bool Restore(const std::string& data, std::vector<std::string>& notes, std::string& error) {
+    std::map<std::string,std::string> files;
+    backup::Info info;
+    if(!backup::Open(data,files,info,error)) return false;
+    Options now=Current();
+    if(now.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so a backup can't be restored."; return false; }
+    std::string undo;
+    if(!MakeBackup("restore",undo,error)) { error="The settings now couldn't be backed up first, so nothing was restored. "+error; return false; }
+    config::File f;
+    f.Read(files["netdisc.ini"]);
+    // Aurora's FTP password is encrypted for the Windows user that saved it;
+    // where it can't be read, the one in use stays.
+    std::string password;
+    bool here=info.platform.empty() || info.platform==backup::Platform();
+    if(f.Has("ftp_password") && (!here || !config::Unprotect(f.Get("ftp_password"),password))) {
+        notes.push_back("Aurora's FTP password in the backup can only be read by the Windows user that made it, so the password you use now was kept.");
+        f.Set("ftp_password",config::Protect(now.ftpPassword));
+    }
+    f.Remove("updated_from");
+    int missing=0, folders=int(f.Number("folders",0));
+    for(int i=1;i<=folders;++i) if(!config::IsFolder(config::FromUtf8(f.Get(("folder"+Number(i)).c_str())))) ++missing;
+    if(missing) notes.push_back(Count(missing,"of the backup's game folders isn't","of the backup's game folders aren't")+" on this computer; change them on the Game folders page.");
+    if(PasswordFixed && f.Has("web_password")) notes.push_back("The dashboard's password stays the one set with NETDISC_WEB_PASSWORD.");
+    {
+        std::lock_guard<std::mutex> hold(SaveLock);
+        if(!config::WriteFile(now.configPath,f.Text(),true)) { error="Can't write "+now.configPath+"."; return false; }
+    }
+    if(files.count("discs.ini")) {
+        std::lock_guard<std::mutex> hold(MapLock);
+        if(!config::WriteFile(DiscMapPath(now.configPath),files["discs.ini"],false)) notes.push_back("The disc map couldn't be written, so it stays as it was.");
+    }
+    Reload(notes);
+    char made[64]="";
+    if(info.time) {
+        time_t t=time_t(info.time);
+        struct tm local;
+#ifdef _WIN32
+        localtime_s(&local,&t);
+#else
+        localtime_r(&t,&local);
+#endif
+        strftime(made,sizeof(made),"%Y-%m-%d %H:%M",&local);
+    }
+    Log("Settings restored from a backup%s%s%s; the settings before are in %s.",*made ? " made " : "",made,
+        info.version.empty() ? "" : (" by NetDisc 360 "+info.version).c_str(),config::FromUtf8(undo).c_str());
+    for(size_t i=0;i<notes.size();++i) Log("  %s",config::FromUtf8(notes[i]).c_str());
+    Event(EventInfo,"Settings restored from a backup%s%s",*made ? " made " : "",made);
+    return true;
+}
+
+// Scheduled backups: one every backupEvery days, looked for every ten
+// minutes from five minutes after the start (so a first start's half-made
+// settings aren't the first backup).
+void BackupLoop() {
+    Sleep(300000);
+    for(;;) {
+        Options o=Current();
+        std::string folder=BackupFolder(o), name, error;
+        if(o.backupEvery>0 && !folder.empty()) {
+            long long newest=0;
+            {
+                std::lock_guard<std::mutex> hold(BackupLock);
+                std::vector<backup::Info> list=backup::List(folder);
+                for(size_t i=0;i<list.size();++i) if(list[i].kind=="scheduled") newest=std::max(newest,list[i].time);
+            }
+            if((long long)time(NULL)-newest>=o.backupEvery*86400LL-60) MakeBackup("scheduled",name,error);
+        }
+        Sleep(600000);
+    }
+}
+
+// Updates, continued ----------------------------------------------------------------
+
+// GitHub's list of releases (or --releases's file, for the tests).
+bool FetchReleases(const Options& o, std::string& body, std::string& error) {
+    if(o.releasesFile.empty()) return update::Fetch(update::ReleasesUrl(),body,8<<20,NULL,error);
+    if(config::ReadFile(o.releasesFile,body,8<<20)) return true;
+    error="Can't read "+o.releasesFile+".";
+    return false;
+}
+
+bool UpdateNewer() {
+    std::lock_guard<std::mutex> hold(UpdateLock);
+    return Updates.found && update::Compare(Updates.latest.version,NETDISC_VERSION)>0;
+}
+
+// Asks GitHub for the newest release; false with why in error.
+bool CheckForUpdate(std::string& error) {
+    Options o=Current();
+    {
+        std::lock_guard<std::mutex> hold(UpdateLock);
+        if(Updates.checking) { error="It's checking already."; return false; }
+        Updates.checking=true;
+    }
+    std::string body;
+    update::Release r;
+    bool answered=FetchReleases(o,body,error);
+    bool ok=answered && update::Newest(body,o.updatePrerelease,r,error);
+    std::string tell;
+    {
+        std::lock_guard<std::mutex> hold(UpdateLock);
+        Updates.checking=false;
+        if(answered) Updates.checkedAt=(long long)time(NULL);
+        Updates.error=ok ? std::string() : error;
+        Updates.found=ok;
+        if(ok) Updates.latest=r;
+        if(ok && update::Compare(r.version,NETDISC_VERSION)>0 && Updates.told!=r.version) tell=Updates.told=r.version;
+    }
+    if(!ok) Log("Update check: %s",error.c_str());
+    if(!tell.empty()) {
+        Log("NetDisc 360 %s is out (this is %s): %s",tell.c_str(),NETDISC_VERSION,r.page.c_str());
+        Event(EventInfo,"NetDisc 360 %s is out; see what's new under Settings, Updates",tell.c_str());
+#ifdef _WIN32
+        if(InTray && !o.updateAuto) Notify("NetDisc 360 "+tell+" is out","Click here to see what's new and install it.","#settings/updates",false);
+#endif
+    }
+    return ok;
+}
+
+void DownloadProgress(long long got, long long total) {
+    std::lock_guard<std::mutex> hold(UpdateLock);
+    Updates.got=got; Updates.total=total;
+}
+
+// Downloads the newest release's NetDisc.exe, checks it, backs up the
+// settings and puts it in place of this exe, which then restarts as it.
+void InstallUpdate() {
+    Options o=Current();
+    std::string body, exe, error, name;
+    update::Release r;
+    bool ok=FetchReleases(o,body,error) && update::Newest(body,o.updatePrerelease,r,error);
+    if(ok && update::Compare(r.version,NETDISC_VERSION)<=0) { ok=false; error="This is the newest version already."; }
+    if(ok && r.exeUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc.exe to install; download it from GitHub."; }
+    if(ok) {
+        Log("Downloading NetDisc 360 %s: %s",r.version.c_str(),r.exeUrl.c_str());
+        ok=update::Fetch(r.exeUrl,exe,256<<20,DownloadProgress,error);
+    }
+    if(ok) {
+        std::lock_guard<std::mutex> hold(UpdateLock);
+        Updates.stage="check";
+    }
+    ok=ok && update::CheckExe(exe,r,error);
+    if(ok) {
+        if(!MakeBackup("update",name,error)) Log("Installing anyway, without a backup of the settings.");
+        std::lock_guard<std::mutex> hold(UpdateLock);
+        Updates.stage="restart";
+    }
+#ifdef _WIN32
+    if(ok) {
+        { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; }
+        Save();
+        Log("Installing NetDisc 360 %s in place of %s; it restarts.",r.version.c_str(),NETDISC_VERSION);
+        Event(EventInfo,"Installing NetDisc 360 %s; it restarts in a moment",r.version.c_str());
+        ok=InstallExe(exe,error);
+        if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); } Save(); }
+    }
+#else
+    if(ok) { ok=false; error="This build doesn't install updates itself."; }
+#endif
+    if(ok) return;  // It's restarting.
+    Log("The update wasn't installed: %s",error.c_str());
+    Event(EventWarning,"The update wasn't installed: %s",error.c_str());
+    std::lock_guard<std::mutex> hold(UpdateLock);
+    Updates.installing=false;
+    Updates.stage.clear();
+    Updates.installError=error;
+}
+
+bool StartInstall(std::string& error) {
+    if(strcmp(UpdateHow(),"app")) {
+        error=InDocker ? "The Docker image is updated by pulling the new one: docker compose pull, then docker compose up -d."
+                       : "This copy is updated by hand: download the new one from GitHub.";
+        return false;
+    }
+    std::lock_guard<std::mutex> hold(UpdateLock);
+    if(Updates.installing) { error="It's installing already."; return false; }
+    Updates.installing=true; Updates.stage="download"; Updates.got=Updates.total=0; Updates.installError.clear();
+    std::thread(InstallUpdate).detach();
+    return true;
+}
+
+// Looks for an update a minute after the start, then every twelve hours (an
+// hour after a check that failed). One that installs by itself waits until
+// no console is playing.
+void UpdateLoop() {
+    double next=Now()+60;
+    for(;;) {
+        Sleep(5000);
+        Options o=Current();
+        if(!ChecksUpdates(o) || (!o.updateCheck && !CheckSoon)) continue;
+        if(Now()<next && !CheckSoon) continue;
+        CheckSoon=false;
+        std::string error;
+        next=Now()+(CheckForUpdate(error) ? 12*3600 : 3600);
+        if(!o.updateAuto || !UpdateNewer() || strcmp(UpdateHow(),"app")) continue;
+        bool busy=false;
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size();++i) busy=busy || consoles[i]->connections>0;
+        if(busy) { next=Now()+1800; continue; }
+        Log("Installing the update by itself (Settings, Updates).");
+        StartInstall(error);
+    }
+}
+
+void UpdateInfo(web::Reply& out) {
+    web::Json j;
+    j.Open('{').Set("version",NETDISC_VERSION).Set("built",__DATE__ " " __TIME__);
+    UpdateJson(j,Current(),true);
+    j.Close('}');
+    out.body=j.Text();
+}
+
 void Api(const web::Request& r, web::Reply& out) {
     web::Value body;
     if(r.method=="POST" && !web::Parse(r.body,body)) { out.Error(400,"That isn't JSON."); return; }
@@ -1999,6 +2431,55 @@ void Api(const web::Request& r, web::Reply& out) {
             Save();
             out.body="{\"ok\":true}";
         }
+    } else if(r.method=="GET" && r.path=="/api/backups") Backups(out);
+    else if(r.method=="POST" && r.path=="/api/backup") {
+        std::string name;
+        if(!MakeBackup("manual",name,error)) out.Error(400,error);
+        else { web::Json j; j.Open('{').Set("ok",true).Set("name",name).Close('}'); out.body=j.Text(); }
+    } else if(r.method=="GET" && r.path=="/api/backup") {
+        std::string name=r.Param("name");
+        if(!ReadBackup(name,out.body,error)) out.Error(404,error);
+        else { out.type="application/zip"; out.download=name; }
+    } else if(r.method=="POST" && r.path=="/api/backup/delete") {
+        std::string name, data;
+        Text(body,"name",name);
+        if(!ReadBackup(name,data,error)) out.Error(404,error);
+        else {
+            bool removed;
+            { std::lock_guard<std::mutex> hold(BackupLock); removed=config::RemoveFile(BackupPath(name)); }
+            if(!removed) out.Error(400,"That backup couldn't be deleted.");
+            else { Log("Deleted the backup %s.",name.c_str()); out.body="{\"ok\":true}"; }
+        }
+    } else if(r.method=="POST" && r.path=="/api/restore") {
+        // A backup in the folder by name, or a file from the browser (base64).
+        std::string name, file, data;
+        std::vector<std::string> notes;
+        bool ok;
+        if(Text(body,"name",name)) ok=ReadBackup(name,data,error);
+        else if(Text(body,"file",file)) {
+            ok=backup::FromBase64(file,data) && !data.empty();
+            if(!ok) error="That file didn't arrive whole; try again.";
+        } else { ok=false; error="Send a backup's name, or a file."; }
+        if(ok && Restore(data,notes,error)) {
+            web::Json j;
+            j.Open('{').Set("ok",true).Key("notes").Open('[');
+            for(size_t i=0;i<notes.size();++i) j.String(notes[i]);
+            j.Close(']').Close('}');
+            out.body=j.Text();
+        } else out.Error(400,error);
+    } else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
+    else if(r.method=="POST" && r.path=="/api/update/check") {
+        if(!ChecksUpdates(Current())) out.Error(400,"The dashboard checks for updates itself here.");
+        else { CheckForUpdate(error); UpdateInfo(out); }
+    } else if(r.method=="POST" && r.path=="/api/update/install") {
+        if(StartInstall(error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+#ifdef _WIN32
+    } else if(r.method=="POST" && r.path=="/api/restart" && InTray) {
+        Log("Restarting (asked on the dashboard).");
+        if(Restart(error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+#endif
     } else if(r.method=="POST" && r.path=="/api/forget") {
         std::string address;
         Text(body,"address",address);
@@ -2132,6 +2613,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o) {
         else if(hasValue && a=="--remove-wait") o.removeWait=atof(args[++i].c_str());
         else if(hasValue && a=="--ping") o.pingSeconds=atof(args[++i].c_str());
         else if(hasValue && a=="--config") o.configPath=config::ToUtf8(args[++i]);
+        else if(hasValue && a=="--releases") o.releasesFile=config::ToUtf8(args[++i]);  // For the tests.
         else if(hasValue && a=="--web-port") o.webPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--web-bind") {
             o.webAddress=args[++i];
@@ -2152,9 +2634,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     // The Docker image passes the FTP password here, so it doesn't show in
     // the process list; --ftp-password still wins.
     if(const char* password=getenv("NETDISC_FTP_PASSWORD")) Settings.ftpPassword=password;
+    InDocker=getenv("NETDISC_DOCKER") && *getenv("NETDISC_DOCKER");
     Options o=Settings;
     if(!ParseArguments(args,o)) return 2;
     if(!configPath.empty()) o.configPath=configPath;
+    CommandLine=o;
     bool fresh=!o.configPath.empty() && !LoadConfig(o);
     if(o.folders.empty() && o.configPath.empty()) o.folders.push_back(".");
     if(const char* password=getenv("NETDISC_WEB_PASSWORD")) {
@@ -2165,7 +2649,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     WSADATA wsa;
     if(WSAStartup(MAKEWORD(2,2),&wsa)) { fprintf(stderr,"Winsock didn't start.\n"); return 1; }
 #endif
-    Log("NetDisc 360, built %s %s.",__DATE__,__TIME__);
+    Log("NetDisc 360 %s, built %s %s.",NETDISC_VERSION,__DATE__,__TIME__);
     if(!o.configPath.empty()) Log("Settings: %s",config::FromUtf8(o.configPath).c_str());
     if(!o.configPath.empty()) Log("Disc map: %s",config::FromUtf8(DiscMapPath(o.configPath)).c_str());
 
@@ -2179,8 +2663,22 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         if(!CanPush && o.push) Log("This build has no launcher built in, so it won't update the Xbox (--launcher gives one).");
     }
     if(!CanPush) o.push=false;
-    { std::lock_guard<std::mutex> hold(SettingsLock); Settings=o; }
-    if(fresh) Save();
+#ifdef _WIN32
+    if(!InTray) o.updateAuto=false;
+#else
+    o.updateAuto=false;
+#endif
+    std::string updatedFrom;
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        Settings=o;
+        updatedFrom.swap(UpdatedFrom);
+    }
+    if(fresh || !updatedFrom.empty()) Save();
+    if(!updatedFrom.empty() && updatedFrom!=NETDISC_VERSION) {
+        Log("Updated from NetDisc 360 %s to %s.",updatedFrom.c_str(),NETDISC_VERSION);
+        Event(EventGood,"Updated to NetDisc 360 %s (from %s)",NETDISC_VERSION,updatedFrom.c_str());
+    }
 
     std::string where;
     for(size_t i=0;i<o.folders.size();++i) where+=(i ? ", " : "")+o.folders[i];
@@ -2217,6 +2715,8 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(AuroraLoop).detach();
     std::thread(PingLoop).detach();
     std::thread(SizeLoop).detach();
+    std::thread(BackupLoop).detach();
+    std::thread(UpdateLoop).detach();
     Serve(listener);
     return 0;
 }

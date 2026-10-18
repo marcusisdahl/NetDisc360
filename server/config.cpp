@@ -8,7 +8,9 @@
 #include <wincrypt.h>
 #pragma comment(lib, "crypt32.lib")
 #else
+#include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace config {
@@ -60,12 +62,13 @@ std::string Narrow(const std::wstring& text, UINT page) {
 }  // namespace
 
 bool File::Load(const std::string& path) {
-    FILE* f=Open(path,"rb");
-    if(!f) return false;
     std::string raw;
-    char part[4096]; size_t got;
-    while((got=fread(part,1,sizeof(part),f))>0) raw.append(part,got);
-    fclose(f);
+    if(!ReadFile(path,raw,16<<20)) return false;
+    Read(raw);
+    return true;
+}
+
+void File::Read(const std::string& raw) {
     const unsigned char* bytes=reinterpret_cast<const unsigned char*>(raw.data());
     std::string text;
     if(raw.size()>=2 && bytes[0]==0xFF && bytes[1]==0xFE) text=FromUtf16(bytes+2,raw.size()-2);
@@ -81,27 +84,15 @@ bool File::Load(const std::string& path) {
         if(line.empty() || line[0]=='[' || line[0]==';' || line[0]=='#' || equals==std::string::npos) continue;
         Set(Trim(line.substr(0,equals)).c_str(),Trim(line.substr(equals+1)));
     }
-    return true;
 }
 
-bool File::Save(const std::string& path) const {
+std::string File::Text() const {
     std::string text=std::string(Section)+"\n";
     for(size_t i=0;i<values_.size();++i) text+=values_[i].first+"="+values_[i].second+"\n";
-    std::string temporary=path+".new";
-    FILE* f=Open(temporary,"wb");
-    if(!f) return false;
-#ifndef _WIN32
-    fchmod(fileno(f),0600);
-#endif
-    bool ok=fwrite(text.data(),1,text.size(),f)==text.size();
-    ok=fclose(f)==0 && ok;
-#ifdef _WIN32
-    ok=ok && MoveFileExW(Wide(temporary,CP_UTF8).c_str(),Wide(path,CP_UTF8).c_str(),MOVEFILE_REPLACE_EXISTING);
-#else
-    ok=ok && !rename(temporary.c_str(),path.c_str());
-#endif
-    return ok;
+    return text;
 }
+
+bool File::Save(const std::string& path) const { return WriteFile(path,Text(),true); }
 
 bool File::Has(const char* key) const {
     std::string k=Lower(key);
@@ -179,6 +170,90 @@ FILE* Open(const std::string& utf8Path, const char* mode) { return fopen(utf8Pat
 bool IsFolder(const std::string& native) {
     struct stat st;
     return !stat(native.c_str(),&st) && S_ISDIR(st.st_mode);
+}
+#endif
+
+bool ReadFile(const std::string& utf8Path, std::string& data, size_t limit) {
+    FILE* f=Open(utf8Path,"rb");
+    if(!f) return false;
+    data.clear();
+    char part[65536]; size_t got;
+    while((got=fread(part,1,sizeof(part),f))>0 && data.size()<=limit) data.append(part,got);
+    fclose(f);
+    return data.size()<=limit;
+}
+
+bool WriteFile(const std::string& utf8Path, const std::string& data, bool secret) {
+    std::string temporary=utf8Path+".new";
+    FILE* f=Open(temporary,"wb");
+    if(!f) return false;
+#ifndef _WIN32
+    if(secret) fchmod(fileno(f),0600);
+#else
+    (void)secret;
+#endif
+    bool ok=fwrite(data.data(),1,data.size(),f)==data.size();
+    ok=fclose(f)==0 && ok;
+#ifdef _WIN32
+    ok=ok && MoveFileExW(Wide(temporary,CP_UTF8).c_str(),Wide(utf8Path,CP_UTF8).c_str(),MOVEFILE_REPLACE_EXISTING);
+#else
+    ok=ok && !rename(temporary.c_str(),utf8Path.c_str());
+#endif
+    if(!ok) RemoveFile(temporary);
+    return ok;
+}
+
+std::string FolderOf(const std::string& path) {
+    size_t cut=path.find_last_of("/\\");
+    return cut==std::string::npos ? std::string() : path.substr(0,cut+1);
+}
+
+#ifdef _WIN32
+bool RemoveFile(const std::string& utf8Path) { return DeleteFileW(Wide(utf8Path,CP_UTF8).c_str())!=0; }
+
+bool MakeFolder(const std::string& utf8Path) {
+    std::wstring path=Wide(utf8Path,CP_UTF8);
+    if(CreateDirectoryW(path.c_str(),NULL)) return true;
+    DWORD attributes=GetFileAttributesW(path.c_str());
+    return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::vector<Entry> Files(const std::string& utf8Folder) {
+    std::vector<Entry> out;
+    WIN32_FIND_DATAW found;
+    std::string folder=utf8Folder;
+    if(!folder.empty() && folder[folder.size()-1]!='\\' && folder[folder.size()-1]!='/') folder+='\\';
+    HANDLE search=FindFirstFileW(Wide(folder+"*",CP_UTF8).c_str(),&found);
+    if(search==INVALID_HANDLE_VALUE) return out;
+    do {
+        if(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+        // FILETIME counts 100 ns from 1601.
+        long long time=(((long long)found.ftLastWriteTime.dwHighDateTime<<32)|found.ftLastWriteTime.dwLowDateTime)/10000000-11644473600LL;
+        Entry e={Narrow(found.cFileName,CP_UTF8),((long long)found.nFileSizeHigh<<32)|found.nFileSizeLow,time};
+        out.push_back(e);
+    } while(FindNextFileW(search,&found));
+    FindClose(search);
+    return out;
+}
+#else
+bool RemoveFile(const std::string& utf8Path) { return !unlink(utf8Path.c_str()); }
+
+bool MakeFolder(const std::string& utf8Path) { return !mkdir(utf8Path.c_str(),0700) || IsFolder(utf8Path); }
+
+std::vector<Entry> Files(const std::string& utf8Folder) {
+    std::vector<Entry> out;
+    DIR* dir=opendir(utf8Folder.c_str());
+    if(!dir) return out;
+    std::string folder=utf8Folder;
+    if(!folder.empty() && folder[folder.size()-1]!='/') folder+='/';
+    while(struct dirent* d=readdir(dir)) {
+        struct stat st;
+        if(stat((folder+d->d_name).c_str(),&st) || !S_ISREG(st.st_mode)) continue;
+        Entry e={d->d_name,(long long)st.st_size,(long long)st.st_mtime};
+        out.push_back(e);
+    }
+    closedir(dir);
+    return out;
 }
 #endif
 }

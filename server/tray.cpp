@@ -9,12 +9,17 @@
 //
 // Started with options, the exe is the command-line server; this file then
 // only connects it to the console it was started from.
+//
+// Restarting (after an update, or from the dashboard) starts the exe again
+// with --tray --restarted <this process's id>; the new one waits for this
+// one to end before it starts serving.
 #ifdef _WIN32
 #include "app.h"
 #include "../shared/platform.h"
 #include <shellapi.h>
 #include <shlobj.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 #include <thread>
@@ -34,8 +39,8 @@ const wchar_t OldRunValue[] = L"NetISO server for Aurora";
 const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t RunValue[] = L"NetDisc 360";
 const int IconId = 1;  // server.rc
-enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD, WM_NOTE };
-enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1 };
+enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD, WM_NOTE, WM_RESTARTING };
+enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1, QuitTimer = 2 };
 
 HWND Window;
 NOTIFYICONDATAW Tray;
@@ -45,7 +50,7 @@ bool OpenWhenReady;   // Open it as soon as it does.
 std::wstring BalloonPage;  // Where clicking the last balloon goes: "" the dashboard, "#games" a page.
 
 struct Ready { std::string url, problem; };
-struct Note { std::string title, text; };
+struct Note { std::string title, text, page; bool warning; };
 
 std::wstring Wide(const std::string& text, UINT page) {
     int n = MultiByteToWideChar(page, 0, text.data(), int(text.size()), NULL, 0);
@@ -202,6 +207,8 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     case WM_READY: {
         Ready* ready = (Ready*)lParam;
         if (!ready->url.empty()) {
+            // Serving: the exe this one replaced in an update isn't needed now.
+            DeleteFileW((ExePath() + L".old").c_str());
             Url = Wide(ready->url, CP_UTF8);
             if (OpenWhenReady) OpenDashboard();
             OpenWhenReady = false;
@@ -217,10 +224,14 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     }
     case WM_NOTE: {
         Note* note = (Note*)lParam;
-        Balloon(Wide(note->title, CP_UTF8).c_str(), Wide(note->text, CP_UTF8).c_str(), NIIF_WARNING, L"#games");
+        Balloon(Wide(note->title, CP_UTF8).c_str(), Wide(note->text, CP_UTF8).c_str(), note->warning ? NIIF_WARNING : NIIF_INFO,
+                Wide(note->page, CP_UTF8).c_str());
         delete note;
         return 0;
     }
+    case WM_RESTARTING:  // The new one waits; a moment for the dashboard's answer to go out first.
+        SetTimer(Window, QuitTimer, 1500, NULL);
+        return 0;
     case WM_STOPPED: {
         std::wstring text = L"NetDisc 360 couldn't start.\n\n" + Wide(ServerProblem(), CP_ACP);
         MessageBoxW(NULL, text.c_str(), AppName, MB_ICONERROR);
@@ -228,6 +239,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         return 0;
     }
     case WM_TIMER:
+        if (wParam == QuitTimer) Quit();
         SetTip();
         return 0;
     }
@@ -255,11 +267,64 @@ void DashboardReady(const std::string& url, const std::string& problem) {
     if (!PostMessageW(Window, WM_READY, 0, (LPARAM)ready)) delete ready;
 }
 
-void Notify(const std::string& title, const std::string& text) {
+void Notify(const std::string& title, const std::string& text, const std::string& page, bool warning) {
     Note* note = new Note;
     note->title = title;
     note->text = text;
+    note->page = page;
+    note->warning = warning;
     if (!PostMessageW(Window, WM_NOTE, 0, (LPARAM)note)) delete note;
+}
+
+bool Restart(std::string& error) {
+    wchar_t pid[16];
+    _snwprintf_s(pid, ARRAYSIZE(pid), _TRUNCATE, L"%lu", GetCurrentProcessId());
+    std::wstring exe = ExePath(), command = L"\"" + exe + L"\" --tray --restarted " + pid;
+    STARTUPINFOW startup = {sizeof(startup)};
+    PROCESS_INFORMATION process;
+    if (!CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
+        char text[96];
+        _snprintf_s(text, sizeof(text), _TRUNCATE, "NetDisc 360 couldn't start again (error %lu).", GetLastError());
+        error = text;
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    PostMessageW(Window, WM_RESTARTING, 0, 0);
+    return true;
+}
+
+bool InstallExe(const std::string& data, std::string& error) {
+    // Windows lets a running exe be renamed, not replaced: this one moves
+    // aside to .old, and the new one takes its name.
+    std::wstring exe = ExePath(), fresh = exe + L".new", old = exe + L".old";
+    std::string folder = Narrow(ExeFolder(), CP_UTF8);
+    HANDLE file = CreateFileW(fresh.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD written = 0;
+    bool ok = file != INVALID_HANDLE_VALUE && WriteFile(file, data.data(), DWORD(data.size()), &written, NULL) && written == data.size();
+    if (file != INVALID_HANDLE_VALUE) ok = CloseHandle(file) && ok;
+    if (!ok) {
+        DeleteFileW(fresh.c_str());
+        error = "NetDisc 360 can't write in " + folder + ". Download the new version from GitHub and put it there yourself.";
+        return false;
+    }
+    if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(fresh.c_str());
+        error = "NetDisc 360 couldn't move itself aside in " + folder + ". Download the new version from GitHub and put it there yourself.";
+        return false;
+    }
+    if (!MoveFileExW(fresh.c_str(), exe.c_str(), 0)) {
+        MoveFileExW(old.c_str(), exe.c_str(), 0);
+        DeleteFileW(fresh.c_str());
+        error = "The new version couldn't take NetDisc 360's place in " + folder + ".";
+        return false;
+    }
+    if (Restart(error)) return true;
+    // The old one back, as the new one didn't start.
+    MoveFileExW(exe.c_str(), fresh.c_str(), MOVEFILE_REPLACE_EXISTING);
+    MoveFileExW(old.c_str(), exe.c_str(), 0);
+    DeleteFileW(fresh.c_str());
+    return false;
 }
 
 bool StartsWithWindows() { return !StartupEntry().empty(); }
@@ -274,10 +339,19 @@ void SetStartWithWindows(bool on) {
 }
 
 int TrayMain(int argc, char** argv) {
-    bool tray = argc == 2 && !strcmp(argv[1], "--tray");
-    if (argc > 1 && !tray) {
+    bool tray = argc > 1 && !strcmp(argv[1], "--tray");
+    bool restarted = tray && argc == 4 && !strcmp(argv[2], "--restarted");
+    if (argc > 1 && !(tray && (argc == 2 || restarted))) {
         UseConsole();
         return -1;
+    }
+    if (restarted) {
+        // The one that started this one quits once it has; then this one serves.
+        HANDLE before = OpenProcess(SYNCHRONIZE, FALSE, DWORD(strtoul(argv[3], NULL, 10)));
+        if (before) {
+            WaitForSingleObject(before, 30000);
+            CloseHandle(before);
+        }
     }
     HANDLE once = CreateMutexW(NULL, FALSE, L"Local\\NetDisc360Window");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {

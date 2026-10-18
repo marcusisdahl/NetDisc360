@@ -440,6 +440,7 @@ private:
         // A new password ends every session; this one goes on with a new cookie.
         std::string after=PasswordHash(), extra;
         if(after!=before && !after.empty()) extra=SessionHeader(Session(after),SessionDays*86400LL);
+        if(!reply.download.empty()) extra+="Content-Disposition: attachment; filename=\""+reply.download+"\"\r\n";
         return Send(reply.status,reply.type.c_str(),reply.body,extra,close);
     }
     SOCKET socket_;
@@ -591,4 +592,6 @@ std::string PasswordHash() {
     std::lock_guard<std::mutex> hold(PasswordLock);
     return Hash;
 }
+
+std::string Sha256Hex(const std::string& data) { return Hex(Sha(data)); }
 }

@@ -23,8 +23,15 @@ bool FirstTrayStart();         // True only the first time the icon shows, for i
 int TrayMain(int argc, char** argv);
 // The server calls this when its dashboard listens (url) or can't (problem).
 void DashboardReady(const std::string& url, const std::string& problem);
-// A notification from the icon (UTF-8); clicking it opens the dashboard's Games page.
-void Notify(const std::string& title, const std::string& text);
+// A notification from the icon (UTF-8); clicking it opens that page of the
+// dashboard, with a warning's icon or else an information one.
+void Notify(const std::string& title, const std::string& text, const std::string& page = "#games", bool warning = true);
+// Starts this exe again behind the icon, then quits once the new one waits
+// for it; false with why if it can't start.
+bool Restart(std::string& error);
+// Puts data, a newer NetDisc.exe, in place of this exe (kept as .old until
+// the new one is running) and restarts as it.
+bool InstallExe(const std::string& data, std::string& error);
 bool StartsWithWindows();
 void SetStartWithWindows(bool on);
 #endif

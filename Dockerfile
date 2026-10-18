@@ -16,6 +16,7 @@ COPY shared/ shared/
 COPY tests/posix_compat.h tests/
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
+        server/backup.cpp server/update.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc-360/releases/latest/download/NetISO-Sync.zip
@@ -45,6 +46,9 @@ COPY --from=build /launcher/ /usr/local/share/netdisc/
 COPY docker/entrypoint.sh /usr/local/bin/netdisc-entrypoint
 RUN chmod 0755 /usr/local/bin/netdisc-entrypoint
 USER netdisc
+# The dashboard says how to update the image (docker compose pull) instead of
+# offering to update itself.
+ENV NETDISC_DOCKER=1
 # The NetISO protocol and the dashboard. The server reaches the Xbox's FTP
 # (port 21) itself.
 EXPOSE 4323/tcp 8360/tcp

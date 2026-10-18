@@ -332,6 +332,53 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .facts .k { color: var(--muted); }
 .facts .v { overflow-wrap: anywhere; }
 
+/* Settings */
+.settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
+.subnav { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; }
+.subnav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--muted); font-weight: 550; text-decoration: none; border: 1px solid transparent; white-space: nowrap; }
+.subnav a:hover { background: var(--hover); color: var(--text); }
+.subnav a.on { background: var(--panel); color: var(--text); border-color: var(--line); box-shadow: var(--shadow); }
+.subnav a.on .i { color: var(--accent-text); }
+.subnav .new { margin-left: auto; }
+.section-head { margin: 2px 0 2px; }
+.section-head h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+.section-head p { margin: 3px 0 0; color: var(--muted); }
+.hero { display: flex; gap: 16px; align-items: center; padding: 20px; }
+.hero .mark { width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center; flex: none; }
+.hero .mark .i { width: 24px; height: 24px; }
+.hero .text { flex: 1; min-width: 0; }
+.hero h3 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.hero p { margin: 3px 0 0; color: var(--muted); }
+.hero .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.hero .brand-mark { width: 48px; height: 48px; display: block; }
+.hero-foot { display: flex; gap: 8px 18px; flex-wrap: wrap; align-items: center; padding: 12px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.hero-foot b { color: var(--text); font-weight: 600; }
+.progress { height: 8px; border-radius: 99px; background: var(--hover); overflow: hidden; margin-top: 10px; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.progress.busy i { width: 35%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.notes { overflow-wrap: anywhere; }
+.notes h3, .notes h4 { margin: 16px 0 6px; font-size: 14px; font-weight: 650; }
+.notes > :first-child { margin-top: 0; }
+.notes p { margin: 6px 0; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 3px 0; }
+.command { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line-strong); }
+.command code { flex: 1; min-width: 0; background: none; border: 0; padding: 0; overflow-x: auto; white-space: nowrap; }
+.backup-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
+.backup-row:first-child { border-top: 0; }
+.backup-row .kindmark { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.backup-row .grow { flex: 1; min-width: 0; }
+.backup-row .sub { color: var(--muted); font-size: 13px; }
+.backup-row .when { font-weight: 600; }
+.link { display: inline-flex; align-items: center; gap: 5px; }
+.backup-row .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.flag.new, .pill.new { background: var(--info); color: var(--panel); }
+.nav .count .flag.new { background: var(--info); }
+.notice.info { background: var(--info-soft); color: var(--info); }
+
 /* Log */
 .log { height: calc(100vh - 230px); min-height: 320px; overflow: auto; padding: 10px 0; background: var(--field); border-radius: 0 0 12px 12px; }
 .log div { padding: 1px 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -369,6 +416,12 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
   .places { flex-direction: row; flex-wrap: wrap; border-right: 0; padding-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
   .places button { width: auto; }
   .detail { flex-direction: column; }
+  .settings { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .subnav { position: static; flex-direction: row; overflow-x: auto; margin: 0 -16px; padding: 0 16px 2px; }
+  .hero { flex-wrap: wrap; }
+  .hero .actions { width: 100%; justify-content: flex-start; }
+  .backup-row { flex-wrap: wrap; }
+  .backup-row .actions { width: 100%; justify-content: flex-start; padding-left: 52px; }
   .covers { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px 12px; }
   .table .hide-narrow { display: none; }
   .offline-bar { padding: 8px 16px; }
@@ -546,6 +599,10 @@ async function refresh() {
   try {
     S = await api('state');
     failed = 0;
+    const said = store('restarted');
+    if (said) { store('restarted', ''); toast(said); }
+    // Where the server can't ask GitHub (Docker), this browser does, for the "New" in the sidebar.
+    if (!U && !S.update.checks && S.settings.updateCheck && !refresh.asked) { refresh.asked = true; loadUpdate(false).then(() => updateFrame()).catch(() => {}); }
     if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || !G.games.length)) {
       const g = await api('games');
       if (g.version !== G.version) { G = g; if (view && view.games) view.games(); }
@@ -555,7 +612,7 @@ async function refresh() {
     if (view && view.update) view.update();
   } catch (e) {
     if ($('.login')) return;
-    if (++failed === 3 && $('.side')) updateFrame(e.message);
+    if (++failed === 3 && $('.side')) updateFrame(restarting ? 'NetDisc 360 is restarting\u2026' : e.message);
   }
   timer = setTimeout(refresh, document.hidden ? 5000 : 1000);
 }
@@ -603,6 +660,7 @@ function updateFrame(problem) {
   for (const a of document.querySelectorAll('.nav a')) {
     const n = counts[a.dataset.page];
     if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
+    else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc 360 ' + updateOut() + ' is out' }, 'New'));
     else fill($('.count', a), n === undefined || n === '' ? '' : n);
   }
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
@@ -615,7 +673,7 @@ function route() {
   const id = (location.hash.slice(1) || 'dashboard').split('/')[0];
   const next = Pages[id] ? id : 'dashboard';
   for (const a of document.querySelectorAll('[data-page]')) a.classList.toggle('on', a.dataset.page === next);
-  if (next === page && view) return;
+  if (next === page && view) { if (view.route) view.route(); return; }
   if (view && view.leave) view.leave();
   page = next;
   charts = [];
@@ -787,11 +845,11 @@ const EventIcons = { good: 'circle-check', play: 'play', xbox: 'monitor', info: 
 // Dashboard -----------------------------------------------------------------------
 
 Pages.dashboard = root => {
-  const open = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
+  const open = h('div'), news = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
   const consoles = h('div.consoles'), events = h('ul.events');
   root.append(
     header('Dashboard', null),
-    h('div.stack', open, copies, setup, tiles,
+    h('div.stack', open, news, copies, setup, tiles,
       h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
         h('div.card-body', chartWrap, legend)),
       h('div.grid.two',
@@ -804,8 +862,11 @@ Pages.dashboard = root => {
       // Setup steps until they're done (or hidden).
       const st = S.settings;
       // Open to the network with no password: anyone there can change the settings.
-      if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings' }, 'Set a password')));
+      if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings/dashboard' }, 'Set a password')));
       else open.replaceChildren();
+      const out = updateOut();
+      if (out) fill(news, h('div.notice.info', ic('sparkles'), h('span', 'NetDisc 360 ' + out + ' is out.'), h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new')));
+      else news.replaceChildren();
       // A game in the folders more than once, with no copy chosen yet.
       const n = S.library.conflicts;
       if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
@@ -813,7 +874,7 @@ Pages.dashboard = root => {
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell NetISO where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetISO.xex.txt'), ' next to NetISO.xex on your USB drive, with one line: ', h('code', S.addresses[0] || 'this computer\u2019s address'), '. Then restart the Xbox.'] },
-        { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', 'Hdd1:\\NetISO'), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings' }, 'Settings'), ').'] },
+        { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', 'Hdd1:\\NetISO'), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings/xbox' }, 'Settings'), ').'] },
       ];
       const all = steps.every(s => s.done);
       if (st.setupDone) setup.replaceChildren();
@@ -957,9 +1018,9 @@ function details(g) {
   ]);
 }
 
-function modal(title, build, narrow) {
+function modal(title, build, narrow, closed) {
   const back = h('div.modal-back');
-  const close = () => { back.remove(); document.removeEventListener('keydown', esc); };
+  const close = () => { if (!back.isConnected) return; back.remove(); document.removeEventListener('keydown', esc); if (closed) closed(); };
   const esc = e => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', esc);
   back.addEventListener('mousedown', e => { if (e.target === back) close(); });
@@ -1121,77 +1182,416 @@ Pages.log = root => {
   return { update: more };
 };
 
+// Updates ------------------------------------------------------------------------------
+
+// Versions as GitHub tags them: <0, 0 or >0 as a is older than, the same as or
+// newer than b ("1.2.0", "v1.10.0", "1.2.0-beta.2"; a pre-release is older than its release).
+function versionCompare(a, b) {
+  const split = v => { v = String(v || '').replace(/^v/i, '').split('+')[0]; const i = v.indexOf('-'); return [v.slice(0, i < 0 ? v.length : i).split('.').map(n => parseInt(n, 10) || 0), i < 0 ? '' : v.slice(i + 1)]; };
+  const [x, px] = split(a), [y, py] = split(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0 ? -1 : 1; }
+  if (!px || !py) return px ? -1 : py ? 1 : 0;
+  const p = px.split('.'), q = py.split('.');
+  for (let i = 0; ; i++) {
+    if (i >= p.length || i >= q.length) return Math.sign(p.length - q.length);
+    const m = /^\d+$/.test(p[i]), n = /^\d+$/.test(q[i]);
+    const d = m && n ? Math.sign(p[i] - q[i]) : m !== n ? (m ? -1 : 1) : p[i] < q[i] ? -1 : p[i] > q[i] ? 1 : 0;
+    if (d) return d;
+  }
+}
+
+// What's known about updates: the server's own check (NetDisc.exe), or, where
+// the server can't reach GitHub (Docker), this browser's, kept for six hours.
+let U = null;
+const ReleasesApi = 'https://api.github.com/repos/marcusisdahl/NetDisc-360/releases?per_page=20';
+async function browserCheck(force) {
+  const pre = !!S.settings.updatePrerelease;
+  try {
+    const kept = JSON.parse(store('update') || 'null');
+    if (!force && kept && kept.pre === pre && Date.now() - kept.at < 6 * 3600e3) return kept.info;
+  } catch (e) { /* checked again */ }
+  const info = { checkedAt: 0, error: '', latest: null };
+  try {
+    const r = await fetch(ReleasesApi, { referrerPolicy: 'no-referrer', headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(r.status === 404 ? 'GitHub has no releases of NetDisc 360 to show (404).' : r.status === 403 || r.status === 429 ? 'GitHub turned the check away for now (too many checks from this network). Try again later.' : 'GitHub answered with status ' + r.status + '.');
+    const list = (await r.json()).filter(x => !x.draft && x.tag_name && (pre || !x.prerelease));
+    info.checkedAt = Date.now() / 1000;
+    list.sort((a, b) => versionCompare(b.tag_name, a.tag_name));
+    if (!list.length) info.error = 'There are no releases on GitHub yet.';
+    else {
+      const x = list[0];
+      info.latest = { tag: x.tag_name, version: x.tag_name.replace(/^v/i, ''), name: x.name || '', notes: x.body || '', page: x.html_url, published: x.published_at, prerelease: !!x.prerelease };
+    }
+  } catch (e) {
+    info.error = e instanceof TypeError ? 'This browser couldn\u2019t reach GitHub. Is it online?' : e.message;
+  }
+  store('update', JSON.stringify({ at: Date.now(), pre, info }));
+  return info;
+}
+// Fills U: the server's, or this browser's check.
+async function loadUpdate(force) {
+  if (S.update.checks) {
+    const r = force ? await api('update/check', {}) : await api('update');
+    U = Object.assign({}, r.update, { version: r.version });
+  } else {
+    const info = await browserCheck(force);
+    U = Object.assign({ how: S.update.how, checks: false, installing: false }, info, { version: S.version });
+    U.newer = !!(U.latest && versionCompare(U.latest.version, S.version) > 0);
+  }
+  return U;
+}
+// Whether there's a newer version, for the sidebar and the dashboard.
+function updateOut() {
+  if (!S || !S.settings.updateCheck && !(U && U.newer)) return null;
+  if (S.update.checks) return S.update.newer ? S.update.latest.version : null;
+  return U && U.newer ? U.latest.version : null;
+}
+
+// Release notes: GitHub's Markdown, its headings, lists, bold, code and links, as text.
+function markdown(text) {
+  const inline = line => {
+    const out = [];
+    const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s)]+)/g;
+    let at = 0, m;
+    while ((m = re.exec(line))) {
+      if (m.index > at) out.push(line.slice(at, m.index));
+      if (m[1]) out.push(h('b', m[1]));
+      else if (m[2]) out.push(h('code', m[2]));
+      else { const url = m[4] || m[5]; out.push(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, m[3] || url.replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/(pull|issues)\/(\d+)$/, '#$2'))); }
+      at = re.lastIndex;
+    }
+    if (at < line.length) out.push(line.slice(at));
+    return out;
+  };
+  const nodes = [];
+  let list = null, para = null;
+  for (const raw of String(text || '').replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    const head = line.match(/^(#{1,4})\s+(.*)$/), item = line.match(/^[-*+]\s+(.*)$/);
+    if (!line || head || item) para = null;
+    if (!item) list = null;
+    if (!line || /^!\[/.test(line) || /^<!--/.test(line)) continue;
+    if (head) nodes.push(h(head[1].length <= 2 ? 'h3' : 'h4', inline(head[2])));
+    else if (item) { if (!list) nodes.push(list = h('ul')); list.appendChild(h('li', inline(item[1]))); }
+    else if (para) para.append(' ', ...inline(line));
+    else nodes.push(para = h('p', inline(line)));
+  }
+  return nodes.length ? nodes : [h('p.muted', 'This release has no notes.')];
+}
+
+// Waits for the server to come back after a restart, then loads its page.
+let restarting = false;
+function awaitRestart(text) {
+  if (restarting) return;
+  restarting = true;
+  store('restarted', text);
+  let tries = 0;
+  const before = S && S.uptime;
+  const look = async () => {
+    try {
+      const r = await fetch('/api/state');
+      if (r.ok || r.status === 401) {
+        const st = r.ok ? await r.json() : null;
+        if (!st || st.uptime < before || st.version !== S.version) { location.reload(); return; }
+      }
+    } catch (e) { /* not back yet */ }
+    if (++tries < 120) setTimeout(look, 1000);
+    else { restarting = false; toast('NetDisc 360 didn\u2019t come back. Start it again from its folder or the Start menu.', true); }
+  };
+  setTimeout(look, 2000);
+}
+
+// Asks before something that can't be undone; true for ok.
+function confirmBox(title, text, ok, danger) {
+  return new Promise(done => {
+    let yes = false;
+    modal(title, close => [
+      h('div.modal-body', text),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
+        h('button.btn' + (danger ? '.danger' : '.primary'), { onclick: () => { yes = true; close(); } }, ok)),
+    ], true, () => done(yes));
+  });
+}
+
 // Settings ---------------------------------------------------------------------------
 
+const Sections = [
+  ['xbox', 'Xbox & Aurora', 'gamepad-2'],
+  ['dashboard', 'Dashboard', 'layout-dashboard'],
+  ['updates', 'Updates', 'refresh-cw'],
+  ['backups', 'Backups', 'archive'],
+  ['windows', 'Windows', 'power'],
+  ['about', 'About', 'info'],
+];
+const BackupKinds = {
+  manual: ['Made by you', 'archive', 'k-good'],
+  scheduled: ['Automatic', 'calendar-clock', 'k-xbox'],
+  update: ['Before an update', 'refresh-cw', 'k-play'],
+  restore: ['Before a restore', 'rotate-ccw', 'k-warning'],
+};
+const fullDate = t => new Date(t * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
 Pages.settings = root => {
-  const body = h('div.stack');
-  root.append(header('Settings', null), body);
-  let built = false;
+  const nav = h('nav.subnav'), body = h('div.stack');
+  root.append(header('Settings', null), h('div.settings', nav, body));
+  let section = null, part = null, key = '';
   function toggle(checked, onchange, disabled) {
     return h('label.switch', h('input', { type: 'checkbox', checked, disabled, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
   }
   function row(title, help, control) { return h('div.setting', h('div.text', h('div.title', title), help && h('div.help', help)), control); }
-  async function flip(key, value, input, said) {
-    if (!(await save({ [key]: value }, said))) input.checked = !value;
+  async function flip(name, value, input, said) {
+    if (!(await save({ [name]: value }, said))) input.checked = !value;
   }
-  function build() {
+  const card = (icon, title, sub, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub && h('span.sub', sub)), h('div.card-body', content));
+  const head = (title, lead) => h('div.section-head', h('h2', title), lead && h('p', lead));
+  const shown = () => Sections.filter(([id]) => id !== 'windows' || S.settings.startWithWindows !== undefined);
+
+  // Each section: build() makes it from S; update() keeps its live parts current.
+  const Parts = {};
+
+  Parts.xbox = () => {
     const st = S.settings;
     const user = h('input.input', { value: st.ftpUser, autocomplete: 'off' });
-    const password = h('input.input', { type: 'password', placeholder: 'Unchanged', autocomplete: 'new-password' });
+    const password = h('input.input', { type: 'password', placeholder: st.ftpPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
     const xboxFolder = h('input.input.mono', { value: st.xboxFolder });
     const aurora = h('input.input.mono', { value: st.aurora });
-    const theme = store('theme') || 'system';
-    const themes = h('div.segmented', [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([v, l, i]) =>
-      h('button', { class: v === theme ? 'on' : '', onclick: e => { store('theme', v); applyTheme(); for (const b of themes.children) b.classList.toggle('on', b === e.currentTarget); } }, ic(i, 'sm'), l)));
-    const lan = st.lanSwitch ? row('Other devices can open it', ['Open the dashboard from your phone or another computer at ', h('b', (S.addresses[0] || 'this computer') + ':' + S.ports.web), '. It needs a password.'],
-      toggle(st.webLan, (v, input) => flip('webLan', v, input, v ? 'Other devices can open the dashboard' : 'The dashboard is on this computer only'))) : null;
-    const newPassword = h('input.input', { type: 'password', placeholder: st.password ? 'New password' : 'Password', autocomplete: 'new-password' });
     fill(body,
-      h('div.card', h('div.card-head', ic('plug'), h('h2', 'Aurora\u2019s FTP login'), h('span.sub', 'used to add your games to each console\u2019s Aurora')),
-        h('div.card-body', h('div.form.cols',
+      head('Xbox & Aurora', 'How your games get into Aurora\u2019s game list on each console.'),
+      card('gamepad-2', 'Your games in Aurora', null,
+        row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s Hdd1:\\NetISO, so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
+        row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
+        row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i))),
+        row('Consoles to update', st.xboxes.length ? st.xboxes.join(', ') : 'Every console that connects.', h('a.btn', { href: '#consoles' }, 'Change', ic('chevron-right', 'sm')))),
+      card('plug', 'Aurora\u2019s FTP login', 'used to add your games to each console\u2019s Aurora',
+        h('div.form.cols',
           h('label.field', h('span', 'User name'), user),
           h('label.field', h('span', 'Password'), password),
           h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The same login as in Aurora\u2019s settings (Aurora\u2019s default is xboxftp / xboxftp; changing it is a good idea). It\u2019s kept ', S.platform === 'windows' ? 'encrypted for your Windows user.' : 'in the settings file, readable only by NetDisc 360\u2019s user.')),
-          h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login'))))),
-      h('div.card', h('div.card-head', ic('gamepad-2'), h('h2', 'Your games in Aurora')),
-        h('div.card-body',
-          row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s Hdd1:\\NetISO, so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
-          row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
-          row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i))),
-          h('details', { style: { marginTop: '6px' } }, h('summary', { style: { cursor: 'pointer', color: 'var(--muted)', padding: '8px 0' } }, 'Folders on the Xbox'),
-            h('div.form.cols', { style: { marginTop: '8px' } },
-              h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path. Add it to Aurora\u2019s scan paths (depth 1).')),
-              h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
-              h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }) }, 'Save folders')))))),
-      h('div.card', h('div.card-head', ic('layout-dashboard'), h('h2', 'This dashboard')),
-        h('div.card-body',
-          row('Theme', null, themes),
-          row('Cover art', 'Loaded by this browser from the XboxUnity archive on GitHub. Only for this page; your Xbox gets its art from Aurora.', toggle(showCovers(), v => { store('covers', v ? 'on' : 'off'); toast(v ? 'Covers on' : 'Covers off'); })),
-          lan,
-          row('Password', st.passwordFixed ? 'Set with NETDISC_WEB_PASSWORD.' : st.password ? 'Set. Anyone opening the dashboard needs it.' : st.webAddress === '0.0.0.0' ? 'None. Anyone on your network can open the dashboard and change its settings.' : 'None. Only this computer can open the dashboard.',
-            st.passwordFixed ? h('span.pill.good', ic('lock', 'sm'), 'Set') : h('div', { style: { display: 'flex', gap: '8px' } }, newPassword,
-              h('button.btn', { onclick: async () => {
-                try { await api('password', { password: newPassword.value }); newPassword.value = ''; await refresh(); toast('Password saved'); built = false; } catch (e) { toast(e.message, true); }
-              } }, st.password ? 'Change' : 'Set'),
-              st.password ? h('button.btn.ghost', { title: 'Remove the password', onclick: async () => {
-                try { await api('password', { password: '' }); await refresh(); toast('Password removed'); built = false; } catch (e) { toast(e.message, true); }
-              } }, 'Remove') : null)),
-          st.password && !st.passwordFixed ? row('Log out', 'On this browser.', h('button.btn', { onclick: async () => { await api('logout', {}); location.reload(); } }, ic('log-out', 'sm'), 'Log out')) : null)),
-      st.startWithWindows !== undefined ? h('div.card', h('div.card-head', ic('power'), h('h2', 'Windows')),
-        h('div.card-body', row('Start with Windows', 'Starts NetDisc 360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))))) : null,
-      h('div.card', h('div.card-head', ic('info'), h('h2', 'About')),
-        h('div.card-body', h('div.facts',
-          h('div.k', 'Version'), h('div.v', 'NetDisc 360, built ' + S.built),
-          h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : 'Linux'),
-          h('div.k', 'NetISO port'), h('div.v', S.ports.netiso + (S.addresses.length ? ' on ' + S.addresses.join(', ') : '')),
-          h('div.k', 'Dashboard'), h('div.v', 'Port ' + S.ports.web + (st.webAddress === '0.0.0.0' ? ', open to the network' : ', this computer only')),
-          h('div.k', 'Settings'), h('div.v', st.saved ? 'Saved in the settings file' : 'Not saved: changes last until the server stops (start it with --config to keep them)'),
-          h('div.k', 'Project'), h('div.v', h('a', { href: 'https://github.com/marcusisdahl/NetDisc-360', target: '_blank', rel: 'noopener' }, 'github.com/marcusisdahl/NetDisc-360'), ' \u00b7 MIT license')))));
+          h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login')))),
+      card('folder', 'Folders on the Xbox', null,
+        h('div.form.cols',
+          h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path. Add it to Aurora\u2019s scan paths (depth 1).')),
+          h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
+          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders')))));
+  };
+
+  Parts.dashboard = () => {
+    const st = S.settings;
+    const theme = store('theme') || 'system';
+    const themes = h('div.segmented', [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([v, l, i]) =>
+      h('button', { class: v === theme ? 'on' : '', onclick: e => { store('theme', v); applyTheme(); for (const b of themes.children) b.classList.toggle('on', b === e.currentTarget); } }, ic(i, 'sm'), l)));
+    const newPassword = h('input.input', { type: 'password', placeholder: st.password ? 'New password' : 'Password', autocomplete: 'new-password' });
+    fill(body,
+      head('Dashboard', 'This page: how it looks, and who can open it.'),
+      card('sun', 'Look', 'kept in this browser',
+        row('Theme', null, themes),
+        row('Cover art', 'Loaded by this browser from the XboxUnity archive on GitHub. Only for this page; your Xbox gets its art from Aurora.', toggle(showCovers(), v => { store('covers', v ? 'on' : 'off'); toast(v ? 'Covers on' : 'Covers off'); }))),
+      card('lock', 'Who can open it', null,
+        st.lanSwitch ? row('Other devices can open it', ['Open the dashboard from your phone or another computer at ', h('b', (S.addresses[0] || 'this computer') + ':' + S.ports.web), '. It needs a password.'],
+          toggle(st.webLan, (v, input) => flip('webLan', v, input, v ? 'Other devices can open the dashboard' : 'The dashboard is on this computer only'))) : null,
+        row('Password', st.passwordFixed ? 'Set with NETDISC_WEB_PASSWORD.' : st.password ? 'Set. Anyone opening the dashboard needs it.' : st.webAddress === '0.0.0.0' ? 'None. Anyone on your network can open the dashboard and change its settings.' : 'None. Only this computer can open the dashboard.',
+          st.passwordFixed ? h('span.pill.good', ic('lock', 'sm'), 'Set') : h('div', { style: { display: 'flex', gap: '8px' } }, newPassword,
+            h('button.btn', { onclick: async () => {
+              try { await api('password', { password: newPassword.value }); newPassword.value = ''; await refresh(); toast('Password saved'); key = ''; } catch (e) { toast(e.message, true); }
+            } }, st.password ? 'Change' : 'Set'),
+            st.password ? h('button.btn.ghost', { title: 'Remove the password', onclick: async () => {
+              try { await api('password', { password: '' }); await refresh(); toast('Password removed'); key = ''; } catch (e) { toast(e.message, true); }
+            } }, 'Remove') : null)),
+        st.password && !st.passwordFixed ? row('Log out', 'On this browser.', h('button.btn', { onclick: async () => { await api('logout', {}); location.reload(); } }, ic('log-out', 'sm'), 'Log out')) : null));
+  };
+
+  Parts.updates = () => {
+    const st = S.settings, app = S.update.how === 'app';
+    const hero = h('div.card'), notes = h('div');
+    fill(body,
+      head('Updates', 'New versions of NetDisc 360, from its releases on GitHub.'),
+      hero, notes,
+      S.update.how === 'docker' ? card('container', 'Updating the Docker image', null,
+        h('p', { style: { margin: '0 0 10px' } }, 'In the folder with your docker-compose.yml:'),
+        h('div.command', h('code', 'docker compose pull && docker compose up -d'),
+          h('button.btn.small.ghost', { title: 'Copy', onclick: () => navigator.clipboard.writeText('docker compose pull && docker compose up -d').then(() => toast('Copied')) }, ic('copy', 'sm'))),
+        h('p.muted', { style: { margin: '10px 0 0', fontSize: '13px' } }, 'Your settings in /config and your games stay as they are.')) : null,
+      card('settings', 'Update options', null,
+        row('Look for updates', S.update.checks ? 'NetDisc 360 asks GitHub every 12 hours. Nothing about you or your games is sent.' : 'This browser asks GitHub when you open the dashboard. Nothing about you or your games is sent.',
+          toggle(st.updateCheck, (v, i) => flip('updateCheck', v, i, v ? 'Looking for updates' : 'Not looking for updates'))),
+        app ? row('Install updates by themselves', 'When no console is playing. Your settings are backed up first, and NetDisc 360 restarts in a few seconds.',
+          toggle(st.updateAuto, (v, i) => flip('updateAuto', v, i, v ? 'Updates install by themselves' : 'Updates wait for you'))) : null,
+        row('Include test versions', 'Pre-releases, to try what\u2019s coming before everyone else. They may have rough edges.',
+          toggle(st.updatePrerelease, async (v, i) => { await flip('updatePrerelease', v, i); store('update', null); load(false); }))));
+    let busy = false;
+    async function load(force) {
+      busy = true; draw();
+      try { await loadUpdate(force); } catch (e) { toast(e.message, true); }
+      busy = false; draw();
+    }
+    async function install() {
+      try { await api('update/install', {}); await refresh(); } catch (e) { toast(e.message, true); }
+    }
+    let drawn = '';
+    function draw() {
+      const u = S.update.checks ? Object.assign({}, U || {}, S.update, { latest: U && U.latest || S.update.latest }) : U;
+      const now = JSON.stringify([u, busy]);
+      if (now === drawn) return;
+      drawn = now;
+      const latest = u && u.latest, here = S.version;
+      const checked = u && u.checkedAt ? 'Checked ' + ago(u.checkedAt) : '';
+      const checkBtn = (small) => h('button.btn' + (small ? '.small' : ''), { onclick: () => load(true), disabled: busy || (u && u.checking) }, ic('refresh-cw', 'sm' + (busy || (u && u.checking) ? ' spin' : '')), 'Check now');
+      let mark, title, text, actions = [], extra = null;
+      if (u && u.installing) {
+        const stage = { download: 'Downloading', check: 'Checking the download', restart: 'Restarting' }[u.stage] || 'Installing';
+        mark = ['loader-circle', 'k-xbox', true]; title = 'Installing NetDisc 360 ' + (latest ? latest.version : '');
+        text = stage + (u.stage === 'download' && u.total ? ': ' + bytes(u.got, 1) + ' of ' + bytes(u.total, 1) : '\u2026');
+        extra = h('div.progress' + (u.stage === 'download' && u.total ? '' : '.busy'), h('i', { style: u.total ? { width: Math.round(100 * u.got / u.total) + '%' } : null }));
+        if (u.stage === 'restart') awaitRestart('Updated to NetDisc 360 ' + (latest ? latest.version : ''));
+      } else if (!u || (busy && !u.checkedAt)) {
+        mark = ['refresh-cw', 'k-info', true]; title = 'Checking for updates\u2026'; text = 'Asking GitHub for the newest release.';
+      } else if (u.newer) {
+        mark = ['sparkles', 'k-xbox']; title = 'NetDisc 360 ' + latest.version + ' is out';
+        text = 'You have ' + here + '.' + (latest.published ? ' Released ' + ago(Date.parse(latest.published) / 1000) + '.' : '') + (latest.prerelease ? ' It\u2019s a test version.' : '');
+        if (app && latest.exe !== false) actions.push(h('button.btn.primary', { onclick: install }, ic('download', 'sm'), 'Install and restart'));
+        else if (S.update.how !== 'docker') actions.push(h('a.btn.primary', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, ic('download', 'sm'), 'Download'));
+        actions.push(h('a.btn', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'On GitHub', ic('external-link', 'sm')));
+      } else if (u.error && !latest) {
+        mark = ['circle-alert', 'k-warning']; title = 'Couldn\u2019t check for updates'; text = u.error; actions.push(checkBtn());
+      } else {
+        mark = ['circle-check', 'k-good']; title = 'You\u2019re up to date';
+        text = 'NetDisc 360 ' + here + ' is the newest version' + (st.updatePrerelease ? ', test versions included.' : '.');
+        actions.push(checkBtn());
+      }
+      if (u && u.installError && !u.installing) extra = h('div.notice', { style: { marginTop: '12px' } }, ic('triangle-alert'), h('span', 'The update wasn\u2019t installed: ' + u.installError));
+      fill(hero,
+        h('div.hero', h('div.mark.' + mark[1], ic(mark[0], mark[2] ? 'spin' : null)), h('div.text', h('h3', title), h('p', text), extra), actions.length ? h('div.actions', actions) : null),
+        h('div.hero-foot', h('span', 'This version: ', h('b', here)), h('span', 'Built ' + S.built), checked && h('span', checked), u && u.newer && checkBtn(true)));
+      fill(notes, latest ? card('scroll-text', u.newer ? 'What\u2019s new in ' + latest.version : 'About ' + latest.version, latest.name && latest.name !== latest.tag ? latest.name : null,
+        h('div.notes', markdown(latest.notes)), h('div', { style: { marginTop: '12px' } }, h('a.link', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'The release on GitHub', ic('external-link', 'sm')))) : null);
+    }
+    draw();
+    load(false);
+    return {
+      update() {
+        // Checked again elsewhere (by itself, or another browser): its notes too.
+        if (S.update.checks && !busy && S.update.latest && !(U && U.latest && U.latest.version === S.update.latest.version)) load(false);
+        draw();
+      },
+    };
+  };
+
+  Parts.backups = () => {
+    const st = S.settings;
+    const list = h('div'), foot = h('div.card-foot.muted');
+    const file = h('input', { type: 'file', accept: '.zip,.ini', hidden: true, onchange: () => { const f = file.files[0]; file.value = ''; if (f) restoreFile(f); } });
+    const every = h('div.segmented', [[0, 'Off'], [1, 'Every day'], [7, 'Every week']].map(([v, l]) =>
+      h('button', { class: v === st.backupEvery ? 'on' : '', onclick: () => save({ backupEvery: v }, v ? 'Backed up ' + l.toLowerCase() : 'Backed up only by you') }, l)));
+    const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ backupKeep: +e.target.value }, 'Keeping ' + e.target.value) },
+      [...new Set([3, 5, 10, 20, 50, st.backupKeep])].sort((a, b) => a - b).map(n => h('option', { value: String(n), selected: n === st.backupKeep }, String(n))));
+    fill(body,
+      head('Backups', 'NetDisc 360\u2019s settings and disc map, to bring back after a mistake or move to another computer. Never your games.'),
+      h('div.card', h('div.hero', h('div.mark.k-good', ic('archive')),
+        h('div.text', h('h3', 'Back up your settings'), h('p', 'Your game folders, consoles, Aurora login, dashboard password, chosen copies and disc map, in one small zip file.')),
+        h('div.actions', h('button.btn.primary', { onclick: backupNow }, ic('archive', 'sm'), 'Back up now'), h('button.btn', { onclick: () => file.click() }, ic('upload', 'sm'), 'Restore from a file\u2026'), file))),
+      card('calendar-clock', 'Automatic backups', null,
+        row('Back up by itself', 'Your settings now and then, in case.', every),
+        row('Keep the newest', 'Automatic backups and the ones made before an update or a restore. Older ones are deleted; yours never are.', keep)),
+      h('div.card', h('div.card-head', ic('history'), h('h2', 'Your backups')), list, foot));
+    async function load() {
+      try {
+        const r = await api('backups');
+        if (!r.available) { fill(list, h('div.empty', ic('archive'), h('h3', 'Nothing to back up'), h('p', 'The settings aren\u2019t kept in a file. Start NetDisc 360 with --config to keep them, and to back them up.'))); return; }
+        fill(foot, 'Kept in ', h('code', r.folder));
+        fill(list, r.backups.length ? r.backups.map(b => {
+          const [label, icon, tone] = BackupKinds[b.kind] || BackupKinds.manual;
+          return h('div.backup-row', h('div.kindmark.' + tone, ic(icon)),
+            h('div.grow', h('div.when', fullDate(b.time)), h('div.sub', label + (b.version ? ' \u00b7 version ' + b.version : '') + (b.platform && b.platform !== r.platform ? ' \u00b7 from ' + (b.platform === 'windows' ? 'Windows' : 'Linux') : '') + ' \u00b7 ' + bytes(b.size))),
+            h('div.actions',
+              h('a.btn.small', { href: '/api/backup?name=' + encodeURIComponent(b.name), download: b.name, title: 'Save this backup on this device' }, ic('download', 'sm'), 'Download'),
+              h('button.btn.small', { onclick: () => restore({ name: b.name }, fullDate(b.time)) }, ic('rotate-ccw', 'sm'), 'Restore'),
+              h('button.btn.small.icon.ghost', { title: 'Delete', onclick: () => remove(b) }, ic('trash-2', 'sm'))));
+        }) : h('div.empty', ic('archive'), h('h3', 'No backups yet'), h('p', st.backupEvery ? 'The first automatic one is made within a few minutes of starting. Or make one now.' : 'Make one with Back up now.')));
+      } catch (e) { fill(list, h('div.empty', ic('circle-alert'), h('p', e.message))); }
+    }
+    async function backupNow() {
+      try { await api('backup', {}); toast('Settings backed up'); load(); } catch (e) { toast(e.message, true); }
+    }
+    async function remove(b) {
+      if (!(await confirmBox('Delete this backup?', 'The backup from ' + fullDate(b.time) + ' is deleted for good.', 'Delete', true))) return;
+      try { await api('backup/delete', { name: b.name }); toast('Backup deleted'); load(); } catch (e) { toast(e.message, true); }
+    }
+    async function restore(what, label) {
+      if (!(await confirmBox('Restore these settings?', ['The settings from ', h('b', label), ' take the place of the ones now, right away. The ones now are backed up first, so you can go back.'], 'Restore'))) return;
+      try {
+        const r = await api('restore', what);
+        await refresh();
+        key = '';
+        toast('Settings restored');
+        if (r.notes.length) modal('Settings restored', close => [h('div.modal-body', h('p', { style: { marginTop: 0 } }, 'A few things to know:'), h('ul', r.notes.map(n => h('li', n)))), h('div.modal-foot', h('span.note'), h('button.btn.primary', { onclick: close }, 'OK'))], true);
+      } catch (e) { toast(e.message, true); }
+      load();
+    }
+    function restoreFile(f) {
+      if (f.size > 180 * 1024) { toast('That file is too big to be NetDisc 360\u2019s settings.', true); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const a = new Uint8Array(reader.result);
+        let text = '';
+        for (let i = 0; i < a.length; i += 0x8000) text += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+        restore({ file: btoa(text) }, f.name);
+      };
+      reader.readAsArrayBuffer(f);
+    }
+    load();
+  };
+
+  Parts.windows = () => {
+    const st = S.settings;
+    fill(body,
+      head('Windows', 'NetDisc 360 on this PC.'),
+      card('power', 'Starting', null,
+        row('Start with Windows', 'Starts NetDisc 360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))),
+        row('Restart NetDisc 360', 'Consoles playing a game lose their disc for a few seconds.', h('button.btn', { onclick: async () => {
+          if (S.consoles.some(c => c.playing) && !(await confirmBox('Restart while a game is running?', 'A console is playing a game from NetDisc 360. It loses its disc while NetDisc 360 restarts.', 'Restart'))) return;
+          try { await api('restart', {}); toast('Restarting\u2026'); awaitRestart('NetDisc 360 restarted'); } catch (e) { toast(e.message, true); }
+        } }, ic('rotate-ccw', 'sm'), 'Restart'))));
+  };
+
+  Parts.about = () => {
+    const st = S.settings, f = S.files;
+    fill(body,
+      head('About', null),
+      h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc 360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
+        h('div.actions', h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc-360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
+      card('info', 'This copy', null, h('div.facts',
+        h('div.k', 'Version'), h('div.v', S.version + ', built ' + S.built),
+        h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : S.update.how === 'docker' ? 'Docker' : 'Linux'),
+        h('div.k', 'NetISO port'), h('div.v', S.ports.netiso + (S.addresses.length ? ' on ' + S.addresses.join(', ') : '')),
+        h('div.k', 'Dashboard'), h('div.v', 'Port ' + S.ports.web + (st.webAddress === '0.0.0.0' ? ', open to the network' : ', this computer only')),
+        h('div.k', 'Settings'), h('div.v', f.settings ? h('code', f.settings) : 'Not saved: changes last until the server stops (start it with --config to keep them)'),
+        f.discMap ? [h('div.k', 'Disc map'), h('div.v', h('code', f.discMap))] : null,
+        f.backups ? [h('div.k', 'Backups'), h('div.v', h('code', f.backups))] : null,
+        h('div.k', 'License'), h('div.v', 'MIT. NetISO.xex is cOz\u2019s and comes with the NetISO kit, not with NetDisc 360.'))));
+  };
+
+  function choose() {
+    const want = (location.hash.split('/')[1] || 'xbox');
+    const list = shown();
+    const id = list.some(([s]) => s === want) ? want : 'xbox';
+    const out = updateOut();
+    fill(nav, list.map(([s, label, icon]) => h('a', { href: '#settings/' + s, class: s === id ? 'on' : '' }, ic(icon, 'sm'), label,
+      s === 'updates' && out ? h('span.pill.new', 'New') : null)));
+    if (id !== section) { section = id; key = ''; }
+    const on = $('a.on', nav);
+    if (on && nav.scrollWidth > nav.clientWidth) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
   return {
+    route() { choose(); this.update(); window.scrollTo(0, 0); },
     update() {
-      // Built once, so typing isn't undone by the next refresh; rebuilt after a password change.
-      if (!built || !body.contains(document.activeElement) && body.dataset.key !== JSON.stringify(S.settings)) { build(); built = true; body.dataset.key = JSON.stringify(S.settings); }
+      choose();
+      // Built when a setting changes, unless something in it is being typed
+      // in, so typing isn't undone by the next refresh.
+      const now = section + JSON.stringify(S.settings) + S.platform;
+      if (key !== now && !(key.startsWith(section) && body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) {
+        key = now;
+        part = Parts[section]() || null;
+      } else if (part && part.update) part.update();
     },
   };
 };

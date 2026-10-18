@@ -18,6 +18,9 @@ class File {
 public:
     bool Load(const std::string& path);        // False if there is no such file.
     bool Save(const std::string& path) const;  // Replaces it whole.
+    void Read(const std::string& raw);         // The file's bytes, as Load reads them.
+    std::string Text() const;                  // What Save writes.
+    bool Empty() const { return values_.empty(); }
     bool Has(const char* key) const;
     std::string Get(const char* key, const char* fallback = "") const;
     long long Number(const char* key, long long fallback) const;
@@ -37,4 +40,14 @@ std::string ToUtf8(const std::string& native);
 std::string FromUtf8(const std::string& utf8);
 FILE* Open(const std::string& utf8Path, const char* mode);
 bool IsFolder(const std::string& native);
+
+// Files by UTF-8 path, for the settings and their backups.
+bool ReadFile(const std::string& utf8Path, std::string& data, size_t limit);  // False if missing or larger.
+// Replaces the file whole, through path.new; secret: readable by its owner only (not on Windows).
+bool WriteFile(const std::string& utf8Path, const std::string& data, bool secret);
+bool RemoveFile(const std::string& utf8Path);
+bool MakeFolder(const std::string& utf8Path);
+struct Entry { std::string name; long long size, time; };
+std::vector<Entry> Files(const std::string& utf8Folder);  // The files directly in it.
+std::string FolderOf(const std::string& path);            // Up to and with the last separator; "" if none.
 }

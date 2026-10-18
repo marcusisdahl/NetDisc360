@@ -71,6 +71,7 @@ struct Request {
 struct Reply {
     int status;
     std::string type, body;
+    std::string download;  // A file name: the browser saves the body as that file.
     Reply() : status(200), type("application/json") {}
     void Error(int code, const std::string& message);  // {"error": message}
 };
@@ -87,4 +88,6 @@ bool Start(const std::string& address, int port, Api api, std::string& error);
 std::string HashPassword(const std::string& password);
 void SetPasswordHash(const std::string& hash);
 std::string PasswordHash();
+
+std::string Sha256Hex(const std::string& data);  // In lower-case hex.
 }
