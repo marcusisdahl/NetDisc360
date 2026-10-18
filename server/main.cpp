@@ -31,12 +31,15 @@
 #include "resource.h"
 #ifdef _WIN32
 #include <iphlpapi.h>
+#include <icmpapi.h>
+#include <mstcpip.h>
 #pragma comment(lib, "iphlpapi.lib")
 typedef int AddressLength;
 #else
 #include <dirent.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <poll.h>
 typedef socklen_t AddressLength;
 #endif
 
@@ -54,6 +57,11 @@ const double IdleSeconds = 86400, IdleProbeSeconds = 600;
 const double FirstProbeSeconds = 5, GameProbeSeconds = 15;
 // Read after it got back to Aurora: a game started from the disc again.
 const U64 RelaunchBytes = 32ull << 20;
+// A console that answered pings before is offline after this many unanswered
+// in a row, each waited for this long, and once its NetISO connections end
+// (PingLoop), which a quick keepalive makes them do within SuspectSeconds.
+const int OfflinePings = 3, PingTimeoutMs = 1000;
+const double SuspectSeconds = 20;
 const int ScanTries = 20;
 const size_t LogKeep = 3000, EventKeep = 100;
 
@@ -71,9 +79,10 @@ struct Options {
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see WatchLoop).
     double onlineWait, removeWait;
+    double pingSeconds;  // How often each console is pinged to see it's still on (PingLoop); 0: never.
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), toldTray(false), onlineWait(120), removeWait(60) {}
+                webLan(false), setupDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -349,8 +358,18 @@ struct Console {
     std::atomic<bool> inAurora;
     std::atomic<U64> sentInAurora;     // sent when it got back.
     std::atomic<long long> probeAt;    // When AuroraLoop next tries its FTP port, in Now() milliseconds.
+    // PingLoop's pings: the latest answer's round trip in ms (-1: none yet),
+    // whether the latest ping was answered and any ever was, the misses in a
+    // row, and offline: it answered before, then stopped (see PingLoop).
+    std::atomic<int> pingMs, missed;
+    std::atomic<bool> answers, answered, offline;
+    std::atomic<bool> toldNoPings;     // "Doesn't answer pings, but ..." was logged since its last answer.
+    std::atomic<long long> answeredAt, offlineAt, pingAt;  // In Now() milliseconds.
+    std::atomic<long long> suspectAt;  // When its connections got a quick keepalive; 0: they didn't.
+    std::set<SOCKET> sockets;          // Its NetISO connections, under ConsoleLock.
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
-                                 inAurora(false), sentInAurora(0), probeAt(0) {
+                                 inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
+                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
     }
@@ -411,7 +430,7 @@ void AuroraLoop() {
         std::vector<Console*> consoles=AllConsoles();
         for(size_t i=0;i<consoles.size();++i) {
             Console& c=*consoles[i];
-            if(c.connections<=0 || c.inAurora || Now()*1000<c.probeAt) continue;
+            if(c.connections<=0 || c.inAurora || c.offline || Now()*1000<c.probeAt) continue;
             std::string game;
             { std::lock_guard<std::mutex> hold(ConsoleLock); game=WithoutIso(c.mounted); }
             if(game.empty()) continue;
@@ -423,6 +442,163 @@ void AuroraLoop() {
             c.ftp=2;
             XboxLog(c,"back in Aurora after %s (its FTP server answers).",game.c_str());
             XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
+        }
+        Sleep(1000);
+    }
+}
+
+// ICMP echo, for PingLoop: on Linux an unprivileged ping socket (allowed by
+// net.ipv4.ping_group_range), else a raw one (root).
+class Pinger {
+public:
+#ifdef _WIN32
+    Pinger() : icmp_(IcmpCreateFile()) {}
+    ~Pinger() { if(icmp_!=INVALID_HANDLE_VALUE) IcmpCloseHandle(icmp_); }
+    bool Ready() const { return icmp_!=INVALID_HANDLE_VALUE; }
+    // The round trip in ms, or -1 without an answer within timeoutMs.
+    int Echo(DWORD address, DWORD timeoutMs) {
+        char data[]="NetDisc 360";
+        unsigned char reply[sizeof(ICMP_ECHO_REPLY)+sizeof(data)+8];
+        if(!IcmpSendEcho(icmp_,address,data,WORD(sizeof(data)),NULL,reply,DWORD(sizeof(reply)),timeoutMs)) return -1;
+        const ICMP_ECHO_REPLY* r=reinterpret_cast<const ICMP_ECHO_REPLY*>(reply);
+        return r->Status==IP_SUCCESS && r->Address==address ? int(r->RoundTripTime) : -1;
+    }
+private:
+    HANDLE icmp_;
+#else
+    Pinger() : socket_(socket(AF_INET,SOCK_DGRAM,IPPROTO_ICMP)), raw_(false), sequence_(0) {
+        if(socket_<0) { socket_=socket(AF_INET,SOCK_RAW,IPPROTO_ICMP); raw_=true; }
+    }
+    ~Pinger() { if(socket_>=0) close(socket_); }
+    bool Ready() const { return socket_>=0; }
+    int Echo(DWORD address, DWORD timeoutMs) {
+        unsigned short id=(unsigned short)getpid(), sequence=++sequence_;
+        unsigned char packet[20]={8,0,0,0,(unsigned char)(id>>8),(unsigned char)id,(unsigned char)(sequence>>8),(unsigned char)sequence};
+        memcpy(packet+8,"NetDisc 360",11);
+        DWORD sum=0;
+        for(size_t i=0;i<sizeof(packet);i+=2) sum+=(packet[i]<<8)|packet[i+1];
+        while(sum>>16) sum=(sum&0xFFFF)+(sum>>16);
+        packet[2]=(unsigned char)(~sum>>8); packet[3]=(unsigned char)~sum;
+        sockaddr_in to; memset(&to,0,sizeof(to)); to.sin_family=AF_INET; to.sin_addr.s_addr=address;
+        double started=Now();
+        if(sendto(socket_,packet,sizeof(packet),0,reinterpret_cast<sockaddr*>(&to),sizeof(to))!=int(sizeof(packet))) return -1;
+        for(;;) {
+            int left=int(timeoutMs-(Now()-started)*1000);
+            pollfd p={socket_,POLLIN,0};
+            if(left<=0 || poll(&p,1,left)<=0) return -1;
+            unsigned char in[1500]; sockaddr_in from; socklen_t size=sizeof(from);
+            int got=int(recvfrom(socket_,in,sizeof(in),0,reinterpret_cast<sockaddr*>(&from),&size));
+            if(got<=0) return -1;
+            const unsigned char* icmp=in;
+            if(raw_) { int header=(in[0]&15)*4; icmp+=header; got-=header; }  // A raw socket gets the IP header too.
+            if(got<8 || from.sin_addr.s_addr!=address || icmp[0]!=0 || ((icmp[6]<<8)|icmp[7])!=sequence) continue;
+            if(raw_ && ((icmp[4]<<8)|icmp[5])!=id) continue;  // A ping socket's id is the kernel's, and only its own answers reach it.
+            return int((Now()-started)*1000+0.5);
+        }
+    }
+private:
+    int socket_;
+    bool raw_;
+    unsigned short sequence_;
+#endif
+};
+
+// The keepalive of a NetISO connection to a console that stopped answering
+// pings (quick): a probe a second, so a connection to a console that is gone
+// ends within seconds, and one whose network still answers stays. quick
+// false puts back the usual timing.
+void QuickKeepalive(SOCKET s, bool quick) {
+#ifdef _WIN32
+    tcp_keepalive k; k.onoff=1; k.keepalivetime=quick ? 1000 : 7200000; k.keepaliveinterval=1000;
+    DWORD bytes;
+    WSAIoctl(s,SIO_KEEPALIVE_VALS,&k,sizeof(k),NULL,0,&bytes,NULL,NULL);
+#else
+    int idle=quick ? 1 : 7200, interval=quick ? 1 : 75, count=quick ? 5 : 9;
+    unsigned int timeout=quick ? 10000 : 0;  // Also for a reply it never acknowledged.
+    setsockopt(s,IPPROTO_TCP,TCP_KEEPIDLE,&idle,sizeof(idle));
+    setsockopt(s,IPPROTO_TCP,TCP_KEEPINTVL,&interval,sizeof(interval));
+    setsockopt(s,IPPROTO_TCP,TCP_KEEPCNT,&count,sizeof(count));
+    setsockopt(s,IPPROTO_TCP,TCP_USER_TIMEOUT,&timeout,sizeof(timeout));
+#endif
+}
+
+void QuickKeepalives(Console& c, bool quick) {
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(std::set<SOCKET>::const_iterator s=c.sockets.begin();s!=c.sockets.end();++s) QuickKeepalive(*s,quick);
+}
+
+// Its connections' keepalive back to the usual, once it shows it's on.
+void NotSuspect(Console& c) {
+    if(!c.suspectAt) return;
+    c.suspectAt=0;
+    QuickKeepalives(c,false);
+}
+
+void GoOffline(Console& c, long long now) {
+    c.offlineAt=now;
+    c.offline=true;
+    XboxLog(c,"offline: the last %d pings got no answer%s.",OfflinePings,c.suspectAt ? ", and its NetISO connection ended" : "");
+    c.suspectAt=0;
+    XboxEvent(c,EventXbox,"Went offline",std::string(c.text)+" went offline");
+}
+
+void BackOnline(Console& c, const char* how) {
+    c.offline=false;
+    c.missed=0;
+    XboxLog(c,"back online (%s).",how);
+    XboxEvent(c,EventXbox,"Back online",std::string(c.text)+" is back online");
+}
+
+// Pings each console every pingSeconds (--ping) to tell when one is switched
+// off: a console that's off sends NetISO nothing, and its NetISO connection
+// would only end after the system's TCP keepalive (two hours on Windows), so
+// it showed as connected all that time. A console that sent NetISO a request
+// within pingSeconds isn't pinged. One that answered pings before and then
+// misses OfflinePings in a row is offline, once its NetISO connections end:
+// they get a quick keepalive (QuickKeepalive), which ends them within seconds
+// if the console is gone. A connection that outlasts it shows the console is
+// on, though not answering pings. A console that never answered a ping is
+// never offline.
+void PingLoop() {
+    if(Current().pingSeconds<=0) return;
+    Pinger pinger;
+    if(!pinger.Ready()) {
+        Log("Can't send pings from here, so a console that's switched off keeps showing as connected until its connection times out.");
+        return;
+    }
+    for(;;) {
+        double every=Current().pingSeconds;
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size() && every>0;++i) {
+            Console& c=*consoles[i];
+            long long now=(long long)(Now()*1000);
+            if(c.offline && c.seenAt>c.offlineAt) BackOnline(c,"it sent a NetISO request");
+            if(c.suspectAt) {
+                if(c.seenAt>c.suspectAt) { NotSuspect(c); c.missed=0; }
+                else if(c.connections<=0) GoOffline(c,now);
+                else if(now-c.suspectAt>=SuspectSeconds*1000) {
+                    if(!c.toldNoPings.exchange(true)) XboxLog(c,"doesn't answer pings, but its NetISO connection does, so it's on.");
+                    NotSuspect(c);
+                    c.missed=0;
+                }
+                continue;
+            }
+            if(now<c.pingAt) continue;
+            bool idle=now-std::max(c.seenAt.load(),c.answeredAt.load())>=IdleSeconds*1000;
+            c.pingAt=now+(long long)(1000*(idle && !c.answers ? IdleProbeSeconds : every));
+            if(c.seenAt>=0 && now-c.seenAt<every*1000) { c.missed=0; continue; }  // NetISO shows it's on.
+            int ms=pinger.Echo(c.address,PingTimeoutMs);
+            if(ms>=0) {
+                c.pingMs=ms; c.answers=true; c.answered=true; c.missed=0; c.toldNoPings=false;
+                c.answeredAt=(long long)(Now()*1000);
+                if(c.offline) BackOnline(c,"it answers pings again");
+                continue;
+            }
+            c.answers=false;
+            if(++c.missed>=OfflinePings && c.answered && !c.offline) {
+                if(c.connections<=0) GoOffline(c,now);
+                else { c.suspectAt=now; QuickKeepalives(c,true); }
+            }
         }
         Sleep(1000);
     }
@@ -463,9 +639,17 @@ public:
     Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(ConsoleAt(address)), pastEnd_(false) {
         AddressText(address,peer_,sizeof(peer_));
         quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
-        if(console_) ++console_->connections;
+        if(console_) {
+            ++console_->connections;
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            console_->sockets.insert(socket_);
+        }
     }
     ~Connection() {
+        if(console_) {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            console_->sockets.erase(socket_);
+        }
         closesocket(socket_);
         if(console_) --console_->connections;
     }
@@ -1262,6 +1446,9 @@ void State(web::Reply& out) {
             j.Open('{').Set("address",c.text).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
             j.Set("ftp",c.ftp.load()).Set("synced",c.synced.load()).Set("mounted",config::ToUtf8(WithoutIso(c.mounted))).Set("push",c.push.load());
             j.Set("playing",c.connections>0 && !c.mounted.empty() && !c.inAurora).Set("inAurora",c.inAurora.load());
+            j.Set("ping",c.pingMs.load()).Set("answers",c.answers && !c.offline).Set("offline",c.offline.load());
+            long long answered=c.answeredAt;
+            j.Set("answered",answered<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-answered/1000.0));
             j.Set("seen",at<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-at/1000.0));
             j.Key("rate").Open('[');
             for(long long s=last-RateSeconds+1;s<=last;++s) j.Number(c.RateAt(s));
@@ -1276,7 +1463,7 @@ void State(web::Reply& out) {
         for(size_t i=0;i<consoles.size() && !listed;++i) listed=known[k].address==consoles[i]->text;
         if(listed) continue;
         j.Open('{').Set("address",known[k].address).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
-        j.Set("playing",false).Set("inAurora",false);
+        j.Set("playing",false).Set("inAurora",false).Set("ping",-1).Set("answers",false).Set("offline",false).Set("answered",0LL);
         j.Set("push",o.xboxes.empty() || std::find(o.xboxes.begin(),o.xboxes.end(),inet_addr(known[k].address.c_str()))!=o.xboxes.end());
         j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
     }
@@ -1749,6 +1936,8 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
+        "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
+        "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
         "  --web-port <n>          the dashboard's port (8360); 0: no dashboard\n"
         "  --web-bind <address>    where the dashboard listens: 127.0.0.1, this computer only\n"
@@ -1784,6 +1973,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o) {
         else if(hasValue && a=="--boot") o.bootPath=args[++i];
         else if(hasValue && a=="--online-wait") o.onlineWait=atof(args[++i].c_str());
         else if(hasValue && a=="--remove-wait") o.removeWait=atof(args[++i].c_str());
+        else if(hasValue && a=="--ping") o.pingSeconds=atof(args[++i].c_str());
         else if(hasValue && a=="--config") o.configPath=config::ToUtf8(args[++i]);
         else if(hasValue && a=="--web-port") o.webPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--web-bind") {
@@ -1867,6 +2057,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(WatchLoop).detach();
     std::thread(RateLoop).detach();
     std::thread(AuroraLoop).detach();
+    std::thread(PingLoop).detach();
     std::thread(SizeLoop).detach();
     Serve(listener);
     return 0;

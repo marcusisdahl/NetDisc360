@@ -237,7 +237,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .console-events .events .badge { width: 22px; height: 22px; border-radius: 6px; }
 .console-events .events .badge .i { width: 13px; height: 13px; }
 .console-events h3 { margin: 4px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
-.console-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.console-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .fact .k { color: var(--faint); font-size: 12px; }
 .fact .v { font-weight: 550; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fact .v.good { color: var(--good); } .fact .v.warn { color: var(--warn); } .fact .v.bad { color: var(--bad); }
@@ -730,18 +730,30 @@ function spark(canvas, values, color) {
 
 // Consoles, as the dashboard and the consoles page show them.
 function consoleStatus(c) {
+  // offline: it answered the server's pings, then stopped, and its connection ended.
+  if (c.offline) return { cls: 'off', dot: 'bad', text: 'Offline' };
   // playing: the server saw no return to Aurora since the game's mount (its FTP server answers again).
   if (c.playing) return { cls: 'playing', dot: 'play', text: 'Playing' };
   if (c.connections > 0) return { cls: 'on', dot: 'good', text: c.inAurora || !c.mounted ? 'In Aurora' : 'Connected' };
-  if (S.time - c.seen < 120) return { cls: '', dot: '', text: 'Idle' };
-  return { cls: 'off', dot: '', text: c.seen ? 'Last seen ' + ago(c.seen) : 'Not seen yet' };
+  if (c.answers) return { cls: '', dot: 'good', text: 'On' };
+  const seen = lastSeen(c);
+  if (S.time - seen < 120) return { cls: '', dot: '', text: 'Idle' };
+  return { cls: 'off', dot: '', text: seen ? 'Last seen ' + ago(seen) : 'Not seen yet' };
 }
+// seen: its latest NetISO request; answered: its latest answer to a ping.
+const lastSeen = c => Math.max(c.seen, c.answered || 0);
 function ftpText(c) {
   if (!c.push) return ['Not updated (not in your list)', ''];
   if (!S.settings.push) return ['Off in Settings', ''];
+  if (c.offline) return ['\u2014', ''];
   if (c.ftp === 2) return ['Answers', 'good'];
   if (c.ftp === 1) return ['Not answering', c.connections > 0 ? 'warn' : ''];
   return ['Not tried yet', ''];
+}
+function pingText(c) {
+  if (c.offline) return ['No answer', 'bad'];
+  if (c.answers) return [c.ping < 1 ? 'Under 1 ms' : c.ping + ' ms', 'good'];
+  return [c.ping < 0 ? '\u2014' : 'No answer', ''];
 }
 function consoleCard(c, index, wide) {
   const st = consoleStatus(c);
@@ -751,15 +763,16 @@ function consoleCard(c, index, wide) {
     h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
     h('div.name', h('span', c.address), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
     h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
-    h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : 'Nothing mounted'));
+    h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : c.answers ? 'On; NetISO hasn\u2019t connected yet' : 'Nothing mounted'));
   if (wide) {
-    const [ftp, tone] = ftpText(c);
+    const [ftp, tone] = ftpText(c), [ping, pingTone] = pingText(c);
     card.classList.add('console-wide');
     card.appendChild(h('div.console-facts',
       fact('Sent since start', bytes(c.sent)),
+      fact('Ping', ping, pingTone),
       fact('Aurora\u2019s FTP', ftp, tone),
       fact('Game folders updated', c.synced ? ago(c.synced) : c.push && S.settings.push ? 'Not yet' : '\u2014'),
-      fact('Last connected', c.connections > 0 ? 'Now' : ago(c.seen))));
+      fact('Last connected', c.connections > 0 ? 'Now' : c.seen ? ago(c.seen) : 'Not yet')));
     // Its last five events, newest first.
     if (c.events && c.events.length) card.appendChild(h('div.console-events', h('h3', 'Recent activity'),
       h('ul.events', c.events.slice().reverse().map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))))));
@@ -818,7 +831,7 @@ Pages.dashboard = root => {
       const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
       chart.set(list.map(x => ({ name: x.c.address, values: x.c.rate, color: x.i })));
       fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), x.c.address, x.c.playing ? ' \u00b7 ' + x.c.mounted : '')));
-      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || b.c.seen - a.c.seen).slice(0, 4);
+      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c)).slice(0, 4);
       fill(consoles, sorted.length ? sorted.map(x => consoleCard(x.c, x.i)) :
         h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to ', h('code', (S.addresses[0] || 'this computer') + ':' + S.ports.netiso), '.')));
       const recent = S.events.slice(-12).reverse();
@@ -1001,7 +1014,7 @@ Pages.consoles = root => {
   return {
     update() {
       if (!mounted) { form(); mounted = true; }
-      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || b.c.seen - a.c.seen);
+      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c));
       fill(list, sorted.length ? sorted.map(x => {
         const card = consoleCard(x.c, x.i, true);
         if (x.c.connections === 0) $('.console-facts', card).appendChild(h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' } },
