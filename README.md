@@ -29,7 +29,7 @@
 
 Keep your games on your PC or NAS and play them on your Xbox 360 just like installed games. Each one appears in Aurora with its name, cover art, title updates and DLC; pick it and it starts.
 
-- **Your Xbox's drive stays free.** The games stay on your PC or NAS. The console keeps only a tiny shortcut for each one (about 6 MB), so 2,300 games take about 13 GB on the Xbox instead of many terabytes.
+- **Your Xbox's drive stays free.** The games stay on your PC or NAS. The console keeps only a small launcher and Aurora's cover art for each one (about 9 MB in all), so even a 20 GB drive holds about 1,400 games, and 2,300 games take about 20 GB instead of many terabytes. See [How many games fit](#how-many-games-fit).
 - **Set it up once.** Start NetDisc 360 on your PC, choose your game folders, and that's it. New games show up in Aurora by themselves and removed ones disappear. It can start with Windows, and on a NAS it runs in Docker.
 - **Every console in the house.** Several Xboxes can play from the same library at the same time, and the dashboard shows what each one is playing.
 - **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
@@ -37,7 +37,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
 - **Faster than the disc.** With a gigabit USB network adapter, games read at up to about 26 MB/s, where the console's own DVD drive manages about 16 MB/s at best and NetISO on its own about 7 MB/s.
 
-**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
+**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora: RGH, JTAG, or a stock console with BadUpdate or ABadAvatar. Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
 
 <p align="center">
   <img src="docs/images/how-it-fits.svg" alt="NetDisc 360 on your PC or NAS gives Aurora a tile for each game over Aurora's FTP, and streams the game disc to the Xbox over NetISO as you play" width="800">
@@ -53,6 +53,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - [Docker](#docker)
 - [Playing](#playing)
 - [Speed](#speed)
+- [How many games fit](#how-many-games-fit)
 - [More Xbox 360 homebrew](#more-xbox-360-homebrew)
 - [Troubleshooting](#troubleshooting)
 - [Updating](#updating)
@@ -63,7 +64,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 
 ## Quick start
 
-You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetISO.xex` 1.0), and a Windows PC or a NAS with your games on the same network.
+You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetISO.xex` 1.0, from [ConsoleMods](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO))), and a Windows PC or a NAS with your games on the same network. [What you need](#what-you-need) links to each of them.
 
 1. Download `NetDisc.exe` and `NetIsoTiles.xex` from the [Releases](../../releases) page.
 2. Copy `NetISO.xex` and `NetIsoTiles.xex` to your USB drive, add a text file `NetISO.xex.txt` next to them with your PC's IP address in it, and load both plugins in `launch.ini`:
@@ -90,10 +91,21 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
 
 ## What you need
 
-- **A modded Xbox 360** with DashLaunch and Aurora (tested with BadUpdate / XeUnshackle and Aurora 0.7b.2), on the same network as your PC.
-- **The NetISO plugin**, `NetISO.xex` 1.0 by cOz. It is not part of this project; get it where you get NetISO. The modified `Nova.xex` from the NetISO kit is not needed.
-- **From this project's [Releases](../../releases) page:** `NetIsoTiles.xex` for the console, and `NetDisc.exe` for a Windows 10 or 11 PC (or the Docker image for Linux or a NAS).
+NetDisc 360 brings the PC side and the console plugin that ties it to Aurora. The rest comes from other homebrew projects, linked here.
+
+**On the console**
+
+- **A modded Xbox 360** on the same network as your PC. RGH and JTAG consoles work, and so do stock consoles with [BadUpdate](https://github.com/grimdoomer/Xbox360BadUpdate) or ABadAvatar 1.3 (see ConsoleMods' [BadUpdate guide](https://consolemods.org/wiki/BadUpdate)), with [XeUnshackle](https://github.com/Byrom90/XeUnshackle) or [XeUnshackle-Max](https://github.com/klofi/XeUnshackle-Max). NetDisc 360 is developed on ABadAvatar 1.3 with XeUnshackle-Max, which carries on into Aurora by itself after the console starts (auto continue).
+- **[Aurora](https://consolemods.org/wiki/Xbox_360:Aurora)**, the dashboard your games show up in (tested with 0.7b.2), and **[DashLaunch](https://consolemods.org/wiki/Xbox_360:DashLaunch)**, which loads the plugins at boot.
+- **The NetISO plugin**, `NetISO.xex` 1.0 by cOz. It makes a game on the server look like a disc in the console's drive, so NetDisc 360 can't work without it. It isn't open source and comes with no license to pass it on, so it isn't included here: download `Nova+NetISO-Aurora0.7b.zip` from [ConsoleMods' NetISO page](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) and take only `NetISO.xex` from it. The modified `Nova.xex` in that kit is not needed.
+- **`NetIsoTiles.xex`** from this project's [Releases](../../releases) page.
+
+**On your PC or NAS**
+
+- **`NetDisc.exe`** from the [Releases](../../releases) page, for Windows 10 or 11, or the [Docker image](#docker) for Linux or a NAS. It replaces NetISO's own server, so you don't need `server.exe` or `netiso-srv`.
 - **Your games:** ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
+
+**Optional:** [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet) with a gigabit USB network adapter for faster loading, and [FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP) for copying files to the console; see [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
 ## Install
 
@@ -104,7 +116,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
    ```
    Usb:\
      launch.ini
-     NetISO.xex
+     NetISO.xex          <- from ConsoleMods' NetISO kit, see What you need
      NetISO.xex.txt      <- you make this one in step 2
      NetIsoTiles.xex
      NetIsoTiles.ini     <- optional, see Speed
@@ -241,6 +253,24 @@ That is about as fast as the adapter goes on the console's USB 2.0 port. The con
 - `rcv_kb` is the receive buffer for NetISO's connection: `16`, `32`, `64` (the default), `128` or `256`; `0` leaves NetISO's own.
 - The file can also go on the root of `Hdd1:`; the USB drive's is used if both are there. Any other value is ignored, and NetISO then works as it does on its own.
 - Each game's `netiso.log` says what the plugin set, in two lines starting `NetISO reads:` and `NetISO's receive buffer:`.
+
+## How many games fit
+
+Each game takes about 9 MB on the console's drive, measured on a console with 39 games:
+
+- **5.8 MB for its launcher**, the folder in `Hdd1:\NetISO` that Aurora shows as the game.
+- **About 3.1 MB for its art**, which Aurora downloads for any game in its list: screenshots (1.3 MB), background (1 MB), cover (0.66 MB) and banner.
+
+The game itself stays on your PC or NAS. A game's install content (GTA V's install disc puts 8.3 GB on the drive), title updates and DLC take space as they would with the disc. The table keeps 1 GB free for Aurora, your saves and updates.
+
+| Console drive | Free for you | Games that fit |
+|---|---|---|
+| 20 GB | about 13 GB | about 1,400 |
+| 60 GB | about 51 GB | about 5,600 |
+| 120 GB | about 106 GB | about 12,000 |
+| 250 GB and up | about 227 GB and up | more than you'll ever need |
+
+The console's own system keeps part of every drive, which is why a 20 GB drive has about 13 GB free. The 60 GB figure is measured; the others are worked out the same way.
 
 ## More Xbox 360 homebrew
 
