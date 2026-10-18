@@ -17,10 +17,11 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Every console in the house.** Several Xboxes can play from the same library at the same time, and the dashboard shows what each one is playing.
 - **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
 - **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
+- **Faster than the disc.** With a gigabit USB network adapter, games read at up to about 26 MB/s, where the console's own DVD drive manages about 16 MB/s at best and NetISO on its own about 7 MB/s.
 
-**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin stops NetISO from killing the Guide. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](#how-it-works) has the details.
+**For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora (RGH, JTAG or BadUpdate). Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin stops NetISO from killing the Guide and lifts its read loop from 4 KB per request to 64 KB or more, with a bigger receive buffer. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](#how-it-works) has the details.
 
-**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** Games load faster through a gigabit USB network adapter, which CUsbEnet makes work on the Xbox (its own network port is 100 Mbit/s); see [Recommended extras](#recommended-extras).
+**Best with [CUsbEnet](https://github.com/marcusisdahl/CUsbEnet).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [Recommended extras](#recommended-extras).
 
 ## Contents
 
@@ -29,6 +30,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - [Install](#install) (step by step)
 - [Docker](#docker)
 - [Playing](#playing)
+- [Speed](#speed)
 - [Recommended extras](#recommended-extras)
 - [Troubleshooting](#troubleshooting)
 - [Updating](#updating)
@@ -62,7 +64,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
 
 5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
 
-[Install](#install) goes through each step in detail, and [Docker](#docker) has every setting.
+[Install](#install) goes through each step in detail, and [Docker](#docker) has every setting. To load games as fast as your network allows, see [Speed](#speed).
 
 ## What you need
 
@@ -83,6 +85,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
      NetISO.xex
      NetISO.xex.txt      <- you make this one in step 2
      NetIsoTiles.xex
+     NetIsoTiles.ini     <- optional, see Speed
      CUsbEnet.xex        <- optional, see Recommended extras
    ```
 
@@ -176,11 +179,38 @@ Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc a
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
+## Speed
+
+NetISO on its own loads games at about 7 MB/s however fast your network is, because it asks the server for 4 KB at a time and waits for each piece before asking for the next. `NetIsoTiles.xex` has it ask for 64 KB at a time and gives its connection a 64 KB receive buffer, with nothing to set up.
+
+With NetDisc 360 it can go faster still. Make a text file `NetIsoTiles.ini` on the root of your USB drive (next to the plugins) with these two lines, and reboot the console:
+
+```ini
+read_kb=256
+rcv_kb=64
+```
+
+Installing GTA V from its install disc over NetISO, on a console with a TP-Link UE306 USB adapter and CUsbEnet:
+
+| | Speed |
+|---|---|
+| NetISO on its own (4 KB per request) | about 7 MB/s |
+| `read_kb=64`, no bigger receive buffer (`rcv_kb=0`) | about 17 MB/s |
+| `read_kb=256`, no bigger receive buffer | about 19 MB/s |
+| `read_kb=256`, `rcv_kb=64` | about 26 MB/s |
+
+That is about as fast as the adapter goes on the console's USB 2.0 port. The console's own network port stops at about 12 MB/s.
+
+- `read_kb` is how much NetISO asks for in one request: `4` (NetISO's own), `16`, `64` (the default), `256` or `1024`. NetISO's own server, `netiso-srv`, cuts replies of 128 KB or more short, so keep `64` with it; NetDisc 360 serves any of them.
+- `rcv_kb` is the receive buffer for NetISO's connection: `16`, `32`, `64` (the default), `128` or `256`; `0` leaves NetISO's own.
+- The file can also go on the root of `Hdd1:`; the USB drive's is used if both are there. Any other value is ignored, and NetISO then works as it does on its own.
+- Each game's `netiso.log` says what the plugin set, in two lines starting `NetISO reads:` and `NetISO's receive buffer:`.
+
 ## Recommended extras
 
 Both are separate homebrew projects that work well alongside NetISO.
 
-- **[CUsbEnet](https://github.com/marcusisdahl/CUsbEnet)**: a DashLaunch plugin that lets the Xbox 360 use a USB Ethernet adapter. The console's own network port is 100 Mbit/s, and NetISO reads every game over the network; with a gigabit USB adapter (ASIX AX88179 or Realtek based, such as the TP-Link UE306) FTP to the console has reached about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
+- **[CUsbEnet](https://github.com/marcusisdahl/CUsbEnet)**: a DashLaunch plugin that lets the Xbox 360 use a USB Ethernet adapter. The console's own network port is 100 Mbit/s, and NetISO reads every game over the network; with a gigabit USB adapter (ASIX AX88179 or Realtek based, such as the TP-Link UE306) FTP to the console has reached about 29 MiB/s, and games load at about 26 MB/s (see [Speed](#speed)). It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
 - **[FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP)**: a fast FTP server app for the console, for copying games, saves and files to and from it (about 27 MiB/s, where Aurora's own FTP managed about 19.5 MiB/s on the same console). It uses the same folder names and login as Aurora's FTP. Start it from Aurora when you need it; NetDisc 360 keeps using Aurora's own FTP, which runs whenever Aurora is open.
 
 ## Troubleshooting
@@ -262,7 +292,7 @@ Some games come on two discs, one of which only installs content: GTA V's second
 - Original Xbox games (`default.xbe`) are not supported, as NetISO doesn't play them; they are skipped.
 - Multi-disc games get one launcher per disc; swapping discs during a game is not handled.
 - The launcher has no title name of its own; Aurora names each game from its online lookup by Title ID.
-- `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix is off.
+- `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix and the speed-up are off.
 
 ## NetISO Sync (for other NetISO servers)
 
@@ -319,6 +349,12 @@ The launcher walks those folders by name (root, the ISO, `Mount`), leaves the di
 The launcher also starts the game the way Aurora's disc entry does (`XamLoaderLaunchTitleEx`, as Nova's browser starts files, left the Guide dead), stays off the disc for 5 s after the mount (reading it during the fake tray cycle left the Guide dead), and keeps drawing frames until it launches (a title that never drew left the Guide dead too).
 
 `NetIsoTiles.xex` also hooks xam's two launch calls (ordinals 420 and 421, which Aurora starts tiles with). By default it leaves tiles to their launcher.
+
+### Read speed
+
+`NetISO.xex` 1.0 splits every disc read into 4 KB requests and sends the next only when the last one's data is in, so each 4 KB costs a round trip (about 0.6 ms through a USB adapter). It receives straight into the caller's buffer, so the limit is only a constant: at start-up, before NetISO has a disc to read, `NetIsoTiles.xex` rewrites the three instructions that clamp a request to 4 KB to clamp it to `read_kb` instead. NetDisc 360 answers a request of up to 16 MB in one go.
+
+NetISO sets one option on its socket before connecting and leaves the receive buffer at XNet's default, which caps how much the server can have in flight. The plugin points that one `setsockopt` call at its own function, which also asks for `rcv_kb` KB with `SO_RCVBUF` on each connection NetISO makes. Both patches check NetISO 1.0's code first, like the Guide fix.
 
 ## Tests
 
