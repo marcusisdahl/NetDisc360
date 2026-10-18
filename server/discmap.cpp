@@ -3,22 +3,67 @@
 #include "discmap.h"
 #include "config.h"
 #include <ctype.h>
+#include <set>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 namespace nia {
 
-// Games on more than one disc whose discs aren't what the discs themselves
-// suggest. The Title IDs are checked against the discs or a title database;
-// a game left out is still added, from what its discs carry.
+// Games on more than one disc, with what each disc is. The Title IDs are
+// checked against the discs or the x360db title database (made from Redump
+// and DBox) and the Iso2God title list; the roles come from the publishers'
+// support pages, reviews and players' reports. A game left out is still
+// added, from what its discs carry. A content disc's name goes into "the
+// <name> disc" in the console's notices.
 static const KnownGame Known[]={
     // The install disc is disc 1; the game asks for the play disc when it's done.
     {0x545408A7,"Grand Theft Auto V","install;play"},
+    {0x45410997,"Dragon Age: Inquisition","install;play"},
+    {0x4B4E085E,"Metal Gear Solid V: The Phantom Pain","install;play"},
+    {0x555308B7,"Watch_Dogs","install;play"},
+    {0x5345085E,"Alien: Isolation","install;play"},
+    {0x5752082C,"Middle-earth: Shadow of Mordor","install;play"},
+    {0x555308CB,"The Crew","install;play"},
+    {0x425307F5,"Wolfenstein: The New Order","install;next;next;next"},
     // Disc 2 is Undead Nightmare, a game of its own.
     {0x5454082B,"Red Dead Redemption: Game of the Year Edition","own Red Dead Redemption;own Undead Nightmare"},
-    // Disc 2 installs car packs; the game plays without them.
+    {0x545407F2,"Grand Theft Auto IV: The Complete Edition","own Grand Theft Auto IV;own Episodes from Liberty City"},
+    // A disc of optional content to install; the game plays without it.
     {0x4D530910,"Forza Motorsport 4","play;content Car packs"},
+    {0x4D53084D,"Forza Motorsport 3","play;content Car and track packs"},
+    {0x415608FC,"Call of Duty: Ghosts","play;content Campaign install"},
+    {0x4D530919,"Halo 4","play;content Multiplayer install"},
+    {0x425307D5,"Fallout 3: Game of the Year Edition","play;content Add-on"},
+    {0x425307D1,"The Elder Scrolls IV: Oblivion Game of the Year Edition","play;content Add-on"},
+    {0x425307E3,"Dishonored: Game of the Year Edition","play;content DLC"},
+    {0x43430814,"Dragon's Dogma: Dark Arisen","play;content HD texture"},
+    {0x43430819,"Resident Evil 6","play;content Voice-over pack"},
+    {0x5451086D,"Saints Row: The Third - The Full Package","content DLC;play"},
+    // The game goes on from disc to disc. Those split by mode ask for the
+    // other disc when the mode is picked in the menu.
+    {0x454108CE,"Mass Effect 2","next;next"},
+    {0x4541095D,"Mass Effect 3","next;next"},
+    {0x535107E4,"Final Fantasy XIII","next;next;next"},
+    {0x4D5307FA,"Lost Odyssey","next;next;next;next"},
+    {0x4D5307DF,"Blue Dragon","next;next;next"},
+    {0x535107DD,"Star Ocean: The Last Hope","next;next;next"},
+    {0x535107DB,"Infinite Undiscovery","next;next"},
+    {0x535107DA,"The Last Remnant","next;next"},
+    {0x4E4D080B,"Magna Carta 2","next;next"},
+    {0x5454086C,"L.A. Noire","next;next;next;next"},
+    {0x5454086B,"Max Payne 3","next Single player part 1 and multiplayer;next Single player part 2"},
+    {0x57520824,"The Witcher 2: Assassins of Kings Enhanced Edition","next;next"},
+    {0x555308B6,"Tom Clancy's Splinter Cell: Blacklist","next;next"},
+    {0x454108DF,"Dead Space 2","next;next"},
+    {0x4541099D,"Dead Space 3","next;next"},
+    {0x4B4E0809,"Castlevania: Lords of Shadow","next;next"},
+    {0x535107FA,"Deus Ex: Human Revolution Director's Cut","next;next"},
+    {0x425307EC,"Rage","next;next;next Multiplayer"},
+    {0x454109BA,"Battlefield 4","next Multiplayer;next Single player"},
+    {0x45410993,"Medal of Honor: Warfighter","next Multiplayer;next Single player"},
+    {0x555308AE,"Assassin's Creed III","next Single player;next Multiplayer"},
+    {0x555308C2,"Assassin's Creed IV: Black Flag","next Single player;next Multiplayer"},
 };
 
 const KnownGame* KnownGames(int& count) {
@@ -160,6 +205,12 @@ void DiscMap::Learn(const std::vector<IsoFile>& discs, std::vector<std::string>&
     for(size_t i=0;i<discs.size();++i) if(discs[i].titleId && !games_.count(discs[i].titleId)) sets[discs[i].titleId].push_back(&discs[i]);
     std::string sections;
     for(std::map<DWORD,std::vector<const IsoFile*> >::const_iterator s=sets.begin();s!=sets.end();++s) {
+        // Only a game found on two discs or more: one disc alone may be an
+        // edition on one disc that shares the Title ID (Fallout 3 and its
+        // Game of the Year Edition).
+        std::set<int> numbers;
+        for(size_t i=0;i<s->second.size();++i) if(s->second[i]->disc>0) numbers.insert(s->second[i]->disc);
+        if(numbers.size()<2) continue;
         MapGame game;
         bool known=false;
         for(size_t k=0;k<sizeof(Known)/sizeof(Known[0]) && !known;++k) {

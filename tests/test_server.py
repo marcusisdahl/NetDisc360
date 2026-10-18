@@ -10,6 +10,7 @@ import gzip
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import struct
@@ -786,13 +787,21 @@ class Push(ServerTest):
         disc("GTA V.iso", 0x79E465C5, 0x545408A7, 2, 2)
         disc("Red Dead.iso", 0x55556666, 0x5454082B, 1, 2)
         disc("Red Dead - Disc 2.iso", 0x77778888, 0x5454082B, 2, 2)
+        # Wolfenstein's install disc, then three discs it goes on through.
+        disc("Wolfenstein.iso", 0x201, 0x425307F5, 1, 4,
+             {"0000000000000000": {"425307F5": {"00000002": {"425307F500000000": b"PIRS" + bytes(100)}}}})
+        disc("Wolfenstein - Disc 2.iso", 0x202, 0x425307F5, 2, 4)
+        disc("Wolfenstein - Disc 3.iso", 0x203, 0x425307F5, 3, 4)
         # Not in it: a game that goes on from disc to disc, and one disc alone.
         for n in (1, 2, 3):
             disc("Saga - Disc %d.iso" % n, 0x100 + n, 0x12340001, n, 3)
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        # In the list but alone: Fallout 3 on one disc shares its Title ID with
+        # the Game of the Year Edition, whose disc 2 is an add-on disc.
+        disc("Fallout 3.iso", 0x301, 0x425307D5, 1, 1)
         config = os.path.join(self.tmp.name, "netdisc.ini")
         out = self.push(extra=("--config", config))
-        self.assertIn("8 added", out)
+        self.assertIn("12 added", out)
         self.assertIn("Disc map: added Red Dead Redemption: Game of the Year Edition (5454082B): disc 1 own (Red Dead Redemption),"
                       " disc 2 own (Undead Nightmare), from the built-in list.", out)
         self.assertIn("Disc map: added Saga - Disc 1 (12340001): disc 1 next, disc 2 next, disc 3 next, guessed from the discs.", out)
@@ -806,7 +815,10 @@ class Push(ServerTest):
                       "disc1=own Red Dead Redemption\r\ndisc2=own Undead Nightmare\r\n", map_text)
         self.assertIn("[12340001]\r\n; NetDisc 360's guess from the discs it found; change it if it's wrong.\r\n"
                       "name=Saga - Disc 1\r\ndisc1=next\r\ndisc2=next\r\ndisc3=next\r\n", map_text)
+        self.assertIn("[425307F5]\r\n; From NetDisc 360's list of known games.\r\nname=Wolfenstein: The New Order\r\n"
+                      "disc1=install\r\ndisc2=next\r\ndisc3=next\r\ndisc4=next\r\n", map_text)
         self.assertNotIn("4D5307E6", map_text)
+        self.assertNotIn("425307D5", map_text)
 
         def ini(folder):
             with open(os.path.join(self.games, folder, "netiso.ini")) as f:
@@ -818,6 +830,13 @@ class Push(ServerTest):
         self.assertIn("disc_role=own\ndisc_label=Undead Nightmare\n", ini("Red Dead - Disc 2"))
         self.assertIn("disc_role=next\n", ini("Saga - Disc 3"))
         self.assertNotIn("disc_role", ini("Halo 3"))
+        self.assertNotIn("disc_role", ini("Fallout 3"))
+        # The discs Wolfenstein goes on through need its install, like a play disc.
+        self.assertIn("disc_role=install\n", ini("Wolfenstein"))
+        for folder in ("Wolfenstein - Disc 2", "Wolfenstein - Disc 3"):
+            self.assertIn("disc_role=next\n", ini(folder))
+            with open(os.path.join(self.games, folder, "install.ini")) as f:
+                self.assertIn("install_iso=Wolfenstein.iso\n", f.read())
         # Nothing new: nothing written, and the map isn't added to.
         self.ftp.stored.clear()
         self.push(extra=("--config", config))
@@ -846,6 +865,30 @@ class Push(ServerTest):
         self.assertIn("Disc map: added Saga - Disc 1 (12340001)", out)
         self.assertIn("disc_role=next\n", ini("Saga - Disc 3"))
         self.assertNotIn("disc_label", ini("Saga - Disc 3"))
+
+    def test_the_built_in_disc_list_is_sound(self):
+        with open(os.path.join(ROOT, "server", "discmap.cpp")) as f:
+            source = f.read()
+        table = source[source.index("static const KnownGame Known[]={"):]
+        table = table[:table.index("\n};")]
+        games = re.findall(r'\{0x([0-9A-F]{8}),"([^"]+)","([^"]+)"\}', table)
+        self.assertGreater(len(games), 40)
+        self.assertEqual(len(games), table.count("{0x"))
+        ids = [title_id for title_id, _, _ in games]
+        self.assertEqual(len(ids), len(set(ids)), "a Title ID is in the list twice")
+        for title_id, name, discs in games:
+            parts = discs.split(";")
+            self.assertGreaterEqual(len(parts), 2, name)
+            self.assertLessEqual(len(parts), 9, name)
+            for part in parts:
+                self.assertIn(part.split(" ")[0], ("install", "play", "content", "next", "own"), name)
+            roles = [part.split(" ")[0] for part in parts]
+            # An install disc comes with a disc to play, and a content disc names what it holds.
+            if "install" in roles:
+                self.assertTrue("play" in roles or "next" in roles, name)
+            for part in parts:
+                if part.startswith("content"):
+                    self.assertGreater(len(part), len("content "), name)
 
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)

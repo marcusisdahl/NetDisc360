@@ -37,9 +37,10 @@ public:
     // file, the map is kept while the server runs). problems gets the lines
     // it couldn't use, when the file has changed since the last call.
     void Load(const std::string& path, std::vector<std::string>& problems);
-    // Adds each game in discs on more than one disc, or in the built-in list,
-    // that the map doesn't have yet, also to the file. added gets one line
-    // per game for the log; error why the file couldn't be written, if so.
+    // Adds each game found on two discs or more that the map doesn't have
+    // yet, from the built-in list or else from what its discs carry, also
+    // to the file. added gets one line per game for the log; error why the
+    // file couldn't be written, if so.
     void Learn(const std::vector<IsoFile>& discs, std::vector<std::string>& added, std::string& error);
     // Sets role and label on each disc the map knows.
     void Apply(std::vector<IsoFile>& discs) const;

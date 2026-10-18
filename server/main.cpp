@@ -282,8 +282,8 @@ std::string DiscMapPath(const std::string& configPath) {
 }
 // What the disc map says each disc is; a game on more than one disc that
 // the map doesn't have yet is added to it. The map has the last word on
-// install discs: only a play disc needs one, and only from an install or
-// content disc.
+// install discs: only a play disc needs one, or a disc the game goes on to
+// after it (Wolfenstein's), and only from an install or content disc.
 void MapDiscs(std::vector<IsoFile>& isos) {
     std::string path=DiscMapPath(Current().configPath),error;
     std::vector<std::string> problems,added;
@@ -301,7 +301,7 @@ void MapDiscs(std::vector<IsoFile>& isos) {
         if(d.installDisc.empty()) continue;
         const IsoFile* carrier=NULL;
         for(size_t k=0;k<isos.size() && !carrier;++k) if(isos[k].name==d.installDisc) carrier=&isos[k];
-        bool fits=(d.role.empty() || d.role=="play") &&
+        bool fits=(d.role.empty() || d.role=="play" || d.role=="next") &&
                   (!carrier || carrier->role.empty() || carrier->role=="install" || carrier->role=="content");
         if(!fits) d.installDisc.clear();
     }
