@@ -4,7 +4,7 @@ What happens on the console when you pick a game, and what `NetIsoTiles.xex` cha
 
 ## The launcher
 
-Each game's folder in `Hdd1:\NetISO` holds `default.xex`, `boot.xex` and `netiso.ini`. `default.xex` carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to `boot.xex` next to it (the same program without a Title ID), which draws the loading screen, asks the NetISO plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
+Each game's folder in `Hdd1:\NetISO` holds `default.xex` and `netiso.ini`. `default.xex` is a small tile launcher (about 130 KB) that carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to the helper all the games share, `Hdd1:\NetISO\NetDisc360\boot.xex` (the full launcher without a Title ID, which Aurora doesn't list), telling it which game folder it came from. The helper draws the loading screen, asks the NetISO plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
 
 ## The mount
 

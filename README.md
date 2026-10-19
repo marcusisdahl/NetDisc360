@@ -32,7 +32,7 @@
 
 Keep your games on your PC or NAS and play them on your Xbox 360 just like installed games. Each one appears in Aurora with its name, cover art, title updates and DLC; pick it and it starts.
 
-- **Your Xbox's drive stays free.** The games stay on your PC or NAS. The console keeps only a small launcher and Aurora's cover art for each one (about 9 MB in all), so even a 20 GB drive holds about 1,400 games, and 2,300 games take about 20 GB instead of many terabytes. See [How many games fit](#how-many-games-fit).
+- **Your Xbox's drive stays free.** The games stay on your PC or NAS. The console keeps only a small launcher and Aurora's cover art for each one (about 3.3 MB in all), so even a 20 GB drive holds about 3,700 games, and 2,300 games take about 7.5 GB instead of many terabytes. See [How many games fit](#how-many-games-fit).
 - **Set it up once.** Start NetDisc360 on your PC, choose your game folders, and that's it. New games show up in Aurora by themselves and removed ones disappear. It can start with Windows, and on a NAS it runs in Docker.
 - **Every console in the house.** Several Xboxes can play from the same library at the same time, and the dashboard shows what each one is playing.
 - **Every kind of game copy.** ISOs, extracted games and Games on Demand, from as many folders as you like. Nothing to convert or copy.
@@ -298,18 +298,18 @@ That is about as fast as the adapter goes on the console's USB 2.0 port. The con
 
 ## How many games fit
 
-Each game takes about 9 MB on the console's drive, measured on a console with 39 games:
+Each game takes about 3.3 MB on the console's drive:
 
-- **5.8 MB for its launcher**, the folder in `Hdd1:\NetISO` that Aurora shows as the game.
-- **About 3.1 MB for its art**, which Aurora downloads for any game in its list: screenshots (1.3 MB), background (1 MB), cover (0.66 MB) and banner.
+- **0.14 MB for its launcher**, the folder in `Hdd1:\NetISO` that Aurora shows as the game. All the games share one 2.9 MB helper in `Hdd1:\NetISO\NetDisc360`, which shows the loading screen and starts the disc.
+- **About 3.1 MB for its art**, which Aurora downloads for any game in its list: screenshots (1.3 MB), background (1 MB), cover (0.66 MB) and banner (measured on a console with 39 games).
 
 The game itself stays on your PC or NAS. A game's install content (GTA V's install disc puts 8.3 GB on the drive), title updates and DLC take space as they would with the disc. The table keeps 1 GB free for Aurora, your saves and updates.
 
 | Console drive | Free for you | Games that fit |
 |---|---|---|
-| 20 GB | about 13 GB | about 1,400 |
-| 60 GB | about 51 GB | about 5,600 |
-| 120 GB | about 106 GB | about 12,000 |
+| 20 GB | about 13 GB | about 3,700 |
+| 60 GB | about 51 GB | about 15,500 |
+| 120 GB | about 106 GB | about 32,500 |
 | 250 GB and up | about 227 GB and up | more than you'll ever need |
 
 The console's own system keeps part of every drive, which is why a 20 GB drive has about 13 GB free. The 60 GB figure is measured; the others are worked out the same way.
