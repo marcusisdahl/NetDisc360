@@ -1442,14 +1442,19 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
 // The launches the plugin makes itself go straight to xam, also when one of
 // xam's two calls goes on through the other. A launch that works doesn't
 // return (the title ends), so this is the thread and the time, not a flag to
-// clear: another thread, or the same one much later, is a new launch.
+// clear: another thread, or the same one later, is a new launch. xam's call
+// through the other hook comes within 30 ms (seen in the logs), so the time
+// is short: the next Aurora's thread can have the same ID, and with a minute
+// GTA V's tile, started 49 s after Halo Reach's, was passed on as "not a
+// tile", got no disc swaps, and the console froze in Nova's swap.
+static const DWORD SkipMs=5000;
 static volatile DWORD SkipThread=0,SkipSince=0;
 static void Skip(bool on) {
     SkipSince=GetTickCount();
     SkipThread=on ? GetCurrentThreadId() : 0;
 }
 static bool Skipping() {
-    return SkipThread==GetCurrentThreadId() && GetTickCount()-SkipSince<60000;
+    return SkipThread==GetCurrentThreadId() && GetTickCount()-SkipSince<SkipMs;
 }
 // One tile at a time.
 static volatile LONG Busy=0;
