@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="NetDisc 360: network games for homebrew Xbox 360" width="480">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/logo.png">
+    <img src="docs/images/logo.gif" alt="NetDisc 360: network games for homebrew Xbox 360" width="480">
+  </picture>
 </p>
 
 <p align="center">
