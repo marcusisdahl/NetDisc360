@@ -146,11 +146,13 @@ static void Cap(ImVec2 c, float r, float a, ImU32 color, float thickness) {
 static void Intro(double t) {
     if(t<0 || t>=IntroSeconds) return;
     const float pi=3.14159265f;
-    const float fade=1-EaseOut(Phase(t,1.55,IntroSeconds-1.55));  // The whole intro, at the end.
+    // The whole logo is up by 1.35 s and stays a second before it fades.
+    const double fadeAt=IntroSeconds-0.45;
+    const float fade=1-EaseOut(Phase(t,fadeAt,IntroSeconds-fadeAt));  // The whole intro, at the end.
     #define A(alpha) int(255*(alpha)*fade)
     Box(0,0,1280,720,Hex(Background,A(1)));
     // The mark is the logo's 256-unit square at scale k around (mx,my).
-    const float grow=1+0.04f*EaseOut(Phase(t,1.55,0.45));
+    const float grow=1+0.04f*EaseOut(Phase(t,fadeAt,0.45));
     const float k=0.86f*grow, mx=322, my=350;
     #define P(x,y) ImVec2(mx+((x)-128)*k*pop,my+((y)-128)*k*pop)
     float pop=EaseBack(Phase(t,0,0.45)), in=Phase(t,0,0.25);

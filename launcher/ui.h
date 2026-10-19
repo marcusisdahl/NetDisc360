@@ -29,7 +29,7 @@ struct LoadScreen {
     LoadScreen();
 };
 // How long the logo intro at the start lasts. The start goes on under it.
-const double IntroSeconds=2.0;
+const double IntroSeconds=3.0;
 // Creates the Dear ImGui context, style and fonts.
 void InitLoadUi();
 // Builds one frame; the caller renders ImGui::GetDrawData().
