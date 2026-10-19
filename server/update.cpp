@@ -116,11 +116,10 @@ bool Newest(const std::string& json, bool prereleases, Release& out, std::string
 
 bool CheckExe(const std::string& data, const Release& r, std::string& error) {
     if(r.exeSize && (long long)data.size()!=r.exeSize) { error="The download was cut short; try again."; return false; }
-    if(!r.exeDigest.empty()) {
-        if(r.exeDigest.compare(0,7,"sha256:") || web::Sha256Hex(data)!=r.exeDigest.substr(7)) {
-            error="The download doesn't match the release's checksum, so it wasn't installed.";
-            return false;
-        }
+    if(r.exeDigest.empty()) { error="GitHub gave no checksum for the release's NetDisc.exe, so it wasn't installed."; return false; }
+    if(r.exeDigest.compare(0,7,"sha256:") || web::Sha256Hex(data)!=r.exeDigest.substr(7)) {
+        error="The download doesn't match the release's checksum, so it wasn't installed.";
+        return false;
     }
     // A PE file for x64: "MZ", and at e_lfanew "PE\0\0" and machine 0x8664.
     unsigned pe=data.size()>=64 ? (unsigned char)data[60]|((unsigned char)data[61]<<8)|((unsigned char)data[62]<<16)|(unsigned(data[63]&0xFF)<<24) : 0;
@@ -130,6 +129,11 @@ bool CheckExe(const std::string& data, const Release& r, std::string& error) {
         return false;
     }
     return true;
+}
+
+bool FromRepo(const std::string& url) {
+    std::string from=Lower("https://github.com/" NETDISC_REPO "/releases/download/");
+    return Lower(url.substr(0,from.size()))==from && url.find("..")==std::string::npos;
 }
 
 #ifdef _WIN32

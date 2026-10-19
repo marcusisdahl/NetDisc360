@@ -490,7 +490,7 @@ bool XexTitle(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& media
     for(DWORD i=0;i<count && 24+i*8+8<=size;++i) {
         if(Big32(xex+24+i*8)!=ExecutionInfoKey) continue;
         DWORD at=Big32(xex+28+i*8);
-        if(at<24 || at+ExecutionInfoBytes>size) return false;
+        if(at<24 || at>size || size-at<ExecutionInfoBytes) return false;
         titleId=Big32(xex+at+12); mediaId=Big32(xex+at); disc=xex[at+18] ? xex[at+18] : 1;
         return titleId!=0;
     }
@@ -668,10 +668,10 @@ void AddGod(const std::string& folder, int depth, const Entry& header, std::vect
     out.push_back(disc);
 }
 
-void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
-    if(depth>MaxDepth) return;
+bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
+    if(depth>MaxDepth) return true;
     std::vector<Entry> entries;
-    if(!List(folder,entries)) return;
+    if(!List(folder,entries)) return false;
     // A served folder itself is a library, not a game, even with a
     // default.xex left in it: the ISOs and folders in it are what count.
     if(depth>0 && Find(entries,"default.xex",false)) {
@@ -682,10 +682,10 @@ void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
             std::vector<Entry> disc; List(inside,disc);
             AddFolder(inside,Leaf(folder)+" - "+entries[i].name,disc,out);
         }
-        return;
+        return true;
     }
     // An original Xbox game, which NetISO can't start; no need to look inside.
-    if(depth>0 && Find(entries,"default.xbe",false)) return;
+    if(depth>0 && Find(entries,"default.xbe",false)) return true;
     for(size_t i=0;i<entries.size();++i) {
         const Entry& e=entries[i];
         if(e.folder) continue;
@@ -702,15 +702,17 @@ void Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
         if(e.name.size()>5 && !_stricmp(e.name.c_str()+e.name.size()-5,".data") && Find(entries,e.name.substr(0,e.name.size()-5),false)) continue;
         Scan(Join(folder,e.name),depth+1,out);
     }
+    return true;
 }
 }
 
-void FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
-    Scan(folder,0,out);
+bool FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
+    bool listed=Scan(folder,0,out);
     std::sort(out.begin(),out.end(),[](const IsoFile& a, const IsoFile& b) {
         int order=_stricmp(a.name.c_str(),b.name.c_str());
         return order ? order<0 : a.path<b.path;
     });
+    return listed;
 }
 
 U64 FolderBytes(const std::string& folder) {
@@ -728,7 +730,24 @@ U64 FolderBytes(const std::string& folder) {
     return total;
 }
 
+// A listed name the console can take. NetISO's names are at most 255 bytes,
+// and the launcher and plugin build paths of up to 260 from them, so a longer
+// one is cut (with room for a " 2"); a control character (a Linux file name
+// can have one) would break the line it is written on in netiso.ini.
+enum { ServedNameMost = 200 };
+std::string ServedName(const std::string& name) {
+    std::string out(name);
+    for(size_t i=0;i<out.size();++i) if((unsigned char)out[i]<' ' || out[i]==0x7F) out[i]='_';
+    if(out.size()>ServedNameMost) {
+        size_t cut=ServedNameMost-4;
+        while(cut && ((unsigned char)out[cut]&0xC0)==0x80) --cut;  // Not inside a UTF-8 character.
+        out=out.substr(0,cut)+out.substr(out.size()-4);
+    }
+    return out;
+}
+
 void UniqueNames(std::vector<IsoFile>& discs) {
+    for(size_t i=0;i<discs.size();++i) discs[i].name=ServedName(discs[i].name);
     // An ISO keeps its name over a folder or GOD package, and otherwise the
     // first in order keeps it. ISOs are named first; a numbered name
     // ("Game 2.iso") sorts before "Game.iso", so a real one is named already.

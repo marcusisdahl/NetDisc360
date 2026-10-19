@@ -33,8 +33,9 @@ std::vector<Info> List(const std::string& folder);
 // The files of a backup (or of a netdisc.ini by itself), after checking it
 // holds NetDisc 360's settings; info gets what its backup.ini says.
 bool Open(const std::string& data, std::map<std::string,std::string>& files, Info& info, std::string& error);
-// Deletes the oldest backups beyond keep, but never manual ones; returns how many.
-int Prune(const std::string& folder, int keep);
+// Deletes the oldest backups beyond keep, but never manual ones nor the one
+// named spare (being restored); returns how many.
+int Prune(const std::string& folder, int keep, const std::string& spare = std::string());
 // Whether name can be a backup's file name: letters, digits, - _ and . only, ending in .zip.
 bool Named(const std::string& name);
 // The platform backups made here name: windows or linux.

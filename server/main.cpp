@@ -109,14 +109,23 @@ double StartedAt;
 // The command line's options, under the settings file's: what a restored
 // backup's settings go over (Reload).
 Options CommandLine;
-// The version before an update, kept in the settings file until the new
-// version has started and said so.
-std::string UpdatedFrom;
+// The version before an update and the one installed, kept in the settings
+// file until the new version has started and said so. Should the old one
+// start instead (the new one didn't, and was swapped back), the new one is
+// skipped by automatic updates (UpdateSkip).
+std::string UpdatedFrom, UpdateTo, UpdateSkip;
 // Raised by a settings change that needs every console's game folders checked again.
 std::atomic<int> PushGeneration(0);
 // When the game folders were last changed on the dashboard, in Now() ms: like
 // a start, it holds back removals for removeWait (see WatchLoop).
 std::atomic<long long> FoldersChangedAt(0);
+// Whether a game folder couldn't be read at the latest look (a drive or share
+// that isn't there): its games only seem gone then, so no game folder is
+// removed from a console meanwhile (see PushTo). MissingFolders, under
+// MissingLock, lists them for the log.
+std::atomic<bool> FoldersMissing(false);
+std::mutex MissingLock;
+std::string MissingFolders;
 
 // The log, and what the dashboard shows of it --------------------------------
 
@@ -332,13 +341,23 @@ std::vector<IsoFile> Isos() {
     std::vector<std::string> folders=Current().folders;
     std::vector<IsoFile> isos;
     std::set<std::string> paths;
+    std::string missing;
     for(size_t i=0;i<folders.size();++i) {
         std::string folder=folders[i];
         if(folder.size()==3 && folder[1]==':') folder+='.';  // "D:\." for the top of D:.
         std::vector<IsoFile> found;
-        FindIsos(folder,found);
+        if(!FindIsos(folder,found)) missing+="  "+folders[i]+"\n";
         // A folder inside another one listed finds the same discs again.
         for(size_t k=0;k<found.size();++k) if(paths.insert(found[k].path).second) isos.push_back(found[k]);
+    }
+    FoldersMissing=!missing.empty();
+    {
+        std::lock_guard<std::mutex> hold(MissingLock);
+        if(missing!=MissingFolders) {
+            if(!missing.empty()) Log("Can't read these game folders; until they're back, no game is removed from the consoles:\n%s",missing.substr(0,missing.size()-1).c_str());
+            else Log("Every game folder can be read again.");
+            MissingFolders=missing;
+        }
     }
     ReadTitles(isos);
     // The launcher's own build (NetISO Sync, in a build folder that is also
@@ -451,6 +470,13 @@ Console* ConsoleAt(DWORD address, bool* added=NULL) {
     Consoles.push_back(new Console(address));
     if(added) *added=true;
     return Consoles.back();
+}
+
+// The console at address if it's known already; NULL if not.
+Console* ConsoleIfKnown(DWORD address) {
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t i=0;i<Consoles.size();++i) if(Consoles[i]->address==address) return Consoles[i];
+    return NULL;
 }
 
 std::vector<Console*> AllConsoles() {
@@ -670,14 +696,9 @@ void RateLoop() {
 // a read past the end gets zeros there instead of a closed connection.
 class Connection {
 public:
-    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(ConsoleAt(address)), pastEnd_(false) {
+    Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(NULL), pastEnd_(false) {
         AddressText(address,peer_,sizeof(peer_));
         quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
-        if(console_) {
-            ++console_->connections;
-            std::lock_guard<std::mutex> hold(ConsoleLock);
-            console_->sockets.insert(socket_);
-        }
     }
     ~Connection() {
         if(console_) {
@@ -692,6 +713,7 @@ public:
         unsigned char request[Header];
         while(ReceiveAll(request,Header)) {
             if(memcmp(request,"ISVR",4)) { Log("%s sent something that isn't a NetISO request; closing.",peer_); break; }
+            if(!console_) Attach();
             int command=(request[4]<<8)|request[5];
             DWORD index=DWORD((request[6]<<8)|request[7]);
             U64 offset=(U64(Read32(request+8))<<32)|Read32(request+12);
@@ -703,6 +725,25 @@ public:
         if(!quiet_) Log("%s disconnected.",peer_);
     }
 private:
+    // Its console, found by its first NetISO request: anything else that
+    // connects (a port scan, say) isn't taken for an Xbox, which would get
+    // the FTP login on its next push.
+    void Attach() {
+        bool added;
+        console_=ConsoleAt(address_,&added);
+        if(!console_) return;
+        console_->seenAt=(long long)(Now()*1000);
+        ++console_->connections;
+        {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            console_->sockets.insert(socket_);
+        }
+        if(added) {
+            if(Current().push && console_->push) Log("Found an Xbox at %s; its game folders are kept up to date.",console_->text);
+            else Log("Found an Xbox at %s.",console_->text);
+            XboxEvent(*console_,EventXbox,"Connected for the first time",std::string("New console at ")+console_->text);
+        }
+    }
     bool ReceiveAll(unsigned char* data, DWORD count) {
         while(count) {
             int got=recv(socket_,reinterpret_cast<char*>(data),int(count),0);
@@ -824,24 +865,49 @@ private:
     bool pastEnd_;  // A read past the end of this mount was logged.
 };
 
+// Connections at once from one address. A console uses a few (NetISO, a
+// launcher, the plugin's disc swap); many more is something else on the
+// network, which would otherwise get a thread for each. This PC's own (the
+// push's) aren't counted.
+enum { MaxConnectionsFrom = 16 };
+std::mutex OpenLock;
+std::map<DWORD,int> OpenFrom;
+
 void Serve(SOCKET listener) {
+    long long refusedAt=0;
     for(;;) {
         sockaddr_in from; AddressLength size=sizeof(from);
         SOCKET client=accept(listener,reinterpret_cast<sockaddr*>(&from),&size);
         if(client==INVALID_SOCKET) { Sleep(100); continue; }
+        DWORD address=from.sin_addr.s_addr;
+        bool counted=!Loopback(address);
+        if(counted) {
+            std::lock_guard<std::mutex> hold(OpenLock);
+            if(OpenFrom[address]>=MaxConnectionsFrom) {
+                closesocket(client);
+                long long now=(long long)Now();
+                if(now-refusedAt>=60) {
+                    refusedAt=now;
+                    char text[16]; AddressText(address,text,sizeof(text));
+                    Log("Refused a connection from %s: it has %d open already.",text,int(MaxConnectionsFrom));
+                }
+                continue;
+            }
+            ++OpenFrom[address];
+        }
         int on=1;
         setsockopt(client,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<const char*>(&on),sizeof(on));
         setsockopt(client,SOL_SOCKET,SO_KEEPALIVE,reinterpret_cast<const char*>(&on),sizeof(on));
-        DWORD address=from.sin_addr.s_addr;
-        bool added;
-        Console* console=ConsoleAt(address,&added);
-        if(console) console->seenAt=(long long)(Now()*1000);
-        if(added) {
-            if(Current().push && console->push) Log("Found an Xbox at %s; its game folders are kept up to date.",console->text);
-            else Log("Found an Xbox at %s.",console->text);
-            XboxEvent(*console,EventXbox,"Connected for the first time",std::string("New console at ")+console->text);
-        }
-        std::thread([client,address]() { Connection(client,address).Run(); }).detach();
+        // An Xbox already known is seen at once (its network is up); a new
+        // one once it sends a request (Connection::Attach).
+        if(Console* known=ConsoleIfKnown(address)) known->seenAt=(long long)(Now()*1000);
+        std::thread([client,address,counted]() {
+            Connection(client,address).Run();
+            if(counted) {
+                std::lock_guard<std::mutex> hold(OpenLock);
+                if(!--OpenFrom[address]) OpenFrom.erase(address);
+            }
+        }).detach();
     }
 }
 
@@ -894,6 +960,14 @@ std::string Lines(const char* text, bool crlf) {
     return out;
 }
 
+// Writes data to path and reads it back: a connection lost during the upload
+// leaves the file cut short, which for Aurora's own script would break it.
+bool StoreChecked(FtpClient& ftp, const std::string& path, const std::string& data) {
+    std::vector<unsigned char> back;
+    return ftp.Store(path.c_str(),data.data(),data.size()) && ftp.Retrieve(path.c_str(),back,data.size()+1) &&
+           back.size()==data.size() && std::equal(back.begin(),back.end(),data.begin());
+}
+
 void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Options& o) {
     std::string path=o.aurora+FilterScript;
     std::vector<unsigned char> data;
@@ -912,9 +986,12 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
     size_t at=text.find(before);
     if(at!=std::string::npos) {
         std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+before.size());
-        if(ftp.Store(path.c_str(),edited.data(),edited.size()))
+        if(StoreChecked(ftp,path,edited))
             XboxLog(console,"Aurora's Xbox 360 category now leaves install discs out (%s). Restart Aurora to see it.",path.c_str());
-        else XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
+        else {
+            XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
+            StoreChecked(ftp,path,text);
+        }
         return;
     }
     if(text.find("GameListFilterNetIso")!=std::string::npos) {
@@ -922,16 +999,34 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
         return;
     }
     std::string original=Lines(FilterOriginal,crlf);
+    std::string backup=path+".before-netiso";
     at=text.find(original);
     if(at==std::string::npos) {
+        // Our edit cut short by a lost connection: written again in full
+        // from the original kept beside it.
+        std::vector<unsigned char> kept;
+        if(!text.empty() && ftp.Retrieve(backup.c_str(),kept,1<<20)) {
+            std::string first(kept.begin(),kept.end());
+            bool keptCrlf=first.find("\r\n")!=std::string::npos;
+            std::string firstOriginal=Lines(FilterOriginal,keptCrlf);
+            size_t from=first.find(firstOriginal);
+            if(from!=std::string::npos) {
+                std::string whole=first.substr(0,from)+Lines(FilterNetIso,keptCrlf)+first.substr(from+firstOriginal.size());
+                if(text.size()<whole.size() && !whole.compare(0,text.size(),text)) {
+                    if(StoreChecked(ftp,path,whole)) XboxLog(console,"Aurora's %s was cut short; wrote it again in full.",path.c_str());
+                    else XboxLog(console,"Aurora's %s is cut short, and writing it again failed: %s",path.c_str(),ftp.Error());
+                    return;
+                }
+            }
+        }
         if(announce) XboxLog(console,"Aurora's Xbox 360 filter isn't the one this program knows, so it is left alone; the NetISO games show under All.");
         return;
     }
     std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+original.size());
-    std::string backup=path+".before-netiso";
-    if(!ftp.Store(backup.c_str(),text.data(),text.size()) || !ftp.Store(path.c_str(),edited.data(),edited.size())) {
+    if(!StoreChecked(ftp,backup,text) || !StoreChecked(ftp,path,edited)) {
         XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
         XboxEvent(console,EventWarning,"Couldn't add the games to Aurora's Xbox 360 category");
+        StoreChecked(ftp,path,text);  // The original back, should the edit have got there cut short.
         return;
     }
     XboxLog(console,"added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
@@ -1100,7 +1195,8 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
     if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
                                     result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
     else if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
-    if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
+    if(ok && result.held && FoldersMissing) XboxLog(console,"%d game folder(s) have no game here; they stay until every game folder can be read again.",result.held);
+    else if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
         XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
         XboxEvent(console,EventWarning,"Updating the game folders stopped; the log says why",
@@ -1190,11 +1286,14 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         SyncResult result;
         s.attempted=true; s.toldWaiting=false;
         double holdFrom=std::max(startedAt,FoldersChangedAt.load()/1000.0);
-        if(Push(console,ftp,result,o.pushOnce || Now()-holdFrom>=o.removeWait,o)) {
+        bool missing=FoldersMissing;
+        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
             if(o.filter) RefreshInstallFilter(console,ftp,o);
-            s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
+            // Folders held while a game folder is missing wait for it to come
+            // back, which changes the state (see WatchLoop).
+            s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held && !missing ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
             if(result.added || result.removed) {
                 if(o.scan) { s.scanTries=o.pushOnce ? 1 : ScanTries; s.scanAt=Now(); scanDue=true; }
                 else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());
@@ -1248,6 +1347,10 @@ void RememberConsoles() {
     for(size_t i=0;i<consoles.size();++i) {
         long long at=consoles[i]->seenAt;
         if(at<0) continue;
+        {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            if(consoles[i]->hiddenAt!=-2 && at<=consoles[i]->hiddenAt) continue;  // Forgotten on the dashboard.
+        }
         long long seen=(long long)time(NULL)-(long long)(Now()-at/1000.0);
         bool known=false;
         {
@@ -1302,7 +1405,8 @@ void WatchLoop() {
             GamesList=isos; ++GamesVersion; GamesScanned=true;
         }
         Options o=Current();
-        char generation[16]; _snprintf_s(generation,sizeof(generation),_TRUNCATE,"#%d",PushGeneration.load());
+        // A missing game folder coming back pushes again, removing what is really gone.
+        char generation[16]; _snprintf_s(generation,sizeof(generation),_TRUNCATE,"#%d%s",PushGeneration.load(),FoldersMissing ? "!" : "");
         { std::lock_guard<std::mutex> hold(GamesLock); GamesState=state+generation; GamesSettled=Now()-changedAt>=SettleSeconds && !o.folders.empty(); }
         if(tick%10==0) RememberConsoles();
         if(o.push) {
@@ -1384,6 +1488,10 @@ std::string Number(long long n) { char text[24]; _snprintf_s(text,sizeof(text),_
 
 // Writes the settings to the settings file, if there is one. Keys this
 // version doesn't use (the window's theme, say) stay as they were.
+// A count the settings file gives, such as how many folders it lists: one
+// from a file made by hand or a backup could otherwise be any number.
+long long Listed(const config::File& f, const char* key) { return std::max(0LL,std::min(1000LL,f.Number(key,0))); }
+
 bool Save() {
     Options o;
     std::vector<KnownConsole> known;
@@ -1392,7 +1500,7 @@ bool Save() {
     std::lock_guard<std::mutex> hold(SaveLock);
     config::File f;
     f.Load(o.configPath);
-    long long before=f.Number("folders",0);
+    long long before=Listed(f,"folders");
     f.Set("folders",Number((long long)o.folders.size()));
     for(size_t i=0;i<o.folders.size();++i) f.Set(("folder"+Number((long long)i+1)).c_str(),config::ToUtf8(o.folders[i]));
     for(long long i=(long long)o.folders.size()+1;i<=before;++i) f.Remove(("folder"+Number(i)).c_str());
@@ -1417,10 +1525,14 @@ bool Save() {
         std::lock_guard<std::mutex> hold(SettingsLock);
         if(UpdatedFrom.empty()) f.Remove("updated_from");
         else f.Set("updated_from",UpdatedFrom);
+        if(UpdateTo.empty()) f.Remove("update_to");
+        else f.Set("update_to",UpdateTo);
+        if(UpdateSkip.empty()) f.Remove("update_skip");
+        else f.Set("update_skip",UpdateSkip);
     }
     std::map<std::string,Choice> choices;
     { std::lock_guard<std::mutex> hold(DuplicatesLock); choices=Choices; }
-    before=f.Number("choices",0);
+    before=Listed(f,"choices");
     f.Set("choices",Number((long long)choices.size()));
     long long n=0;
     for(std::map<std::string,Choice>::const_iterator c=choices.begin();c!=choices.end();++c) {
@@ -1429,7 +1541,7 @@ bool Save() {
         f.Set(("choice"+Number(++n)).c_str(),c->first+"|"+copies+"|"+config::ToUtf8(c->second.path));
     }
     for(long long i=n+1;i<=before;++i) f.Remove(("choice"+Number(i)).c_str());
-    before=f.Number("consoles",0);
+    before=Listed(f,"consoles");
     f.Set("consoles",Number((long long)known.size()));
     for(size_t i=0;i<known.size();++i) f.Set(("console"+Number((long long)i+1)).c_str(),known[i].address+"|"+Number(known[i].seen));
     for(long long i=(long long)known.size()+1;i<=before;++i) f.Remove(("console"+Number(i)).c_str());
@@ -1459,18 +1571,18 @@ std::vector<std::string> SplitCommandLine(const std::string& line) {
     return args;
 }
 
-bool ParseArguments(const std::vector<std::string>& args, Options& o);
+bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromFile=false);
 
 // The settings file's values over the command line's. The window kept extra
 // command-line options in "options"; they come first, so the other keys win.
 bool LoadConfig(Options& o) {
     config::File f;
     if(!f.Load(o.configPath)) return false;
-    if(!f.Get("options").empty() && !ParseArguments(SplitCommandLine(config::FromUtf8(f.Get("options"))),o))
+    if(!f.Get("options").empty() && !ParseArguments(SplitCommandLine(config::FromUtf8(f.Get("options"))),o,true))
         Log("The settings file's options (%s) aren't all understood; see netdisc -h.",config::FromUtf8(f.Get("options")).c_str());
     if(f.Has("folders")) {
         o.folders.clear();
-        for(long long i=1,n=f.Number("folders",0);i<=n;++i) {
+        for(long long i=1,n=Listed(f,"folders");i<=n;++i) {
             std::string folder=f.Get(("folder"+Number(i)).c_str());
             if(!folder.empty()) o.folders.push_back(CleanFolder(config::FromUtf8(folder)));
         }
@@ -1501,11 +1613,13 @@ bool LoadConfig(Options& o) {
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         UpdatedFrom=f.Get("updated_from");
+        UpdateTo=f.Get("update_to");
+        UpdateSkip=f.Get("update_skip");
     }
     // Which copy of a game to play: "key|copy ids|path" (see Choice).
     {
         std::map<std::string,Choice> choices;
-        for(long long i=1,n=f.Number("choices",0);i<=n;++i) {
+        for(long long i=1,n=Listed(f,"choices");i<=n;++i) {
             std::string value=f.Get(("choice"+Number(i)).c_str());
             size_t bar=value.find('|'), second=bar==std::string::npos ? bar : value.find('|',bar+1);
             if(second==std::string::npos || !bar || second+1>=value.size()) continue;
@@ -1524,7 +1638,7 @@ bool LoadConfig(Options& o) {
         Choices.swap(choices);
     }
     std::vector<KnownConsole> known;
-    for(long long i=1,n=f.Number("consoles",0);i<=n;++i) {
+    for(long long i=1,n=Listed(f,"consoles");i<=n;++i) {
         std::string value=f.Get(("console"+Number(i)).c_str());
         size_t bar=value.find('|');
         if(bar==std::string::npos || !bar) continue;
@@ -1989,6 +2103,12 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         if(!ReadAddresses(text,xboxes,bad)) { error="\""+bad+"\" isn't an IPv4 address like 192.168.1.20."; return false; }
         next.xboxes=xboxes;
     }
+    // Each goes into an FTP command, which a line break would end early.
+    const char* ftpFields[]={"ftpUser","ftpPassword","xboxFolder","aurora"};
+    for(int i=0;i<4;++i)
+        if(Text(v,ftpFields[i],text) && std::find_if(text.begin(),text.end(),[](char c) { return (unsigned char)c<' '; })!=text.end()) {
+            error="That can't have a line break or tab in it."; return false;
+        }
     if(Text(v,"ftpUser",text)) {
         if(text.empty()) { error="Aurora's FTP user name can't be empty."; return false; }
         next.ftpUser=text;
@@ -2109,7 +2229,7 @@ std::mutex BackupLock;
 std::string BackupFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Backups"; }
 
 // A backup of the settings file and the disc map as they are now.
-bool MakeBackup(const char* kind, std::string& name, std::string& error) {
+bool MakeBackup(const char* kind, std::string& name, std::string& error, const std::string& spare = std::string()) {
     Options o=Current();
     if(o.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so there's nothing to back up."; return false; }
     Save();
@@ -2124,7 +2244,7 @@ bool MakeBackup(const char* kind, std::string& name, std::string& error) {
         return false;
     }
     Log("Settings backed up (%s): %s",kind,config::FromUtf8(name).c_str());
-    int removed=backup::Prune(BackupFolder(o),o.backupKeep);
+    int removed=backup::Prune(BackupFolder(o),o.backupKeep,spare);
     if(removed) Log("Deleted the %s oldest automatic backup%s, keeping the newest %d.",Number(removed).c_str(),removed==1 ? "" : "s",o.backupKeep);
     return true;
 }
@@ -2194,14 +2314,15 @@ void Reload(std::vector<std::string>& notes) {
 
 // Puts a backup's settings (data: the backup's bytes) in place of the ones
 // now, which are backed up first, and uses them at once.
-bool Restore(const std::string& data, std::vector<std::string>& notes, std::string& error) {
+// from: the backup's name when it is one in the Backups folder.
+bool Restore(const std::string& data, std::vector<std::string>& notes, std::string& error, const std::string& from = std::string()) {
     std::map<std::string,std::string> files;
     backup::Info info;
     if(!backup::Open(data,files,info,error)) return false;
     Options now=Current();
     if(now.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so a backup can't be restored."; return false; }
     std::string undo;
-    if(!MakeBackup("restore",undo,error)) { error="The settings now couldn't be backed up first, so nothing was restored. "+error; return false; }
+    if(!MakeBackup("restore",undo,error,from)) { error="The settings now couldn't be backed up first, so nothing was restored. "+error; return false; }
     config::File f;
     f.Read(files["netdisc.ini"]);
     // Aurora's FTP password is encrypted for the Windows user that saved it;
@@ -2213,7 +2334,8 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
         f.Set("ftp_password",config::Protect(now.ftpPassword));
     }
     f.Remove("updated_from");
-    int missing=0, folders=int(f.Number("folders",0));
+    f.Remove("update_to");
+    int missing=0, folders=int(Listed(f,"folders"));
     for(int i=1;i<=folders;++i) if(!config::IsFolder(config::FromUtf8(f.Get(("folder"+Number(i)).c_str())))) ++missing;
     if(missing) notes.push_back(Count(missing,"of the backup's game folders isn't","of the backup's game folders aren't")+" on this computer; change them on the Game folders page.");
     if(PasswordFixed && f.Has("web_password")) notes.push_back("The dashboard's password stays the one set with NETDISC_WEB_PASSWORD.");
@@ -2231,11 +2353,11 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
         time_t t=time_t(info.time);
         struct tm local;
 #ifdef _WIN32
-        localtime_s(&local,&t);
+        bool known=!localtime_s(&local,&t);
 #else
-        localtime_r(&t,&local);
+        bool known=localtime_r(&t,&local)!=NULL;
 #endif
-        strftime(made,sizeof(made),"%Y-%m-%d %H:%M",&local);
+        if(known) strftime(made,sizeof(made),"%Y-%m-%d %H:%M",&local);  // A time out of range would end the program on Windows.
     }
     Log("Settings restored from a backup%s%s%s; the settings before are in %s.",*made ? " made " : "",made,
         info.version.empty() ? "" : (" by NetDisc 360 "+info.version).c_str(),config::FromUtf8(undo).c_str());
@@ -2318,15 +2440,24 @@ void DownloadProgress(long long got, long long total) {
     Updates.got=got; Updates.total=total;
 }
 
+// Whether a console is connected (playing, or about to).
+bool ConsolesBusy() {
+    std::vector<Console*> consoles=AllConsoles();
+    for(size_t i=0;i<consoles.size();++i) if(consoles[i]->connections>0) return true;
+    return false;
+}
+
 // Downloads the newest release's NetDisc.exe, checks it, backs up the
-// settings and puts it in place of this exe, which then restarts as it.
-void InstallUpdate() {
+// settings and puts it in place of this exe, which then restarts as it. One
+// installing by itself (automatic) leaves it should a console start a game.
+void InstallUpdate(bool automatic) {
     Options o=Current();
     std::string body, exe, error, name;
     update::Release r;
     bool ok=FetchReleases(o,body,error) && update::Newest(body,o.updatePrerelease,r,error);
     if(ok && update::Compare(r.version,NETDISC_VERSION)<=0) { ok=false; error="This is the newest version already."; }
     if(ok && r.exeUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc.exe to install; download it from GitHub."; }
+    if(ok && o.releasesFile.empty() && !update::FromRepo(r.exeUrl)) { ok=false; error="Release "+r.tag+"'s NetDisc.exe isn't on "+NETDISC_REPO+"'s releases, so it wasn't installed."; }
     if(ok) {
         Log("Downloading NetDisc 360 %s: %s",r.version.c_str(),r.exeUrl.c_str());
         ok=update::Fetch(r.exeUrl,exe,256<<20,DownloadProgress,error);
@@ -2342,13 +2473,14 @@ void InstallUpdate() {
         Updates.stage="restart";
     }
 #ifdef _WIN32
+    if(ok && automatic && ConsolesBusy()) { ok=false; error="A console started a game; it installs later."; }
     if(ok) {
-        { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; }
+        { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; UpdateTo=r.version; }
         Save();
         Log("Installing NetDisc 360 %s in place of %s; it restarts.",r.version.c_str(),NETDISC_VERSION);
         Event(EventInfo,"Installing NetDisc 360 %s; it restarts in a moment",r.version.c_str());
         ok=InstallExe(exe,error);
-        if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); } Save(); }
+        if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); UpdateTo.clear(); } Save(); }
     }
 #else
     if(ok) { ok=false; error="This build doesn't install updates itself."; }
@@ -2362,7 +2494,7 @@ void InstallUpdate() {
     Updates.installError=error;
 }
 
-bool StartInstall(std::string& error) {
+bool StartInstall(std::string& error, bool automatic=false) {
     if(strcmp(UpdateHow(),"app")) {
         error=InDocker ? "The Docker image is updated by pulling the new one: docker compose pull, then docker compose up -d."
                        : "This copy is updated by hand: download the new one from GitHub.";
@@ -2371,7 +2503,7 @@ bool StartInstall(std::string& error) {
     std::lock_guard<std::mutex> hold(UpdateLock);
     if(Updates.installing) { error="It's installing already."; return false; }
     Updates.installing=true; Updates.stage="download"; Updates.got=Updates.total=0; Updates.installError.clear();
-    std::thread(InstallUpdate).detach();
+    std::thread(InstallUpdate,automatic).detach();
     return true;
 }
 
@@ -2389,12 +2521,12 @@ void UpdateLoop() {
         std::string error;
         next=Now()+(CheckForUpdate(error) ? 12*3600 : 3600);
         if(!o.updateAuto || !UpdateNewer() || strcmp(UpdateHow(),"app")) continue;
-        bool busy=false;
-        std::vector<Console*> consoles=AllConsoles();
-        for(size_t i=0;i<consoles.size();++i) busy=busy || consoles[i]->connections>0;
-        if(busy) { next=Now()+1800; continue; }
+        std::string skip;
+        { std::lock_guard<std::mutex> hold(SettingsLock); skip=UpdateSkip; }
+        { std::lock_guard<std::mutex> hold(UpdateLock); if(!skip.empty() && Updates.latest.version==skip) continue; }
+        if(ConsolesBusy()) { next=Now()+1800; continue; }
         Log("Installing the update by itself (Settings, Updates).");
-        StartInstall(error);
+        StartInstall(error,true);
     }
 }
 
@@ -2460,7 +2592,7 @@ void Api(const web::Request& r, web::Reply& out) {
             ok=backup::FromBase64(file,data) && !data.empty();
             if(!ok) error="That file didn't arrive whole; try again.";
         } else { ok=false; error="Send a backup's name, or a file."; }
-        if(ok && Restore(data,notes,error)) {
+        if(ok && Restore(data,notes,error,name)) {
             web::Json j;
             j.Open('{').Set("ok",true).Key("notes").Open('[');
             for(size_t i=0;i<notes.size();++i) j.String(notes[i]);
@@ -2476,9 +2608,14 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
 #ifdef _WIN32
     } else if(r.method=="POST" && r.path=="/api/restart" && InTray) {
-        Log("Restarting (asked on the dashboard).");
-        if(Restart(error)) out.body="{\"ok\":true}";
-        else out.Error(400,error);
+        bool installing;
+        { std::lock_guard<std::mutex> hold(UpdateLock); installing=Updates.installing; }
+        if(installing) out.Error(400,"It's installing an update, which restarts it.");
+        else {
+            Log("Restarting (asked on the dashboard).");
+            if(Restart(error)) out.body="{\"ok\":true}";
+            else out.Error(400,error);
+        }
 #endif
     } else if(r.method=="POST" && r.path=="/api/forget") {
         std::string address;
@@ -2585,10 +2722,15 @@ void Usage() {
         "  -r, -b                  accepted for netiso-srv's command line; subfolders are always searched\n");
 }
 
-bool ParseArguments(const std::vector<std::string>& args, Options& o) {
+// fromFile: the settings file's "options" (see LoadConfig), which may come
+// from a backup: there, nothing that ends the program, opens the dashboard to
+// the network or picks the files it runs or sends to the Xbox.
+bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromFile) {
     for(size_t i=0;i<args.size();++i) {
         const std::string& a=args[i];
         bool hasValue=i+1<args.size();
+        if(fromFile && (a=="-h" || a=="--help" || a=="/?" || a=="--push-once" || a=="--config" || a=="--releases" ||
+                        a=="--web-bind" || a=="--launcher" || a=="--boot")) return false;
         if(a=="-h" || a=="--help" || a=="/?") { Usage(); exit(0); }
         else if(a=="-r" || a=="-b") {}
         else if(a=="-v") o.verbose=true;
@@ -2626,6 +2768,18 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o) {
     return o.port>0 && o.port<65536 && o.ftpPort>0 && o.ftpPort<65536 && o.webPort>=0 && o.webPort<65536;
 }
 }  // namespace
+
+// What the dashboard's sessions are signed with besides the password's hash
+// (see web.h): kept next to the settings file but not in it, so a backup
+// doesn't carry it. Without a settings file, a new one each start.
+std::string SessionSecret(const Options& o) {
+    if(o.configPath.empty()) return web::NewSecret();
+    std::string path=config::FolderOf(o.configPath)+"session.key", secret;
+    if(config::ReadFile(path,secret,256) && secret.size()>=32) return secret;
+    secret=web::NewSecret();
+    if(!config::WriteFile(path,secret,true)) Log("Couldn't write %s; logins last until NetDisc 360 restarts.",config::FromUtf8(path).c_str());
+    return secret;
+}
 
 // Runs the server; returns only when it can't (see app.h).
 int RunServer(const std::vector<std::string>& args, const std::string& configPath, bool tray) {
@@ -2668,16 +2822,23 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
 #else
     o.updateAuto=false;
 #endif
-    std::string updatedFrom;
+    std::string updatedFrom, updateTo;
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings=o;
         updatedFrom.swap(UpdatedFrom);
+        updateTo.swap(UpdateTo);
+        if(updatedFrom==NETDISC_VERSION && !updateTo.empty()) UpdateSkip=updateTo;  // It didn't take.
+        else if(!updatedFrom.empty()) UpdateSkip.clear();
     }
     if(fresh || !updatedFrom.empty()) Save();
+    web::SetSessionSecret(SessionSecret(o));
     if(!updatedFrom.empty() && updatedFrom!=NETDISC_VERSION) {
         Log("Updated from NetDisc 360 %s to %s.",updatedFrom.c_str(),NETDISC_VERSION);
         Event(EventGood,"Updated to NetDisc 360 %s (from %s)",NETDISC_VERSION,updatedFrom.c_str());
+    } else if(!updateTo.empty()) {
+        Log("NetDisc 360 %s didn't start after the update, so %s was put back. It won't install %s by itself.",updateTo.c_str(),NETDISC_VERSION,updateTo.c_str());
+        Event(EventWarning,"NetDisc 360 %s didn't start, so %s was put back; it won't install that version by itself",updateTo.c_str(),NETDISC_VERSION);
     }
 
     std::string where;

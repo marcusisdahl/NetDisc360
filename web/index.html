@@ -516,7 +516,8 @@ function toast(text, bad) {
 }
 
 async function api(path, body) {
-  const options = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NetDisc': '1' }, body: JSON.stringify(body) };
+  // The server answers only requests with X-NetDisc, which another site's page can't send.
+  const options = body === undefined ? { headers: { 'X-NetDisc': '1' } } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NetDisc': '1' }, body: JSON.stringify(body) };
   let response;
   try { response = await fetch('/api/' + path, options); }
   catch (e) { throw new Error('NetDisc 360 isn\u2019t answering. Is it still running?'); }
@@ -1289,7 +1290,7 @@ function awaitRestart(text) {
   const before = S && S.uptime;
   const look = async () => {
     try {
-      const r = await fetch('/api/state');
+      const r = await fetch('/api/state', { headers: { 'X-NetDisc': '1' } });
       if (r.ok || r.status === 401) {
         const st = r.ok ? await r.json() : null;
         if (!st || st.uptime < before || st.version !== S.version) { location.reload(); return; }
@@ -1392,6 +1393,7 @@ Pages.settings = root => {
         row('Password', st.passwordFixed ? 'Set with NETDISC_WEB_PASSWORD.' : st.password ? 'Set. Anyone opening the dashboard needs it.' : st.webAddress === '0.0.0.0' ? 'None. Anyone on your network can open the dashboard and change its settings.' : 'None. Only this computer can open the dashboard.',
           st.passwordFixed ? h('span.pill.good', ic('lock', 'sm'), 'Set') : h('div', { style: { display: 'flex', gap: '8px' } }, newPassword,
             h('button.btn', { onclick: async () => {
+              if (!newPassword.value) { toast('Type the new password first.', true); newPassword.focus(); return; }
               try { await api('password', { password: newPassword.value }); newPassword.value = ''; await refresh(); toast('Password saved'); key = ''; } catch (e) { toast(e.message, true); }
             } }, st.password ? 'Change' : 'Set'),
             st.password ? h('button.btn.ghost', { title: 'Remove the password', onclick: async () => {

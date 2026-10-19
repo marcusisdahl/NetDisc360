@@ -88,6 +88,10 @@ bool Start(const std::string& address, int port, Api api, std::string& error);
 std::string HashPassword(const std::string& password);
 void SetPasswordHash(const std::string& hash);
 std::string PasswordHash();
+// A secret of this server's, kept out of the settings file and its backups,
+// that sessions are signed with too; NewSecret makes one.
+void SetSessionSecret(const std::string& secret);
+std::string NewSecret();
 
 std::string Sha256Hex(const std::string& data);  // In lower-case hex.
 }

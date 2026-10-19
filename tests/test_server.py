@@ -8,6 +8,8 @@ Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 """
 import base64
 import gzip
+import hashlib
+import hmac
 import http.client
 import io
 import json
@@ -217,12 +219,12 @@ class ServerTest(unittest.TestCase):
 
     # The dashboard's API on port self.web.
     def call(self, method, path, body=None, page=True, cookie=None, headers=None):
-        """(status, response, data); a POST comes from the page unless page is False."""
+        """(status, response, data); an API call comes from the page unless page is False."""
         sent = {"Host": "127.0.0.1:%d" % self.web}
+        if page and path.startswith("/api/"):
+            sent["X-NetDisc"] = "1"
         if method == "POST":
             sent["Content-Type"] = "application/json"
-            if page:
-                sent["X-NetDisc"] = "1"
         if cookie:
             sent["Cookie"] = cookie
         sent.update(headers or {})
@@ -522,6 +524,35 @@ class Push(ServerTest):
         out = self.push()
         self.assertIn("0 added, 1 removed", out)
         self.assertEqual(sorted(os.listdir(self.games)), ["NetISO Sync", "a"])
+
+    def test_leaves_a_gone_game_s_folder_alone_when_it_holds_more(self):
+        self.add_iso("a.iso", 1, 0x11111111)
+        path = self.add_iso("b.iso", 2, 0x22222222)
+        self.push()
+        with open(os.path.join(self.games, "b", "save.dat"), "w") as f:
+            f.write("mine")
+        os.remove(path)
+        out = self.push()
+        self.assertIn("Couldn't remove", out)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.games, "b"))), ["boot.xex", "default.xex", "netiso.ini", "save.dat"])
+
+    def test_keeps_the_games_of_a_game_folder_that_isn_t_there(self):
+        # A drive or share that drops out mustn't take its games out of Aurora.
+        self.add_iso("a.iso", 1, 0x11111111)
+        other = os.path.join(self.tmp.name, "drive")
+        os.makedirs(other)
+        self.add_iso("b.iso", 2, 0x22222222, other)
+        result = subprocess.run([SERVER, self.isos, other, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
+                                 "--web-port", "0", "--ftp-port", str(self.ftp.server_address[1]),
+                                 "--launcher", self.launcher, "--boot", self.boot], capture_output=True, text=True, timeout=60)
+        self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"], result.stdout)
+        os.rename(other, other + " (unplugged)")
+        result = subprocess.run([SERVER, self.isos, other, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
+                                 "--web-port", "0", "--ftp-port", str(self.ftp.server_address[1]),
+                                 "--launcher", self.launcher, "--boot", self.boot], capture_output=True, text=True, timeout=60)
+        self.assertIn("Can't read these game folders", result.stdout)
+        self.assertIn("they stay until every game folder can be read again", result.stdout)
+        self.assertEqual(sorted(os.listdir(self.games)), ["a", "b"])
 
     def test_keeps_a_gone_game_for_a_while_after_starting(self):
         # The window restarts the server for each folder added; a game from a
@@ -1007,6 +1038,22 @@ class Dashboard(ServerTest):
         self.assertIn("Halo 3 started on 127.0.0.2", [e["text"] for e in state["events"]])
         self.assertIn("Halo 3 started", [e["text"] for e in console["events"]])  # Under its own card.
 
+    @unittest.skipUnless(OWN_ADDRESS, "needs an address other than loopback")
+    def test_a_connection_without_a_request_is_no_console(self):
+        # A port scan isn't taken for an Xbox, which would get the FTP login.
+        self.start("--no-push")
+        probe = socket.socket()
+        probe.bind((OWN_ADDRESS, 0))
+        probe.connect(("127.0.0.1", self.port))
+        probe.close()
+        time.sleep(1)
+        self.assertEqual(self.json("GET", "/api/state")["consoles"], [])
+        with connect_from(OWN_ADDRESS, self.port) as plugin:
+            plugin.sendall(b"ISVR" + bytes(16))  # A ping.
+            self.assertEqual(plugin.recv(8), b"ISVRokOK")
+            state = self.state_when(lambda s: s["consoles"])
+        self.assertEqual([x["address"] for x in state["consoles"]], [OWN_ADDRESS])
+
     def test_tells_when_a_console_is_back_in_aurora(self):
         # NetISO keeps its connection and disc after a game ends; Aurora's FTP
         # server, which never runs during a game, answering again tells.
@@ -1066,6 +1113,24 @@ class Dashboard(ServerTest):
             saved = f.read()
         self.assertIn("scan=0\n", saved)
         self.assertIn("xbox=192.168.1.20, 192.168.1.21\n", saved)
+        # Reads too: another site could load /api/browse?path=\\its-server\share as an image.
+        self.assertEqual(self.call("GET", "/api/browse?path=%2Ftmp", page=False)[0], 403)
+        self.assertEqual(self.call("GET", "/api/state", headers={"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(self.call("GET", "/api/state", headers={"Sec-Fetch-Site": "same-origin"})[0], 200)
+        # A line break would start another FTP command.
+        self.assertEqual(self.call("POST", "/api/settings", {"aurora": "/Hdd1/Apps/Aurora\r\nRMD /Hdd1"})[0], 400)
+
+    def test_settings_file_options_can_t_open_or_end_it(self):
+        # A settings file (or a restored backup) can't do what only a command line should.
+        with open(self.config, "w") as f:
+            f.write("[Server]\noptions=-h\nfolders=1000000000000\n")
+        self.start()
+        self.assertIsNone(self.server.poll())
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["webAddress"], "127.0.0.1")
+        with open(self.config, "w") as f:
+            f.write("[Server]\noptions=--web-bind 0.0.0.0\n")
+        self.restart()
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["webAddress"], "127.0.0.1")
 
     def test_saved_settings_win_over_the_command_line(self):
         os.makedirs(os.path.join(self.tmp.name, "more"))
@@ -1216,6 +1281,12 @@ class Dashboard(ServerTest):
         self.assertEqual(status, 200)
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 401)
         self.assertEqual(self.call("GET", "/api/state", cookie=response.getheader("Set-Cookie").split(";")[0])[0], 200)
+        # The hash in the settings file (and so in every backup) can't make a session.
+        with open(self.config) as f:
+            stored = re.search(r"web_password=(\S+)", f.read()).group(1)
+        end = str(int(time.time()) + 3600)
+        forged = "netdisc_session=%s.%s" % (end, hmac.new(stored.encode(), end.encode(), hashlib.sha256).hexdigest())
+        self.assertEqual(self.call("GET", "/api/state", cookie=forged)[0], 401)
 
     def test_takes_the_password_from_the_environment(self):
         os.environ["NETDISC_WEB_PASSWORD"] = "from docker"

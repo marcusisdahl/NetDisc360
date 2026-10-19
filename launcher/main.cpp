@@ -328,16 +328,19 @@ static const char* FindName(int count,const char* name) {
     return NULL;
 }
 
+// Set when B is pressed during the mount (see RunMount).
+static volatile LONG CancelAsked=0;
 // Walks from the root toward the ISO's Mount folder by name, the way you
 // would in Aurora's file browser, and gives that folder's path (inside
 // NIsoL:). Listing these folders doesn't mount; listing Mount does. It stops
-// without a path after the given number of listings.
+// without a path after the given number of listings, or when B is pressed.
 enum Found { FoundMount, FoundStopped, FoundNoRoot, FoundNotListed, FoundNoMount };
 static Found FindMountFolder(const Settings& settings,char* folder,size_t capacity,int listings) {
     strcpy_s(folder,capacity,IsoRoot);
     bool sawIso=false;
     for(int depth=0;depth<MaxDepth;++depth) {
         if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
+        if(CancelAsked) return FoundStopped;
         int count=ListFolder(folder);
         // An empty root: the plugin couldn't reach the server.
         if(!depth && !count) return FoundNoRoot;
@@ -379,7 +382,6 @@ static char ServerSource[48]="";
 struct Failure { int step; bool retry; char title[96]; char lines[3][128]; };
 static Failure Problem;
 enum Result { Mounted, Failed, Cancelled };
-static volatile LONG CancelAsked=0;
 static Result Fail(int step,bool retry,const char* title,const char* line0,const char* line1=NULL,const char* line2=NULL) {
     Problem.step=step; Problem.retry=retry;
     strcpy_s(Problem.title,title);
@@ -491,10 +493,11 @@ static Result Mount(const char* ini,const Settings& settings) {
     int stop=StopAfter(ini);
     char folder[MAX_PATH];
     Found found=FindMountFolder(settings,folder,sizeof(folder),stop);
-    bool asked=found==FoundMount && ListMountFolder(folder);
+    bool asked=found==FoundMount && !CancelAsked && ListMountFolder(folder);
     DWORD error=GetLastError();
     UnlinkDrive(IsoLink);
     if(stop!=NoStop) { Note("Back to Aurora without mounting."); return Cancelled; }
+    if(CancelAsked) return Cancelled;
     if(found==FoundNoRoot)
         return Fail(nia::StepMount,true,"The NetISO plugin can't reach the server","The server answers, but the NetISO drive lists no games.",
                     "After a reboot the plugin can take a little longer; try again in a moment.");
@@ -512,7 +515,6 @@ static Result Mount(const char* ini,const Settings& settings) {
         _snprintf_s(line,sizeof(line),_TRUNCATE,"The NetISO drive answered the mount with error %lu.",error);
         return Fail(nia::StepMount,true,title,line,"The server's window on the PC may say why.");
     }
-    if(CancelAsked) return Cancelled;
 
     ShowStep(nia::StepDisc,0.3,"The disc is going in. Waiting for the console to read it");
     int quiet=IniNumber(ini,"quiet_ms",QuietMs);
@@ -845,7 +847,10 @@ public:
         char pattern[nia::PathMax]; _snprintf_s(pattern,sizeof(pattern),_TRUNCATE,"%s\\*",root);
         WIN32_FIND_DATA found;
         HANDLE find=FindFirstFile(pattern,&found);
-        if(find==INVALID_HANDLE_VALUE) return 0;
+        if(find==INVALID_HANDLE_VALUE) {  // Empty, or not readable.
+            DWORD error=GetLastError();
+            return error==ERROR_NO_MORE_FILES || error==ERROR_FILE_NOT_FOUND ? 0 : -1;
+        }
         int count=0;
         do {
             if((found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) && count<capacity && strlen(found.cFileName)<=nia::FolderNameMax)
@@ -883,7 +888,9 @@ public:
 
 // "192.168.1.20" or "192.168.1.20:4323".
 static bool ParseServer(const char* text,DWORD& address,int& port) {
-    char host[64]; strcpy_s(host,text);
+    char host[64];
+    if(strlen(text)>=sizeof(host)) return false; // Longer than any address; strcpy_s would end the launcher.
+    strcpy_s(host,text);
     char* colon=strchr(host,':');
     if(colon) { *colon=0; port=atoi(colon+1); if(port<1||port>65535) return false; }
     size_t length=strlen(host);

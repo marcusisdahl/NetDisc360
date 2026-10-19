@@ -47,7 +47,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ env.TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
-            type=raw,value=latest
+            # A test version (v1.2.0-beta.1) isn't "latest".
+            type=raw,value=latest,enable=${{ !contains(env.TAG, '-') }}
       - uses: docker/build-push-action@v6
         with:
           context: .

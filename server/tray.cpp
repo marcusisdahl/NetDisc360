@@ -40,7 +40,10 @@ const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t RunValue[] = L"NetDisc 360";
 const int IconId = 1;  // server.rc
 enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD, WM_NOTE, WM_RESTARTING };
-enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1, QuitTimer = 2 };
+enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1, QuitTimer = 2, OldTimer = 3 };
+// How long a new version gets after an update to have its dashboard up
+// before the old one is put back (see WatchUpdate).
+const DWORD UpdateGraceMs = 120000;
 
 HWND Window;
 NOTIFYICONDATAW Tray;
@@ -48,6 +51,8 @@ UINT TaskbarCreated;
 std::wstring Url;     // The dashboard, once it listens.
 bool OpenWhenReady;   // Open it as soon as it does.
 std::wstring BalloonPage;  // Where clicking the last balloon goes: "" the dashboard, "#games" a page.
+LONG Restarting;      // A new process was started to take over; this one quits.
+int OldTries;         // Tries left at deleting the exe an update replaced (OldTimer).
 
 struct Ready { std::string url, problem; };
 struct Note { std::string title, text, page; bool warning; };
@@ -206,9 +211,16 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         return 0;
     case WM_READY: {
         Ready* ready = (Ready*)lParam;
+        // Serving: should an update have started this one, it worked
+        // (WatchUpdate, running from the exe it replaced, stops watching and
+        // quits), so that exe isn't needed now.
+        wchar_t name[64];
+        _snwprintf_s(name, ARRAYSIZE(name), _TRUNCATE, L"Local\\NetDisc360Ready%lu", GetCurrentProcessId());
+        HANDLE signal = CreateEventW(NULL, TRUE, FALSE, name);  // Kept open while this one runs.
+        if (signal) SetEvent(signal);
+        OldTries = 15;
+        SetTimer(Window, OldTimer, 1000, NULL);
         if (!ready->url.empty()) {
-            // Serving: the exe this one replaced in an update isn't needed now.
-            DeleteFileW((ExePath() + L".old").c_str());
             Url = Wide(ready->url, CP_UTF8);
             if (OpenWhenReady) OpenDashboard();
             OpenWhenReady = false;
@@ -240,6 +252,11 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     }
     case WM_TIMER:
         if (wParam == QuitTimer) Quit();
+        if (wParam == OldTimer) {
+            std::wstring old = ExePath() + L".old";
+            if (DeleteFileW(old.c_str()) || GetFileAttributesW(old.c_str()) == INVALID_FILE_ATTRIBUTES || --OldTries <= 0) KillTimer(Window, OldTimer);
+            return 0;
+        }
         SetTip();
         return 0;
     }
@@ -276,23 +293,82 @@ void Notify(const std::string& title, const std::string& text, const std::string
     if (!PostMessageW(Window, WM_NOTE, 0, (LPARAM)note)) delete note;
 }
 
-bool Restart(std::string& error) {
+namespace {
+// Starts exe to take over from this process, which quits; with watcher, also
+// starts that (the exe an update replaced) to put itself back should the new
+// one not get its dashboard up (see WatchUpdate).
+bool StartAgain(const std::wstring& exe, const std::wstring& watcher, std::string& error) {
+    if (InterlockedCompareExchange(&Restarting, 1, 0)) { error = "NetDisc 360 is restarting already."; return false; }
     wchar_t pid[16];
     _snwprintf_s(pid, ARRAYSIZE(pid), _TRUNCATE, L"%lu", GetCurrentProcessId());
-    std::wstring exe = ExePath(), command = L"\"" + exe + L"\" --tray --restarted " + pid;
+    std::wstring command = L"\"" + exe + L"\" --tray --restarted " + pid;
     STARTUPINFOW startup = {sizeof(startup)};
     PROCESS_INFORMATION process;
-    if (!CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
+    // With a watcher, the new one waits until that has hold of it, so it can't end unseen.
+    if (!CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, watcher.empty() ? 0 : CREATE_SUSPENDED, NULL, NULL, &startup, &process)) {
         char text[96];
         _snprintf_s(text, sizeof(text), _TRUNCATE, "NetDisc 360 couldn't start again (error %lu).", GetLastError());
         error = text;
+        InterlockedExchange(&Restarting, 0);
         return false;
+    }
+    if (!watcher.empty()) {
+        wchar_t child[16];
+        _snwprintf_s(child, ARRAYSIZE(child), _TRUNCATE, L"%lu", process.dwProcessId);
+        std::wstring watch = L"\"" + watcher + L"\" --watch-update " + child;
+        HANDLE held = CreateEventW(NULL, TRUE, FALSE, (L"Local\\NetDisc360Watching" + std::wstring(child)).c_str());
+        STARTUPINFOW watchStartup = {sizeof(watchStartup)};
+        PROCESS_INFORMATION watching;
+        if (held && CreateProcessW(watcher.c_str(), &watch[0], NULL, NULL, FALSE, 0, NULL, NULL, &watchStartup, &watching)) {
+            HANDLE either[2] = {held, watching.hProcess};
+            WaitForMultipleObjects(2, either, FALSE, 10000);
+            CloseHandle(watching.hThread);
+            CloseHandle(watching.hProcess);
+        }
+        if (held) CloseHandle(held);
+        ResumeThread(process.hThread);
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     PostMessageW(Window, WM_RESTARTING, 0, 0);
     return true;
 }
+
+// Run as "<exe>.old --watch-update <pid>" by the version an update replaced:
+// waits for the new one (pid) to have its dashboard up, which it signals.
+// Should it end or hang first, it is stopped and this version goes back in
+// its place and starts; it then says the update didn't take (RunServer).
+int WatchUpdate(DWORD pid) {
+    HANDLE child = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+    if (!child) return 0;
+    wchar_t name[64];
+    _snwprintf_s(name, ARRAYSIZE(name), _TRUNCATE, L"Local\\NetDisc360Watching%lu", pid);
+    HANDLE held = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);  // The one that started it lets it go now.
+    if (held) {
+        SetEvent(held);
+        CloseHandle(held);
+    }
+    _snwprintf_s(name, ARRAYSIZE(name), _TRUNCATE, L"Local\\NetDisc360Ready%lu", pid);
+    HANDLE ready = CreateEventW(NULL, TRUE, FALSE, name);
+    HANDLE both[2] = {ready, child};
+    DWORD waited = ready ? WaitForMultipleObjects(2, both, FALSE, UpdateGraceMs) : WAIT_FAILED;
+    if (ready) CloseHandle(ready);
+    if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED) { CloseHandle(child); return 0; }
+    TerminateProcess(child, 1);
+    WaitForSingleObject(child, 10000);
+    CloseHandle(child);
+    std::wstring self = ExePath();
+    if (self.size() < 5 || _wcsicmp(self.c_str() + self.size() - 4, L".old")) return 1;
+    std::wstring exe = self.substr(0, self.size() - 4), broken = exe + L".new";
+    MoveFileExW(exe.c_str(), broken.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!MoveFileExW(self.c_str(), exe.c_str(), MOVEFILE_WRITE_THROUGH)) return 1;
+    DeleteFileW(broken.c_str());
+    std::string error;
+    return StartAgain(exe, L"", error) ? 0 : 1;
+}
+}  // namespace
+
+bool Restart(std::string& error) { return StartAgain(ExePath(), L"", error); }
 
 bool InstallExe(const std::string& data, std::string& error) {
     // Windows lets a running exe be renamed, not replaced: this one moves
@@ -301,25 +377,27 @@ bool InstallExe(const std::string& data, std::string& error) {
     std::string folder = Narrow(ExeFolder(), CP_UTF8);
     HANDLE file = CreateFileW(fresh.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     DWORD written = 0;
-    bool ok = file != INVALID_HANDLE_VALUE && WriteFile(file, data.data(), DWORD(data.size()), &written, NULL) && written == data.size();
+    bool ok = file != INVALID_HANDLE_VALUE && WriteFile(file, data.data(), DWORD(data.size()), &written, NULL) && written == data.size() &&
+              FlushFileBuffers(file);  // On the disk before the renames, should the power go.
     if (file != INVALID_HANDLE_VALUE) ok = CloseHandle(file) && ok;
     if (!ok) {
         DeleteFileW(fresh.c_str());
         error = "NetDisc 360 can't write in " + folder + ". Download the new version from GitHub and put it there yourself.";
         return false;
     }
-    if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(fresh.c_str());
         error = "NetDisc 360 couldn't move itself aside in " + folder + ". Download the new version from GitHub and put it there yourself.";
         return false;
     }
-    if (!MoveFileExW(fresh.c_str(), exe.c_str(), 0)) {
-        MoveFileExW(old.c_str(), exe.c_str(), 0);
+    if (!MoveFileExW(fresh.c_str(), exe.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        bool back = MoveFileExW(old.c_str(), exe.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
         DeleteFileW(fresh.c_str());
         error = "The new version couldn't take NetDisc 360's place in " + folder + ".";
+        if (!back) error += " This version is there as NetDisc.exe.old; rename it back to NetDisc.exe.";
         return false;
     }
-    if (Restart(error)) return true;
+    if (StartAgain(exe, old, error)) return true;
     // The old one back, as the new one didn't start.
     MoveFileExW(exe.c_str(), fresh.c_str(), MOVEFILE_REPLACE_EXISTING);
     MoveFileExW(old.c_str(), exe.c_str(), 0);
@@ -339,6 +417,7 @@ void SetStartWithWindows(bool on) {
 }
 
 int TrayMain(int argc, char** argv) {
+    if (argc == 3 && !strcmp(argv[1], "--watch-update")) return WatchUpdate(DWORD(strtoul(argv[2], NULL, 10)));
     bool tray = argc > 1 && !strcmp(argv[1], "--tray");
     bool restarted = tray && argc == 4 && !strcmp(argv[2], "--restarted");
     if (argc > 1 && !(tray && (argc == 2 || restarted))) {
@@ -354,6 +433,12 @@ int TrayMain(int argc, char** argv) {
         }
     }
     HANDLE once = CreateMutexW(NULL, FALSE, L"Local\\NetDisc360Window");
+    // Started again: the one before may take a moment longer to go.
+    for (int tries = 0; restarted && GetLastError() == ERROR_ALREADY_EXISTS && tries < 30; ++tries) {
+        CloseHandle(once);
+        Sleep(1000);
+        once = CreateMutexW(NULL, FALSE, L"Local\\NetDisc360Window");
+    }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Already running: open its dashboard instead.
         HWND other = FindWindowW(WindowClass, NULL);

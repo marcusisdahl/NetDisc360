@@ -35,4 +35,6 @@ bool Fetch(const std::string& url, std::string& body, long long limit, Progress 
 // Checks a downloaded NetDisc.exe against its release: its size, its
 // SHA-256, and that it is a 64-bit Windows program.
 bool CheckExe(const std::string& data, const Release& r, std::string& error);
+// Whether url is a download from this project's releases on GitHub.
+bool FromRepo(const std::string& url);
 }

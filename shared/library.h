@@ -17,10 +17,13 @@ const char PathSeparator = '/';
 class Storage {
 public:
     virtual ~Storage() {}
-    // Names of the folders directly in root.
+    // Names of the folders directly in root; -1 if root couldn't be listed.
     virtual int ListFolders(const char* root, char names[][FolderNameMax + 1], int capacity) = 0;
     // Whole file into data; false if missing or larger than capacity.
     virtual bool ReadFile(const char* path, unsigned char* data, DWORD capacity, DWORD& size) = 0;
+    // Whether the last ReadFile that failed did because the file isn't there,
+    // rather than because reading it went wrong.
+    virtual bool Missing() { return true; }
     virtual bool WriteFile(const char* path, const void* data, DWORD size) = 0;
     virtual bool MakeFolder(const char* path) = 0;
     // Deletes default.xex, boot.xex, netiso.ini, install.ini and netiso.log in

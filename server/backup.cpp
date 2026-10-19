@@ -37,10 +37,11 @@ struct tm Local(long long when) {
     time_t t=time_t(when);
     struct tm out;
 #ifdef _WIN32
-    localtime_s(&out,&t);
+    bool known=!localtime_s(&out,&t);
 #else
-    localtime_r(&t,&out);
+    bool known=localtime_r(&t,&out)!=NULL;
 #endif
+    if(!known) { memset(&out,0,sizeof(out)); out.tm_mday=1; out.tm_year=70; }  // Out of range: strftime would end the program on Windows.
     return out;
 }
 
@@ -211,11 +212,11 @@ std::vector<Info> List(const std::string& folder) {
     return out;
 }
 
-int Prune(const std::string& folder, int keep) {
+int Prune(const std::string& folder, int keep, const std::string& spare) {
     std::vector<Info> all=List(folder);
     int kept=0, removed=0;
     for(size_t i=0;i<all.size();++i) {
-        if(all[i].kind=="manual") continue;
+        if(all[i].kind=="manual" || all[i].name==spare) continue;
         if(++kept>keep && config::RemoveFile(Join(folder,all[i].name))) ++removed;
     }
     return removed;
