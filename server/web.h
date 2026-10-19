@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// The dashboard of NetDisc 360: a small web server for its page
+// The dashboard of NetDisc360: a small web server for its page
 // (web/index.html, built into web_page.h by tools/make_web.py) and the JSON
-// the page reads and sends, the same in NetDisc.exe and in Docker. The API
+// the page reads and sends, the same in NetDisc360.exe and in Docker. The API
 // itself (what /api/... answers) is in main.cpp.
 //
 // With a password, every /api/ request but logging in needs the cookie that
@@ -71,6 +71,7 @@ struct Request {
 struct Reply {
     int status;
     std::string type, body;
+    std::string download;  // A file name: the browser saves the body as that file.
     Reply() : status(200), type("application/json") {}
     void Error(int code, const std::string& message);  // {"error": message}
 };
@@ -87,4 +88,10 @@ bool Start(const std::string& address, int port, Api api, std::string& error);
 std::string HashPassword(const std::string& password);
 void SetPasswordHash(const std::string& hash);
 std::string PasswordHash();
+// A secret of this server's, kept out of the settings file and its backups,
+// that sessions are signed with too; NewSecret makes one.
+void SetSessionSecret(const std::string& secret);
+std::string NewSecret();
+
+std::string Sha256Hex(const std::string& data);  // In lower-case hex.
 }

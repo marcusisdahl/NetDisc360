@@ -8,13 +8,13 @@
 // folder holds a few kilobytes instead of two copies of the full launcher.
 //
 // The helper is HelperFolder\HelperXex in the folder the game folders are in
-// (Hdd1:\NetISO\NetDisc 360\boot.xex). Aurora lists nothing for that folder,
+// (Hdd1:\NetISO\NetDisc360\boot.xex). Aurora lists nothing for that folder,
 // since it has no default.xex. A game folder made before has its own copy as
 // boot.xex, which the tile launcher starts when the shared one isn't there.
 #include "platform.h"
 
 namespace nia {
-const char HelperFolder[] = "NetDisc 360", HelperXex[] = "boot.xex";
+const char HelperFolder[] = "NetDisc360", HelperXex[] = "boot.xex";
 const char BootData[] = "NetISO boot";
 enum { BootFolderMax = 260 };
 // The launch data the tile launcher hands the helper: BootData, when the tile

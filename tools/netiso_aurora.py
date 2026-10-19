@@ -8,7 +8,7 @@ start to goes in a folder of its own (see shared/helper.h):
 
     <output>/<game>/default.xex
     <output>/<game>/netiso.ini
-    <output>/NetDisc 360/boot.xex
+    <output>/NetDisc360/boot.xex
 
 Copy the output folder to the console (for example Hdd1:\\NetISO) and add it
 to Aurora as a scan path with depth 1. Aurora then lists each game with its
@@ -41,7 +41,7 @@ XEX_DIGEST_AT, XEX_DIGEST_END = 0x164, 0x17C
 FATX_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-.@[]^_`{}~")
 BUILT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "NetISO Sync")
 DEFAULT_LAUNCHER = os.path.join(BUILT, "default.xex")
-HELPER_FOLDER, HELPER_XEX = "NetDisc 360", "boot.xex"  # As in shared/helper.h.
+HELPER_FOLDER, HELPER_XEX = "NetDisc360", "boot.xex"  # As in shared/helper.h.
 
 
 class IsoError(Exception):

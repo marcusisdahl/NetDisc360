@@ -6,8 +6,12 @@ Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 
     python tests/test_server.py
 """
+import base64
 import gzip
+import hashlib
+import hmac
 import http.client
+import io
 import json
 import os
 import re
@@ -20,6 +24,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -48,7 +53,8 @@ def build_server():
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
-                                               "server/web.cpp", "server/config.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -213,12 +219,12 @@ class ServerTest(unittest.TestCase):
 
     # The dashboard's API on port self.web.
     def call(self, method, path, body=None, page=True, cookie=None, headers=None):
-        """(status, response, data); a POST comes from the page unless page is False."""
+        """(status, response, data); an API call comes from the page unless page is False."""
         sent = {"Host": "127.0.0.1:%d" % self.web}
+        if page and path.startswith("/api/"):
+            sent["X-NetDisc"] = "1"
         if method == "POST":
             sent["Content-Type"] = "application/json"
-            if page:
-                sent["X-NetDisc"] = "1"
         if cookie:
             sent["Cookie"] = cookie
         sent.update(headers or {})
@@ -351,12 +357,12 @@ class Push(ServerTest):
         self.add_iso("Gears: Of War?.iso", 0x11111111, 0x4D5307D5)
         out = self.push()
         self.assertIn("2 added, 0 removed", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["Gears_ Of War_", "Halo 3", "NetDisc 360"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears_ Of War_", "Halo 3", "NetDisc360"])
         folder = os.path.join(self.games, "Halo 3")
         self.assertEqual(sorted(os.listdir(folder)), ["default.xex", "netiso.ini"])
         # The helper is one file for all the game folders, in a folder of its own.
-        self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc 360")), ["boot.xex"])
-        with open(os.path.join(self.games, "NetDisc 360", "boot.xex"), "rb") as f:
+        self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc360")), ["boot.xex"])
+        with open(os.path.join(self.games, "NetDisc360", "boot.xex"), "rb") as f:
             self.assertEqual(f.read(), b"BOOT HELPER")
         with open(os.path.join(folder, "default.xex"), "rb") as f:
             launcher = f.read()
@@ -531,7 +537,7 @@ class Push(ServerTest):
             launcher = f.read()
         self.assertIn(b"LAUNCHER CODE", launcher)
         self.assertIn(execution_info(0x1A2B3C4D, 0x4D5307E6), launcher)
-        with open(os.path.join(self.games, "NetDisc 360", "boot.xex"), "rb") as f:
+        with open(os.path.join(self.games, "NetDisc360", "boot.xex"), "rb") as f:
             self.assertEqual(f.read(), b"BOOT HELPER")
         self.assertIn("1 kept (0 updated)", self.push())
 
@@ -545,7 +551,36 @@ class Push(ServerTest):
         os.remove(path)
         out = self.push()
         self.assertIn("0 added, 1 removed", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "NetISO Sync", "a"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "NetISO Sync", "a"])
+
+    def test_leaves_a_gone_game_s_folder_alone_when_it_holds_more(self):
+        self.add_iso("a.iso", 1, 0x11111111)
+        path = self.add_iso("b.iso", 2, 0x22222222)
+        self.push()
+        with open(os.path.join(self.games, "b", "save.dat"), "w") as f:
+            f.write("mine")
+        os.remove(path)
+        out = self.push()
+        self.assertIn("Couldn't remove", out)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.games, "b"))), ["default.xex", "netiso.ini", "save.dat"])
+
+    def test_keeps_the_games_of_a_game_folder_that_isn_t_there(self):
+        # A drive or share that drops out mustn't take its games out of Aurora.
+        self.add_iso("a.iso", 1, 0x11111111)
+        other = os.path.join(self.tmp.name, "drive")
+        os.makedirs(other)
+        self.add_iso("b.iso", 2, 0x22222222, other)
+        result = subprocess.run([SERVER, self.isos, other, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
+                                 "--web-port", "0", "--ftp-port", str(self.ftp.server_address[1]),
+                                 "--launcher", self.launcher, "--boot", self.boot], capture_output=True, text=True, timeout=60)
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"], result.stdout)
+        os.rename(other, other + " (unplugged)")
+        result = subprocess.run([SERVER, self.isos, other, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
+                                 "--web-port", "0", "--ftp-port", str(self.ftp.server_address[1]),
+                                 "--launcher", self.launcher, "--boot", self.boot], capture_output=True, text=True, timeout=60)
+        self.assertIn("Can't read these game folders", result.stdout)
+        self.assertIn("they stay until every game folder can be read again", result.stdout)
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
 
     def test_keeps_a_gone_game_for_a_while_after_starting(self):
         # The window restarts the server for each folder added; a game from a
@@ -561,7 +596,7 @@ class Push(ServerTest):
             before = self.logins()
             self.assertTrue(self.wait_for(lambda: self.logins() > before, 10))
             time.sleep(1)
-            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
             self.assertEqual(len(self.ftp.scans), scans)
             self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
             self.assertGreaterEqual(time.time() - started, 6)
@@ -585,7 +620,7 @@ class Push(ServerTest):
                                     "--config", os.path.join(self.tmp.name, "netdisc.ini"), more)
         try:
             self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
-            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
             time.sleep(max(0, started + 16 - time.time()))  # The start's hold is over.
             before = self.logins()
             conn = http.client.HTTPConnection("127.0.0.1", web, timeout=10)
@@ -596,7 +631,7 @@ class Push(ServerTest):
             changed = time.time()
             self.assertTrue(self.wait_for(lambda: self.logins() > before, 20))  # Once the games settled.
             time.sleep(1)
-            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a", "b"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
             self.assertTrue(self.wait_for(lambda: not os.path.exists(os.path.join(self.games, "b")), 20))
             self.assertGreaterEqual(time.time() - changed, 14)
         finally:
@@ -743,7 +778,7 @@ class Push(ServerTest):
                 f.write(xex(execution_info(0x12345678, title_id, 1, 1)))
         out = self.push()
         self.assertIn("1 added", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3", "NetDisc 360"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3", "NetDisc360"])
 
     def test_names_the_install_disc_a_game_needs(self):
         def game(folder, media_id, title_id, disc, discs=2, content=None):
@@ -836,14 +871,14 @@ class Push(ServerTest):
         path = os.path.join(self.tmp.name, "discs.ini")
         with open(path, newline="") as f:
             map_text = f.read()
-        self.assertIn("\r\n[545408A7]\r\n; From NetDisc 360's list of known games.\r\nname=Grand Theft Auto V\r\n"
+        self.assertIn("\r\n[545408A7]\r\n; From NetDisc360's list of known games.\r\nname=Grand Theft Auto V\r\n"
                       "disc1=install\r\ndisc2=play\r\n", map_text)
-        self.assertIn("[5454082B]\r\n; From NetDisc 360's list of known games.\r\n"
+        self.assertIn("[5454082B]\r\n; From NetDisc360's list of known games.\r\n"
                       "name=Red Dead Redemption: Game of the Year Edition\r\n"
                       "disc1=own Red Dead Redemption\r\ndisc2=own Undead Nightmare\r\n", map_text)
-        self.assertIn("[12340001]\r\n; NetDisc 360's guess from the discs it found; change it if it's wrong.\r\n"
+        self.assertIn("[12340001]\r\n; NetDisc360's guess from the discs it found; change it if it's wrong.\r\n"
                       "name=Saga - Disc 1\r\ndisc1=next\r\ndisc2=next\r\ndisc3=next\r\n", map_text)
-        self.assertIn("[425307F5]\r\n; From NetDisc 360's list of known games.\r\nname=Wolfenstein: The New Order\r\n"
+        self.assertIn("[425307F5]\r\n; From NetDisc360's list of known games.\r\nname=Wolfenstein: The New Order\r\n"
                       "disc1=install\r\ndisc2=next\r\ndisc3=next\r\ndisc4=next\r\n", map_text)
         self.assertNotIn("4D5307E6", map_text)
         self.assertNotIn("425307D5", map_text)
@@ -949,7 +984,7 @@ class Dashboard(ServerTest):
         self.assertEqual(status, 200)
         self.assertEqual(response.getheader("Content-Encoding"), "gzip")
         self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
-        self.assertIn(b"<title>NetDisc 360</title>", gzip.decompress(data))
+        self.assertIn(b"<title>NetDisc360</title>", gzip.decompress(data))
         state = self.state_when(lambda s: s["library"]["games"] == 1)
         self.assertEqual(state["library"]["games"], 1)
         self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True}])
@@ -1031,6 +1066,22 @@ class Dashboard(ServerTest):
         self.assertIn("Halo 3 started on 127.0.0.2", [e["text"] for e in state["events"]])
         self.assertIn("Halo 3 started", [e["text"] for e in console["events"]])  # Under its own card.
 
+    @unittest.skipUnless(OWN_ADDRESS, "needs an address other than loopback")
+    def test_a_connection_without_a_request_is_no_console(self):
+        # A port scan isn't taken for an Xbox, which would get the FTP login.
+        self.start("--no-push")
+        probe = socket.socket()
+        probe.bind((OWN_ADDRESS, 0))
+        probe.connect(("127.0.0.1", self.port))
+        probe.close()
+        time.sleep(1)
+        self.assertEqual(self.json("GET", "/api/state")["consoles"], [])
+        with connect_from(OWN_ADDRESS, self.port) as plugin:
+            plugin.sendall(b"ISVR" + bytes(16))  # A ping.
+            self.assertEqual(plugin.recv(8), b"ISVRokOK")
+            state = self.state_when(lambda s: s["consoles"])
+        self.assertEqual([x["address"] for x in state["consoles"]], [OWN_ADDRESS])
+
     def test_tells_when_a_console_is_back_in_aurora(self):
         # NetISO keeps its connection and disc after a game ends; Aurora's FTP
         # server, which never runs during a game, answering again tells.
@@ -1090,6 +1141,24 @@ class Dashboard(ServerTest):
             saved = f.read()
         self.assertIn("scan=0\n", saved)
         self.assertIn("xbox=192.168.1.20, 192.168.1.21\n", saved)
+        # Reads too: another site could load /api/browse?path=\\its-server\share as an image.
+        self.assertEqual(self.call("GET", "/api/browse?path=%2Ftmp", page=False)[0], 403)
+        self.assertEqual(self.call("GET", "/api/state", headers={"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(self.call("GET", "/api/state", headers={"Sec-Fetch-Site": "same-origin"})[0], 200)
+        # A line break would start another FTP command.
+        self.assertEqual(self.call("POST", "/api/settings", {"aurora": "/Hdd1/Apps/Aurora\r\nRMD /Hdd1"})[0], 400)
+
+    def test_settings_file_options_can_t_open_or_end_it(self):
+        # A settings file (or a restored backup) can't do what only a command line should.
+        with open(self.config, "w") as f:
+            f.write("[Server]\noptions=-h\nfolders=1000000000000\n")
+        self.start()
+        self.assertIsNone(self.server.poll())
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["webAddress"], "127.0.0.1")
+        with open(self.config, "w") as f:
+            f.write("[Server]\noptions=--web-bind 0.0.0.0\n")
+        self.restart()
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["webAddress"], "127.0.0.1")
 
     def test_saved_settings_win_over_the_command_line(self):
         os.makedirs(os.path.join(self.tmp.name, "more"))
@@ -1102,6 +1171,112 @@ class Dashboard(ServerTest):
         state = self.json("GET", "/api/state")
         self.assertEqual(state["settings"]["xboxes"], ["192.168.1.30"])
         self.assertEqual([f["path"] for f in state["folders"]], [self.isos, more])
+
+    def backups(self):
+        return self.json("GET", "/api/backups")["backups"]
+
+    def test_backs_up_and_restores_the_settings(self):
+        self.start()
+        self.json("POST", "/api/settings", {"scan": False, "xboxes": "192.168.1.20"})
+        name = self.json("POST", "/api/backup", {})["name"]
+        self.assertTrue(re.match(r"NetDisc360_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_manual\.zip$", name), name)
+        listed = self.backups()
+        self.assertEqual([(b["name"], b["kind"], b["version"]) for b in listed], [(name, "manual", self.json("GET", "/api/state")["version"])])
+        # Downloaded as a zip that holds the settings file, and what made it.
+        status, response, data = self.call("GET", "/api/backup?name=" + name)
+        self.assertEqual(status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "application/zip")
+        self.assertIn('attachment; filename="%s"' % name, response.getheader("Content-Disposition"))
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertEqual(sorted(z.namelist()), ["backup.ini", "netdisc.ini"])
+            self.assertIn(b"scan=0\n", z.read("netdisc.ini"))
+            self.assertIn(b"kind=manual\n", z.read("backup.ini"))
+        self.assertEqual(self.call("GET", "/api/backup?name=../netdisc.ini")[0], 404)
+        # Restored by name: at once, with the settings before kept as a backup.
+        self.json("POST", "/api/settings", {"scan": True, "xboxes": "192.168.1.30"})
+        self.assertEqual(self.json("POST", "/api/restore", {"name": name})["notes"], [])
+        settings = self.json("GET", "/api/state")["settings"]
+        self.assertEqual((settings["scan"], settings["xboxes"]), (False, ["192.168.1.20"]))
+        with open(self.config) as f:
+            self.assertIn("xbox=192.168.1.20\n", f.read())
+        self.assertEqual(sorted(b["kind"] for b in self.backups()), ["manual", "restore"])
+        # Restored from a file: the zip as downloaded, or a netdisc.ini by itself.
+        self.json("POST", "/api/restore", {"file": base64.b64encode(b"[Server]\nxbox=192.168.1.77\nscan=1\n").decode()})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.77"])
+        self.json("POST", "/api/restore", {"file": base64.b64encode(data).decode()})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
+        # Anything else is refused, and changes nothing.
+        squeezed = io.BytesIO()
+        with zipfile.ZipFile(squeezed, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("netdisc.ini", "[Server]\nxbox=192.168.1.99\n")
+        for wrong, why in [(b"hello", "isn't a NetDisc360 backup"), (squeezed.getvalue(), "compressed"), (data[:-30], "zip")]:
+            status, _, answer = self.call("POST", "/api/restore", {"file": base64.b64encode(wrong).decode()})
+            self.assertEqual(status, 400)
+            self.assertIn(why, json.loads(answer)["error"])
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
+        # Deleted.
+        before = len(self.backups())
+        self.json("POST", "/api/backup/delete", {"name": name})
+        self.assertEqual(len(self.backups()), before - 1)
+        self.assertNotIn(name, [b["name"] for b in self.backups()])
+
+    def test_keeps_the_newest_automatic_backups(self):
+        self.start()
+        folder = os.path.join(self.tmp.name, "Backups")
+        os.makedirs(folder)
+        with open(self.config, "rb") as f:
+            settings = f.read()
+        for days in range(1, 5):
+            when = int(time.time()) - days * 86400
+            stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(when))
+            with zipfile.ZipFile(os.path.join(folder, "NetDisc360_%s_scheduled.zip" % stamp), "w") as z:
+                z.writestr("backup.ini", "[Backup]\nkind=scheduled\nversion=0.9\ntime=%d\n" % when)
+                z.writestr("netdisc.ini", settings)
+        self.json("POST", "/api/settings", {"backupKeep": 2, "backupEvery": 1})
+        self.assertEqual(self.call("POST", "/api/settings", {"backupKeep": 0})[0], 400)
+        self.json("POST", "/api/backup", {})
+        kinds = [b["kind"] for b in self.backups()]
+        self.assertEqual(kinds, ["manual", "scheduled", "scheduled"])  # Newest first; yours are never deleted.
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("backup_keep=2\n", saved)
+        self.assertIn("backup_every=1\n", saved)
+
+    def test_finds_the_newest_release(self):
+        releases = os.path.join(self.tmp.name, "releases.json")
+
+        def release(tag, prerelease=False, draft=False):
+            return {"tag_name": tag, "name": tag, "body": "## New\n- Things", "html_url": "https://example.com/" + tag,
+                    "published_at": "2026-10-18T10:00:00Z", "draft": draft, "prerelease": prerelease,
+                    "assets": [{"name": "NetDisc360.exe", "size": 1234, "browser_download_url": "https://example.com/NetDisc360.exe",
+                                "digest": "sha256:" + "0" * 64}]}
+        with open(releases, "w") as f:
+            json.dump([release("v99.1.0-beta.2", prerelease=True), release("v99.9.0"), release("v99.10.0"),
+                       release("v100.0.0", draft=True), release("v0.1.0")], f)
+        self.start("--releases", releases)
+        state = self.json("GET", "/api/state")
+        self.assertRegex(state["version"], r"^\d+\.\d+\.\d+")
+        self.assertEqual((state["update"]["how"], state["update"]["checks"], state["update"]["newer"]), ("manual", True, False))
+        # Drafts and pre-releases aren't updates; 99.10 is newer than 99.9.
+        update = self.json("POST", "/api/update/check", {})["update"]
+        self.assertEqual((update["newer"], update["latest"]["version"], update["latest"]["exe"]), (True, "99.10.0", True))
+        self.assertIn("## New", update["latest"]["notes"])
+        self.assertNotIn("notes", self.json("GET", "/api/state")["update"]["latest"])
+        self.json("POST", "/api/settings", {"updatePrerelease": True})
+        self.assertEqual(self.json("POST", "/api/update/check", {})["update"]["latest"]["version"], "99.10.0")
+        with open(releases, "w") as f:
+            json.dump([release("v99.11.0-rc.1", prerelease=True), release("v99.10.0")], f)
+        self.assertEqual(self.json("POST", "/api/update/check", {})["update"]["latest"]["version"], "99.11.0-rc.1")
+        # Here (not NetDisc360.exe in the notification area) it's updated by hand.
+        status, _, data = self.call("POST", "/api/update/install", {})
+        self.assertEqual(status, 400)
+        self.assertIn("by hand", json.loads(data)["error"])
+        self.assertEqual(self.call("POST", "/api/settings", {"updateAuto": True})[0], 400)
+        with open(releases, "w") as f:
+            f.write("[]")
+        update = self.json("POST", "/api/update/check", {})["update"]
+        self.assertEqual((update["newer"], update["latest"]), (False, None))
+        self.assertIn("no releases", update["error"])
 
     def test_a_password_locks_it(self):
         self.start()
@@ -1134,6 +1309,12 @@ class Dashboard(ServerTest):
         self.assertEqual(status, 200)
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 401)
         self.assertEqual(self.call("GET", "/api/state", cookie=response.getheader("Set-Cookie").split(";")[0])[0], 200)
+        # The hash in the settings file (and so in every backup) can't make a session.
+        with open(self.config) as f:
+            stored = re.search(r"web_password=(\S+)", f.read()).group(1)
+        end = str(int(time.time()) + 3600)
+        forged = "netdisc_session=%s.%s" % (end, hmac.new(stored.encode(), end.encode(), hashlib.sha256).hexdigest())
+        self.assertEqual(self.call("GET", "/api/state", cookie=forged)[0], 401)
 
     def test_takes_the_password_from_the_environment(self):
         os.environ["NETDISC_WEB_PASSWORD"] = "from docker"

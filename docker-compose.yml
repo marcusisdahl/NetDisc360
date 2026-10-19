@@ -1,10 +1,10 @@
-# NetDisc 360 (a NetISO server for Aurora) in Docker. Put your games in a
+# NetDisc360 (a NetISO server for Aurora) in Docker. Put your games in a
 # folder, set the path below, then:   docker compose up -d
 # and open the dashboard at http://<this machine>:8360.
 # See "Docker" in README.md for every setting.
 services:
   netdisc:
-    image: ghcr.io/marcusisdahl/netdisc-360:latest
+    image: ghcr.io/marcusisdahl/netdisc360:latest
     build: .
     container_name: netdisc
     restart: unless-stopped

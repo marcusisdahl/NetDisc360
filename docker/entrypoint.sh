@@ -1,5 +1,5 @@
 #!/bin/bash
-# Turns the NETDISC_* environment variables into NetDisc 360's options.
+# Turns the NETDISC_* environment variables into NetDisc360's options.
 # Whatever the container is given as its command (default: /games) comes
 # after them, so more folders and options can be passed there too.
 #

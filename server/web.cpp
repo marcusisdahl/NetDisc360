@@ -3,6 +3,8 @@
 // thread per connection, the page from web_page.h, and the password.
 #include "web.h"
 #include "web_page.h"
+#include "../shared/isvr.h"
+#include <map>
 #include <atomic>
 #include <ctype.h>
 #include <mutex>
@@ -21,8 +23,11 @@ typedef socklen_t AddressLength;
 
 namespace web {
 namespace {
-enum { MaxHeader = 16 << 10, MaxBody = 256 << 10, MaxConnections = 64, IdleSeconds = 60, MaxDepth = 32,
-       SessionDays = 30, HashRounds = 20000 };
+// MaxBody is for a backup sent to /api/restore; everything else is small.
+// A request has RequestSeconds to arrive whole once it has started, and a
+// connection waits IdleSeconds for one at most.
+enum { MaxHeader = 16 << 10, MaxBody = 256 << 10, MaxSmallBody = 16 << 10, MaxConnections = 64, MaxConnectionsFrom = 16,
+       IdleSeconds = 15, RequestSeconds = 30, MaxDepth = 32, SessionDays = 30, HashRounds = 20000 };
 const char Cookie[] = "netdisc_session";
 
 // JSON ------------------------------------------------------------------------
@@ -99,7 +104,9 @@ struct Parser {
                 if(!Text(field.first)) return false;
                 Space();
                 if(p>=end || *p++!=':' || !Read(field.second,depth+1)) return false;
-                v.fields.push_back(field);
+                v.fields.push_back(std::pair<std::string,Value>());
+                v.fields.back().first.swap(field.first);
+                std::swap(v.fields.back().second,field.second);
                 Space();
                 if(p<end && *p==',') { ++p; continue; }
                 if(p<end && *p=='}') { ++p; return true; }
@@ -219,7 +226,15 @@ bool Same(const std::string& a, const std::string& b) {
 }
 
 std::mutex PasswordLock, LoginLock;
-std::string Hash;  // "salt:hash", under PasswordLock.
+std::string Hash;    // "salt:hash", under PasswordLock.
+std::string Secret;  // Signs the sessions with Hash, under PasswordLock (see SetSessionSecret).
+
+// What signs the sessions: the password's hash, signed with the server's
+// secret when it has one, so a hash read from a backup can't make a session.
+std::string SessionKey(const std::string& hash) {
+    std::lock_guard<std::mutex> hold(PasswordLock);
+    return Secret.empty() ? hash : Hmac(Secret,hash);
+}
 
 std::string Stretch(const std::string& salt, const std::string& password) {
     std::string h=Sha(salt+password);
@@ -233,11 +248,11 @@ bool CheckPassword(const std::string& password) {
     return colon!=std::string::npos && Same(Stretch(hash.substr(0,colon),password),hash.substr(colon+1));
 }
 
-// A session is its end (time()) and that signed with the password's hash, so
-// it outlasts a restart and ends when the password changes.
+// A session is its end (time()) and that signed with SessionKey, so it
+// outlasts a restart and ends when the password changes.
 std::string Session(const std::string& hash) {
     char end[24]; _snprintf_s(end,sizeof(end),_TRUNCATE,"%lld",(long long)time(NULL)+SessionDays*86400LL);
-    return std::string(end)+"."+Hex(Hmac(hash,end));
+    return std::string(end)+"."+Hex(Hmac(SessionKey(hash),end));
 }
 
 bool ValidSession(const std::string& session) {
@@ -245,7 +260,8 @@ bool ValidSession(const std::string& session) {
     size_t dot=session.find('.');
     if(hash.empty() || dot==std::string::npos) return false;
     std::string end=session.substr(0,dot);
-    return atoll(end.c_str())>(long long)time(NULL) && Same(Hex(Hmac(hash,end)),session.substr(dot+1));
+    long long now=(long long)time(NULL), until=atoll(end.c_str());
+    return until>now && until<=now+SessionDays*86400LL+60 && Same(Hex(Hmac(SessionKey(hash),end)),session.substr(dot+1));
 }
 
 std::string SessionHeader(const std::string& value, long long seconds) {
@@ -314,15 +330,20 @@ const char* StatusText(int status) {
     }
 }
 
+bool Loopback(DWORD address) { return (ntohl(address)>>24)==127; }
+bool OnlyHere();
+
 class Connection {
 public:
-    Connection(SOCKET socket, Api api) : socket_(socket), api_(api) {}
+    Connection(SOCKET socket, DWORD peer, Api api) : socket_(socket), peer_(peer), api_(api), started_(0) {}
     ~Connection() { closesocket(socket_); }
     void Run() {
         for(int served=0;served<1000;++served) {
             Incoming in;
             int status=ReadRequest(in);
             if(status<0) return;
+            // Opened from another device before "this computer only" was chosen.
+            if(OnlyHere() && !Loopback(peer_)) return;
             if(status) { Send(status,"application/json","{\"error\":\"bad request\"}","",true); return; }
             std::string connection=Lower(in.Header("connection"));
             bool close=connection=="close" || (in.version=="HTTP/1.0" && connection!="keep-alive");
@@ -331,6 +352,7 @@ public:
     }
 private:
     bool Receive() {
+        if(started_ && nia::Now()-started_>RequestSeconds) return false;  // Too slow to be a browser.
         char part[8192];
         int got=recv(socket_,part,sizeof(part),0);
         if(got<=0) return false;
@@ -340,9 +362,12 @@ private:
     // 0 when a request was read, an HTTP status for a bad one, -1 when the connection ended.
     int ReadRequest(Incoming& in) {
         size_t end;
+        started_=pending_.empty() ? 0 : nia::Now();
         while((end=pending_.find("\r\n\r\n"))==std::string::npos) {
             if(pending_.size()>MaxHeader) return 431;
+            bool waiting=pending_.empty();
             if(!Receive()) return -1;
+            if(waiting) started_=nia::Now();
         }
         std::string head=pending_.substr(0,end);
         pending_.erase(0,end+4);
@@ -363,7 +388,7 @@ private:
         if(!in.Header("transfer-encoding").empty()) return 400;
         long long length=atoll(in.Header("content-length").c_str());
         if(length<0) return 400;
-        if(length>MaxBody) return 413;
+        if(length>(in.target.compare(0,12,"/api/restore") ? MaxSmallBody : MaxBody)) return 413;
         while(pending_.size()<size_t(length)) if(!Receive()) return -1;
         in.body=pending_.substr(0,size_t(length));
         pending_.erase(0,size_t(length));
@@ -405,13 +430,17 @@ private:
         }
         if(r.path.compare(0,5,"/api/")) return Send(404,"text/plain","Not here.","",close);
         if(r.method!="GET" && r.method!="POST") return Send(405,"application/json","{\"error\":\"GET or POST\"}","",close);
-        if(r.method=="POST") {
-            // Only the page sends this header; another site's page can't
-            // without this server allowing it (which it never does).
-            std::string origin=in.Header("origin");
-            if(in.Header("x-netdisc").empty() || (!origin.empty() && !EndsWith(origin,("://"+in.Header("host")).c_str())))
-                return Send(403,"application/json","{\"error\":\"Changes come from the dashboard page only.\"}","",close);
-        }
+        // Only the page sends this header; another site's page can't without
+        // this server allowing it (which it never does). GETs need it too, as
+        // another site could have one fetched as an image (say a folder
+        // listing of \\its-server\share, which hands Windows' login to it);
+        // only a backup's download is a plain link. A browser also says where
+        // a request comes from.
+        std::string origin=in.Header("origin"), site=in.Header("sec-fetch-site");
+        bool download=r.method=="GET" && r.path=="/api/backup";
+        if((in.Header("x-netdisc").empty() && !download) || (!origin.empty() && !EndsWith(origin,("://"+in.Header("host")).c_str())) ||
+           site=="cross-site" || site=="same-site")
+            return Send(403,"application/json","{\"error\":\"Only the dashboard page can do that.\"}","",close);
         std::string session;
         std::string cookies=in.Header("cookie");
         size_t at=cookies.find(std::string(Cookie)+"=");
@@ -440,11 +469,14 @@ private:
         // A new password ends every session; this one goes on with a new cookie.
         std::string after=PasswordHash(), extra;
         if(after!=before && !after.empty()) extra=SessionHeader(Session(after),SessionDays*86400LL);
+        if(!reply.download.empty()) extra+="Content-Disposition: attachment; filename=\""+reply.download+"\"\r\n";
         return Send(reply.status,reply.type.c_str(),reply.body,extra,close);
     }
     SOCKET socket_;
+    DWORD peer_;
     Api api_;
     std::string pending_;
+    double started_;  // When the request being read started; 0 before its first byte.
 };
 
 std::mutex ListenLock;
@@ -452,6 +484,13 @@ SOCKET Listener=INVALID_SOCKET;
 std::string ListenAddress;
 int ListenPort;
 std::atomic<int> Active(0);
+std::mutex OpenLock;
+std::map<DWORD,int> OpenFrom;  // Connections by address, under OpenLock.
+
+bool OnlyHere() {
+    std::lock_guard<std::mutex> hold(ListenLock);
+    return ListenAddress=="127.0.0.1";
+}
 
 void Serve(SOCKET listener, Api api) {
     for(;;) {
@@ -462,15 +501,30 @@ void Serve(SOCKET listener, Api api) {
             Sleep(100);
             continue;
         }
-        if(Active>=MaxConnections) { closesocket(client); continue; }
+        DWORD peer=from.sin_addr.s_addr;
+        {
+            std::lock_guard<std::mutex> hold(OpenLock);
+            if(Active>=MaxConnections || OpenFrom[peer]>=MaxConnectionsFrom) {
+                if(!OpenFrom[peer]) OpenFrom.erase(peer);
+                closesocket(client);
+                continue;
+            }
+            ++OpenFrom[peer];
+        }
 #ifdef _WIN32
         DWORD idle=IdleSeconds*1000;
 #else
         struct timeval idle; idle.tv_sec=IdleSeconds; idle.tv_usec=0;
 #endif
         setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&idle),sizeof(idle));
+        setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,reinterpret_cast<const char*>(&idle),sizeof(idle));
         ++Active;
-        std::thread([client,api]() { Connection(client,api).Run(); --Active; }).detach();
+        std::thread([client,peer,api]() {
+            Connection(client,peer,api).Run();
+            --Active;
+            std::lock_guard<std::mutex> hold(OpenLock);
+            if(!--OpenFrom[peer]) OpenFrom.erase(peer);
+        }).detach();
     }
 }
 
@@ -591,4 +645,13 @@ std::string PasswordHash() {
     std::lock_guard<std::mutex> hold(PasswordLock);
     return Hash;
 }
+
+void SetSessionSecret(const std::string& secret) {
+    std::lock_guard<std::mutex> hold(PasswordLock);
+    Secret=secret;
+}
+
+std::string NewSecret() { return Hex(Random(32)); }
+
+std::string Sha256Hex(const std::string& data) { return Hex(Sha(data)); }
 }

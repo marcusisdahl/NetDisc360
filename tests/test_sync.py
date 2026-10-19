@@ -155,7 +155,7 @@ class Sync(unittest.TestCase):
         boot = os.path.join(self.tmp.name, "boot.xex")
         with open(boot, "wb") as f:
             f.write(b"BOOT HELPER 1")
-        helper = os.path.join(self.games, "NetDisc 360", "boot.xex")
+        helper = os.path.join(self.games, "NetDisc360", "boot.xex")
         self.add_iso("a.iso", 1, 0x11111111)
         self.sync()  # Made without the helper.
         self.assertFalse(os.path.exists(helper))
@@ -184,7 +184,7 @@ class Sync(unittest.TestCase):
         # Its folder is no game folder, and stays when the games go.
         os.remove(os.path.join(self.isos, "b.iso"))
         self.assertIn("removed=1", self.sync(boot=boot))
-        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc 360", "a"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a"])
 
     def test_a_game_folder_keeps_its_own_helper_while_the_shared_one_cant_be_written(self):
         boot = os.path.join(self.tmp.name, "boot.xex")
@@ -194,7 +194,7 @@ class Sync(unittest.TestCase):
         self.sync()
         with open(os.path.join(self.games, "a", "boot.xex"), "wb") as f:
             f.write(b"OLD HELPER")
-        with open(os.path.join(self.games, "NetDisc 360"), "wb") as f:
+        with open(os.path.join(self.games, "NetDisc360"), "wb") as f:
             f.write(b"a file where the helper's folder goes")
         out = self.sync(boot=boot, expect_ok=True)
         self.assertIn("Couldn't write", out)

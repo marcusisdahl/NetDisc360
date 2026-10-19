@@ -132,8 +132,8 @@ class Generator(unittest.TestCase):
         with open(helper, "wb") as f:
             f.write(b"BOOT HELPER")
         self.assertEqual(self.run_tool("--helper", helper), 0)
-        self.assertEqual(sorted(os.listdir(self.out)), ["NetDisc 360", "a"])
-        self.assertEqual(self.read_out("NetDisc 360", "boot.xex"), b"BOOT HELPER")
+        self.assertEqual(sorted(os.listdir(self.out)), ["NetDisc360", "a"])
+        self.assertEqual(self.read_out("NetDisc360", "boot.xex"), b"BOOT HELPER")
         self.assertEqual(sorted(os.listdir(os.path.join(self.out, "a"))), ["default.xex", "netiso.ini"])
 
     def test_takes_the_helper_next_to_the_tile_launcher(self):
@@ -141,7 +141,7 @@ class Generator(unittest.TestCase):
         with open(os.path.join(self.root, "boot.xex"), "wb") as f:
             f.write(b"BOOT HELPER")
         self.assertEqual(self.run_tool(), 0)
-        self.assertEqual(self.read_out("NetDisc 360", "boot.xex"), b"BOOT HELPER")
+        self.assertEqual(self.read_out("NetDisc360", "boot.xex"), b"BOOT HELPER")
 
     def test_xgd2_and_xgd3_layouts(self):
         write_iso(os.path.join(self.isos, "a.iso"), {"default.xex": xex(execution_info(1, 0x11111111))}, partition=(0xFDA0000, 0xFD90000))

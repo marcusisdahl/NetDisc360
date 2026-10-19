@@ -28,10 +28,12 @@ struct Package { std::string path; U64 size; };
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
                  std::vector<Package> packages; std::string installDisc, role, roleLabel; };
 
-// The discs in folder and its subfolders, sorted by name, added to out.
-void FindIsos(const std::string& folder, std::vector<IsoFile>& out);
-// Gives a disc whose listed name is taken (ignoring case) a number: an ISO
-// keeps its name over a folder or GOD package, otherwise the first one does.
+// The discs in folder and its subfolders, sorted by name, added to out;
+// false if folder itself couldn't be read (a drive or share that isn't there).
+bool FindIsos(const std::string& folder, std::vector<IsoFile>& out);
+// Makes each listed name one the console can take (see ServedName), and
+// gives a disc whose name is taken (ignoring case) a number: an ISO keeps its
+// name over a folder or GOD package, otherwise the first one does.
 void UniqueNames(std::vector<IsoFile>& discs);
 // Reads each disc's Title ID, disc number and packages (remembered between calls).
 void ReadTitles(std::vector<IsoFile>& discs);

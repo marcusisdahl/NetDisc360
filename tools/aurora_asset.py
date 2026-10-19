@@ -4,7 +4,7 @@ Each file holds up to 25 textures (icon, banner, box art, slot, background
 and 20 screenshots) after a 2048-byte header, as documented in
 github.com/jrobiche/xbox360-aurora-developer-documentation (Aurora 0.7b.2).
 This prints every texture's header fields and writes each one as a PNG, so
-the files Aurora made can be compared with the ones NetDisc 360 makes.
+the files Aurora made can be compared with the ones NetDisc360 makes.
 
     python tools/aurora_asset.py <file.asset> [--png <folder>]
 """

@@ -48,7 +48,7 @@ DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size) {
     for(DWORD i=0;i<count && 24+i*8+8<=headerSize;++i) {
         if(Read32(xex+24+i*8)!=ExecutionInfo) continue;
         DWORD at=Read32(xex+28+i*8);
-        return at>=24 && at+ExecutionInfoSize<=headerSize ? at : 0;
+        return at>=24 && at<=headerSize && headerSize-at>=ExecutionInfoSize ? at : 0;
     }
     return 0;
 }
@@ -374,7 +374,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
         const Folder* disc=NULL;
         for(int k=0;k<folderCount && !disc;++k) if(folders[k].game && folders[k].keep && !_stricmp(folders[k].iso,need.iso)) disc=&folders[k];
         _snprintf_s(text,sizeof(text),_TRUNCATE,
-            "; Written by NetDisc 360: this game's install disc, and the packages it puts under Content.\r\n"
+            "; Written by NetDisc360: this game's install disc, and the packages it puts under Content.\r\n"
             "install_iso=%s\r\ninstall_title_id=%08X\r\ninstall_media_id=%08X\r\ninstall_folder=%s\r\n%s",
             need.iso,game.titleId,disc ? disc->mediaId : 0,disc ? disc->name : "",need.packages);
     } else {
@@ -422,6 +422,9 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     static char names[MaxFolders][FolderNameMax+1];
     static Folder folders[MaxFolders];
     int folderCount=storage.ListFolders(root,names,MaxFolders);
+    // Not knowing what is there, every game would look new and could be
+    // written over a folder of the same name.
+    if(folderCount<0) { Say(note,"Couldn't list %s (error %lu).",root,storage.LastError()); return false; }
     static char ini[IniMax+1];
     for(int i=0;i<folderCount;++i) {
         Folder& f=folders[i]; memset(&f,0,sizeof(f)); strcpy_s(f.name,names[i]);
@@ -435,6 +438,10 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(IniValue(ini,"media_id",id,sizeof(id))) f.mediaId=DWORD(strtoul(id,NULL,16));
             if(!IniValue(ini,"disc_role",f.role,sizeof(f.role))) f.role[0]=0;
             if(!IniValue(ini,"disc_label",f.label,sizeof(f.label))) f.label[0]=0;
+        } else if(!storage.Missing()) {
+            // Its game would get a second folder; better to try again later.
+            Say(note,"Couldn't read %s (error %lu).",path,storage.LastError());
+            return false;
         }
     }
 

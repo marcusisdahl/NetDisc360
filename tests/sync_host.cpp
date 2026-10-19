@@ -3,12 +3,13 @@
 //   sync-host <server port> <games folder> <launcher.xex> [boot.xex]
 #include "../shared/library.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdlib.h>
 
 class PosixStorage : public nia::Storage {
 public:
     int ListFolders(const char* root, char names[][nia::FolderNameMax + 1], int capacity) {
-        DIR* dir=opendir(root); if(!dir) return 0;
+        DIR* dir=opendir(root); if(!dir) return -1;
         int count=0;
         while(struct dirent* e=readdir(dir)) {
             if(e->d_name[0]=='.' || count>=capacity) continue;
@@ -20,7 +21,7 @@ public:
         return count;
     }
     bool ReadFile(const char* path, unsigned char* data, DWORD capacity, DWORD& size) {
-        FILE* f=fopen(path,"rb"); if(!f) return false;
+        FILE* f=fopen(path,"rb"); missing_=!f && errno==ENOENT; if(!f) return false;
         size=DWORD(fread(data,1,capacity,f)); bool whole=fgetc(f)==EOF; fclose(f);
         return whole;
     }
@@ -35,7 +36,10 @@ public:
         return rmdir(folder)==0;
     }
     int RemoveFile(const char* path) { return unlink(path)==0 ? 1 : errno==ENOENT ? 0 : -1; }
+    bool Missing() { return missing_; }
     unsigned long LastError() { return (unsigned long)errno; }
+private:
+    bool missing_ = false;
 };
 
 static void Print(const char* text) { printf("%s\n",text); fflush(stdout); }

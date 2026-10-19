@@ -2,7 +2,7 @@
 // picked by the netiso.ini of the folder the tile launcher (tile.cpp) that
 // started it is in.
 //
-// A game (netiso.ini has iso=): the game folder, made by NetDisc 360, NetISO
+// A game (netiso.ini has iso=): the game folder, made by NetDisc360, NetISO
 // Sync or tools/netiso_aurora.py, has the tile launcher as its default.xex,
 // carrying the game's Title ID and Media ID in its XEX header so Aurora scans
 // it like an installed game. It hands the start here. This asks the NetISO
@@ -98,6 +98,11 @@ static IDirect3DDevice9* Screen=NULL;
 static nia::LoadScreen Shown;
 static CRITICAL_SECTION ShownLock;
 static WORD Held=0; // Controller buttons down at the last look.
+// When the logo intro (ui.cpp) started; 0 once it's over. It plays once, over
+// the first screen, while the start goes on under it.
+static DWORD IntroAt=0;
+static bool IntroShown=false;
+static WORD IntroHeld=0; // Buttons down since before the intro, which don't cut it short.
 static WORD Buttons() {
     WORD buttons=0;
     for(DWORD pad=0;pad<4;++pad) {
@@ -127,6 +132,7 @@ static void ScreenStart() {
     if(Screen && !ImGuiXbox360Init(Screen)) { Screen->Release(); Screen=NULL; }
     // The A that started the tile may still be down.
     Held=Buttons();
+    if(Screen && !IntroShown) { IntroAt=GetTickCount(); IntroShown=true; IntroHeld=Held; }
 }
 // The bar glides to the fraction the steps set instead of jumping: quickly
 // while it's far behind, never slower than BarMinSpeed a second, so it gets
@@ -154,6 +160,14 @@ static void ScreenDraw() {
     frame.fraction=Bar;
     frame.time=GetTickCount()/1000.0;
     frame.elapsed=(GetTickCount()-Started)/1000.0;
+    // Any button cuts the intro short; the press still does what it does
+    // (B cancels).
+    if(IntroAt) {
+        WORD buttons=Buttons();
+        IntroHeld&=buttons;
+        if((GetTickCount()-IntroAt)/1000.0>=nia::IntroSeconds || (buttons&~IntroHeld)) IntroAt=0;
+    }
+    frame.intro=IntroAt ? (GetTickCount()-IntroAt)/1000.0 : -1;
     ImGui::GetIO().DeltaTime=1.0f/60;
     nia::DrawLoadUi(frame);
     Screen->Clear(0,NULL,D3DCLEAR_TARGET,0xFF0F1725,1.0f,0);
@@ -334,16 +348,19 @@ static const char* FindName(int count,const char* name) {
     return NULL;
 }
 
+// Set when B is pressed during the mount (see RunMount).
+static volatile LONG CancelAsked=0;
 // Walks from the root toward the ISO's Mount folder by name, the way you
 // would in Aurora's file browser, and gives that folder's path (inside
 // NIsoL:). Listing these folders doesn't mount; listing Mount does. It stops
-// without a path after the given number of listings.
+// without a path after the given number of listings, or when B is pressed.
 enum Found { FoundMount, FoundStopped, FoundNoRoot, FoundNotListed, FoundNoMount };
 static Found FindMountFolder(const Settings& settings,char* folder,size_t capacity,int listings) {
     strcpy_s(folder,capacity,IsoRoot);
     bool sawIso=false;
     for(int depth=0;depth<MaxDepth;++depth) {
         if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
+        if(CancelAsked) return FoundStopped;
         int count=ListFolder(folder);
         // An empty root: the plugin couldn't reach the server.
         if(!depth && !count) return FoundNoRoot;
@@ -385,7 +402,6 @@ static char ServerSource[48]="";
 struct Failure { int step; bool retry; char title[96]; char lines[3][128]; };
 static Failure Problem;
 enum Result { Mounted, Failed, Cancelled };
-static volatile LONG CancelAsked=0;
 static Result Fail(int step,bool retry,const char* title,const char* line0,const char* line1=NULL,const char* line2=NULL) {
     Problem.step=step; Problem.retry=retry;
     strcpy_s(Problem.title,title);
@@ -436,7 +452,7 @@ static Result WaitForServer(const char* ini) {
     char line0[128],line2[128];
     _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
     _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
-    return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc 360 on the PC, and check that the PC and the Xbox",line2);
+    return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc360 on the PC, and check that the PC and the Xbox",line2);
 }
 
 // stop_after= in netiso.ini stops short of the mount and goes back to
@@ -497,10 +513,11 @@ static Result Mount(const char* ini,const Settings& settings) {
     int stop=StopAfter(ini);
     char folder[MAX_PATH];
     Found found=FindMountFolder(settings,folder,sizeof(folder),stop);
-    bool asked=found==FoundMount && ListMountFolder(folder);
+    bool asked=found==FoundMount && !CancelAsked && ListMountFolder(folder);
     DWORD error=GetLastError();
     UnlinkDrive(IsoLink);
     if(stop!=NoStop) { Note("Back to Aurora without mounting."); return Cancelled; }
+    if(CancelAsked) return Cancelled;
     if(found==FoundNoRoot)
         return Fail(nia::StepMount,true,"The NetISO plugin can't reach the server","The server answers, but the NetISO drive lists no games.",
                     "After a reboot the plugin can take a little longer; try again in a moment.");
@@ -518,7 +535,6 @@ static Result Mount(const char* ini,const Settings& settings) {
         _snprintf_s(line,sizeof(line),_TRUNCATE,"The NetISO drive answered the mount with error %lu.",error);
         return Fail(nia::StepMount,true,title,line,"The server's window on the PC may say why.");
     }
-    if(CancelAsked) return Cancelled;
 
     ShowStep(nia::StepDisc,0.3,"The disc is going in. Waiting for the console to read it");
     int quiet=IniNumber(ini,"quiet_ms",QuietMs);
@@ -676,7 +692,7 @@ static void StartDisc(const char* ini) {
 
 // ---- Install discs ----
 
-// install.ini, which NetDisc 360 writes next to netiso.ini when the game's
+// install.ini, which NetDisc360 writes next to netiso.ini when the game's
 // install disc is another of the server's discs: that disc, and the packages
 // it puts under Content. GTA V's play disc froze at "Loading story mode"
 // without them (seen on the console); Forza 4 plays without its car packs.
@@ -766,7 +782,7 @@ static InstallChoice AskToInstall(const char* game,const Install& install) {
 static void LaunchGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) {
-        Fail(nia::StepServer,false,"This game's netiso.ini is incomplete","It needs iso= and title_id= lines.","Let NetDisc 360 or NetISO Sync write the folder again.");
+        Fail(nia::StepServer,false,"This game's netiso.ini is incomplete","It needs iso= and title_id= lines.","Let NetDisc360 or NetISO Sync write the folder again.");
         ShowProblem();
         return;
     }
@@ -850,7 +866,10 @@ public:
         char pattern[nia::PathMax]; _snprintf_s(pattern,sizeof(pattern),_TRUNCATE,"%s\\*",root);
         WIN32_FIND_DATA found;
         HANDLE find=FindFirstFile(pattern,&found);
-        if(find==INVALID_HANDLE_VALUE) return 0;
+        if(find==INVALID_HANDLE_VALUE) {  // Empty, or not readable.
+            DWORD error=GetLastError();
+            return error==ERROR_NO_MORE_FILES || error==ERROR_FILE_NOT_FOUND ? 0 : -1;
+        }
         int count=0;
         do {
             if((found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) && count<capacity && strlen(found.cFileName)<=nia::FolderNameMax)
@@ -893,7 +912,9 @@ public:
 
 // "192.168.1.20" or "192.168.1.20:4323".
 static bool ParseServer(const char* text,DWORD& address,int& port) {
-    char host[64]; strcpy_s(host,text);
+    char host[64];
+    if(strlen(text)>=sizeof(host)) return false; // Longer than any address; strcpy_s would end the launcher.
+    strcpy_s(host,text);
     char* colon=strchr(host,':');
     if(colon) { *colon=0; port=atoi(colon+1); if(port<1||port>65535) return false; }
     size_t length=strlen(host);

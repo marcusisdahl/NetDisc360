@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The tile launcher: the default.xex in each game folder. NetDisc 360 or
+// The tile launcher: the default.xex in each game folder. NetDisc360 or
 // NetISO Sync puts the game's execution info (Title ID, Media ID, disc
 // number) in its header, so Aurora lists the folder as that game and finds
 // its name and art. Started, it hands the start to the helper, the full
@@ -132,7 +132,7 @@ void __cdecl main() {
         else Note("XSetLaunchData failed (%lu).",set);
     }
     // Nothing to hand over to: back to Aurora, saying why.
-    Show(L"NetDisc 360 couldn't start this game: its helper is missing. Start NetDisc 360 on your PC to put it back.");
+    Show(L"NetDisc360 couldn't start this game: its helper is missing. Start NetDisc360 on your PC to put it back.");
     Sleep(500);
     LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
 }

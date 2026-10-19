@@ -73,6 +73,7 @@ public:
     bool MakeFolder(const char* path);
     bool RemoveGame(const char* folder);
     int RemoveFile(const char* path);
+    bool Missing();
     unsigned long LastError();
 private:
     FtpClient& ftp_;

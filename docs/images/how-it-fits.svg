@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" width="1000" height="340">
+  <title>NetDisc360 on a PC or NAS gives Aurora a tile for each game over Aurora's FTP, and serves the game disc to the Xbox over NetISO as you play</title>
+  <defs>
+    <marker id="teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3ED9BC"/>
+    </marker>
+    <marker id="blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#73B8FF"/>
+    </marker>
+    <style>
+      text { font-family: Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .title { font-size: 24px; font-weight: 700; fill: #E6EDF5; }
+      .sub { font-size: 16px; fill: #A9B8C8; }
+      .foot { font-size: 14px; fill: #6F8196; }
+      .chip { font-size: 14px; font-weight: 600; fill: #3ED9BC; }
+      .label { font-size: 17px; font-weight: 600; fill: #E6EDF5; }
+      .small { font-size: 14px; fill: #A9B8C8; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="998" height="338" rx="24" fill="#0F1725" stroke="#223047" stroke-width="2"/>
+
+  <!-- PC or NAS -->
+  <rect x="32" y="40" width="280" height="260" rx="18" fill="#192537"/>
+  <rect x="60" y="70" width="70" height="46" rx="6" fill="none" stroke="#73B8FF" stroke-width="4"/>
+  <path d="M95 116 V128 M80 130 H110" stroke="#73B8FF" stroke-width="4" stroke-linecap="round"/>
+  <rect x="144" y="66" width="38" height="62" rx="6" fill="none" stroke="#73B8FF" stroke-width="4"/>
+  <path d="M153 82 H173 M153 96 H173 M153 110 H173" stroke="#3ED9BC" stroke-width="4" stroke-linecap="round"/>
+  <text x="60" y="166" class="title">Your PC or NAS</text>
+  <text x="60" y="194" class="sub">NetDisc360 serves your games</text>
+  <g>
+    <rect x="60" y="214" width="50" height="28" rx="14" fill="none" stroke="#3ED9BC" stroke-width="1.5" opacity="0.7"/>
+    <text x="85" y="233" class="chip" text-anchor="middle">ISO</text>
+    <rect x="118" y="214" width="92" height="28" rx="14" fill="none" stroke="#3ED9BC" stroke-width="1.5" opacity="0.7"/>
+    <text x="164" y="233" class="chip" text-anchor="middle">Extracted</text>
+    <rect x="218" y="214" width="56" height="28" rx="14" fill="none" stroke="#3ED9BC" stroke-width="1.5" opacity="0.7"/>
+    <text x="246" y="233" class="chip" text-anchor="middle">GOD</text>
+  </g>
+  <text x="60" y="276" class="foot">Windows app or Docker</text>
+
+  <!-- Xbox 360 -->
+  <rect x="688" y="40" width="280" height="260" rx="18" fill="#192537"/>
+  <rect x="716" y="76" width="120" height="40" rx="12" fill="none" stroke="#73B8FF" stroke-width="4"/>
+  <path d="M730 90 H786" stroke="#73B8FF" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="814" cy="96" r="9" fill="none" stroke="#3ED9BC" stroke-width="4"/>
+  <text x="716" y="166" class="title">Your Xbox 360</text>
+  <text x="716" y="194" class="sub">Every game in Aurora's list</text>
+  <g>
+    <rect x="716" y="214" width="70" height="28" rx="14" fill="none" stroke="#3ED9BC" stroke-width="1.5" opacity="0.7"/>
+    <text x="751" y="233" class="chip" text-anchor="middle">Aurora</text>
+    <rect x="794" y="214" width="70" height="28" rx="14" fill="none" stroke="#3ED9BC" stroke-width="1.5" opacity="0.7"/>
+    <text x="829" y="233" class="chip" text-anchor="middle">NetISO</text>
+  </g>
+  <text x="716" y="276" class="foot">About 9 MB per game, art included</text>
+
+  <!-- What goes across -->
+  <text x="500" y="98" class="label" text-anchor="middle">A tile for each game</text>
+  <path d="M332 116 H666" stroke="#3ED9BC" stroke-width="4" marker-end="url(#teal)"/>
+  <text x="500" y="142" class="small" text-anchor="middle">by itself, over Aurora's FTP</text>
+
+  <text x="500" y="200" class="label" text-anchor="middle">The game disc, as you play</text>
+  <path d="M332 218 H666" stroke="#73B8FF" stroke-width="4" marker-end="url(#blue)"/>
+  <text x="500" y="244" class="small" text-anchor="middle">streamed over NetISO</text>
+
+  <path d="M352 268 H648" stroke="#2A3D57" stroke-width="2" stroke-dasharray="6 6"/>
+  <text x="500" y="292" class="foot" text-anchor="middle">your home network</text>
+</svg>

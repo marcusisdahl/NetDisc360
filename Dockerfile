@@ -1,5 +1,5 @@
-# NetDisc 360 (a NetISO server for Aurora), for Linux, a NAS or anything else
-# that runs Docker. The same server as NetDisc.exe, built from server/ and shared/ for
+# NetDisc360 (a NetISO server for Aurora), for Linux, a NAS or anything else
+# that runs Docker. The same server as NetDisc360.exe, built from server/ and shared/ for
 # Linux. The game launchers it writes to the Xbox are Xbox programs built with
 # the Xbox 360 SDK on Windows, so they come from the release's NetISO-Sync.zip
 # (or from docker/launcher/, when default.xex and boot.xex are put there).
@@ -16,9 +16,10 @@ COPY shared/ shared/
 COPY tests/posix_compat.h tests/
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
+        server/backup.cpp server/update.cpp \
         shared/library.cpp shared/isvr.cpp
 
-ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc-360/releases/latest/download/NetISO-Sync.zip
+ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
 # 1: fail the build without launchers (for the published image).
 ARG REQUIRE_LAUNCHER=0
 COPY docker/launcher/ /launcher/
@@ -45,6 +46,9 @@ COPY --from=build /launcher/ /usr/local/share/netdisc/
 COPY docker/entrypoint.sh /usr/local/bin/netdisc-entrypoint
 RUN chmod 0755 /usr/local/bin/netdisc-entrypoint
 USER netdisc
+# The dashboard says how to update the image (docker compose pull) instead of
+# offering to update itself.
+ENV NETDISC_DOCKER=1
 # The NetISO protocol and the dashboard. The server reaches the Xbox's FTP
 # (port 21) itself.
 EXPOSE 4323/tcp 8360/tcp

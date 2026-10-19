@@ -124,6 +124,9 @@ bool FtpClient::Send(const char* format, ...) {
     char line[1024];
     va_list a; va_start(a,format); int n=_vsnprintf_s(line,sizeof(line)-2,_TRUNCATE,format,a); va_end(a);
     if(n<0) return Fail("FTP command too long");
+    // A name or setting with a line break in it would end the command early
+    // and start another one.
+    if(strpbrk(line,"\r\n")) return Fail("A name in this FTP command has a line break in it");
     memcpy(line+n,"\r\n",2);
     if(!control_->SendAll(line,size_t(n)+2,timeout_)) { code_=0; return Fail("Lost the connection to the Xbox's FTP server"); }
     return true;
@@ -316,7 +319,7 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
 
 int FtpStorage::ListFolders(const char* root, char names[][FolderNameMax + 1], int capacity) {
     std::vector<FtpEntry> entries;
-    if(!ftp_.List(root,entries)) return 0;
+    if(!ftp_.List(root,entries)) return -1;
     int count=0;
     for(size_t i=0;i<entries.size() && count<capacity;++i)
         if(entries[i].folder && entries[i].name.size()<=FolderNameMax) strcpy_s(names[count++],FolderNameMax+1,entries[i].name.c_str());
@@ -332,6 +335,15 @@ bool FtpStorage::WriteFile(const char* path, const void* data, DWORD size) { ret
 bool FtpStorage::MakeFolder(const char* path) { return ftp_.MakeFolder(path); }
 bool FtpStorage::RemoveGame(const char* folder) {
     static const char* files[]={"default.xex","boot.xex","netiso.ini","install.ini","netiso.log"};
+    // Only a folder that holds nothing else loses its files: one with
+    // anything more in it is left as it is.
+    std::vector<FtpEntry> entries;
+    if(!ftp_.List(folder,entries)) return false;
+    for(size_t i=0;i<entries.size();++i) {
+        bool ours=false;
+        for(int k=0;k<5 && !ours;++k) ours=!entries[i].folder && !_stricmp(entries[i].name.c_str(),files[k]);
+        if(!ours) return false;
+    }
     for(int i=0;i<5;++i) { char path[PathMax]; _snprintf_s(path,sizeof(path),_TRUNCATE,"%s/%s",folder,files[i]); ftp_.Delete(path); }
     return ftp_.RemoveFolder(folder);
 }
@@ -339,5 +351,6 @@ int FtpStorage::RemoveFile(const char* path) {
     if(ftp_.Delete(path)) return 1;
     return ftp_.Missing() ? 0 : -1;
 }
+bool FtpStorage::Missing() { return ftp_.Missing(); }
 unsigned long FtpStorage::LastError() { return (unsigned long)ftp_.Code(); }
 }

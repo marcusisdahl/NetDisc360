@@ -389,6 +389,22 @@ class Discs(ServerTest):
         self.assertEqual(c.names(), ["a.iso", "Game.iso"])
         c.close()
 
+    def test_a_header_pointing_past_its_end(self):
+        # An execution info offset near 4 GB once wrapped the bounds check and
+        # crashed the server while it read the game's title.
+        bad = bytearray(xex(execution_info(1, 0x22222222)))
+        struct.pack_into(">I", bad, 24 + 8 + 4, 0xFFFFFFF0)
+        folder = os.path.join(self.isos, "Broken")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xex"), "wb") as f:
+            f.write(bytes(bad))
+        self.add_iso("a.iso", 1, 0x11111111)
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["a.iso", "Broken.iso"])  # Served, as a game without a title.
+        c.close()
+        self.assertIsNone(self.server.poll())
+
     def test_a_name_an_iso_already_has(self):
         iso = self.add_iso("Kameo.iso", 1, 0x11111111)
         self.make_game("Kameo", 0x22222222)  # Another game with the same name.
