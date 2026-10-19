@@ -31,3 +31,6 @@ jobs:
           context: .
           push: false
           tags: netdisc360:ci
+          # With the latest release's launchers, as the published image needs.
+          build-args: |
+            REQUIRE_LAUNCHER=1

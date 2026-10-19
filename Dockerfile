@@ -23,13 +23,16 @@ ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/down
 # 1: fail the build without launchers (for the published image).
 ARG REQUIRE_LAUNCHER=0
 COPY docker/launcher/ /launcher/
+# unzip exits with 1 for a warning, such as the backslash paths of zips made
+# by Windows PowerShell 5.1, after extracting everything; only the files count.
 RUN if [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; then \
         echo "Using the launchers in docker/launcher/."; \
     elif curl -fsSL "$LAUNCHER_URL" -o /tmp/launcher.zip \
-         && unzip -jo /tmp/launcher.zip '*default.xex' '*boot.xex' -d /launcher; then \
+         && { unzip -jo /tmp/launcher.zip '*default.xex' '*boot.xex' -d /launcher || [ $? -eq 1 ]; } \
+         && [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; then \
         echo "Using the launchers from $LAUNCHER_URL."; \
     else \
-        echo "WARNING: no launchers ($LAUNCHER_URL didn't download). The server will only serve games, not add them to Aurora."; \
+        echo "WARNING: no launchers (none in $LAUNCHER_URL, or it didn't download). The server will only serve games, not add them to Aurora."; \
         rm -f /launcher/default.xex /launcher/boot.xex; \
         [ "$REQUIRE_LAUNCHER" != 1 ]; \
     fi
