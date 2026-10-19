@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: MIT
-     NetDisc 360's dashboard, served by the server itself (server/web.cpp). The
-     same page runs for NetDisc.exe and in Docker. tools/make_web.py builds it
+     NetDisc360's dashboard, served by the server itself (server/web.cpp). The
+     same page runs for NetDisc360.exe and in Docker. tools/make_web.py builds it
      into server/web_page.h, with the icons from web/icons.svg in place of the
      icons comment below. -->
 <html lang="en">
@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>NetDisc 360</title>
+<title>NetDisc360</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23107c10'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23fff' stroke-opacity='.45' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -520,7 +520,7 @@ async function api(path, body) {
   const options = body === undefined ? { headers: { 'X-NetDisc': '1' } } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NetDisc': '1' }, body: JSON.stringify(body) };
   let response;
   try { response = await fetch('/api/' + path, options); }
-  catch (e) { throw new Error('NetDisc 360 isn\u2019t answering. Is it still running?'); }
+  catch (e) { throw new Error('NetDisc360 isn\u2019t answering. Is it still running?'); }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && path !== 'login') { showLogin(); throw new Error('Log in first.'); }
   if (!response.ok) throw new Error(data.error || 'Something went wrong (' + response.status + ').');
@@ -613,7 +613,7 @@ async function refresh() {
     if (view && view.update) view.update();
   } catch (e) {
     if ($('.login')) return;
-    if (++failed === 3 && $('.side')) updateFrame(restarting ? 'NetDisc 360 is restarting\u2026' : e.message);
+    if (++failed === 3 && $('.side')) updateFrame(restarting ? 'NetDisc360 is restarting\u2026' : e.message);
   }
   timer = setTimeout(refresh, document.hidden ? 5000 : 1000);
 }
@@ -630,7 +630,7 @@ function frame() {
   const nav = Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon), h('span', label), h('span.count')));
   fill($('#app'),
     h('aside.side',
-      h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc 360'), h('div.brand-sub', 'NetISO server for Aurora'))),
+      h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
       h('nav.nav', nav),
       h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
         h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
@@ -661,13 +661,13 @@ function updateFrame(problem) {
   for (const a of document.querySelectorAll('.nav a')) {
     const n = counts[a.dataset.page];
     if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
-    else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc 360 ' + updateOut() + ' is out' }, 'New'));
+    else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else fill($('.count', a), n === undefined || n === '' ? '' : n);
   }
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
-  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc 360';
+  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc360';
 }
 
 function route() {
@@ -866,7 +866,7 @@ Pages.dashboard = root => {
       if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings/dashboard' }, 'Set a password')));
       else open.replaceChildren();
       const out = updateOut();
-      if (out) fill(news, h('div.notice.info', ic('sparkles'), h('span', 'NetDisc 360 ' + out + ' is out.'), h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new')));
+      if (out) fill(news, h('div.notice.info', ic('sparkles'), h('span', 'NetDisc360 ' + out + ' is out.'), h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new')));
       else news.replaceChildren();
       // A game in the folders more than once, with no copy chosen yet.
       const n = S.library.conflicts;
@@ -960,7 +960,7 @@ Pages.games = root => {
     if (waiting.length) fill(open, h('div.card.conflicts', { style: { marginBottom: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Choose which copy to play'), h('span.sub', waiting.length === 1 ? 'this game is in your folders more than once' : 'these games are in your folders more than once')),
       h('div.card-body', waiting.map(conflict)),
-      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc 360 remembers your choice, and asks again if another copy turns up.')));
+      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.')));
     else open.replaceChildren();
     if (settled.length) fill(dupes, h('div.card.conflicts', { style: { marginTop: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Games with more than one copy'), h('span.sub', 'the copy you chose plays')),
@@ -1033,12 +1033,12 @@ function modal(title, build, narrow, closed) {
   return close;
 }
 
-// The newest release of NetDisc 360 and of the console tools that go with it.
+// The newest release of NetDisc360 and of the console tools that go with it.
 // GitHub's /releases/latest always leads to the newest one; its API names it.
 const Releases = [
-  { repo: 'marcusisdahl/NetDisc-360', name: 'NetDisc 360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
+  { repo: 'marcusisdahl/NetDisc360', name: 'NetDisc360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
   { repo: 'marcusisdahl/Xbox360_FastFTP', name: 'FastFTP', icon: 'arrow-down-up', what: 'A fast FTP server app for the Xbox, to copy games and files to it.' },
-  { repo: 'marcusisdahl/CUsbEnet', name: 'CUsbEnet', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster.' },
+  { repo: 'marcusisdahl/UsbNet360', name: 'UsbNet360', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster. Our fork of CUsbEnet.' },
 ];
 function releases() {
   modal('Latest releases', close => [
@@ -1112,13 +1112,13 @@ Pages.folders = root => {
 
 function removeFolder(path) {
   modal('Remove this folder?', close => [
-    h('div.modal-body', h('p', { style: { margin: 0 } }, 'NetDisc 360 stops serving ', h('b', path), '. Nothing is deleted, but its games leave Aurora on your consoles until you add it again.')),
+    h('div.modal-body', h('p', { style: { margin: 0 } }, 'NetDisc360 stops serving ', h('b', path), '. Nothing is deleted, but its games leave Aurora on your consoles until you add it again.')),
     h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
       h('button.btn.primary', { onclick: async () => { if (await save({ folders: S.folders.map(f => f.path).filter(p => p !== path) }, 'Folder removed')) close(); } }, 'Remove')),
   ], true);
 }
 
-// The folder browser: folders on the computer that runs NetDisc 360 (in
+// The folder browser: folders on the computer that runs NetDisc360 (in
 // Docker, the container's: the folders mounted into it).
 function addFolder() {
   let current = null;
@@ -1201,10 +1201,10 @@ function versionCompare(a, b) {
   }
 }
 
-// What's known about updates: the server's own check (NetDisc.exe), or, where
+// What's known about updates: the server's own check (NetDisc360.exe), or, where
 // the server can't reach GitHub (Docker), this browser's, kept for six hours.
 let U = null;
-const ReleasesApi = 'https://api.github.com/repos/marcusisdahl/NetDisc-360/releases?per_page=20';
+const ReleasesApi = 'https://api.github.com/repos/marcusisdahl/NetDisc360/releases?per_page=20';
 async function browserCheck(force) {
   const pre = !!S.settings.updatePrerelease;
   try {
@@ -1214,7 +1214,7 @@ async function browserCheck(force) {
   const info = { checkedAt: 0, error: '', latest: null };
   try {
     const r = await fetch(ReleasesApi, { referrerPolicy: 'no-referrer', headers: { Accept: 'application/vnd.github+json' } });
-    if (!r.ok) throw new Error(r.status === 404 ? 'GitHub has no releases of NetDisc 360 to show (404).' : r.status === 403 || r.status === 429 ? 'GitHub turned the check away for now (too many checks from this network). Try again later.' : 'GitHub answered with status ' + r.status + '.');
+    if (!r.ok) throw new Error(r.status === 404 ? 'GitHub has no releases of NetDisc360 to show (404).' : r.status === 403 || r.status === 429 ? 'GitHub turned the check away for now (too many checks from this network). Try again later.' : 'GitHub answered with status ' + r.status + '.');
     const list = (await r.json()).filter(x => !x.draft && x.tag_name && (pre || !x.prerelease));
     info.checkedAt = Date.now() / 1000;
     list.sort((a, b) => versionCompare(b.tag_name, a.tag_name));
@@ -1297,7 +1297,7 @@ function awaitRestart(text) {
       }
     } catch (e) { /* not back yet */ }
     if (++tries < 120) setTimeout(look, 1000);
-    else { restarting = false; toast('NetDisc 360 didn\u2019t come back. Start it again from its folder or the Start menu.', true); }
+    else { restarting = false; toast('NetDisc360 didn\u2019t come back. Start it again from its folder or the Start menu.', true); }
   };
   setTimeout(look, 2000);
 }
@@ -1367,7 +1367,7 @@ Pages.settings = root => {
         h('div.form.cols',
           h('label.field', h('span', 'User name'), user),
           h('label.field', h('span', 'Password'), password),
-          h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The same login as in Aurora\u2019s settings (Aurora\u2019s default is xboxftp / xboxftp; changing it is a good idea). It\u2019s kept ', S.platform === 'windows' ? 'encrypted for your Windows user.' : 'in the settings file, readable only by NetDisc 360\u2019s user.')),
+          h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The same login as in Aurora\u2019s settings (Aurora\u2019s default is xboxftp / xboxftp; changing it is a good idea). It\u2019s kept ', S.platform === 'windows' ? 'encrypted for your Windows user.' : 'in the settings file, readable only by NetDisc360\u2019s user.')),
           h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login')))),
       card('folder', 'Folders on the Xbox', null,
         h('div.form.cols',
@@ -1406,7 +1406,7 @@ Pages.settings = root => {
     const st = S.settings, app = S.update.how === 'app';
     const hero = h('div.card'), notes = h('div');
     fill(body,
-      head('Updates', 'New versions of NetDisc 360, from its releases on GitHub.'),
+      head('Updates', 'New versions of NetDisc360, from its releases on GitHub.'),
       hero, notes,
       S.update.how === 'docker' ? card('container', 'Updating the Docker image', null,
         h('p', { style: { margin: '0 0 10px' } }, 'In the folder with your docker-compose.yml:'),
@@ -1414,9 +1414,9 @@ Pages.settings = root => {
           h('button.btn.small.ghost', { title: 'Copy', onclick: () => navigator.clipboard.writeText('docker compose pull && docker compose up -d').then(() => toast('Copied')) }, ic('copy', 'sm'))),
         h('p.muted', { style: { margin: '10px 0 0', fontSize: '13px' } }, 'Your settings in /config and your games stay as they are.')) : null,
       card('settings', 'Update options', null,
-        row('Look for updates', S.update.checks ? 'NetDisc 360 asks GitHub every 12 hours. Nothing about you or your games is sent.' : 'This browser asks GitHub when you open the dashboard. Nothing about you or your games is sent.',
+        row('Look for updates', S.update.checks ? 'NetDisc360 asks GitHub every 12 hours. Nothing about you or your games is sent.' : 'This browser asks GitHub when you open the dashboard. Nothing about you or your games is sent.',
           toggle(st.updateCheck, (v, i) => flip('updateCheck', v, i, v ? 'Looking for updates' : 'Not looking for updates'))),
-        app ? row('Install updates by themselves', 'When no console is playing. Your settings are backed up first, and NetDisc 360 restarts in a few seconds.',
+        app ? row('Install updates by themselves', 'When no console is playing. Your settings are backed up first, and NetDisc360 restarts in a few seconds.',
           toggle(st.updateAuto, (v, i) => flip('updateAuto', v, i, v ? 'Updates install by themselves' : 'Updates wait for you'))) : null,
         row('Include test versions', 'Pre-releases, to try what\u2019s coming before everyone else. They may have rough edges.',
           toggle(st.updatePrerelease, async (v, i) => { await flip('updatePrerelease', v, i); store('update', null); load(false); }))));
@@ -1441,14 +1441,14 @@ Pages.settings = root => {
       let mark, title, text, actions = [], extra = null;
       if (u && u.installing) {
         const stage = { download: 'Downloading', check: 'Checking the download', restart: 'Restarting' }[u.stage] || 'Installing';
-        mark = ['loader-circle', 'k-xbox', true]; title = 'Installing NetDisc 360 ' + (latest ? latest.version : '');
+        mark = ['loader-circle', 'k-xbox', true]; title = 'Installing NetDisc360 ' + (latest ? latest.version : '');
         text = stage + (u.stage === 'download' && u.total ? ': ' + bytes(u.got, 1) + ' of ' + bytes(u.total, 1) : '\u2026');
         extra = h('div.progress' + (u.stage === 'download' && u.total ? '' : '.busy'), h('i', { style: u.total ? { width: Math.round(100 * u.got / u.total) + '%' } : null }));
-        if (u.stage === 'restart') awaitRestart('Updated to NetDisc 360 ' + (latest ? latest.version : ''));
+        if (u.stage === 'restart') awaitRestart('Updated to NetDisc360 ' + (latest ? latest.version : ''));
       } else if (!u || (busy && !u.checkedAt)) {
         mark = ['refresh-cw', 'k-info', true]; title = 'Checking for updates\u2026'; text = 'Asking GitHub for the newest release.';
       } else if (u.newer) {
-        mark = ['sparkles', 'k-xbox']; title = 'NetDisc 360 ' + latest.version + ' is out';
+        mark = ['sparkles', 'k-xbox']; title = 'NetDisc360 ' + latest.version + ' is out';
         text = 'You have ' + here + '.' + (latest.published ? ' Released ' + ago(Date.parse(latest.published) / 1000) + '.' : '') + (latest.prerelease ? ' It\u2019s a test version.' : '');
         if (app && latest.exe !== false) actions.push(h('button.btn.primary', { onclick: install }, ic('download', 'sm'), 'Install and restart'));
         else if (S.update.how !== 'docker') actions.push(h('a.btn.primary', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, ic('download', 'sm'), 'Download'));
@@ -1457,7 +1457,7 @@ Pages.settings = root => {
         mark = ['circle-alert', 'k-warning']; title = 'Couldn\u2019t check for updates'; text = u.error; actions.push(checkBtn());
       } else {
         mark = ['circle-check', 'k-good']; title = 'You\u2019re up to date';
-        text = 'NetDisc 360 ' + here + ' is the newest version' + (st.updatePrerelease ? ', test versions included.' : '.');
+        text = 'NetDisc360 ' + here + ' is the newest version' + (st.updatePrerelease ? ', test versions included.' : '.');
         actions.push(checkBtn());
       }
       if (u && u.installError && !u.installing) extra = h('div.notice', { style: { marginTop: '12px' } }, ic('triangle-alert'), h('span', 'The update wasn\u2019t installed: ' + u.installError));
@@ -1487,7 +1487,7 @@ Pages.settings = root => {
     const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ backupKeep: +e.target.value }, 'Keeping ' + e.target.value) },
       [...new Set([3, 5, 10, 20, 50, st.backupKeep])].sort((a, b) => a - b).map(n => h('option', { value: String(n), selected: n === st.backupKeep }, String(n))));
     fill(body,
-      head('Backups', 'NetDisc 360\u2019s settings and disc map, to bring back after a mistake or move to another computer. Never your games.'),
+      head('Backups', 'NetDisc360\u2019s settings and disc map, to bring back after a mistake or move to another computer. Never your games.'),
       h('div.card', h('div.hero', h('div.mark.k-good', ic('archive')),
         h('div.text', h('h3', 'Back up your settings'), h('p', 'Your game folders, consoles, Aurora login, dashboard password, chosen copies and disc map, in one small zip file.')),
         h('div.actions', h('button.btn.primary', { onclick: backupNow }, ic('archive', 'sm'), 'Back up now'), h('button.btn', { onclick: () => file.click() }, ic('upload', 'sm'), 'Restore from a file\u2026'), file))),
@@ -1498,7 +1498,7 @@ Pages.settings = root => {
     async function load() {
       try {
         const r = await api('backups');
-        if (!r.available) { fill(list, h('div.empty', ic('archive'), h('h3', 'Nothing to back up'), h('p', 'The settings aren\u2019t kept in a file. Start NetDisc 360 with --config to keep them, and to back them up.'))); return; }
+        if (!r.available) { fill(list, h('div.empty', ic('archive'), h('h3', 'Nothing to back up'), h('p', 'The settings aren\u2019t kept in a file. Start NetDisc360 with --config to keep them, and to back them up.'))); return; }
         fill(foot, 'Kept in ', h('code', r.folder));
         fill(list, r.backups.length ? r.backups.map(b => {
           const [label, icon, tone] = BackupKinds[b.kind] || BackupKinds.manual;
@@ -1530,7 +1530,7 @@ Pages.settings = root => {
       load();
     }
     function restoreFile(f) {
-      if (f.size > 180 * 1024) { toast('That file is too big to be NetDisc 360\u2019s settings.', true); return; }
+      if (f.size > 180 * 1024) { toast('That file is too big to be NetDisc360\u2019s settings.', true); return; }
       const reader = new FileReader();
       reader.onload = () => {
         const a = new Uint8Array(reader.result);
@@ -1546,12 +1546,12 @@ Pages.settings = root => {
   Parts.windows = () => {
     const st = S.settings;
     fill(body,
-      head('Windows', 'NetDisc 360 on this PC.'),
+      head('Windows', 'NetDisc360 on this PC.'),
       card('power', 'Starting', null,
-        row('Start with Windows', 'Starts NetDisc 360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))),
-        row('Restart NetDisc 360', 'Consoles playing a game lose their disc for a few seconds.', h('button.btn', { onclick: async () => {
-          if (S.consoles.some(c => c.playing) && !(await confirmBox('Restart while a game is running?', 'A console is playing a game from NetDisc 360. It loses its disc while NetDisc 360 restarts.', 'Restart'))) return;
-          try { await api('restart', {}); toast('Restarting\u2026'); awaitRestart('NetDisc 360 restarted'); } catch (e) { toast(e.message, true); }
+        row('Start with Windows', 'Starts NetDisc360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))),
+        row('Restart NetDisc360', 'Consoles playing a game lose their disc for a few seconds.', h('button.btn', { onclick: async () => {
+          if (S.consoles.some(c => c.playing) && !(await confirmBox('Restart while a game is running?', 'A console is playing a game from NetDisc360. It loses its disc while NetDisc360 restarts.', 'Restart'))) return;
+          try { await api('restart', {}); toast('Restarting\u2026'); awaitRestart('NetDisc360 restarted'); } catch (e) { toast(e.message, true); }
         } }, ic('rotate-ccw', 'sm'), 'Restart'))));
   };
 
@@ -1559,8 +1559,8 @@ Pages.settings = root => {
     const st = S.settings, f = S.files;
     fill(body,
       head('About', null),
-      h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc 360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
-        h('div.actions', h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc-360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
+      h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
+        h('div.actions', h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
       card('info', 'This copy', null, h('div.facts',
         h('div.k', 'Version'), h('div.v', S.version + ', built ' + S.built),
         h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : S.update.how === 'docker' ? 'Docker' : 'Linux'),
@@ -1569,7 +1569,7 @@ Pages.settings = root => {
         h('div.k', 'Settings'), h('div.v', f.settings ? h('code', f.settings) : 'Not saved: changes last until the server stops (start it with --config to keep them)'),
         f.discMap ? [h('div.k', 'Disc map'), h('div.v', h('code', f.discMap))] : null,
         f.backups ? [h('div.k', 'Backups'), h('div.v', h('code', f.backups))] : null,
-        h('div.k', 'License'), h('div.v', 'MIT. NetISO.xex is cOz\u2019s and comes with the NetISO kit, not with NetDisc 360.'))));
+        h('div.k', 'License'), h('div.v', 'MIT. NetISO.xex is cOz\u2019s and comes with the NetISO kit, not with NetDisc360.'))));
   };
 
   function choose() {
@@ -1611,7 +1611,7 @@ function showLogin() {
     catch (err) { fill(problem, err.message); password.select(); }
   };
   fill($('#app'), h('div.login', { style: { flex: 1 } }, h('form.card', { onsubmit: go },
-    mark(), h('h1', 'NetDisc 360'), h('p.muted', { style: { margin: '0 0 18px' } }, 'Enter the dashboard\u2019s password.'),
+    mark(), h('h1', 'NetDisc360'), h('p.muted', { style: { margin: '0 0 18px' } }, 'Enter the dashboard\u2019s password.'),
     password, problem, h('button.btn.primary', { type: 'submit', style: { width: '100%', marginTop: '6px' } }, 'Log in'))));
   password.focus();
 }

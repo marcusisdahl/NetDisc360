@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// The dashboard of NetDisc 360: a small web server for its page
+// The dashboard of NetDisc360: a small web server for its page
 // (web/index.html, built into web_page.h by tools/make_web.py) and the JSON
-// the page reads and sends, the same in NetDisc.exe and in Docker. The API
+// the page reads and sends, the same in NetDisc360.exe and in Docker. The API
 // itself (what /api/... answers) is in main.cpp.
 //
 // With a password, every /api/ request but logging in needs the cookie that

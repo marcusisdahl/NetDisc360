@@ -105,7 +105,7 @@ bool Newest(const std::string& json, bool prereleases, Release& out, std::string
     const web::Value* assets=best->Get("assets");
     for(size_t i=0;assets && assets->type==web::Value::Array && i<assets->items.size();++i) {
         const web::Value& a=assets->items[i];
-        if(a.type!=web::Value::Object || Lower(Text(a,"name"))!="netdisc.exe") continue;
+        if(a.type!=web::Value::Object || Lower(Text(a,"name"))!="netdisc360.exe") continue;
         out.exeUrl=Text(a,"browser_download_url");
         out.exeDigest=Lower(Text(a,"digest"));
         const web::Value* size=a.Get("size");
@@ -116,7 +116,7 @@ bool Newest(const std::string& json, bool prereleases, Release& out, std::string
 
 bool CheckExe(const std::string& data, const Release& r, std::string& error) {
     if(r.exeSize && (long long)data.size()!=r.exeSize) { error="The download was cut short; try again."; return false; }
-    if(r.exeDigest.empty()) { error="GitHub gave no checksum for the release's NetDisc.exe, so it wasn't installed."; return false; }
+    if(r.exeDigest.empty()) { error="GitHub gave no checksum for the release's NetDisc360.exe, so it wasn't installed."; return false; }
     if(r.exeDigest.compare(0,7,"sha256:") || web::Sha256Hex(data)!=r.exeDigest.substr(7)) {
         error="The download doesn't match the release's checksum, so it wasn't installed.";
         return false;
@@ -165,7 +165,7 @@ bool Fetch(const std::string& url, std::string& body, long long limit, Progress 
     parts.lpszUrlPath=path; parts.dwUrlPathLength=ARRAYSIZE(path);
     parts.lpszExtraInfo=extra; parts.dwExtraInfoLength=ARRAYSIZE(extra);
     if(!WinHttpCrackUrl(wide.c_str(),0,0,&parts) || parts.nScheme!=INTERNET_SCHEME_HTTPS) { error="Not an https address: "+url; return false; }
-    std::wstring agent=L"NetDisc-360/" + Wide(NETDISC_VERSION);
+    std::wstring agent=L"NetDisc360/" + Wide(NETDISC_VERSION);
     Handle session(WinHttpOpen(agent.c_str(),WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0));
     if(!session.h) session.h=WinHttpOpen(agent.c_str(),WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);  // Before Windows 8.1.
     if(!session.h) { error="Windows' HTTP client didn't start."; return false; }
@@ -185,8 +185,8 @@ bool Fetch(const std::string& url, std::string& body, long long limit, Progress 
     WinHttpQueryHeaders(request.h,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX);
     if(status!=200) {
         char text[160];
-        if(status==404) _snprintf_s(text,sizeof(text),_TRUNCATE,"GitHub has no releases of NetDisc 360 to show (404).");
-        else if(status==403 || status==429) _snprintf_s(text,sizeof(text),_TRUNCATE,"GitHub is limiting checks from this network right now (%lu); NetDisc 360 tries again later.",status);
+        if(status==404) _snprintf_s(text,sizeof(text),_TRUNCATE,"GitHub has no releases of NetDisc360 to show (404).");
+        else if(status==403 || status==429) _snprintf_s(text,sizeof(text),_TRUNCATE,"GitHub is limiting checks from this network right now (%lu); NetDisc360 tries again later.",status);
         else _snprintf_s(text,sizeof(text),_TRUNCATE,"GitHub answered with status %lu.",status);
         error=text;
         return false;

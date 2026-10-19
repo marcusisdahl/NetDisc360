@@ -1,4 +1,4 @@
-# How NetDisc 360 works
+# How NetDisc360 works
 
 What happens on the console when you pick a game, and what `NetIsoTiles.xex` changes in the NetISO plugin. For setting it up, see the [README](../README.md).
 
@@ -35,13 +35,13 @@ If the console still heads for the dashboard within 30 s of a swap, the plugin s
 
 ## Read speed
 
-`NetISO.xex` 1.0 splits every disc read into 4 KB requests and sends the next only when the last one's data is in, so each 4 KB costs a round trip (about 0.6 ms through a USB adapter). It receives straight into the caller's buffer, so the limit is only a constant: at start-up, before NetISO has a disc to read, `NetIsoTiles.xex` rewrites the three instructions that clamp a request to 4 KB to clamp it to `read_kb` instead. NetDisc 360 answers a request of up to 16 MB in one go.
+`NetISO.xex` 1.0 splits every disc read into 4 KB requests and sends the next only when the last one's data is in, so each 4 KB costs a round trip (about 0.6 ms through a USB adapter). It receives straight into the caller's buffer, so the limit is only a constant: at start-up, before NetISO has a disc to read, `NetIsoTiles.xex` rewrites the three instructions that clamp a request to 4 KB to clamp it to `read_kb` instead. NetDisc360 answers a request of up to 16 MB in one go.
 
 NetISO sets one option on its socket before connecting and leaves the receive buffer at XNet's default, which caps how much the server can have in flight. The plugin points that one `setsockopt` call at its own function, which also asks for `rcv_kb` KB with `SO_RCVBUF` on each connection NetISO makes. Both patches check NetISO 1.0's code first, like the Guide fix.
 
 ## Logs
 
-Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc 360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
+Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
 
 ## Troubleshooting switches
 

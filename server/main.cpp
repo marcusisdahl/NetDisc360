@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// NetDisc 360, a NetISO server for Aurora: one program in place of
+// NetDisc360, a NetISO server for Aurora: one program in place of
 // netiso-srv. It serves the games in folders (and their subfolders) to the
 // NetISO plugin, noticing new ones without a restart, and keeps the console's
 // Hdd1:\NetISO game folders in step with them over Aurora's FTP server, with
@@ -86,7 +86,7 @@ struct Options {
     // hand), keeping the newest so many but those made by hand.
     int backupEvery, backupKeep;
     // Updates (UpdateLoop): whether to look for them, install them by
-    // themselves (NetDisc.exe), and count test versions (pre-releases) too.
+    // themselves (NetDisc360.exe), and count test versions (pre-releases) too.
     bool updateCheck, updateAuto, updatePrerelease;
     std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
@@ -102,7 +102,7 @@ Options Current() { std::lock_guard<std::mutex> hold(SettingsLock); return Setti
 
 std::vector<unsigned char> Launcher, Boot;
 bool CanPush;         // A launcher is built in (or given), so game folders can be written.
-bool InTray;          // NetDisc.exe behind its notification-area icon (tray.cpp).
+bool InTray;          // NetDisc360.exe behind its notification-area icon (tray.cpp).
 bool PasswordFixed;   // The dashboard's password comes from NETDISC_WEB_PASSWORD.
 bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated by pulling it.
 double StartedAt;
@@ -937,6 +937,8 @@ const char FilterNetIsoBefore[] =  // As servers before the install disc filter 
     "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
     "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
     "end";
+// The server knows its own edit by these exact words, so they keep the name
+// as it was then ("NetDisc 360").
 const char FilterNetIso[] =
     "function GameListFilterXbox360(Content)\n"
     "   -- Add only legit xbox 360 games\n"
@@ -1051,7 +1053,7 @@ std::string InstallFilter() {
     }
     if(discs.empty()) return std::string();
     std::string text=
-        "-- Written by NetDisc 360, which keeps it up to date: the install discs\r\n"
+        "-- Written by NetDisc360, which keeps it up to date: the install discs\r\n"
         "-- and content discs of its games, by Title ID and Media ID. Each is\r\n"
         "-- started from its game's tile, which offers the install, so this filter\r\n"
         "-- hides their own tiles. Aurora's Xbox 360 category leaves them out too.\r\n"
@@ -1710,7 +1712,7 @@ UpdateStatus Updates;
 std::mutex UpdateLock;
 std::atomic<bool> CheckSoon(false);  // UpdateLoop checks within seconds.
 
-// How this copy is updated: app (NetDisc.exe installs it), docker (pull the
+// How this copy is updated: app (NetDisc360.exe installs it), docker (pull the
 // image) or manual (download it, or build it, by hand).
 const char* UpdateHow() {
 #ifdef _WIN32
@@ -1744,7 +1746,7 @@ void State(web::Reply& out) {
     std::vector<KnownConsole> known;
     { std::lock_guard<std::mutex> hold(SettingsLock); o=Settings; known=Known; }
     web::Json j;
-    j.Open('{').Set("name","NetDisc 360").Set("version",NETDISC_VERSION).Set("built",__DATE__ " " __TIME__);
+    j.Open('{').Set("name","NetDisc360").Set("version",NETDISC_VERSION).Set("built",__DATE__ " " __TIME__);
 #ifdef _WIN32
     j.Set("platform","windows");
 #else
@@ -2131,7 +2133,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(!error.empty()) return false;
     Bool(v,"updateCheck",next.updateCheck);
     if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
-        error=InDocker ? "The Docker image is updated by pulling the new one, not by itself." : "Only NetDisc.exe in the notification area installs updates by itself.";
+        error=InDocker ? "The Docker image is updated by pulling the new one, not by itself." : "Only NetDisc360.exe in the notification area installs updates by itself.";
         return false;
     }
     Bool(v,"updatePrerelease",next.updatePrerelease);
@@ -2231,7 +2233,7 @@ std::string BackupFolder(const Options& o) { return o.configPath.empty() ? std::
 // A backup of the settings file and the disc map as they are now.
 bool MakeBackup(const char* kind, std::string& name, std::string& error, const std::string& spare = std::string()) {
     Options o=Current();
-    if(o.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so there's nothing to back up."; return false; }
+    if(o.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc360 with --config), so there's nothing to back up."; return false; }
     Save();
     std::map<std::string,std::string> files;
     std::string text;
@@ -2320,7 +2322,7 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
     backup::Info info;
     if(!backup::Open(data,files,info,error)) return false;
     Options now=Current();
-    if(now.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc 360 with --config), so a backup can't be restored."; return false; }
+    if(now.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc360 with --config), so a backup can't be restored."; return false; }
     std::string undo;
     if(!MakeBackup("restore",undo,error,from)) { error="The settings now couldn't be backed up first, so nothing was restored. "+error; return false; }
     config::File f;
@@ -2360,7 +2362,7 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
         if(known) strftime(made,sizeof(made),"%Y-%m-%d %H:%M",&local);  // A time out of range would end the program on Windows.
     }
     Log("Settings restored from a backup%s%s%s; the settings before are in %s.",*made ? " made " : "",made,
-        info.version.empty() ? "" : (" by NetDisc 360 "+info.version).c_str(),config::FromUtf8(undo).c_str());
+        info.version.empty() ? "" : (" by NetDisc360 "+info.version).c_str(),config::FromUtf8(undo).c_str());
     for(size_t i=0;i<notes.size();++i) Log("  %s",config::FromUtf8(notes[i]).c_str());
     Event(EventInfo,"Settings restored from a backup%s%s",*made ? " made " : "",made);
     return true;
@@ -2426,10 +2428,10 @@ bool CheckForUpdate(std::string& error) {
     }
     if(!ok) Log("Update check: %s",error.c_str());
     if(!tell.empty()) {
-        Log("NetDisc 360 %s is out (this is %s): %s",tell.c_str(),NETDISC_VERSION,r.page.c_str());
-        Event(EventInfo,"NetDisc 360 %s is out; see what's new under Settings, Updates",tell.c_str());
+        Log("NetDisc360 %s is out (this is %s): %s",tell.c_str(),NETDISC_VERSION,r.page.c_str());
+        Event(EventInfo,"NetDisc360 %s is out; see what's new under Settings, Updates",tell.c_str());
 #ifdef _WIN32
-        if(InTray && !o.updateAuto) Notify("NetDisc 360 "+tell+" is out","Click here to see what's new and install it.","#settings/updates",false);
+        if(InTray && !o.updateAuto) Notify("NetDisc360 "+tell+" is out","Click here to see what's new and install it.","#settings/updates",false);
 #endif
     }
     return ok;
@@ -2447,7 +2449,7 @@ bool ConsolesBusy() {
     return false;
 }
 
-// Downloads the newest release's NetDisc.exe, checks it, backs up the
+// Downloads the newest release's NetDisc360.exe, checks it, backs up the
 // settings and puts it in place of this exe, which then restarts as it. One
 // installing by itself (automatic) leaves it should a console start a game.
 void InstallUpdate(bool automatic) {
@@ -2456,10 +2458,10 @@ void InstallUpdate(bool automatic) {
     update::Release r;
     bool ok=FetchReleases(o,body,error) && update::Newest(body,o.updatePrerelease,r,error);
     if(ok && update::Compare(r.version,NETDISC_VERSION)<=0) { ok=false; error="This is the newest version already."; }
-    if(ok && r.exeUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc.exe to install; download it from GitHub."; }
-    if(ok && o.releasesFile.empty() && !update::FromRepo(r.exeUrl)) { ok=false; error="Release "+r.tag+"'s NetDisc.exe isn't on "+NETDISC_REPO+"'s releases, so it wasn't installed."; }
+    if(ok && r.exeUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc360.exe to install; download it from GitHub."; }
+    if(ok && o.releasesFile.empty() && !update::FromRepo(r.exeUrl)) { ok=false; error="Release "+r.tag+"'s NetDisc360.exe isn't on "+NETDISC_REPO+"'s releases, so it wasn't installed."; }
     if(ok) {
-        Log("Downloading NetDisc 360 %s: %s",r.version.c_str(),r.exeUrl.c_str());
+        Log("Downloading NetDisc360 %s: %s",r.version.c_str(),r.exeUrl.c_str());
         ok=update::Fetch(r.exeUrl,exe,256<<20,DownloadProgress,error);
     }
     if(ok) {
@@ -2477,8 +2479,8 @@ void InstallUpdate(bool automatic) {
     if(ok) {
         { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; UpdateTo=r.version; }
         Save();
-        Log("Installing NetDisc 360 %s in place of %s; it restarts.",r.version.c_str(),NETDISC_VERSION);
-        Event(EventInfo,"Installing NetDisc 360 %s; it restarts in a moment",r.version.c_str());
+        Log("Installing NetDisc360 %s in place of %s; it restarts.",r.version.c_str(),NETDISC_VERSION);
+        Event(EventInfo,"Installing NetDisc360 %s; it restarts in a moment",r.version.c_str());
         ok=InstallExe(exe,error);
         if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); UpdateTo.clear(); } Save(); }
     }
@@ -2688,7 +2690,7 @@ bool BuiltIn(int id, std::vector<unsigned char>& out) {
 
 void Usage() {
     printf(
-        "NetDisc 360, a NetISO server for Aurora. Serves the games in folders and their\n"
+        "NetDisc360, a NetISO server for Aurora. Serves the games in folders and their\n"
         "subfolders to the NetISO plugin, and keeps the Xbox's game folders for Aurora in\n"
         "step with them. Its dashboard is a web page: http://127.0.0.1:8360 by default.\n"
         "Games can be ISOs, extracted to a folder (default.xex at the top; a \"Disc 2\"\n"
@@ -2777,7 +2779,7 @@ std::string SessionSecret(const Options& o) {
     std::string path=config::FolderOf(o.configPath)+"session.key", secret;
     if(config::ReadFile(path,secret,256) && secret.size()>=32) return secret;
     secret=web::NewSecret();
-    if(!config::WriteFile(path,secret,true)) Log("Couldn't write %s; logins last until NetDisc 360 restarts.",config::FromUtf8(path).c_str());
+    if(!config::WriteFile(path,secret,true)) Log("Couldn't write %s; logins last until NetDisc360 restarts.",config::FromUtf8(path).c_str());
     return secret;
 }
 
@@ -2799,11 +2801,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         if(*password) { web::SetPasswordHash(web::HashPassword(password)); PasswordFixed=true; }
     }
 #ifdef _WIN32
-    SetConsoleTitleA("NetDisc 360");
+    SetConsoleTitleA("NetDisc360");
     WSADATA wsa;
     if(WSAStartup(MAKEWORD(2,2),&wsa)) { fprintf(stderr,"Winsock didn't start.\n"); return 1; }
 #endif
-    Log("NetDisc 360 %s, built %s %s.",NETDISC_VERSION,__DATE__,__TIME__);
+    Log("NetDisc360 %s, built %s %s.",NETDISC_VERSION,__DATE__,__TIME__);
     if(!o.configPath.empty()) Log("Settings: %s",config::FromUtf8(o.configPath).c_str());
     if(!o.configPath.empty()) Log("Disc map: %s",config::FromUtf8(DiscMapPath(o.configPath)).c_str());
 
@@ -2834,11 +2836,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     if(fresh || !updatedFrom.empty()) Save();
     web::SetSessionSecret(SessionSecret(o));
     if(!updatedFrom.empty() && updatedFrom!=NETDISC_VERSION) {
-        Log("Updated from NetDisc 360 %s to %s.",updatedFrom.c_str(),NETDISC_VERSION);
-        Event(EventGood,"Updated to NetDisc 360 %s (from %s)",NETDISC_VERSION,updatedFrom.c_str());
+        Log("Updated from NetDisc360 %s to %s.",updatedFrom.c_str(),NETDISC_VERSION);
+        Event(EventGood,"Updated to NetDisc360 %s (from %s)",NETDISC_VERSION,updatedFrom.c_str());
     } else if(!updateTo.empty()) {
-        Log("NetDisc 360 %s didn't start after the update, so %s was put back. It won't install %s by itself.",updateTo.c_str(),NETDISC_VERSION,updateTo.c_str());
-        Event(EventWarning,"NetDisc 360 %s didn't start, so %s was put back; it won't install that version by itself",updateTo.c_str(),NETDISC_VERSION);
+        Log("NetDisc360 %s didn't start after the update, so %s was put back. It won't install %s by itself.",updateTo.c_str(),NETDISC_VERSION,updateTo.c_str());
+        Event(EventWarning,"NetDisc360 %s didn't start, so %s was put back; it won't install that version by itself",updateTo.c_str(),NETDISC_VERSION);
     }
 
     std::string where;

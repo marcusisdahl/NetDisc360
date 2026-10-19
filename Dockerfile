@@ -1,5 +1,5 @@
-# NetDisc 360 (a NetISO server for Aurora), for Linux, a NAS or anything else
-# that runs Docker. The same server as NetDisc.exe, built from server/ and shared/ for
+# NetDisc360 (a NetISO server for Aurora), for Linux, a NAS or anything else
+# that runs Docker. The same server as NetDisc360.exe, built from server/ and shared/ for
 # Linux. The game launchers it writes to the Xbox are Xbox programs built with
 # the Xbox 360 SDK on Windows, so they come from the release's NetISO-Sync.zip
 # (or from docker/launcher/, when default.xex and boot.xex are put there).
@@ -19,7 +19,7 @@ RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc 
         server/backup.cpp server/update.cpp \
         shared/library.cpp shared/isvr.cpp
 
-ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc-360/releases/latest/download/NetISO-Sync.zip
+ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
 # 1: fail the build without launchers (for the published image).
 ARG REQUIRE_LAUNCHER=0
 COPY docker/launcher/ /launcher/

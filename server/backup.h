@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// Backups of NetDisc 360's settings: netdisc.ini and the disc map
+// Backups of NetDisc360's settings: netdisc.ini and the disc map
 // (discs.ini), never the games. Each is a zip in the Backups folder next to
 // the settings file, with backup.ini saying what made it:
 //
@@ -10,7 +10,7 @@
 //     discs.ini     when there is one
 //
 // The files are a few KB, so the zips are stored, not compressed, and only
-// stored zips are read back: NetDisc 360's own, as they were downloaded. A
+// stored zips are read back: NetDisc360's own, as they were downloaded. A
 // netdisc.ini by itself can be restored too.
 #include <map>
 #include <string>
@@ -31,7 +31,7 @@ bool Make(const std::string& folder, const std::string& kind, const std::map<std
 // The backups in folder, newest first.
 std::vector<Info> List(const std::string& folder);
 // The files of a backup (or of a netdisc.ini by itself), after checking it
-// holds NetDisc 360's settings; info gets what its backup.ini says.
+// holds NetDisc360's settings; info gets what its backup.ini says.
 bool Open(const std::string& data, std::map<std::string,std::string>& files, Info& info, std::string& error);
 // Deletes the oldest backups beyond keep, but never manual ones nor the one
 // named spare (being restored); returns how many.

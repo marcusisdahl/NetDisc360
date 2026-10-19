@@ -843,14 +843,14 @@ class Push(ServerTest):
         path = os.path.join(self.tmp.name, "discs.ini")
         with open(path, newline="") as f:
             map_text = f.read()
-        self.assertIn("\r\n[545408A7]\r\n; From NetDisc 360's list of known games.\r\nname=Grand Theft Auto V\r\n"
+        self.assertIn("\r\n[545408A7]\r\n; From NetDisc360's list of known games.\r\nname=Grand Theft Auto V\r\n"
                       "disc1=install\r\ndisc2=play\r\n", map_text)
-        self.assertIn("[5454082B]\r\n; From NetDisc 360's list of known games.\r\n"
+        self.assertIn("[5454082B]\r\n; From NetDisc360's list of known games.\r\n"
                       "name=Red Dead Redemption: Game of the Year Edition\r\n"
                       "disc1=own Red Dead Redemption\r\ndisc2=own Undead Nightmare\r\n", map_text)
-        self.assertIn("[12340001]\r\n; NetDisc 360's guess from the discs it found; change it if it's wrong.\r\n"
+        self.assertIn("[12340001]\r\n; NetDisc360's guess from the discs it found; change it if it's wrong.\r\n"
                       "name=Saga - Disc 1\r\ndisc1=next\r\ndisc2=next\r\ndisc3=next\r\n", map_text)
-        self.assertIn("[425307F5]\r\n; From NetDisc 360's list of known games.\r\nname=Wolfenstein: The New Order\r\n"
+        self.assertIn("[425307F5]\r\n; From NetDisc360's list of known games.\r\nname=Wolfenstein: The New Order\r\n"
                       "disc1=install\r\ndisc2=next\r\ndisc3=next\r\ndisc4=next\r\n", map_text)
         self.assertNotIn("4D5307E6", map_text)
         self.assertNotIn("425307D5", map_text)
@@ -956,7 +956,7 @@ class Dashboard(ServerTest):
         self.assertEqual(status, 200)
         self.assertEqual(response.getheader("Content-Encoding"), "gzip")
         self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
-        self.assertIn(b"<title>NetDisc 360</title>", gzip.decompress(data))
+        self.assertIn(b"<title>NetDisc360</title>", gzip.decompress(data))
         state = self.state_when(lambda s: s["library"]["games"] == 1)
         self.assertEqual(state["library"]["games"], 1)
         self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True}])
@@ -1181,7 +1181,7 @@ class Dashboard(ServerTest):
         squeezed = io.BytesIO()
         with zipfile.ZipFile(squeezed, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("netdisc.ini", "[Server]\nxbox=192.168.1.99\n")
-        for wrong, why in [(b"hello", "isn't a NetDisc 360 backup"), (squeezed.getvalue(), "compressed"), (data[:-30], "zip")]:
+        for wrong, why in [(b"hello", "isn't a NetDisc360 backup"), (squeezed.getvalue(), "compressed"), (data[:-30], "zip")]:
             status, _, answer = self.call("POST", "/api/restore", {"file": base64.b64encode(wrong).decode()})
             self.assertEqual(status, 400)
             self.assertIn(why, json.loads(answer)["error"])
@@ -1220,7 +1220,7 @@ class Dashboard(ServerTest):
         def release(tag, prerelease=False, draft=False):
             return {"tag_name": tag, "name": tag, "body": "## New\n- Things", "html_url": "https://example.com/" + tag,
                     "published_at": "2026-10-18T10:00:00Z", "draft": draft, "prerelease": prerelease,
-                    "assets": [{"name": "NetDisc.exe", "size": 1234, "browser_download_url": "https://example.com/NetDisc.exe",
+                    "assets": [{"name": "NetDisc360.exe", "size": 1234, "browser_download_url": "https://example.com/NetDisc360.exe",
                                 "digest": "sha256:" + "0" * 64}]}
         with open(releases, "w") as f:
             json.dump([release("v99.1.0-beta.2", prerelease=True), release("v99.9.0"), release("v99.10.0"),
@@ -1239,7 +1239,7 @@ class Dashboard(ServerTest):
         with open(releases, "w") as f:
             json.dump([release("v99.11.0-rc.1", prerelease=True), release("v99.10.0")], f)
         self.assertEqual(self.json("POST", "/api/update/check", {})["update"]["latest"]["version"], "99.11.0-rc.1")
-        # Here (not NetDisc.exe in the notification area) it's updated by hand.
+        # Here (not NetDisc360.exe in the notification area) it's updated by hand.
         status, _, data = self.call("POST", "/api/update/install", {})
         self.assertEqual(status, 400)
         self.assertIn("by hand", json.loads(data)["error"])

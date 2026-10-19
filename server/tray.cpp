@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-// NetDisc.exe (NetDisc 360) on Windows. Started with no options (from
+// NetDisc360.exe on Windows. Started with no options (from
 // Explorer, a shortcut, or at sign-in with --tray), it runs the server behind
 // an icon in the notification area and opens the dashboard, the web page the
 // server serves (web.cpp), in the browser. Clicking the icon opens it again;
 // its menu has "Start with Windows" and Quit. The settings are kept in
-// %APPDATA%\NetDisc 360\netdisc.ini (the FTP password encrypted for this
+// %APPDATA%\NetDisc360\netdisc.ini (the FTP password encrypted for this
 // Windows user).
 //
 // Started with options, the exe is the command-line server; this file then
@@ -31,13 +31,14 @@
 #pragma comment(lib, "user32.lib")
 
 namespace {
-const wchar_t AppName[] = L"NetDisc 360";
+const wchar_t AppName[] = L"NetDisc360";
 const wchar_t WindowClass[] = L"NetDisc360Tray";
-// The names before NetDisc 360: its settings and "Start with Windows" carry over.
-const wchar_t OldName[] = L"NetISO for Aurora";
-const wchar_t OldRunValue[] = L"NetISO server for Aurora";
+// The names before NetDisc360: its settings and "Start with Windows" carry over.
+const wchar_t OldFolder[] = L"NetDisc 360";
+const wchar_t OldestFolder[] = L"NetISO for Aurora";
+const wchar_t* const OldRunValues[] = {L"NetDisc 360", L"NetISO server for Aurora"};
 const wchar_t RunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t RunValue[] = L"NetDisc 360";
+const wchar_t RunValue[] = L"NetDisc360";
 const int IconId = 1;  // server.rc
 enum { WM_TRAY = WM_APP + 1, WM_READY, WM_STOPPED, WM_SHOWDASHBOARD, WM_NOTE, WM_RESTARTING };
 enum { IdOpen = 200, IdBoot, IdQuit, TipTimer = 1, QuitTimer = 2, OldTimer = 3 };
@@ -83,19 +84,38 @@ std::wstring ExeFolder() {
     return at == std::wstring::npos ? L"." : path.substr(0, at);
 }
 
-// %APPDATA%\NetDisc 360\netdisc.ini, copied from the old name's folder the first time.
+// Copies a folder with everything in it, leaving files already there alone.
+void CopyFolder(const std::wstring& from, const std::wstring& to) {
+    CreateDirectoryW(to.c_str(), NULL);
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileW((from + L"\\*").c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        std::wstring name = found.cFileName;
+        if (name == L"." || name == L"..") continue;
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) CopyFolder(from + L"\\" + name, to + L"\\" + name);
+        else CopyFileW((from + L"\\" + name).c_str(), (to + L"\\" + name).c_str(), TRUE);
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
+}
+
+// %APPDATA%\NetDisc360\netdisc.ini. The first time, the folder of the name
+// before is copied over whole (the disc map, backups and login key too), or
+// else the oldest name's settings file. The old folder stays as it was.
 std::wstring IniPath() {
     PWSTR roaming = NULL;
-    std::wstring folder;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &roaming))) folder = roaming;
+    std::wstring base;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &roaming))) base = roaming;
     CoTaskMemFree(roaming);
-    if (folder.empty()) folder = ExeFolder();
-    std::wstring old = folder + L"\\" + OldName + L"\\netiso-server.ini";
-    folder += L"\\";
-    folder += AppName;
+    if (base.empty()) base = ExeFolder();
+    base += L"\\";
+    std::wstring folder = base + AppName, ini = folder + L"\\netdisc.ini";
+    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW((base + OldFolder + L"\\netdisc.ini").c_str()) != INVALID_FILE_ATTRIBUTES)
+        CopyFolder(base + OldFolder, folder);
     CreateDirectoryW(folder.c_str(), NULL);
-    std::wstring ini = folder + L"\\netdisc.ini";
-    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) CopyFileW(old.c_str(), ini.c_str(), TRUE);
+    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES)
+        CopyFileW((base + OldestFolder + L"\\netiso-server.ini").c_str(), ini.c_str(), TRUE);
     return ini;
 }
 
@@ -177,7 +197,7 @@ void Menu(int x, int y) {
     AppendMenuW(menu, MF_STRING, IdOpen, L"Open the dashboard");
     AppendMenuW(menu, MF_STRING | (StartsWithWindows() ? MF_CHECKED : 0), IdBoot, L"Start with Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(menu, MF_STRING, IdQuit, L"Quit NetDisc 360");
+    AppendMenuW(menu, MF_STRING, IdQuit, L"Quit NetDisc360");
     SetMenuDefaultItem(menu, IdOpen, FALSE);
     SetForegroundWindow(Window);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, x, y, 0, Window, NULL);
@@ -225,7 +245,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
             if (OpenWhenReady) OpenDashboard();
             OpenWhenReady = false;
             if (FirstTrayStart())
-                Balloon(L"NetDisc 360 is serving your games",
+                Balloon(L"NetDisc360 is serving your games",
                         L"It runs here in the notification area. Click the icon to open the dashboard, or right-click it to quit.");
         } else {
             std::wstring text = L"The dashboard couldn't start: " + Wide(ready->problem, CP_ACP) + L"\n\nThe server itself runs.";
@@ -245,7 +265,7 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         SetTimer(Window, QuitTimer, 1500, NULL);
         return 0;
     case WM_STOPPED: {
-        std::wstring text = L"NetDisc 360 couldn't start.\n\n" + Wide(ServerProblem(), CP_ACP);
+        std::wstring text = L"NetDisc360 couldn't start.\n\n" + Wide(ServerProblem(), CP_ACP);
         MessageBoxW(NULL, text.c_str(), AppName, MB_ICONERROR);
         Quit();
         return 0;
@@ -298,7 +318,7 @@ namespace {
 // starts that (the exe an update replaced) to put itself back should the new
 // one not get its dashboard up (see WatchUpdate).
 bool StartAgain(const std::wstring& exe, const std::wstring& watcher, std::string& error) {
-    if (InterlockedCompareExchange(&Restarting, 1, 0)) { error = "NetDisc 360 is restarting already."; return false; }
+    if (InterlockedCompareExchange(&Restarting, 1, 0)) { error = "NetDisc360 is restarting already."; return false; }
     wchar_t pid[16];
     _snwprintf_s(pid, ARRAYSIZE(pid), _TRUNCATE, L"%lu", GetCurrentProcessId());
     std::wstring command = L"\"" + exe + L"\" --tray --restarted " + pid;
@@ -307,7 +327,7 @@ bool StartAgain(const std::wstring& exe, const std::wstring& watcher, std::strin
     // With a watcher, the new one waits until that has hold of it, so it can't end unseen.
     if (!CreateProcessW(exe.c_str(), &command[0], NULL, NULL, FALSE, watcher.empty() ? 0 : CREATE_SUSPENDED, NULL, NULL, &startup, &process)) {
         char text[96];
-        _snprintf_s(text, sizeof(text), _TRUNCATE, "NetDisc 360 couldn't start again (error %lu).", GetLastError());
+        _snprintf_s(text, sizeof(text), _TRUNCATE, "NetDisc360 couldn't start again (error %lu).", GetLastError());
         error = text;
         InterlockedExchange(&Restarting, 0);
         return false;
@@ -382,19 +402,20 @@ bool InstallExe(const std::string& data, std::string& error) {
     if (file != INVALID_HANDLE_VALUE) ok = CloseHandle(file) && ok;
     if (!ok) {
         DeleteFileW(fresh.c_str());
-        error = "NetDisc 360 can't write in " + folder + ". Download the new version from GitHub and put it there yourself.";
+        error = "NetDisc360 can't write in " + folder + ". Download the new version from GitHub and put it there yourself.";
         return false;
     }
     if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(fresh.c_str());
-        error = "NetDisc 360 couldn't move itself aside in " + folder + ". Download the new version from GitHub and put it there yourself.";
+        error = "NetDisc360 couldn't move itself aside in " + folder + ". Download the new version from GitHub and put it there yourself.";
         return false;
     }
     if (!MoveFileExW(fresh.c_str(), exe.c_str(), MOVEFILE_WRITE_THROUGH)) {
         bool back = MoveFileExW(old.c_str(), exe.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
         DeleteFileW(fresh.c_str());
-        error = "The new version couldn't take NetDisc 360's place in " + folder + ".";
-        if (!back) error += " This version is there as NetDisc.exe.old; rename it back to NetDisc.exe.";
+        error = "The new version couldn't take NetDisc360's place in " + folder + ".";
+        std::string name = Narrow(exe.substr(exe.find_last_of(L"\\/") + 1), CP_UTF8);
+        if (!back) error += " This version is there as " + name + ".old; rename it back to " + name + ".";
         return false;
     }
     if (StartAgain(exe, old, error)) return true;
@@ -452,11 +473,13 @@ int TrayMain(int argc, char** argv) {
     // exe can simply be put in the folder with them. Run from the Desktop or
     // Downloads, it starts with no folders, which the dashboard asks for.
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES && HasGames(ExeFolder(), 3)) args.push_back(Narrow(ExeFolder(), CP_ACP));
-    wchar_t old[MAX_PATH * 4];
-    DWORD oldSize = sizeof(old);
-    if (RegGetValueW(HKEY_CURRENT_USER, RunKey, OldRunValue, RRF_RT_REG_SZ, NULL, old, &oldSize) == ERROR_SUCCESS) {
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, RunKey, OldRunValue);
-        SetStartWithWindows(true);
+    for (size_t i = 0; i < ARRAYSIZE(OldRunValues); ++i) {
+        wchar_t old[MAX_PATH * 4];
+        DWORD oldSize = sizeof(old);
+        if (RegGetValueW(HKEY_CURRENT_USER, RunKey, OldRunValues[i], RRF_RT_REG_SZ, NULL, old, &oldSize) == ERROR_SUCCESS) {
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, RunKey, OldRunValues[i]);
+            SetStartWithWindows(true);
+        }
     }
     // Keep "Start with Windows" pointing at this exe if it was moved.
     std::wstring entry = StartupEntry();

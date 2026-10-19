@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// NetDisc 360's settings file (--config; on Windows %APPDATA%\NetDisc
+// NetDisc360's settings file (--config; on Windows %APPDATA%\NetDisc
 // 360\netdisc.ini): "key=value" lines under [Server], kept in UTF-8. The
 // window before the dashboard wrote the same file in UTF-16, which is read too.
 //

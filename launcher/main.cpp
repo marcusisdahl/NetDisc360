@@ -446,7 +446,7 @@ static Result WaitForServer(const char* ini) {
     char line0[128],line2[128];
     _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
     _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
-    return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc 360 on the PC, and check that the PC and the Xbox",line2);
+    return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc360 on the PC, and check that the PC and the Xbox",line2);
 }
 
 // stop_after= in netiso.ini stops short of the mount and goes back to
@@ -686,7 +686,7 @@ static void StartDisc(const char* ini) {
 
 // ---- Install discs ----
 
-// install.ini, which NetDisc 360 writes next to netiso.ini when the game's
+// install.ini, which NetDisc360 writes next to netiso.ini when the game's
 // install disc is another of the server's discs: that disc, and the packages
 // it puts under Content. GTA V's play disc froze at "Loading story mode"
 // without them (seen on the console); Forza 4 plays without its car packs.
@@ -777,7 +777,7 @@ static InstallChoice AskToInstall(const char* game,const Install& install) {
 static void LaunchGame(const char* ini) {
     Settings settings;
     if(!ReadSettings(ini,settings)) {
-        Fail(nia::StepServer,false,"This game's netiso.ini is incomplete","It needs iso= and title_id= lines.","Let NetDisc 360 or NetISO Sync write the folder again.");
+        Fail(nia::StepServer,false,"This game's netiso.ini is incomplete","It needs iso= and title_id= lines.","Let NetDisc360 or NetISO Sync write the folder again.");
         ShowProblem();
         return;
     }

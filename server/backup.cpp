@@ -50,7 +50,7 @@ std::string Lower(std::string text) {
     return text;
 }
 
-// Keys only NetDisc 360's settings file has, to tell it from any other ini.
+// Keys only NetDisc360's settings file has, to tell it from any other ini.
 bool Settings(const std::string& text) {
     config::File f;
     f.Read(text);
@@ -123,7 +123,7 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
         at+=46+nameLength+extra+comment;
         if(!name.empty() && name[name.size()-1]=='/') continue;  // A folder.
         if(method!=0) {
-            error="Its files are compressed, which NetDisc 360's backups never are. Restore the backup as it was downloaded, or choose its netdisc.ini by itself.";
+            error="Its files are compressed, which NetDisc360's backups never are. Restore the backup as it was downloaded, or choose its netdisc.ini by itself.";
             return false;
         }
         if(size_t(local)+30>data.size() || Get32(data,local)!=0x04034B50) { error="The zip file is damaged."; return false; }
@@ -143,7 +143,7 @@ bool Make(const std::string& folder, const std::string& kind, const std::map<std
     long long now=(long long)time(NULL);
     std::map<std::string,std::string> all=files;
     char about[256];
-    _snprintf_s(about,sizeof(about),_TRUNCATE,"[Backup]\napp=NetDisc 360\nversion=%s\nplatform=%s\nkind=%s\ntime=%lld\n",
+    _snprintf_s(about,sizeof(about),_TRUNCATE,"[Backup]\napp=NetDisc360\nversion=%s\nplatform=%s\nkind=%s\ntime=%lld\n",
                 NETDISC_VERSION,Platform(),kind.c_str(),now);
     all["backup.ini"]=about;
     struct tm t=Local(now);
@@ -181,14 +181,14 @@ bool Open(const std::string& data, std::map<std::string,std::string>& files, Inf
         for(std::map<std::string,std::string>::iterator f=files.begin();f!=files.end();)
             if(f->first!="netdisc.ini" && f->first!="discs.ini") files.erase(f++);
             else ++f;
-        if(!files.count("netdisc.ini")) { error="This zip has no netdisc.ini, so it isn't a NetDisc 360 backup."; return false; }
+        if(!files.count("netdisc.ini")) { error="This zip has no netdisc.ini, so it isn't a NetDisc360 backup."; return false; }
     } else if(data.size()<=MaxFile && Settings(data)) {
         files["netdisc.ini"]=data;
     } else {
-        error="This isn't a NetDisc 360 backup (a .zip from Backups) or a netdisc.ini.";
+        error="This isn't a NetDisc360 backup (a .zip from Backups) or a netdisc.ini.";
         return false;
     }
-    if(!Settings(files["netdisc.ini"])) { error="Its netdisc.ini has none of NetDisc 360's settings."; return false; }
+    if(!Settings(files["netdisc.ini"])) { error="Its netdisc.ini has none of NetDisc360's settings."; return false; }
     return true;
 }
 

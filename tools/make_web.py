@@ -1,4 +1,4 @@
-"""Builds server/web_page.h, the dashboard page that NetDisc 360 serves.
+"""Builds server/web_page.h, the dashboard page that NetDisc360 serves.
 
 Puts web/icons.svg (the Lucide icons the page uses, as an SVG sprite) into
 web/index.html where it says <!--icons-->, gzips it and writes it as a byte

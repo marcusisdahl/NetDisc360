@@ -189,7 +189,7 @@ static void Intro(double t) {
     if(name>0) {
         int first=List->VtxBuffer.Size;
         List->AddText(Logo,Logo->FontSize,ImVec2(x,y),Hex(Green,A(name)),"Net");
-        List->AddText(Logo,Logo->FontSize,ImVec2(x+Logo->CalcTextSizeA(Logo->FontSize,10000,0,"Net").x,y),Hex(Blue,A(name)),"Disc 360");
+        List->AddText(Logo,Logo->FontSize,ImVec2(x+Logo->CalcTextSizeA(Logo->FontSize,10000,0,"Net").x,y),Hex(Blue,A(name)),"Disc360");
         const float base=y+Logo->FontSize*0.78f;
         for(int i=first;i<List->VtxBuffer.Size;++i) List->VtxBuffer[i].pos.x+=(base-List->VtxBuffer[i].pos.y)*0.2f;
     }
@@ -210,8 +210,8 @@ void DrawLoadUi(const LoadScreen& s) {
 
     // Header: name and what it does on the left, the server on the right.
     Box(Left,Top+6,6,40,Hex(Green),3);
-    Text(Heading,Left+20,Top,Hex(White),"NetDisc 360");
-    Text(Small,Left+20+Width(Heading,"NetDisc 360")+16,Top+15,Hex(Muted),"Playing from your NetISO server");
+    Text(Heading,Left+20,Top,Hex(White),"NetDisc360");
+    Text(Small,Left+20+Width(Heading,"NetDisc360")+16,Top+15,Hex(Muted),"Playing from your NetISO server");
     float headerRight=Right;
     if(s.server[0]) {
         TextRight(Heading,Right,Top,Hex(White),s.server);

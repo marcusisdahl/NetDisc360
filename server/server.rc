@@ -21,12 +21,12 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName", "Marcus Isdahl"
-            VALUE "FileDescription", "NetDisc 360"
+            VALUE "FileDescription", "NetDisc360"
             VALUE "FileVersion", NETDISC_VERSION
             VALUE "InternalName", "NetDisc"
             VALUE "LegalCopyright", "Copyright (c) 2026 Marcus Isdahl. MIT License."
-            VALUE "OriginalFilename", "NetDisc.exe"
-            VALUE "ProductName", "NetDisc 360"
+            VALUE "OriginalFilename", "NetDisc360.exe"
+            VALUE "ProductName", "NetDisc360"
             VALUE "ProductVersion", NETDISC_VERSION
         END
     END

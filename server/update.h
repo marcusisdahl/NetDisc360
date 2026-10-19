@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// Updates of NetDisc 360 from its GitHub releases. The server asks GitHub's
+// Updates of NetDisc360 from its GitHub releases. The server asks GitHub's
 // API for the newest release. On Windows it can then download that
-// release's NetDisc.exe, check it against the release, and put it in place of
+// release's NetDisc360.exe, check it against the release, and put it in place of
 // the running exe, after which tray.cpp starts the new one. The Docker image
 // is updated by pulling it, so there the dashboard only says that a new one
 // is out (it asks GitHub itself, as the Linux server has no HTTPS).
@@ -11,7 +11,7 @@
 namespace update {
 struct Release {
     std::string tag, version, name, notes, page, published;  // version: the tag without its v.
-    std::string exeUrl, exeDigest;  // Its NetDisc.exe; digest "sha256:<hex>" when GitHub gives one.
+    std::string exeUrl, exeDigest;  // Its NetDisc360.exe; digest "sha256:<hex>" when GitHub gives one.
     long long exeSize;
     bool prerelease;
     Release() : exeSize(0), prerelease(false) {}
@@ -32,7 +32,7 @@ bool CanFetch();
 // not NULL, is told the bytes so far and the total (0 if not known).
 typedef void (*Progress)(long long got, long long total);
 bool Fetch(const std::string& url, std::string& body, long long limit, Progress progress, std::string& error);
-// Checks a downloaded NetDisc.exe against its release: its size, its
+// Checks a downloaded NetDisc360.exe against its release: its size, its
 // SHA-256, and that it is a 64-bit Windows program.
 bool CheckExe(const std::string& data, const Release& r, std::string& error);
 // Whether url is a download from this project's releases on GitHub.

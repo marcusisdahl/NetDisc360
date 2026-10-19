@@ -1,4 +1,4 @@
-# Publishes the Docker image to ghcr.io/marcusisdahl/netdisc-360 when a
+# Publishes the Docker image to ghcr.io/marcusisdahl/netdisc360 when a
 # release is published, with that release's launchers (NetISO-Sync.zip, which
 # must be attached before the release is published). It can also be run by
 # hand for an existing release tag.
@@ -43,7 +43,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/marcusisdahl/netdisc-360
+          images: ghcr.io/marcusisdahl/netdisc360
           tags: |
             type=semver,pattern={{version}},value=${{ env.TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}

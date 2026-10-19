@@ -631,10 +631,10 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
     bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
-    if(!found) { Tell("NetDisc 360: the server doesn't list this game. Is it running?"); return Fallback; }
+    if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
     if(stop==StepIso) return Cancelled;
     LONG skipped=UnloadsSkipped;
-    if(!ListMountFolder(folder,hold)) { Tell("NetDisc 360 couldn't mount this game."); return Fallback; }
+    if(!ListMountFolder(folder,hold)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
     Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
     if(relist) {
         Note("Listing the ISO's folder and the root again (relist).");
@@ -650,7 +650,7 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
-    Tell("NetDisc 360: the game didn't show up in the drive.");
+    Tell("NetDisc360: the game didn't show up in the drive.");
     return Fallback;
 }
 
@@ -684,7 +684,7 @@ static Outcome MountOnSystemThread(const Settings& settings,int stop) {
         // It still uses Job and keeps its lines to itself.
         ThreadOverran=true;
         Note("The system thread didn't finish in %lu ms.",MountThreadMs);
-        Tell("NetDisc 360: the mount didn't finish.");
+        Tell("NetDisc360: the mount didn't finish.");
         return Cancelled;
     }
     WriteDeferred();
@@ -697,7 +697,7 @@ static Outcome Mount(const Settings& settings) {
     char where[16]="";
     if(CheckServer(where,sizeof(where))==ServerDown) {
         static char text[96];
-        sprintf_s(text,"NetDisc 360 server %s isn't answering. Try again in a minute.",where);
+        sprintf_s(text,"NetDisc360 server %s isn't answering. Try again in a minute.",where);
         Tell(text);
         return Cancelled;
     }
@@ -864,7 +864,7 @@ static DWORD SwapTitle=0;
 static char SwapIsos[MaxDiscs+1][MAX_PATH];
 static volatile HANDLE SwapModule=NULL;
 // What each disc is to the player, for the notices: disc_role and
-// disc_label in its folder's netiso.ini, from NetDisc 360's disc map (see
+// disc_label in its folder's netiso.ini, from NetDisc360's disc map (see
 // server/discmap.h). From a server without one, a game with an install disc
 // (GTA V) has install.ini in its play disc's folder naming that disc (see
 // launcher/main.cpp); any other disc is just its number.
@@ -1219,7 +1219,7 @@ static void DiscName(DWORD disc,char* text,size_t capacity) {
 static DWORD WINAPI SwapThread(void*) {
     DWORD disc=SwapRequest.disc; void* event=SwapRequest.event;
     char name[96]; DiscName(disc,name,sizeof(name)); // Room for "the <63-character disc_label> disc".
-    static char text[160]; _snprintf_s(text,sizeof(text),_TRUNCATE,"NetDisc 360: inserting %s",name); Show(text);
+    static char text[160]; _snprintf_s(text,sizeof(text),_TRUNCATE,"NetDisc360: inserting %s",name); Show(text);
     Sleep(PollMs); // xam's swap is under way before the tray moves.
     bool in=false;
     Settings settings; memset(&settings,0,sizeof(settings));
@@ -1234,7 +1234,7 @@ static DWORD WINAPI SwapThread(void*) {
         }
         if(!in) SwapNote("Disc %u didn't show up in the drive.",disc);
     }
-    if(!in) { _snprintf_s(text,sizeof(text),_TRUNCATE,"NetDisc 360 couldn't insert %s",name); Show(text); }
+    if(!in) { _snprintf_s(text,sizeof(text),_TRUNCATE,"NetDisc360 couldn't insert %s",name); Show(text); }
     else {
         // The event lives in the game; if the game has ended, it's gone.
         DWORD waited=0;
@@ -1258,7 +1258,7 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     if(number<1 || number>DWORD(MaxDiscs) || !SwapIsos[number][0] || !event || !extra) {
         SwapNote("The game asks for disc %u (%X, %X, %X), which this tile has no folder for; told it there's no swap.",number,disc,DWORD(event),DWORD(extra));
         // The game's thread: no CRT here (see SwapNote).
-        char text[64]; size_t at=Put(text,0,sizeof(text),"NetDisc 360 has no tile for disc ");
+        char text[64]; size_t at=Put(text,0,sizeof(text),"NetDisc360 has no tile for disc ");
         at=PutNumber(text,at,sizeof(text),number,10,1); Put(text,at,sizeof(text)," of this game");
         Show(text);
         return SwapRefused;
@@ -1398,8 +1398,8 @@ static void ArmSwap() {
     // from disc to disc asks for the next. Discs that are games of their own
     // (Red Dead's disc 2 is Undead Nightmare) never ask, so they get none.
     char role=PreparedDisc>=1 && PreparedDisc<=MaxDiscs ? SwapRoles[PreparedDisc] : NumberedDisc;
-    if(role==InstallDisc) Show("NetDisc 360 will insert the play disc after the install");
-    else if(role==NextDisc) Show("NetDisc 360 will swap the discs for you");
+    if(role==InstallDisc) Show("NetDisc360 will insert the play disc after the install");
+    else if(role==NextDisc) Show("NetDisc360 will swap the discs for you");
 }
 // Each launch after a tile's, in that tile's log.
 static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const char* what) {

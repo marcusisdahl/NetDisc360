@@ -29,7 +29,7 @@ void Notify(const std::string& title, const std::string& text, const std::string
 // Starts this exe again behind the icon, then quits once the new one waits
 // for it; false with why if it can't start.
 bool Restart(std::string& error);
-// Puts data, a newer NetDisc.exe, in place of this exe (kept as .old until
+// Puts data, a newer NetDisc360.exe, in place of this exe (kept as .old until
 // the new one is running) and restarts as it.
 bool InstallExe(const std::string& data, std::string& error);
 bool StartsWithWindows();

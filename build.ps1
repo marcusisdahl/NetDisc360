@@ -24,7 +24,7 @@ try {
     # The same folder zipped, for the release: NetISO Sync for other servers,
     # and the launchers the Docker image downloads (Dockerfile).
     Compress-Archive -Path $sync -DestinationPath build\NetISO-Sync.zip -Force
-    # NetDisc.exe (NetDisc 360): the PC server that replaces netiso-srv and keeps the
+    # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
     # Xbox's game folders current, with default.xex and boot.xex built in
     # (server/). Rebuilt every time so it carries the XEXs just made, and the
     # dashboard page (web/index.html, made into server/web_page.h).
@@ -51,5 +51,5 @@ try {
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
     Write-Host 'Built build\NetIsoTiles.xex. Add it as a DashLaunch plugin, next to NetISO.xex.'
-    Write-Host 'Built build\NetDisc.exe (NetDisc 360). Start it: it opens its dashboard in your browser. NetDisc.exe -h in a command prompt lists its options.'
+    Write-Host 'Built build\NetDisc360.exe. Start it: it opens its dashboard in your browser. NetDisc360.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }

@@ -76,7 +76,7 @@ bool KnownRole(const std::string& role) {
 }
 
 static const char Header[]=
-    "; NetDisc 360's disc map: what each disc of a game on more than one disc is.\r\n"
+    "; NetDisc360's disc map: what each disc of a game on more than one disc is.\r\n"
     "; The console uses it to say which disc goes in, and the dashboard shows it.\r\n"
     ";\r\n"
     "; One [Title ID] section per game, and one line per disc: disc<N>=<role> <the disc's own name>\r\n"
@@ -86,7 +86,7 @@ static const char Header[]=
     ";   next     the game goes on from the disc before and asks for this one\r\n"
     ";   own      a game of its own that never asks for another disc\r\n"
     ";\r\n"
-    "; NetDisc 360 adds each game it finds once and never changes it after, so\r\n"
+    "; NetDisc360 adds each game it finds once and never changes it after, so\r\n"
     "; change any line here. Delete a game's section to have it added again.\r\n";
 
 static std::string Trim(const std::string& text) {
@@ -229,8 +229,8 @@ void DiscMap::Learn(const std::vector<IsoFile>& discs, std::vector<std::string>&
         added.push_back(Describe(s->first,game,known ? "from the built-in list" : "guessed from the discs"));
         char id[16]; snprintf(id,sizeof(id),"%08X",(unsigned)s->first);
         sections+=std::string("\r\n[")+id+"]\r\n";
-        sections+=known ? "; From NetDisc 360's list of known games.\r\n"
-                        : "; NetDisc 360's guess from the discs it found; change it if it's wrong.\r\n";
+        sections+=known ? "; From NetDisc360's list of known games.\r\n"
+                        : "; NetDisc360's guess from the discs it found; change it if it's wrong.\r\n";
         sections+="name="+game.name+"\r\n";
         for(std::map<int,MapDisc>::const_iterator d=game.discs.begin();d!=game.discs.end();++d) {
             char key[16]; snprintf(key,sizeof(key),"disc%d=",d->first);

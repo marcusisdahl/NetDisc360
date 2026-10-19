@@ -127,7 +127,7 @@ void File::Remove(const char* key) {
 std::string Protect(const std::string& secret) {
     std::wstring text=Wide(secret,CP_UTF8);
     DATA_BLOB in={DWORD(text.size()*sizeof(wchar_t)),(BYTE*)text.data()}, out={0,NULL};
-    if(!CryptProtectData(&in,L"NetDisc 360 FTP password",NULL,NULL,NULL,CRYPTPROTECT_UI_FORBIDDEN,&out)) return std::string();
+    if(!CryptProtectData(&in,L"NetDisc360 FTP password",NULL,NULL,NULL,CRYPTPROTECT_UI_FORBIDDEN,&out)) return std::string();
     DWORD n=0;
     std::string result;
     if(CryptBinaryToStringA(out.pbData,out.cbData,CRYPT_STRING_BASE64|CRYPT_STRING_NOCRLF,NULL,&n)) {

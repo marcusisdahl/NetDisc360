@@ -372,7 +372,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
         const Folder* disc=NULL;
         for(int k=0;k<folderCount && !disc;++k) if(folders[k].game && folders[k].keep && !_stricmp(folders[k].iso,need.iso)) disc=&folders[k];
         _snprintf_s(text,sizeof(text),_TRUNCATE,
-            "; Written by NetDisc 360: this game's install disc, and the packages it puts under Content.\r\n"
+            "; Written by NetDisc360: this game's install disc, and the packages it puts under Content.\r\n"
             "install_iso=%s\r\ninstall_title_id=%08X\r\ninstall_media_id=%08X\r\ninstall_folder=%s\r\n%s",
             need.iso,game.titleId,disc ? disc->mediaId : 0,disc ? disc->name : "",need.packages);
     } else {
