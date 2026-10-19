@@ -130,7 +130,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
      NetISO.xex.txt      <- you make this one in step 2
      NetIsoTiles.xex
      NetIsoTiles.ini     <- optional, see Speed
-     CUsbEnet.xex        <- optional: UsbNet360, see More Xbox 360 homebrew
+     UsbNet360.xex       <- optional, see More Xbox 360 homebrew
    ```
 
 2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The server's dashboard shows this address. Give your PC a fixed address in your router, so it doesn't change.
@@ -142,12 +142,12 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
    Default = Hdd:\Apps\Aurora\Aurora.xex
 
    [Plugins]
-   plugin1 = Usb:\CUsbEnet.xex
+   plugin1 = Usb:\UsbNet360.xex
    plugin2 = Usb:\NetISO.xex
    plugin3 = Usb:\NetIsoTiles.xex
    ```
 
-   `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `CUsbEnet.xex` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
+   `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `UsbNet360.xex` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
 
 4. **Turn on Aurora's FTP server and add the game folder.** Reboot the console into Aurora. In Aurora's settings, make sure the FTP server is on, and under Content, Scan paths, add `Hdd1:\NetISO` with depth 1 (the folder can be empty; the PC fills it).
 
@@ -320,9 +320,9 @@ Two companion projects from the same GitHub account make NetDisc360 faster and t
 
 ### [UsbNet360](https://github.com/marcusisdahl/UsbNet360): a faster network for your Xbox
 
-The Xbox 360's own network port is 100 Mbit/s. UsbNet360 is a DashLaunch plugin that lets the console use a gigabit USB Ethernet adapter instead (ASIX AX88179 or Realtek based, such as the TP-Link UE306), so games over NetISO load at about 26 MB/s and FTP to the console reaches about 29 MiB/s. It is `plugin1` (`CUsbEnet.xex`) in the `launch.ini` above; plug the adapter in instead of the network cable.
+The Xbox 360's own network port is 100 Mbit/s. UsbNet360 is a DashLaunch plugin that lets the console use a gigabit USB Ethernet adapter instead (ASIX AX88179 or Realtek based, such as the TP-Link UE306), so games over NetISO load at about 26 MB/s and FTP to the console reaches about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
 
-UsbNet360 is our faster fork of [CUsbEnet](https://github.com/proferabg/CUsbEnet) by proferabg, which brought the USB Ethernet driver from early Xbox 360 development kits to homebrew consoles. The fork adds bigger and batched receive transfers, an ACK-batching build and TP-Link UE300 support. The plugin file keeps its CUsbEnet name, so a `launch.ini` set up for CUsbEnet keeps working.
+UsbNet360 is our faster fork of [CUsbEnet](https://github.com/proferabg/CUsbEnet) by proferabg, which brought the USB Ethernet driver from early Xbox 360 development kits to homebrew consoles. The fork adds bigger and batched receive transfers, an ACK-batching build and TP-Link UE300 support. Coming from CUsbEnet? Put `UsbNet360.xex` in its place in `launch.ini`, and don't load both.
 
 ### [FastFTP](https://github.com/marcusisdahl/Xbox360_FastFTP): copy files to and from your Xbox, fast
 
