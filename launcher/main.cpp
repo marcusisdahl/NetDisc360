@@ -92,6 +92,11 @@ static IDirect3DDevice9* Screen=NULL;
 static nia::LoadScreen Shown;
 static CRITICAL_SECTION ShownLock;
 static WORD Held=0; // Controller buttons down at the last look.
+// When the logo intro (ui.cpp) started; 0 once it's over. It plays once, over
+// the first screen, while the start goes on under it.
+static DWORD IntroAt=0;
+static bool IntroShown=false;
+static WORD IntroHeld=0; // Buttons down since before the intro, which don't cut it short.
 static WORD Buttons() {
     WORD buttons=0;
     for(DWORD pad=0;pad<4;++pad) {
@@ -121,6 +126,7 @@ static void ScreenStart() {
     if(Screen && !ImGuiXbox360Init(Screen)) { Screen->Release(); Screen=NULL; }
     // The A that started the tile may still be down.
     Held=Buttons();
+    if(Screen && !IntroShown) { IntroAt=GetTickCount(); IntroShown=true; IntroHeld=Held; }
 }
 // The bar glides to the fraction the steps set instead of jumping: quickly
 // while it's far behind, never slower than BarMinSpeed a second, so it gets
@@ -148,6 +154,14 @@ static void ScreenDraw() {
     frame.fraction=Bar;
     frame.time=GetTickCount()/1000.0;
     frame.elapsed=(GetTickCount()-Started)/1000.0;
+    // Any button cuts the intro short; the press still does what it does
+    // (B cancels).
+    if(IntroAt) {
+        WORD buttons=Buttons();
+        IntroHeld&=buttons;
+        if((GetTickCount()-IntroAt)/1000.0>=nia::IntroSeconds || (buttons&~IntroHeld)) IntroAt=0;
+    }
+    frame.intro=IntroAt ? (GetTickCount()-IntroAt)/1000.0 : -1;
     ImGui::GetIO().DeltaTime=1.0f/60;
     nia::DrawLoadUi(frame);
     Screen->Clear(0,NULL,D3DCLEAR_TARGET,0xFF0F1725,1.0f,0);

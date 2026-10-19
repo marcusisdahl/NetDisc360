@@ -3,6 +3,8 @@
 // it without a console: Dear ImGui's triangles drawn in software into a
 // 1280x720 BMP. The rasterizer is Xbox360-FastFTP's tests/ui_preview.cpp.
 //   ui-preview out.bmp [server|network|mount|disc|start|no-server|not-listed|no-disc|wrong-disc|no-plugin|install]
+//   ui-preview out.bmp intro <seconds>   the logo intro, that far in
+//   ui-preview out.bmp run <seconds>     a whole start, intro to game, that far in (the README's GIF)
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <string.h>
@@ -70,13 +72,39 @@ static void Error(nia::LoadScreen& s, int step, const char* title, const char* a
     s.step=step; strcpy(s.errorTitle,title); strcpy(s.errorLines[0],a); strcpy(s.errorLines[1],b); strcpy(s.errorLines[2],c);
     s.canRetry=retry; s.countdown=57;
 }
+// A start as the console shows it, t seconds after the tile was pressed (the
+// disc's quiet wait cut short): the step, the line and where the bar is.
+static void Run(nia::LoadScreen& s, double t) {
+    static const struct { double at; int step; double fraction; const char* status; } steps[]={
+        {0,nia::StepServer,0.08,"Checking the NetISO server at 192.168.1.20"},
+        {1.3,nia::StepMount,0.25,"Asking the server for the disc"},
+        {2.4,nia::StepDisc,0.45,"The disc is going in. Waiting for the console to read it"},
+        {5.4,nia::StepStart,1,"Starting Skate 3"}};
+    int n=0;
+    while(n+1<int(sizeof(steps)/sizeof(steps[0])) && t>=steps[n+1].at) ++n;
+    s.step=steps[n].step; strcpy(s.status,steps[n].status);
+    // The bar glides as main.cpp's Glide does, at 60 frames a second.
+    double bar=0;
+    for(double at=0;at<t;at+=1.0/60) {
+        int k=0;
+        while(k+1<int(sizeof(steps)/sizeof(steps[0])) && at>=steps[k+1].at) ++k;
+        double target=steps[k].fraction;
+        if(steps[k].step==nia::StepDisc) target+=0.4*(at-steps[k].at)/3.0;  // Reading the disc.
+        double speed=(target-bar)*5; if(speed<0.6) speed=0.6;
+        bar+=speed/60; if(bar>target) bar=target;
+    }
+    s.fraction=bar; s.time=t; s.elapsed=t+0.4; s.intro=t;
+}
 int main(int argc, char** argv) {
     nia::InitLoadUi();
     unsigned char* alpha=NULL; ImGui::GetIO().Fonts->GetTexDataAsAlpha8(&alpha,&TextureWidth,&TextureHeight); Texture=alpha;
     nia::LoadScreen s; const char* scene=argc>2 ? argv[2] : "mount";
     strcpy(s.iso,"Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl).iso"); nia::GameName(s.iso,s.game,sizeof(s.game));
     strcpy(s.server,"192.168.1.20"); s.titleId=0x454108E6; s.time=0.3; s.elapsed=12.4;
-    if(!strcmp(scene,"server")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"Checking the NetISO server at 192.168.1.20"); }
+    double at=argc>3 ? atof(argv[3]) : 0;
+    if(!strcmp(scene,"intro")) { s.step=nia::StepServer; s.fraction=0.08; strcpy(s.status,"Checking the NetISO server at 192.168.1.20"); s.intro=at; s.time=at; s.elapsed=at; }
+    else if(!strcmp(scene,"run")) Run(s,at);
+    else if(!strcmp(scene,"server")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"Checking the NetISO server at 192.168.1.20"); }
     else if(!strcmp(scene,"network")) { s.step=nia::StepServer; s.fraction=0.04; strcpy(s.status,"The Xbox's network is still starting after the reboot. Waiting for the server... 42 s"); }
     else if(!strcmp(scene,"mount")) { s.step=nia::StepMount; s.fraction=0.2; strcpy(s.status,"Asking the server for the disc"); }
     else if(!strcmp(scene,"disc")) { s.step=nia::StepDisc; s.fraction=0.62; strcpy(s.status,"The disc is going in. Waiting for the console to read it"); s.time=0.7; }

@@ -10,7 +10,7 @@
 #include <string.h>
 
 namespace nia {
-LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), question(false), countdown(0), time(0), elapsed(-1) {
+LoadScreen::LoadScreen() : titleId(0), step(StepServer), fraction(0), canRetry(false), question(false), countdown(0), time(0), elapsed(-1), intro(-1) {
     game[0]=iso[0]=server[0]=status[0]=errorTitle[0]=buttonA[0]=buttonX[0]=0;
     for(int i=0;i<3;++i) errorLines[i][0]=0;
 }
@@ -26,12 +26,12 @@ void GameName(const char* iso, char* name, size_t capacity) {
     memcpy(name,iso,length); name[length]=0;
 }
 
-static ImFont* Small; static ImFont* Body; static ImFont* Heading; static ImFont* Title;
+static ImFont* Small; static ImFont* Body; static ImFont* Heading; static ImFont* Title; static ImFont* Logo;
 enum { Left=64, Right=1216, Top=36, Bottom=684 };
 
 static ImU32 Hex(unsigned int rgb, int alpha=255) { return IM_COL32((rgb>>16)&255,(rgb>>8)&255,rgb&255,alpha); }
 static const unsigned int Background=0x0F1725,Card=0x192537,Raised=0x223349,White=0xE2EBF4,Muted=0x8FA6BA,Dim=0x51667A,
-    Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,Info=0x62B6FF,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0;
+    Green=0x3ED9BC,Blue=0x73B8FF,Edge=0x2A3D57,Error=0xFFAC8B,ErrorStrong=0xF0624D,Info=0x62B6FF,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0;
 
 void InitLoadUi() {
     ImGui::CreateContext();
@@ -44,6 +44,9 @@ void InitLoadUi() {
     Small=io.Fonts->AddFontFromMemoryTTF(data,size,21,&config,ascii);
     Heading=io.Fonts->AddFontFromMemoryTTF(data,size,38,&config,ascii);
     Title=io.Fonts->AddFontFromMemoryTTF(data,size,60,&config,ascii);
+    // Only the letters of the name, for the intro's wordmark.
+    static const ImWchar name[]={0x20,0x20,'0','0','3','3','6','6','D','D','N','N','c','c','e','e','i','i','s','t',0};
+    Logo=io.Fonts->AddFontFromMemoryTTF(data,size,104,&config,name);
     ImGuiStyle& style=ImGui::GetStyle();
     style.WindowPadding=ImVec2(0,0); style.WindowBorderSize=0; style.WindowRounding=0;
 }
@@ -122,6 +125,78 @@ static void Progress(float x, float y, float w, double fraction, double time) {
     // A soft highlight running along the filled part shows it's alive.
     float at=float(fmod(time*0.6,1.0))*filled;
     List->AddRectFilledMultiColor(ImVec2(x+at-60<x ? x : x+at-60,y),ImVec2(x+at,y+10),Hex(0xFFFFFF,0),Hex(0xFFFFFF,70),Hex(0xFFFFFF,70),Hex(0xFFFFFF,0));
+}
+
+// The logo intro (docs/images/logo.svg, animated): the tile pops in, the
+// disc's ring draws itself, the read arcs spin in and settle, the network
+// lines slide in, then the name; then it all fades to the loading screen.
+static float Clamp01(double v) { return v<0 ? 0 : v>1 ? 1 : float(v); }
+static float EaseOut(float p) { return 1-(1-p)*(1-p)*(1-p); }
+static float EaseBack(float p) { const float k=1.7f; p-=1; return 1+p*p*((k+1)*p+k); }
+static float Phase(double t, double from, double length) { return Clamp01((t-from)/length); }
+static void Arc(ImVec2 c, float r, float from, float to, ImU32 color, float thickness) {
+    if(to-from<0.01f) return;
+    List->PathArcTo(c,r,from,to,int(8+(to-from)*12));
+    List->PathStroke(color,false,thickness);
+}
+// A round cap at angle a on a circle of radius r, as the logo's arcs have.
+static void Cap(ImVec2 c, float r, float a, ImU32 color, float thickness) {
+    List->AddCircleFilled(ImVec2(c.x+r*cosf(a),c.y+r*sinf(a)),thickness/2,color,12);
+}
+static void Intro(double t) {
+    if(t<0 || t>=IntroSeconds) return;
+    const float pi=3.14159265f;
+    const float fade=1-EaseOut(Phase(t,1.55,IntroSeconds-1.55));  // The whole intro, at the end.
+    #define A(alpha) int(255*(alpha)*fade)
+    Box(0,0,1280,720,Hex(Background,A(1)));
+    // The mark is the logo's 256-unit square at scale k around (mx,my).
+    const float grow=1+0.04f*EaseOut(Phase(t,1.55,0.45));
+    const float k=0.86f*grow, mx=322, my=350;
+    #define P(x,y) ImVec2(mx+((x)-128)*k*pop,my+((y)-128)*k*pop)
+    float pop=EaseBack(Phase(t,0,0.45)), in=Phase(t,0,0.25);
+    if(pop<=0) pop=0.001f;
+    List->AddRectFilled(P(8,8),P(248,248),Hex(0x16233A,A(in)),56*k*pop);
+    List->AddRect(P(10,10),P(246,246),Hex(Edge,A(in)),54*k*pop,0,4*k*pop);
+    pop=1;
+    const ImVec2 c=P(144,128);
+    // The disc's ring draws round from the top.
+    float ring=EaseOut(Phase(t,0.15,0.55));
+    if(ring>0) {
+        List->AddCircleFilled(c,74*k,Hex(Blue,A(0.08f*ring)),48);
+        Arc(c,74*k,-pi/2,-pi/2+2*pi*ring,Hex(Blue,A(1)),12*k);
+    }
+    // The hub.
+    float hub=EaseBack(Phase(t,0.3,0.35));
+    if(hub>0) List->AddCircle(c,15*k*hub,Hex(Blue,A(Clamp01(hub))),24,10*k);
+    // The two read arcs spin in and settle where the logo has them.
+    float arcs=Phase(t,0.4,0.7), spin=(1-EaseOut(arcs))*-2.5f*pi, length=EaseOut(Phase(t,0.4,0.45))*(2*pi/3);
+    if(length>0) {
+        for(int i=0;i<2;++i) {
+            float from=-pi/2+i*pi+spin;
+            ImU32 color=Hex(Green,A(i ? 0.45f : 1.0f));
+            Arc(c,48*k,from,from+length,color,12*k);
+            Cap(c,48*k,from,color,12*k); Cap(c,48*k,from+length,color,12*k);
+        }
+    }
+    // The network lines slide in from the left.
+    for(int i=0;i<2;++i) {
+        float p=EaseOut(Phase(t,0.65+i*0.1,0.4)), slide=(1-p)*-40;
+        float x0=i ? 34.f : 24.f, y0=i ? 132.f : 112.f;
+        if(p>0) List->AddRectFilled(P(x0+slide,y0),P(54+slide,y0+10),Hex(Green,A(p*(i ? 0.35f : 0.6f))),5*k);
+    }
+    // The name, slanted like the logo's, and the line under it.
+    float name=EaseOut(Phase(t,0.75,0.45)), x=mx+128*k+36+(1-name)*36, y=my-80;
+    if(name>0) {
+        int first=List->VtxBuffer.Size;
+        List->AddText(Logo,Logo->FontSize,ImVec2(x,y),Hex(Green,A(name)),"Net");
+        List->AddText(Logo,Logo->FontSize,ImVec2(x+Logo->CalcTextSizeA(Logo->FontSize,10000,0,"Net").x,y),Hex(Blue,A(name)),"Disc 360");
+        const float base=y+Logo->FontSize*0.78f;
+        for(int i=first;i<List->VtxBuffer.Size;++i) List->VtxBuffer[i].pos.x+=(base-List->VtxBuffer[i].pos.y)*0.2f;
+    }
+    float line=EaseOut(Phase(t,0.95,0.4));
+    if(line>0) Text(Heading,mx+128*k+42+(1-line)*24,my+44,Hex(Muted,A(line)),"Network games for homebrew Xbox 360");
+    #undef P
+    #undef A
 }
 
 void DrawLoadUi(const LoadScreen& s) {
@@ -209,6 +284,8 @@ void DrawLoadUi(const LoadScreen& s) {
         Button(bx,Bottom-40,"B",ButtonB,"Cancel");
         TextRight(Small,Right,Bottom-36,Hex(Dim),"The game starts by itself");
     }
+
+    Intro(s.intro);
 
     ImGui::End();
     ImGui::PopStyleColor();

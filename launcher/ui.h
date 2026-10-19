@@ -25,8 +25,11 @@ struct LoadScreen {
     int countdown;      // Seconds until it goes back to Aurora by itself; 0 hides it.
     double time;        // Seconds since start, for the animation.
     double elapsed;     // Seconds since the tile was pressed, shown at the top; below 0 hides it.
+    double intro;       // Seconds into the logo intro, drawn over the screen; below 0 or past IntroSeconds: none.
     LoadScreen();
 };
+// How long the logo intro at the start lasts. The start goes on under it.
+const double IntroSeconds=2.0;
 // Creates the Dear ImGui context, style and fonts.
 void InitLoadUi();
 // Builds one frame; the caller renders ImGui::GetDrawData().
