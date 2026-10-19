@@ -28,7 +28,10 @@ try {
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
     # The same folder zipped, for the release: NetISO Sync for other servers,
     # and the launchers the Docker image downloads (Dockerfile).
-    Compress-Archive -Path $sync -DestinationPath build\NetISO-Sync.zip -Force
+    # Python's zipfile, not Compress-Archive: Windows PowerShell 5.1 writes
+    # backslashes in the paths, which unzip on Linux warns about.
+    & python -c "import shutil; shutil.make_archive('build/NetISO-Sync', 'zip', 'build', 'NetISO Sync')"
+    if ($LASTEXITCODE) { throw 'Zipping NetISO Sync failed.' }
     # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
     # Xbox's game folders current, with the tile launcher (default.xex) and the helper (boot.xex) built in
     # (server/). Rebuilt every time so it carries the XEXs just made, and the
