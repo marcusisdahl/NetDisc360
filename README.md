@@ -269,6 +269,12 @@ Pick the game's tile. The NetDisc360 logo plays for three seconds while the game
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
+**Play together.** Several consoles can play the same game from the same copy at the same time, system link included. Here two consoles play Call of Duty: Modern Warfare 2 against each other over system link, each streaming the game from NetDisc360:
+
+<p align="center">
+  <img src="docs/images/system-link.gif" alt="The dashboard and the Consoles page while two consoles play Call of Duty: Modern Warfare 2 over system link: both consoles connected and playing, and the game data streamed to each one" width="800">
+</p>
+
 ## Speed
 
 NetISO on its own loads games at about 7 MB/s however fast your network is, because it asks the server for 4 KB at a time and waits for each piece before asking for the next. `NetIsoTiles.xex` has it ask for 64 KB at a time and gives its connection a 64 KB receive buffer, with nothing to set up.
