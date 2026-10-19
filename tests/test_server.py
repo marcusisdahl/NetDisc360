@@ -1117,8 +1117,9 @@ class Dashboard(ServerTest):
         # a console is on, even with no NetISO connection (one that stops
         # answering goes offline: PingLoop).
         self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(free_port()))
-        console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
-        state = self.state_when(lambda s: console(s)["answers"])
+        # The web page can answer just before the console from --xbox is listed.
+        console = lambda s: next((x for x in s["consoles"] if x["address"] == "127.0.0.2"), {})  # noqa: E731
+        state = self.state_when(lambda s: console(s).get("answers"))
         self.assertEqual([console(state)[k] for k in ("answers", "offline", "connections")], [True, False, 0])
         self.assertGreaterEqual(console(state)["ping"], 0)
 
