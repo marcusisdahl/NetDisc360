@@ -241,7 +241,7 @@ It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release
 
 ## Playing
 
-Pick the game's tile. The NetDisc360 logo plays for two seconds while the game already loads underneath (any button skips it). Then the loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
+Pick the game's tile. The NetDisc360 logo plays for three seconds while the game already loads underneath (any button skips it). Then the loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
 
 <p align="center">
   <img src="docs/images/logo-intro.gif" alt="The NetDisc360 logo intro: the disc draws itself, then the name and the tagline, Network games for homebrew Xbox 360" width="480">
