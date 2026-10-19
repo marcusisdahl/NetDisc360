@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|Xbox 360"><Configuration>Release</Configuration><Platform>Xbox 360</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{0B7E6F3D-5C1A-4F57-8E2B-9A4D1C360151}</ProjectGuid><Keyword>Xbox360Proj</Keyword><ProjectName>NetIsoTiles</ProjectName></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType><CharacterSet>MultiByte</CharacterSet><PlatformToolset>2010-01</PlatformToolset></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\xbox\</OutDir><IntDir>$(OutDir)obj-plugin\</IntDir>
+    <TargetName>NetIsoTiles</TargetName><TargetExt>.dll</TargetExt>
+    <TargetPath>$(OutDir)NetIsoTiles.dll</TargetPath><OutputFile>$(OutDir)NetIsoTiles.dll</OutputFile>
+      </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><Optimization>MinSpace</Optimization><WarningLevel>Level4</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader><RuntimeLibrary>MultiThreaded</RuntimeLibrary><ExceptionHandling>false</ExceptionHandling>
+      <PreprocessorDefinitions>NDEBUG;_XBOX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <FunctionLevelLinking>true</FunctionLevelLinking><StringPooling>true</StringPooling>
+    </ClCompile>
+    <!-- No COMDAT folding: the trampolines are placeholder functions that are
+         overwritten at start-up, and must stay separate. -->
+    <Link><OutputFile>$(OutDir)NetIsoTiles.dll</OutputFile><LinkDLL>true</LinkDLL><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>false</EnableCOMDATFolding>
+      <BaseAddress>0x91380000</BaseAddress><FixedBaseAddress>true</FixedBaseAddress>
+      <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <!-- Not packaged here: imagexex refuses the system base (see build.ps1 and xex.xml). -->
+    <ImageXex><ExcludedFromBuild>true</ExcludedFromBuild></ImageXex>
+    <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
+  <ItemGroup><None Include="xex.xml" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- The Xbox 360 platform's ImageXex target ignores ExcludedFromBuild; this
+       later, empty definition replaces it (build.ps1 packages the XEX). -->
+  <Target Name="ImageXex" />
+</Project>

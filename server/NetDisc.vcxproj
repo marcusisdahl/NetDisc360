@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{6E2B1C4A-4E49-4C61-9A15-0D15C0360152}</ProjectGuid><Keyword>Win32Proj</Keyword><ProjectName>NetDisc</ProjectName><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><CharacterSet>MultiByte</CharacterSet><PlatformToolset>v143</PlatformToolset></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\</OutDir><IntDir>$(ProjectDir)..\build\pc\obj\</IntDir>
+    <TargetName>NetDisc360</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <!-- One self-contained exe: the C runtime is linked in, the launcher XEXs are resources and
+         the dashboard page is in web_page.h. A Windows program (no console window of its own):
+         started without options it runs behind its notification-area icon (tray.cpp); with
+         options it attaches to the console it was started from. -->
+    <ClCompile><Optimization>MaxSpeed</Optimization><WarningLevel>Level3</WarningLevel><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard><SDLCheck>false</SDLCheck><MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link><SubSystem>Windows</SubSystem><EntryPointSymbol>mainCRTStartup</EntryPointSymbol><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <!-- Its DLLs only from System32, not from the folder it was downloaded to. -->
+      <AdditionalOptions>/DEPENDENTLOADFLAG:0x800 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalDependencies>ws2_32.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="tray.cpp" /><ClCompile Include="web.cpp" /><ClCompile Include="config.cpp" /><ClCompile Include="discs.cpp" /><ClCompile Include="discmap.cpp" /><ClCompile Include="ftp.cpp" /><ClCompile Include="backup.cpp" /><ClCompile Include="update.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="ftp.h" /><ClInclude Include="backup.h" /><ClInclude Include="update.h" /><ClInclude Include="version.h" /><ClInclude Include="discs.h" /><ClInclude Include="discmap.h" /><ClInclude Include="app.h" /><ClInclude Include="web.h" /><ClInclude Include="web_page.h" /><ClInclude Include="config.h" /><ClInclude Include="resource.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /></ItemGroup>
+  <ItemGroup><ResourceCompile Include="server.rc" /></ItemGroup>
+  <ItemGroup><Image Include="netiso.ico" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

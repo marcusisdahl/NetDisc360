@@ -1,0 +1,5 @@
+*
+!server/
+!shared/
+!tests/posix_compat.h
+!docker/

@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<!-- Privilege 0 (no forced reboot on tray open), as in Omni360's xex.xml:
+     after a mount the NetISO plugin cycles a fake disc tray, and without it
+     the console would send this launcher back to the dashboard mid-wait. -->
+<xex>
+  <privilege id="0"/>
+</xex>

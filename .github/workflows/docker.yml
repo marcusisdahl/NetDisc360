@@ -1,0 +1,61 @@
+# Publishes the Docker image to ghcr.io/marcusisdahl/netdisc360 when a
+# release is published, with that release's launchers (NetISO-Sync.zip, which
+# must be attached before the release is published). It can also be run by
+# hand for an existing release tag.
+name: Docker image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (its NetISO-Sync.zip is used)
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Check the tag matches server/version.h
+        run: |
+          grep -q "NETDISC_VERSION \"${TAG#v}\"" server/version.h || {
+            echo "::error::Tag $TAG doesn't match NETDISC_VERSION in server/version.h; set the version there before tagging."
+            exit 1
+          }
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/marcusisdahl/netdisc360
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+            # A test version (v1.2.0-beta.1) isn't "latest".
+            type=raw,value=latest,enable=${{ !contains(env.TAG, '-') }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/download/${{ env.TAG }}/NetISO-Sync.zip
+            REQUIRE_LAUNCHER=1

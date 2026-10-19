@@ -1,0 +1,1623 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT
+     NetDisc360's dashboard, served by the server itself (server/web.cpp). The
+     same page runs for NetDisc360.exe and in Docker. tools/make_web.py builds it
+     into server/web_page.h, with the icons from web/icons.svg in place of the
+     icons comment below. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>NetDisc360</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23107c10'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23fff' stroke-opacity='.45' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f3f4f6; --panel: #ffffff; --side: #ffffff; --line: #e3e5e9; --line-strong: #d0d4da; --hover: #f0f2f5;
+  --text: #1c1e22; --muted: #5d6470; --faint: #959ca8;
+  --accent: #107c10; --accent-hover: #0d6b0d; --on-accent: #ffffff; --accent-soft: #e5f2e5; --accent-text: #0e6e0e;
+  --good: #1e8a3a; --good-soft: #e3f4e7; --warn: #9a5b00; --warn-soft: #fdf1dc; --bad: #c42b1c; --bad-soft: #fde7e4;
+  --info: #2f6fd6; --info-soft: #e6eefc; --play: #7b4fc9; --play-soft: #efe8fb;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05); --shadow-pop: 0 12px 32px rgba(16, 24, 40, .18);
+  --field: #ffffff; --chart-grid: #eceef1;
+  --s1: #107c10; --s2: #2f6fd6; --s3: #8b5cf6; --s4: #d97706; --s5: #db2777; --s6: #0d9488;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #121417; --panel: #1b1e22; --side: #16181b; --line: #2a2e34; --line-strong: #3a3f46; --hover: #23272c;
+  --text: #e8eaed; --muted: #a0a7b1; --faint: #69707a;
+  --accent: #5cc35c; --accent-hover: #6fd16f; --on-accent: #0a1a0a; --accent-soft: #1d3020; --accent-text: #7dd37d;
+  --good: #5cc35c; --good-soft: #1d3020; --warn: #e7a43c; --warn-soft: #3a2c14; --bad: #f0675c; --bad-soft: #3d1d1a;
+  --info: #6fa1ff; --info-soft: #1c2a42; --play: #b192f5; --play-soft: #2b2340;
+  --shadow: none; --shadow-pop: 0 12px 40px rgba(0, 0, 0, .5);
+  --field: #15171a; --chart-grid: #262a2f;
+  --s1: #5cc35c; --s2: #6fa1ff; --s3: #b192f5; --s4: #f0ad4e; --s5: #f472b6; --s6: #2dd4bf;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.i { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.i.sm { width: 15px; height: 15px; }
+.i.lg { width: 22px; height: 22px; }
+.mono { font-family: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.hidden { display: none !important; }
+
+/* Frame: the sidebar and the page */
+#app { display: flex; min-height: 100%; }
+.side {
+  width: 232px; flex: none; background: var(--side); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; padding: 18px 12px 14px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 20px; }
+.brand-mark { width: 30px; height: 30px; flex: none; }
+.brand-name { font-weight: 650; font-size: 16px; letter-spacing: -.01em; }
+.brand-sub { font-size: 12px; color: var(--muted); margin-top: -2px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a {
+  display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 8px; color: var(--muted);
+  font-weight: 500; text-decoration: none; position: relative;
+}
+.nav a:hover { background: var(--hover); color: var(--text); }
+.nav a.on { background: var(--accent-soft); color: var(--accent-text); }
+.nav .count { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--faint); }
+.nav a.on .count { color: var(--accent-text); }
+.side-foot { margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.side-foot .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.side-foot b { color: var(--text); font-weight: 600; }
+.side-link { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0 0 8px -2px; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-weight: 550; cursor: pointer; }
+.side-link:hover { background: var(--hover); color: var(--text); }
+.releases { display: grid; gap: 10px; }
+.release { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); text-decoration: none; }
+.release:hover { border-color: var(--accent); background: var(--hover); }
+.release .icon { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
+.release .text { flex: 1; min-width: 0; }
+.release .title { font-weight: 600; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.release .title .muted { font-size: 12.5px; font-weight: 500; }
+.release .help { color: var(--muted); font-size: 13px; margin-top: 2px; }
+main { flex: 1; min-width: 0; }
+.page { max-width: 1240px; margin: 0 auto; padding: 28px 32px 48px; }
+.head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+.head h1 { font-size: 24px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+.head p { margin: 4px 0 0; color: var(--muted); }
+.head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.topbar { display: none; }
+
+/* Pieces */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.card-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 0; }
+.card-head h2 { font-size: 15px; font-weight: 620; margin: 0; }
+.card-head .sub { color: var(--muted); font-size: 13px; }
+.card-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.card-body { padding: 14px 18px 18px; }
+.card-foot { padding: 12px 18px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.grid { display: grid; gap: 16px; }
+.tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.two { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.stack > :empty { display: none; }
+.tile { padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile .label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.tile .label .i { color: var(--faint); }
+.tile .value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .value small { font-size: 15px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+.tile .note { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .note.warn { color: var(--warn); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 34px; padding: 0 14px;
+  border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); cursor: pointer; font-weight: 550;
+  white-space: nowrap; text-decoration: none !important; color: var(--text);
+}
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.danger { color: var(--bad); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--hover); color: var(--text); }
+.btn.icon { width: 34px; padding: 0; }
+.btn.small { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 7px; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn:focus-visible, .nav a:focus-visible, input:focus-visible, select:focus-visible, .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 99px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.info { background: var(--info-soft); color: var(--info); }
+.pill.play { background: var(--play-soft); color: var(--play); }
+.pill.off { background: var(--hover); color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.dot.good { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+.dot.play { background: var(--play); box-shadow: 0 0 0 3px var(--play-soft); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.dot.bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.empty { padding: 34px 18px; text-align: center; color: var(--muted); }
+.empty .i { width: 30px; height: 30px; color: var(--faint); margin-bottom: 8px; }
+.empty h3 { margin: 0 0 4px; font-size: 15px; color: var(--text); font-weight: 600; }
+.empty p { margin: 0 auto 14px; max-width: 420px; }
+code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; font-size: 12.5px; background: var(--hover); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; }
+
+/* Forms */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-weight: 550; font-size: 13px; }
+.field .help { color: var(--muted); font-size: 12.5px; }
+.input, select.input {
+  height: 36px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--field); width: 100%; min-width: 0;
+}
+.input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.input-icon { position: relative; }
+.input-icon .i { position: absolute; left: 10px; top: 9px; color: var(--faint); }
+.input-icon .input { padding-left: 34px; }
+.form { display: grid; gap: 16px; }
+.form.cols { grid-template-columns: 1fr 1fr; }
+.form-actions { display: flex; gap: 8px; align-items: center; }
+.form-actions .note { color: var(--muted); font-size: 13px; }
+.setting { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }
+.setting:first-child { border-top: 0; padding-top: 2px; }
+.setting .text { flex: 1; min-width: 0; }
+.setting .title { font-weight: 550; }
+.setting .help { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--line-strong); transition: background .15s; }
+.switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(18px); }
+.switch input:disabled + span { opacity: .5; }
+.segmented { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 8px; padding: 2px; gap: 2px; background: var(--field); }
+.segmented button { border: 0; background: transparent; height: 28px; padding: 0 12px; border-radius: 6px; cursor: pointer; color: var(--muted); font-weight: 550; display: inline-flex; align-items: center; gap: 6px; }
+.segmented button.on { background: var(--accent-soft); color: var(--accent-text); }
+.radio { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
+.radio:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.radio input { margin: 3px 0 0; accent-color: var(--accent); }
+.radio .title { font-weight: 550; }
+.radio .help { color: var(--muted); font-size: 13px; }
+
+/* Dashboard */
+.notice { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-weight: 550; }
+.notice span { flex: 1; }
+.setup { padding: 18px; display: grid; grid-template-columns: 1fr auto; gap: 14px; }
+.setup h2 { margin: 0; font-size: 16px; font-weight: 640; }
+.setup .lead { color: var(--muted); margin: 3px 0 0; }
+.steps { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.step { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
+.step.done { background: var(--accent-soft); border-color: transparent; }
+.step .n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 650; font-size: 13px; border: 2px solid var(--line-strong); color: var(--muted); }
+.step.done .n { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.step .t { font-weight: 600; }
+.step .d { color: var(--muted); font-size: 13px; }
+.step.done .d { color: var(--accent-text); }
+.step .btn { align-self: flex-start; margin-top: auto; }
+.chart-wrap { position: relative; height: 230px; margin: 4px 0 0; }
+.chart-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.chart-tip {
+  position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow-pop);
+  border-radius: 8px; padding: 8px 10px; font-size: 12.5px; min-width: 150px; z-index: 2;
+}
+.chart-tip .row { display: flex; align-items: center; gap: 8px; }
+.chart-tip .row b { margin-left: auto; font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.events { list-style: none; margin: 0; padding: 4px 0 0; }
+.events li { display: flex; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); align-items: flex-start; }
+.events li:first-child { border-top: 0; }
+.events .badge { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+.events .badge .i { width: 15px; height: 15px; }
+.k-good { background: var(--good-soft); color: var(--good); }
+.k-play { background: var(--play-soft); color: var(--play); }
+.k-xbox { background: var(--info-soft); color: var(--info); }
+.k-info { background: var(--hover); color: var(--muted); }
+.k-warning { background: var(--warn-soft); color: var(--warn); }
+.events .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.events .when { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
+.consoles { display: grid; gap: 12px; }
+.console { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; align-items: center; background: var(--panel); }
+.console .icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; background: var(--hover); color: var(--muted); grid-row: span 2; }
+.console.on .icon { background: var(--good-soft); color: var(--good); }
+.console.playing .icon { background: var(--play-soft); color: var(--play); }
+.console .name { font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.console .what { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console .what b { color: var(--text); font-weight: 600; }
+.console .rate { text-align: right; grid-row: span 2; }
+.console .rate .v { font-weight: 650; font-size: 15px; white-space: nowrap; }
+.console .rate .s { color: var(--faint); font-size: 12px; }
+.console canvas { width: 110px; height: 30px; display: block; margin-left: auto; }
+.console-wide { grid-template-columns: auto 1fr auto; }
+.console-events { grid-column: 1 / -1; margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.console-events .events li { padding: 6px 0; border-top: 0; align-items: center; font-size: 13px; }
+.console-events .events .badge { width: 22px; height: 22px; border-radius: 6px; }
+.console-events .events .badge .i { width: 13px; height: 13px; }
+.console-events h3 { margin: 4px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.console-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.fact .k { color: var(--faint); font-size: 12px; }
+.fact .v { font-weight: 550; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fact .v.good { color: var(--good); } .fact .v.warn { color: var(--warn); } .fact .v.bad { color: var(--bad); }
+
+/* Games */
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.toolbar .search { flex: 1 1 240px; max-width: 360px; }
+.covers { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px 16px; }
+.game { cursor: pointer; min-width: 0; border-radius: 10px; }
+.game:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cover {
+  position: relative; aspect-ratio: 0.705; border-radius: 9px; overflow: hidden; background: var(--hover);
+  border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.cover img { position: absolute; top: 0; height: 100%; opacity: 0; transition: opacity .2s; }
+.cover img.box { right: 0; width: auto; }
+.cover img.front { left: 0; width: 100%; object-fit: cover; }
+.cover img.ready { opacity: 1; }
+.cover .art {
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px;
+  background: linear-gradient(160deg, var(--a1), var(--a2)); color: #fff;
+}
+.cover .art .t { font-weight: 650; font-size: 14px; line-height: 1.25; text-shadow: 0 1px 2px rgba(0,0,0,.3); overflow-wrap: anywhere; }
+.cover .art .ring { position: absolute; right: -26px; top: -26px; width: 110px; height: 110px; border-radius: 50%; border: 14px solid rgba(255,255,255,.14); }
+.cover .tag { position: absolute; left: 8px; top: 8px; z-index: 1; }
+.cover .now { position: absolute; left: 8px; bottom: 8px; right: 8px; z-index: 1; }
+.cover .now .pill { background: var(--play); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 100%; overflow: hidden; }
+.game:hover .cover { border-color: var(--accent); }
+.game .name { font-weight: 600; margin-top: 8px; font-size: 13.5px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.game .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.kind { font-size: 11px; font-weight: 700; letter-spacing: .03em; height: 20px; padding: 0 7px; border-radius: 6px; display: inline-flex; align-items: center; background: rgba(0,0,0,.55); color: #fff; backdrop-filter: blur(4px); }
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.table td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.table tr:last-child td { border-bottom: 0; }
+.table tbody tr.click { cursor: pointer; }
+.table tbody tr.click:hover td { background: var(--hover); }
+.table .path { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.table .num { text-align: right; white-space: nowrap; }
+.thumb { width: 34px; height: 48px; border-radius: 5px; position: relative; overflow: hidden; background: var(--hover); flex: none; border: 1px solid var(--line); }
+.thumb .art { padding: 0; }
+.thumb .art .t, .thumb .art .ring { display: none; }
+.cell-name { display: flex; gap: 12px; align-items: center; font-weight: 600; }
+.kind-text { font-size: 12px; font-weight: 650; color: var(--muted); }
+.nav .count .flag { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--warn); color: var(--panel); font-size: 11.5px; font-weight: 700; }
+.conflicts .card-body { padding-top: 4px; padding-bottom: 4px; }
+.conflict { padding: 14px 0; border-top: 1px solid var(--line); }
+.conflict:first-child { border-top: 0; }
+.conflict-head { display: flex; align-items: center; gap: 12px; }
+.conflict-head .what { flex: 1; min-width: 0; }
+.conflict-head .what b { overflow-wrap: anywhere; }
+.conflict-head .what .muted { font-size: 12.5px; }
+.copies { list-style: none; margin: 10px 0 0 46px; padding: 0; display: grid; gap: 6px; }
+.copies li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+.copies li.on { border-color: var(--line-strong); background: var(--hover); }
+.copies .kind-text { width: 68px; flex: none; }
+.copies .size { width: 64px; flex: none; font-size: 12.5px; color: var(--muted); }
+.copies .path { flex: 1 1 200px; min-width: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .copies { margin-left: 0; } }
+
+/* Folders and the folder browser */
+.folder-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
+.folder-row:first-child { border-top: 0; }
+.folder-row .icon { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
+.folder-row.missing .icon { background: var(--bad-soft); color: var(--bad); }
+.folder-row .path { font-weight: 600; overflow-wrap: anywhere; }
+.folder-row .sub { color: var(--muted); font-size: 13px; }
+.folder-row .grow { flex: 1; min-width: 0; }
+.modal-back { position: fixed; inset: 0; background: rgba(10, 12, 16, .45); display: grid; place-items: center; z-index: 50; padding: 20px; }
+.modal { background: var(--panel); border-radius: 14px; box-shadow: var(--shadow-pop); width: min(760px, 100%); max-height: min(640px, calc(100vh - 40px)); display: flex; flex-direction: column; border: 1px solid var(--line); }
+.modal.narrow { width: min(520px, 100%); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.modal-head h2 { margin: 0; font-size: 16px; font-weight: 640; }
+.modal-head .btn { margin-left: auto; }
+.modal-body { padding: 16px 18px; overflow: auto; flex: 1; min-height: 0; }
+.modal-foot { display: flex; gap: 8px; align-items: center; padding: 14px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.modal-foot .note { color: var(--muted); font-size: 13px; margin-right: auto; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.browser { display: grid; grid-template-columns: 170px 1fr; gap: 14px; min-height: 340px; }
+.places { display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--line); padding-right: 12px; }
+.places button, .listing button {
+  display: flex; align-items: center; gap: 10px; border: 0; background: transparent; text-align: left; padding: 7px 9px; border-radius: 7px; cursor: pointer; color: var(--text); width: 100%;
+}
+.places button:hover, .listing button:hover { background: var(--hover); }
+.places button .i, .listing button .i { color: var(--faint); }
+.listing button .i { color: var(--accent-text); }
+.crumbs { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.crumbs .input { font-family: "Cascadia Mono", Consolas, Menlo, monospace; font-size: 12.5px; }
+.listing { display: flex; flex-direction: column; max-height: 360px; overflow: auto; }
+.detail-cover { width: 180px; flex: none; }
+.detail { display: flex; gap: 20px; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 13.5px; align-content: start; }
+.facts .k { color: var(--muted); }
+.facts .v { overflow-wrap: anywhere; }
+
+/* Settings */
+.settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
+.subnav { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 2px; }
+.subnav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--muted); font-weight: 550; text-decoration: none; border: 1px solid transparent; white-space: nowrap; }
+.subnav a:hover { background: var(--hover); color: var(--text); }
+.subnav a.on { background: var(--panel); color: var(--text); border-color: var(--line); box-shadow: var(--shadow); }
+.subnav a.on .i { color: var(--accent-text); }
+.subnav .new { margin-left: auto; }
+.section-head { margin: 2px 0 2px; }
+.section-head h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+.section-head p { margin: 3px 0 0; color: var(--muted); }
+.hero { display: flex; gap: 16px; align-items: center; padding: 20px; }
+.hero .mark { width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center; flex: none; }
+.hero .mark .i { width: 24px; height: 24px; }
+.hero .text { flex: 1; min-width: 0; }
+.hero h3 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.hero p { margin: 3px 0 0; color: var(--muted); }
+.hero .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.hero .brand-mark { width: 48px; height: 48px; display: block; }
+.hero-foot { display: flex; gap: 8px 18px; flex-wrap: wrap; align-items: center; padding: 12px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.hero-foot b { color: var(--text); font-weight: 600; }
+.progress { height: 8px; border-radius: 99px; background: var(--hover); overflow: hidden; margin-top: 10px; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.progress.busy i { width: 35%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.notes { overflow-wrap: anywhere; }
+.notes h3, .notes h4 { margin: 16px 0 6px; font-size: 14px; font-weight: 650; }
+.notes > :first-child { margin-top: 0; }
+.notes p { margin: 6px 0; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 3px 0; }
+.command { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line-strong); }
+.command code { flex: 1; min-width: 0; background: none; border: 0; padding: 0; overflow-x: auto; white-space: nowrap; }
+.backup-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
+.backup-row:first-child { border-top: 0; }
+.backup-row .kindmark { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.backup-row .grow { flex: 1; min-width: 0; }
+.backup-row .sub { color: var(--muted); font-size: 13px; }
+.backup-row .when { font-weight: 600; }
+.link { display: inline-flex; align-items: center; gap: 5px; }
+.backup-row .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.flag.new, .pill.new { background: var(--info); color: var(--panel); }
+.nav .count .flag.new { background: var(--info); }
+.notice.info { background: var(--info-soft); color: var(--info); }
+
+/* Log */
+.log { height: calc(100vh - 230px); min-height: 320px; overflow: auto; padding: 10px 0; background: var(--field); border-radius: 0 0 12px 12px; }
+.log div { padding: 1px 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log div:hover { background: var(--hover); }
+.log .t { color: var(--faint); margin-right: 10px; user-select: none; }
+.log .warn { color: var(--warn); }
+.log .xbox { color: var(--info); font-weight: 600; }
+
+/* Login, toasts */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login .card { width: min(380px, 100%); padding: 28px; }
+.login h1 { font-size: 20px; margin: 16px 0 4px; }
+#toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+.toast { background: var(--text); color: var(--bg); border-radius: 10px; padding: 11px 14px; box-shadow: var(--shadow-pop); display: flex; gap: 10px; align-items: center; max-width: 420px; animation: rise .2s ease-out; }
+.toast.bad { background: var(--bad); color: #fff; }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+.offline-bar { background: var(--warn-soft); color: var(--warn); padding: 8px 32px; font-weight: 550; display: flex; align-items: center; gap: 8px; }
+
+@media (max-width: 1100px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .two { grid-template-columns: minmax(0, 1fr); }
+  .console-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  #app { flex-direction: column; }
+  .side { display: none; }
+  .topbar { display: flex; position: sticky; top: 0; z-index: 10; background: var(--side); border-bottom: 1px solid var(--line); padding: 8px 12px; gap: 4px; overflow-x: auto; align-items: center; }
+  .topbar .brand-mark { width: 26px; height: 26px; margin-right: 6px; }
+  .topbar a { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px; color: var(--muted); white-space: nowrap; font-weight: 550; font-size: 13px; text-decoration: none; }
+  .topbar a.on { background: var(--accent-soft); color: var(--accent-text); }
+  .page { padding: 18px 16px 40px; }
+  .steps { grid-template-columns: 1fr; }
+  .form.cols { grid-template-columns: 1fr; }
+  .browser { grid-template-columns: 1fr; }
+  .places { flex-direction: row; flex-wrap: wrap; border-right: 0; padding-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .places button { width: auto; }
+  .detail { flex-direction: column; }
+  .settings { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .subnav { position: static; flex-direction: row; overflow-x: auto; margin: 0 -16px; padding: 0 16px 2px; }
+  .hero { flex-wrap: wrap; }
+  .hero .actions { width: 100%; justify-content: flex-start; }
+  .backup-row { flex-wrap: wrap; }
+  .backup-row .actions { width: 100%; justify-content: flex-start; padding-left: 52px; }
+  .covers { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px 12px; }
+  .table .hide-narrow { display: none; }
+  .offline-bar { padding: 8px 16px; }
+}
+@media (max-width: 520px) {
+  .tiles { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .tile { padding: 12px 14px; }
+  .tile .value { font-size: 21px; }
+  .console-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<!--icons-->
+<div id="app"></div>
+<div id="modals"></div>
+<div id="toasts"></div>
+<script>
+'use strict';
+// Helpers ----------------------------------------------------------------------
+
+const $ = (selector, root) => (root || document).querySelector(selector);
+const ic = (name, size) => {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'i' + (size ? ' ' + size : ''));
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  return svg;
+};
+// h('div.card', {onclick: ...}, 'text', child, ...): an element; strings become text, never HTML.
+function h(spec, props, ...children) {
+  const tag = spec.match(/^[a-z0-9]*/i)[0];
+  const el = document.createElement(tag || 'div');
+  for (const [, sym, name] of spec.slice(tag.length).matchAll(/([.#])([^.#]+)/g)) if (sym === '.') el.classList.add(name); else el.id = name;
+  if (props != null && (typeof props !== 'object' || props instanceof Node || Array.isArray(props))) { children.unshift(props); props = null; }
+  for (const key in props || {}) {
+    const value = props[key];
+    if (value == null || value === false || value === '') continue;
+    if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+    else if (key === 'class') { for (const c of value.split(' ')) if (c) el.classList.add(c); }
+    else if (key === 'style' && typeof value === 'object') { for (const k in value) if (k.startsWith('--')) el.style.setProperty(k, value[k]); else el.style[k] = value[k]; }
+    else if (key in el && key !== 'list' && typeof value !== 'string') el[key] = value;
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  add(el, children);
+  return el;
+}
+function add(el, children) {
+  for (const c of children.flat(Infinity)) {
+    if (c == null || c === false) continue;
+    el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+const fill = (el, ...children) => { el.replaceChildren(); return add(el, children); };
+
+function bytes(n, digits) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(digits == null ? (n < 10 ? 1 : 0) : digits) : n) + ' ' + units[i];
+}
+const rate = n => n < 1024 ? (n ? Math.round(n) + ' B/s' : '0 MB/s') : bytes(n, 1) + '/s';
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'));
+function ago(t) {
+  if (!t) return 'never';
+  const s = (S ? S.time : Date.now() / 1000) - t;
+  if (s < 45) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 172800) return 'yesterday';
+  return new Date(t * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+const clock = t => new Date(t * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+function duration(s) {
+  s = Math.floor(s);
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min';
+  return Math.floor(s / 86400) + ' d ' + Math.floor(s % 86400 / 3600) + ' h';
+}
+function store(key, value) {
+  try { if (value === undefined) return localStorage.getItem('netdisc.' + key); localStorage.setItem('netdisc.' + key, value); } catch (e) { return null; }
+}
+
+function toast(text, bad) {
+  const t = h('div.toast' + (bad ? '.bad' : ''), ic(bad ? 'circle-alert' : 'circle-check', 'sm'), h('span', text));
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), bad ? 6000 : 3000);
+}
+
+async function api(path, body) {
+  // The server answers only requests with X-NetDisc, which another site's page can't send.
+  const options = body === undefined ? { headers: { 'X-NetDisc': '1' } } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NetDisc': '1' }, body: JSON.stringify(body) };
+  let response;
+  try { response = await fetch('/api/' + path, options); }
+  catch (e) { throw new Error('NetDisc360 isn\u2019t answering. Is it still running?'); }
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && path !== 'login') { showLogin(); throw new Error('Log in first.'); }
+  if (!response.ok) throw new Error(data.error || 'Something went wrong (' + response.status + ').');
+  return data;
+}
+async function save(changes, done) {
+  try { await api('settings', changes); await refresh(); toast(done || 'Saved'); return true; }
+  catch (e) { toast(e.message, true); return false; }
+}
+
+// Theme: the system's, or light or dark, kept in this browser.
+function applyTheme() {
+  const choice = store('theme') || 'system';
+  const dark = choice === 'dark' || (choice === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  if (charts.length) redrawCharts();
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const seriesColor = i => css('--s' + (i % 6 + 1));
+
+// Covers: from the XboxUnity-Scraper archive of XboxUnity's covers on GitHub
+// (the ones Aurora downloads), loaded by this browser. Only for this page;
+// the Xbox gets its art from Aurora.
+const Archive = 'https://raw.githubusercontent.com/UncreativeXenon/XboxUnity-Scraper/master/Covers/';
+const coverIds = {};
+function coverId(titleId) {
+  if (!coverIds[titleId]) {
+    const known = store('cover.' + titleId);
+    if (known && (known !== 'none' || Date.now() - (+store('cover.' + titleId + '.at') || 0) < 7 * 864e5)) coverIds[titleId] = Promise.resolve(known);
+    else coverIds[titleId] = fetch(Archive + titleId + '/metadata.json').then(r => r.ok ? r.json() : { Covers: [] }).then(meta => {
+      const covers = (meta.Covers || []).filter(c => /^\d+$/.test(c.CoverID));
+      covers.sort((a, b) => (b.Official === '1') - (a.Official === '1') || (+b.Rating || 0) - (+a.Rating || 0));
+      const id = covers.length ? covers[0].CoverID : 'none';
+      store('cover.' + titleId, id); store('cover.' + titleId + '.at', Date.now());
+      return id;
+    }).catch(() => 'none');
+  }
+  return coverIds[titleId];
+}
+const showCovers = () => store('covers') !== 'off';
+function hue(text) { let n = 0; for (const c of text) n = (n * 31 + c.charCodeAt(0)) % 360; return n; }
+// A game's cover: its art, over a colored card with its name while it loads or if it has none.
+function cover(game, small) {
+  const k = hue(game.name);
+  const box = h('div.' + (small ? 'thumb' : 'cover'),
+    h('div.art', { style: { '--a1': `hsl(${k} 45% 38%)`, '--a2': `hsl(${(k + 40) % 360} 55% 22%)` } }, h('div.ring'), h('div.t', game.name)));
+  if (game.titleId && showCovers()) {
+    coverId(game.titleId).then(id => {
+      if (id === 'none') return;
+      const img = h('img', { alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
+      img.onload = () => { img.className = (img.naturalWidth / img.naturalHeight > 1.2 ? 'box' : 'front') + ' ready'; };
+      img.src = Archive + game.titleId + '/Large/' + id + '.png';
+      box.appendChild(img);
+    });
+  }
+  return box;
+}
+
+// State -------------------------------------------------------------------------
+
+let S = null;                // /api/state
+let G = { version: -1, games: [], conflicts: [] };  // /api/games
+let page = null, view = null, failed = 0, timer = 0;
+const Pages = {};
+const Nav = [
+  ['dashboard', 'Dashboard', 'layout-dashboard'],
+  ['games', 'Games', 'gamepad-2'],
+  ['consoles', 'Consoles', 'monitor'],
+  ['folders', 'Game folders', 'folder'],
+  ['log', 'Log', 'scroll-text'],
+  ['settings', 'Settings', 'settings'],
+];
+
+async function refresh() {
+  clearTimeout(timer);
+  try {
+    S = await api('state');
+    failed = 0;
+    const said = store('restarted');
+    if (said) { store('restarted', ''); toast(said); }
+    // Where the server can't ask GitHub (Docker), this browser does, for the "New" in the sidebar.
+    if (!U && !S.update.checks && S.settings.updateCheck && !refresh.asked) { refresh.asked = true; loadUpdate(false).then(() => updateFrame()).catch(() => {}); }
+    if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || !G.games.length)) {
+      const g = await api('games');
+      if (g.version !== G.version) { G = g; if (view && view.games) view.games(); }
+    }
+    if (!$('.side')) frame();
+    updateFrame();
+    if (view && view.update) view.update();
+  } catch (e) {
+    if ($('.login')) return;
+    if (++failed === 3 && $('.side')) updateFrame(restarting ? 'NetDisc360 is restarting\u2026' : e.message);
+  }
+  timer = setTimeout(refresh, document.hidden ? 5000 : 1000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S) refresh(); });
+
+function playing() {
+  const map = {};
+  for (const c of S ? S.consoles : []) if (c.playing) (map[c.mounted.toLowerCase()] = map[c.mounted.toLowerCase()] || []).push(c.address);
+  return map;
+}
+
+// The frame: sidebar, top bar on small screens, and the page.
+function frame() {
+  const nav = Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon), h('span', label), h('span.count')));
+  fill($('#app'),
+    h('aside.side',
+      h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
+      h('nav.nav', nav),
+      h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
+        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
+    h('main',
+      h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label)),
+        h('a', { href: '#', title: 'Latest releases', onclick: e => { e.preventDefault(); releases(); } }, ic('download', 'sm'), 'Releases')),
+      h('div#offline.offline-bar.hidden', ic('wifi-off', 'sm'), h('span')),
+      h('div.page#page')));
+  route();
+}
+function mark() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 32 32'); svg.setAttribute('class', 'brand-mark');
+  for (const [r, attrs] of [[15, { fill: 'var(--accent)' }], [9.5, { fill: 'none', stroke: 'var(--on-accent)', 'stroke-opacity': '.4', 'stroke-width': '2' }], [3.6, { fill: 'var(--on-accent)' }]]) {
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('cx', 16); c.setAttribute('cy', 16); c.setAttribute('r', r);
+    for (const k in attrs) c.setAttribute(k, attrs[k]);
+    svg.appendChild(c);
+  }
+  return svg;
+}
+function updateFrame(problem) {
+  const bar = $('#offline');
+  if (bar) { bar.classList.toggle('hidden', !problem); if (problem) fill($('span', bar), problem); }
+  if (!S) return;
+  const online = S.consoles.filter(c => c.connections > 0).length;
+  const counts = { games: S.library.games, consoles: S.consoles.length ? online + '/' + S.consoles.length : '', folders: S.folders.length };
+  for (const a of document.querySelectorAll('.nav a')) {
+    const n = counts[a.dataset.page];
+    if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
+    else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
+    else fill($('.count', a), n === undefined || n === '' ? '' : n);
+  }
+  $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
+  fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
+  fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
+  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc360';
+}
+
+function route() {
+  const id = (location.hash.slice(1) || 'dashboard').split('/')[0];
+  const next = Pages[id] ? id : 'dashboard';
+  for (const a of document.querySelectorAll('[data-page]')) a.classList.toggle('on', a.dataset.page === next);
+  if (next === page && view) { if (view.route) view.route(); return; }
+  if (view && view.leave) view.leave();
+  page = next;
+  charts = [];
+  const root = $('#page');
+  root.replaceChildren();
+  view = Pages[page](root) || {};
+  if (S && view.update) view.update();
+  if (page === 'games' && S && S.library.version !== G.version) refresh();
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', route);
+
+function header(title, lead, ...actions) {
+  return h('div.head', h('div', h('h1', title), lead && h('p', lead)), actions.length ? h('div.actions', actions) : null);
+}
+
+// Charts --------------------------------------------------------------------------
+
+let charts = [];
+function redrawCharts() { for (const c of charts) c.draw(); }
+window.addEventListener('resize', redrawCharts);
+// The bandwidth chart: each console's last two minutes, stacked.
+function bandwidthChart(wrap) {
+  const canvas = h('canvas'), tip = h('div.chart-tip.hidden');
+  wrap.append(canvas, tip);
+  let hover = -1, series = [];
+  const chart = {
+    set(list) { series = list; chart.draw(); },
+    draw() {
+      const w = wrap.clientWidth, hgt = wrap.clientHeight, ratio = devicePixelRatio || 1;
+      if (!w) return;
+      canvas.width = w * ratio; canvas.height = hgt * ratio;
+      const g = canvas.getContext('2d');
+      g.scale(ratio, ratio);
+      const n = 120, left = 64, right = 8, top = 10, bottom = 22;
+      const totals = new Array(n).fill(0);
+      for (const s of series) s.values.forEach((v, i) => totals[i + n - s.values.length] += v);
+      const peak = Math.max(...totals, 0);
+      const mb = 1048576;
+      let step = [0.5, 1, 2, 5, 10, 20, 50, 100, 200].find(x => x * mb * 4 >= peak) || 500;
+      const max = step * mb * 4;
+      const font = '12px ' + getComputedStyle(document.body).fontFamily;
+      g.font = font; g.textBaseline = 'middle';
+      for (let i = 0; i <= 4; i++) {
+        const y = top + (hgt - top - bottom) * (1 - i / 4);
+        g.strokeStyle = css('--chart-grid'); g.lineWidth = 1;
+        g.beginPath(); g.moveTo(left, Math.round(y) + .5); g.lineTo(w - right, Math.round(y) + .5); g.stroke();
+        g.fillStyle = css('--faint'); g.textAlign = 'right';
+        g.fillText((step * i) + (i ? ' MB/s' : ''), left - 8, y);
+      }
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+      g.fillText('2 min ago', left, hgt - 4);
+      g.textAlign = 'right'; g.fillText('now', w - right, hgt - 4);
+      const x = i => left + (w - left - right) * i / (n - 1);
+      const y = v => top + (hgt - top - bottom) * (1 - Math.min(v, max) / max);
+      const base = new Array(n).fill(0);
+      series.forEach((s, k) => {
+        const values = new Array(n - s.values.length).fill(0).concat(s.values);
+        const color = seriesColor(s.color);
+        const tops = values.map((v, i) => base[i] + v);
+        g.beginPath();
+        tops.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+        for (let i = n - 1; i >= 0; i--) g.lineTo(x(i), y(base[i]));
+        g.closePath();
+        g.globalAlpha = 0.22; g.fillStyle = color; g.fill(); g.globalAlpha = 1;
+        g.beginPath();
+        tops.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+        g.strokeStyle = color; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
+        tops.forEach((v, i) => base[i] = v);
+      });
+      if (!series.length || peak === 0) {
+        g.fillStyle = css('--panel');
+        const text = series.length ? 'Nothing is streaming right now' : 'No console has connected yet';
+        const tw = g.measureText(text).width;
+        g.fillRect((left + w) / 2 - tw / 2 - 10, (top + hgt - bottom) / 2 - 12, tw + 20, 24);
+        g.fillStyle = css('--muted'); g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(text, (left + w) / 2, (top + hgt - bottom) / 2);
+      }
+      if (hover >= 0 && series.length) {
+        g.strokeStyle = css('--line-strong'); g.lineWidth = 1;
+        g.beginPath(); g.moveTo(Math.round(x(hover)) + .5, top); g.lineTo(Math.round(x(hover)) + .5, hgt - bottom); g.stroke();
+        const rows = series.map(s => { const v = s.values[hover - (n - s.values.length)] || 0; return h('div.row', h('i', { style: { width: '8px', height: '8px', borderRadius: '2px', background: seriesColor(s.color), display: 'inline-block' } }), s.name, h('b', rate(v))); });
+        fill(tip, h('div.muted', { style: { marginBottom: '4px' } }, (n - 1 - hover) ? (n - 1 - hover) + ' s ago' : 'now'), rows);
+        tip.classList.remove('hidden');
+        const tx = x(hover) + 14;
+        tip.style.left = (tx + 170 > w ? x(hover) - 14 - tip.offsetWidth : tx) + 'px';
+        tip.style.top = '10px';
+      } else tip.classList.add('hidden');
+      chart.x = x; chart.n = n; chart.left = left; chart.right = right;
+    },
+  };
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect(), w = r.width;
+    const i = Math.round((e.clientX - r.left - 64) / (w - 72) * 119);
+    hover = i >= 0 && i < 120 ? i : -1; chart.draw();
+  });
+  canvas.addEventListener('mouseleave', () => { hover = -1; chart.draw(); });
+  charts.push(chart);
+  return chart;
+}
+// A console's small chart: its last minute.
+function spark(canvas, values, color) {
+  const w = canvas.clientWidth || 110, hgt = canvas.clientHeight || 30, ratio = devicePixelRatio || 1;
+  canvas.width = w * ratio; canvas.height = hgt * ratio;
+  const g = canvas.getContext('2d'); g.scale(ratio, ratio);
+  const v = values.slice(-60), max = Math.max(...v, 1048576);
+  g.beginPath();
+  v.forEach((x, i) => { const px = w * i / Math.max(v.length - 1, 1), py = hgt - 2 - (hgt - 4) * x / max; i ? g.lineTo(px, py) : g.moveTo(px, py); });
+  g.strokeStyle = color; g.lineWidth = 1.6; g.stroke();
+  g.lineTo(w, hgt); g.lineTo(0, hgt); g.closePath(); g.globalAlpha = .15; g.fillStyle = color; g.fill();
+}
+
+// Consoles, as the dashboard and the consoles page show them.
+function consoleStatus(c) {
+  // offline: it answered the server's pings, then stopped, and its connection ended.
+  if (c.offline) return { cls: 'off', dot: 'bad', text: 'Offline' };
+  // playing: the server saw no return to Aurora since the game's mount (its FTP server answers again).
+  if (c.playing) return { cls: 'playing', dot: 'play', text: 'Playing' };
+  if (c.connections > 0) return { cls: 'on', dot: 'good', text: c.inAurora || !c.mounted ? 'In Aurora' : 'Connected' };
+  if (c.answers) return { cls: '', dot: 'good', text: 'On' };
+  const seen = lastSeen(c);
+  if (S.time - seen < 120) return { cls: '', dot: '', text: 'Idle' };
+  return { cls: 'off', dot: '', text: seen ? 'Last seen ' + ago(seen) : 'Not seen yet' };
+}
+// seen: its latest NetISO request; answered: its latest answer to a ping.
+const lastSeen = c => Math.max(c.seen, c.answered || 0);
+function ftpText(c) {
+  if (!c.push) return ['Not updated (not in your list)', ''];
+  if (!S.settings.push) return ['Off in Settings', ''];
+  if (c.offline) return ['\u2014', ''];
+  if (c.ftp === 2) return ['Answers', 'good'];
+  if (c.ftp === 1) return ['Not answering', c.connections > 0 ? 'warn' : ''];
+  return ['Not tried yet', ''];
+}
+function pingText(c) {
+  if (c.offline) return ['No answer', 'bad'];
+  if (c.answers) return [c.ping < 1 ? 'Under 1 ms' : c.ping + ' ms', 'good'];
+  return [c.ping < 0 ? '\u2014' : 'No answer', ''];
+}
+function consoleCard(c, index, wide) {
+  const st = consoleStatus(c);
+  const now = c.rate.length ? c.rate[c.rate.length - 1] : 0;
+  const canvas = h('canvas');
+  const card = h('div.console' + (st.cls ? '.' + st.cls : ''),
+    h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
+    h('div.name', h('span', c.address), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+    h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
+    h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : c.answers ? 'On; NetISO hasn\u2019t connected yet' : 'Nothing mounted'));
+  if (wide) {
+    const [ftp, tone] = ftpText(c), [ping, pingTone] = pingText(c);
+    card.classList.add('console-wide');
+    card.appendChild(h('div.console-facts',
+      fact('Sent since start', bytes(c.sent)),
+      fact('Ping', ping, pingTone),
+      fact('Aurora\u2019s FTP', ftp, tone),
+      fact('Game folders updated', c.synced ? ago(c.synced) : c.push && S.settings.push ? 'Not yet' : '\u2014'),
+      fact('Last connected', c.connections > 0 ? 'Now' : c.seen ? ago(c.seen) : 'Not yet')));
+    // Its last five events, newest first.
+    if (c.events && c.events.length) card.appendChild(h('div.console-events', h('h3', 'Recent activity'),
+      h('ul.events', c.events.slice().reverse().map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))))));
+  }
+  requestAnimationFrame(() => { if (canvas.isConnected) spark(canvas, c.rate, seriesColor(index)); });
+  return card;
+}
+function fact(k, v, tone) { return h('div.fact', h('div.k', k), h('div.v' + (tone ? '.' + tone : ''), v)); }
+
+const EventIcons = { good: 'circle-check', play: 'play', xbox: 'monitor', info: 'info', warning: 'triangle-alert' };
+
+// Dashboard -----------------------------------------------------------------------
+
+Pages.dashboard = root => {
+  const open = h('div'), news = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
+  const consoles = h('div.consoles'), events = h('ul.events');
+  root.append(
+    header('Dashboard', null),
+    h('div.stack', open, news, copies, setup, tiles,
+      h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
+        h('div.card-body', chartWrap, legend)),
+      h('div.grid.two',
+        h('div.card', h('div.card-head', ic('monitor'), h('h2', 'Consoles'), h('div.right', h('a.btn.small.ghost', { href: '#consoles' }, 'All consoles', ic('chevron-right', 'sm')))), h('div.card-body', consoles)),
+        h('div.card', h('div.card-head', ic('history'), h('h2', 'Activity')), h('div.card-body', events)))));
+  const chart = bandwidthChart(chartWrap);
+  const tile = (icon, label, value, note, warn) => h('div.card.tile', h('div.label', ic(icon, 'sm'), label), h('div.value', value), h('div.note' + (warn ? '.warn' : ''), note));
+  return {
+    update() {
+      // Setup steps until they're done (or hidden).
+      const st = S.settings;
+      // Open to the network with no password: anyone there can change the settings.
+      if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings/dashboard' }, 'Set a password')));
+      else open.replaceChildren();
+      const out = updateOut();
+      if (out) fill(news, h('div.notice.info', ic('sparkles'), h('span', 'NetDisc360 ' + out + ' is out.'), h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new')));
+      else news.replaceChildren();
+      // A game in the folders more than once, with no copy chosen yet.
+      const n = S.library.conflicts;
+      if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
+      else copies.replaceChildren();
+      const steps = [
+        { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
+        { done: S.consoles.some(c => c.seen > 0), t: 'Tell NetISO where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetISO.xex.txt'), ' next to NetISO.xex on your USB drive, with one line: ', h('code', S.addresses[0] || 'this computer\u2019s address'), '. Then restart the Xbox.'] },
+        { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', 'Hdd1:\\NetISO'), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings/xbox' }, 'Settings'), ').'] },
+      ];
+      const all = steps.every(s => s.done);
+      if (st.setupDone) setup.replaceChildren();
+      else fill(setup, h('div.card.setup',
+        h('div', h('h2', all ? 'All set! Your games are on their way to Aurora.' : 'Get started'), h('p.lead', all ? 'New games you put in your folders show up in Aurora by themselves.' : 'Three steps, and your games show up in Aurora like installed games.')),
+        h('div', h('button.btn' + (all ? '.primary' : '.ghost') + '.small', { onclick: () => save({ setupDone: true }, 'Setup steps hidden') }, all ? 'Done' : 'Hide')),
+        h('div.steps', steps.map((s, i) => h('div.step' + (s.done ? '.done' : ''), h('div.n', s.done ? ic('check', 'sm') : String(i + 1)), h('div.t', s.t), h('div.d', s.d), s.done ? null : s.a)))));
+      const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.playing);
+      const missing = S.folders.filter(f => !f.found).length;
+      fill(tiles,
+        tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
+        tile('monitor', 'Consoles connected', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
+        tile('gauge', 'Streaming now', rate(S.totals.rate), 'peak ' + rate(S.totals.peak)),
+        tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
+      const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
+      chart.set(list.map(x => ({ name: x.c.address, values: x.c.rate, color: x.i })));
+      fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), x.c.address, x.c.playing ? ' \u00b7 ' + x.c.mounted : '')));
+      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c)).slice(0, 4);
+      fill(consoles, sorted.length ? sorted.map(x => consoleCard(x.c, x.i)) :
+        h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to ', h('code', (S.addresses[0] || 'this computer') + ':' + S.ports.netiso), '.')));
+      const recent = S.events.slice(-12).reverse();
+      fill(events, recent.length ? recent.map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))) : h('li.muted', 'Nothing yet.'));
+    },
+  };
+};
+
+// Games ---------------------------------------------------------------------------
+
+const KindNames = { iso: 'ISO', folder: 'Extracted', god: 'GOD' };
+Pages.games = root => {
+  let mode = store('games.view') || 'covers', kind = 'all', sort = store('games.sort') || 'name', query = '';
+  const list = h('div'), open = h('div'), dupes = h('div'), count = h('span.muted');
+  const search = h('input.input', { type: 'search', placeholder: 'Search games', oninput: e => { query = e.target.value.toLowerCase(); draw(); } });
+  const kinds = h('div.segmented', ['all', 'iso', 'folder', 'god'].map(k => h('button', { 'data-kind': k, class: k === kind ? 'on' : '', onclick: () => { kind = k; draw(); } }, k === 'all' ? 'All' : KindNames[k])));
+  const views = h('div.segmented', [['covers', 'layout-grid'], ['list', 'list']].map(([m, icon]) => h('button', { 'data-mode': m, title: m === 'covers' ? 'Covers' : 'List', class: m === mode ? 'on' : '', onclick: () => { mode = m; store('games.view', m); draw(); } }, ic(icon, 'sm'))));
+  const sorts = h('select.input', { style: { width: 'auto' }, onchange: e => { sort = e.target.value; store('games.sort', sort); draw(); } },
+    [['name', 'Name'], ['size', 'Size'], ['kind', 'Format'], ['folder', 'Folder']].map(([v, l]) => h('option', { value: v, selected: v === sort }, 'Sort by ' + l.toLowerCase())));
+  root.append(header('Games', h('span', count), h('button.btn', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')),
+    open, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
+  let drawn = '';
+  function draw() {
+    for (const b of kinds.children) b.classList.toggle('on', b.dataset.kind === kind);
+    for (const b of views.children) b.classList.toggle('on', b.dataset.mode === mode);
+    const now = playing();
+    let games = G.games.filter(g => (kind === 'all' || g.kind === kind) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
+    const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    games.sort(sort === 'size' ? (a, b) => b.size - a.size || byName(a, b) : sort === 'kind' ? (a, b) => a.kind.localeCompare(b.kind) || byName(a, b) : sort === 'folder' ? (a, b) => a.folder - b.folder || byName(a, b) : byName);
+    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers')]);
+    if (key === drawn) return;
+    drawn = key;
+    const total = G.games.reduce((n, g) => n + g.size, 0);
+    fill(count, G.games.length ? plural(G.games.length, 'game') + ' \u00b7 ' + bytes(total) + (G.games.some(g => !g.sizeKnown) ? '+' : '') : '');
+    if (!G.games.length) {
+      fill(list, h('div.card', h('div.empty', ic('gamepad-2'), h('h3', S && S.library.scanned ? 'No games yet' : 'Looking for games\u2026'),
+        h('p', S && S.folders.length ? 'Put ISOs, extracted games or Games on Demand packages in your game folders; they show up here by themselves.' : 'Add the folder with your games, and they show up here.'),
+        h('button.btn.primary', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder'))));
+    } else if (!games.length) fill(list, h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', 'Try another name, or All.'))));
+    else if (mode === 'covers') {
+      fill(list, h('div.covers', games.map(g => {
+        const on = now[(g.name).toLowerCase()];
+        const c = cover(g);
+        c.append(h('div.tag', h('span.kind', KindNames[g.kind])));
+        if (on) c.append(h('div.now', { title: 'Playing on ' + on.join(', ') }, h('span.pill', ic('play', 'sm'), on.length > 1 ? plural(on.length, 'console') : on[0])));
+        return h('div.game', { tabindex: 0, onclick: () => details(g), onkeydown: e => { if (e.key === 'Enter') details(g); } }, c, h('div.name', { title: g.name }, g.name),
+          h('div.meta', g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : ''));
+      })));
+    } else {
+      fill(list, h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
+        h('thead', h('tr', h('th', 'Game'), h('th', 'Format'), h('th.hide-narrow', 'Title ID'), h('th.num', 'Size'), h('th.hide-narrow', 'Where'))),
+        h('tbody', games.map(g => {
+          const on = now[g.name.toLowerCase()];
+          return h('tr.click', { onclick: () => details(g) },
+            h('td', h('div.cell-name', cover(g, true), h('div', g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null))),
+            h('td', h('span.kind-text', KindNames[g.kind])),
+            h('td.hide-narrow.mono', g.titleId || '\u2014'),
+            h('td.num', g.sizeKnown ? bytes(g.size) : '\u2026'),
+            h('td.hide-narrow.path', g.path));
+        })))));
+    }
+    // Games there more than once: the open ones first, above the list.
+    const waiting = G.conflicts.filter(c => c.open), settled = G.conflicts.filter(c => !c.open);
+    if (waiting.length) fill(open, h('div.card.conflicts', { style: { marginBottom: '20px' } },
+      h('div.card-head', ic('copy', 'sm'), h('h2', 'Choose which copy to play'), h('span.sub', waiting.length === 1 ? 'this game is in your folders more than once' : 'these games are in your folders more than once')),
+      h('div.card-body', waiting.map(conflict)),
+      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.')));
+    else open.replaceChildren();
+    if (settled.length) fill(dupes, h('div.card.conflicts', { style: { marginTop: '20px' } },
+      h('div.card-head', ic('copy', 'sm'), h('h2', 'Games with more than one copy'), h('span.sub', 'the copy you chose plays')),
+      h('div.card-body', settled.map(conflict)),
+      h('div.card-foot.muted', 'Delete the copies you don\u2019t play from your folders to free up space.')));
+    else dupes.replaceChildren();
+  }
+  return { update: draw, games: draw };
+};
+
+const choosePhrase = n => n === 1 ? '1 game to choose a copy of' : n + ' games to choose a copy of';
+
+// One game that is in the folders more than once, with a button to play each copy.
+function conflict(c) {
+  const first = c.copies[0];
+  return h('div.conflict',
+    h('div.conflict-head', cover({ name: c.name, titleId: first.titleId }, true),
+      h('div.what', h('b', c.name), h('div.muted', 'Title ID ' + first.titleId + (first.disc > 1 ? ' \u00b7 Disc ' + first.disc : '') + ' \u00b7 ' + plural(c.copies.length, 'copy', 'copies'))),
+      c.open ? h('span.pill.warn', ic('triangle-alert', 'sm'), 'Choose a copy') : h('span.pill.good', ic('check', 'sm'), 'Chosen')),
+    h('ul.copies', c.copies.map(g => {
+      const served = g.path === c.served;
+      return h('li' + (served ? '.on' : ''),
+        h('span.kind-text', KindNames[g.kind]), h('span.size', g.sizeKnown ? bytes(g.size) : '\u2026'), h('span.path', g.path),
+        served ? h('span.pill' + (c.open ? '.info' : '.good'), ic('play', 'sm'), 'Plays now') : null,
+        served && c.open ? h('button.btn.small.primary', { onclick: e => choose(c, g, e.target) }, 'Keep this one') : null,
+        served ? null : h('button.btn.small', { onclick: e => choose(c, g, e.target) }, 'Play this one'));
+    })));
+}
+
+async function choose(c, g, button) {
+  button.disabled = true;
+  try {
+    await api('conflict', { key: c.key, path: g.path });
+    toast(c.name + ': the ' + { iso: 'ISO', folder: 'extracted', god: 'Games on Demand' }[g.kind] + ' copy plays from now on');
+    await refresh();
+  } catch (e) { toast(e.message, true); button.disabled = false; }
+}
+
+function details(g) {
+  const on = playing()[g.name.toLowerCase()];
+  const folder = S && S.folders[g.folder];
+  modal(g.name, close => [
+    h('div.modal-body', h('div.detail',
+      h('div.detail-cover', cover(g)),
+      h('div.facts',
+        h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', god: 'Games on Demand package' }[g.kind] || g.kind),
+        h('div.k', 'Size'), h('div.v', g.sizeKnown ? bytes(g.size, 2) : 'Counting\u2026'),
+        h('div.k', 'Title ID'), h('div.v.mono', g.titleId || 'Not known'),
+        g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
+        h('div.k', 'Playing'), h('div.v', on ? on.join(', ') : 'Not now'),
+        h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
+        h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path)))),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
+      navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
+      h('button.btn.primary', { onclick: close }, 'Close')),
+  ]);
+}
+
+function modal(title, build, narrow, closed) {
+  const back = h('div.modal-back');
+  const close = () => { if (!back.isConnected) return; back.remove(); document.removeEventListener('keydown', esc); if (closed) closed(); };
+  const esc = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', esc);
+  back.addEventListener('mousedown', e => { if (e.target === back) close(); });
+  back.appendChild(h('div.modal' + (narrow ? '.narrow' : ''), { role: 'dialog', 'aria-label': title },
+    h('div.modal-head', h('h2', title), h('button.btn.icon.ghost', { onclick: close, title: 'Close' }, ic('x'))), build(close)));
+  $('#modals').appendChild(back);
+  const first = $('input', back);
+  if (first) first.focus();
+  return close;
+}
+
+// The newest release of NetDisc360 and of the console tools that go with it.
+// GitHub's /releases/latest always leads to the newest one; its API names it.
+const Releases = [
+  { repo: 'marcusisdahl/NetDisc360', name: 'NetDisc360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
+  { repo: 'marcusisdahl/FastFTP360', name: 'FastFTP360', icon: 'arrow-down-up', what: 'A fast FTP server app for the Xbox, to copy games and files to it.' },
+  { repo: 'marcusisdahl/UsbNet360', name: 'UsbNet360', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster. Our fork of CUsbEnet.' },
+];
+function releases() {
+  modal('Latest releases', close => [
+    h('div.modal-body', h('div.releases', Releases.map(r => {
+      const tag = h('span.muted');
+      fetch('https://api.github.com/repos/' + r.repo + '/releases/latest', { referrerPolicy: 'no-referrer' })
+        .then(x => x.ok ? x.json() : null)
+        .then(j => { if (j && j.tag_name) fill(tag, j.tag_name + (j.published_at ? ' \u00b7 ' + ago(Date.parse(j.published_at) / 1000) : '')); })
+        .catch(() => {});
+      return h('a.release', { href: 'https://github.com/' + r.repo + '/releases/latest', target: '_blank', rel: 'noopener noreferrer' },
+        h('div.icon', ic(r.icon)), h('div.text', h('div.title', r.name, tag), h('div.help', r.what)), ic('chevron-right', 'sm'));
+    }))),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Each opens the newest release on GitHub in a new tab.'), h('button.btn.primary', { onclick: close }, 'Close')),
+  ], true);
+}
+
+// Consoles ------------------------------------------------------------------------
+
+Pages.consoles = root => {
+  const list = h('div.consoles');
+  const which = h('div');
+  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.'), h('div.stack', list, which));
+  let mounted = false, only;
+  function form() {
+    const st = S.settings;
+    const every = h('input', { type: 'radio', name: 'which', checked: !st.xboxes.length });
+    const some = h('input', { type: 'radio', name: 'which', checked: st.xboxes.length > 0 });
+    only = h('input.input', { value: st.xboxes.join(', '), placeholder: '192.168.1.30, 192.168.1.31', oninput: () => { some.checked = true; } });
+    fill(which, h('div.card', h('div.card-head', ic('folder-sync'), h('h2', 'Which consoles get your games in Aurora')),
+      h('div.card-body', h('div.form',
+        h('label.radio', every, h('div', h('div.title', 'Every console that connects'), h('div.help', 'Each console that uses this server gets a folder in Hdd1:\\NetISO for every game.'))),
+        h('label.radio', some, h('div', { style: { flex: 1 } }, h('div.title', 'Only these consoles'), h('div.help', 'IP addresses, separated by commas. Other consoles can still play, but their Aurora is left alone.'), h('div', { style: { marginTop: '8px' } }, only))),
+        h('div.form-actions', h('button.btn.primary', { onclick: () => save({ xboxes: every.checked ? '' : only.value }) }, 'Save'))))));
+  }
+  return {
+    update() {
+      if (!mounted) { form(); mounted = true; }
+      const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c));
+      fill(list, sorted.length ? sorted.map(x => {
+        const card = consoleCard(x.c, x.i, true);
+        if (x.c.connections === 0) $('.console-facts', card).appendChild(h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' } },
+          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget')));
+        return card;
+      }) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
+        h('p', 'Make NetISO.xex.txt next to NetISO.xex on the console\u2019s USB drive, with this computer\u2019s address: ', h('code', S.addresses[0] || '?'), '. A console shows up here when it connects.'))));
+    },
+  };
+};
+
+// Game folders ------------------------------------------------------------------------
+
+Pages.folders = root => {
+  const list = h('div.card');
+  root.append(header('Game folders', 'The folders with your games. Their subfolders are searched too.', h('button.btn.primary', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')),
+    h('div.stack', list, h('p.muted', { style: { margin: 0 } }, 'Removing a folder here only stops serving it; nothing is deleted. Its games leave Aurora on the consoles.')));
+  let drawn = '';
+  return {
+    update() {
+      const key = JSON.stringify(S.folders);
+      if (key === drawn) return;
+      drawn = key;
+      fill(list, S.folders.length ? S.folders.map(f => h('div.folder-row' + (f.found ? '' : '.missing'),
+        h('div.icon', ic(f.found ? 'folder' : 'folder-x')),
+        h('div.grow', h('div.path', f.path), h('div.sub', f.found ? plural(f.games, 'game') : 'This folder can\u2019t be opened right now (a drive that isn\u2019t connected?)')),
+        h('button.btn.small.danger', { onclick: () => removeFolder(f.path) }, ic('trash-2', 'sm'), 'Remove'))) :
+        h('div.empty', ic('folder-open'), h('h3', 'No game folders yet'), h('p', 'Add the folder with your ISOs, extracted games or Games on Demand packages.'),
+          h('button.btn.primary', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')));
+    },
+  };
+};
+
+function removeFolder(path) {
+  modal('Remove this folder?', close => [
+    h('div.modal-body', h('p', { style: { margin: 0 } }, 'NetDisc360 stops serving ', h('b', path), '. Nothing is deleted, but its games leave Aurora on your consoles until you add it again.')),
+    h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
+      h('button.btn.primary', { onclick: async () => { if (await save({ folders: S.folders.map(f => f.path).filter(p => p !== path) }, 'Folder removed')) close(); } }, 'Remove')),
+  ], true);
+}
+
+// The folder browser: folders on the computer that runs NetDisc360 (in
+// Docker, the container's: the folders mounted into it).
+function addFolder() {
+  let current = null;
+  const places = h('div.places'), listing = h('div.listing'), status = h('span.note');
+  const path = h('input.input', { placeholder: S && S.platform === 'windows' ? 'D:\\Games' : '/games', onkeydown: e => { if (e.key === 'Enter') go(path.value); } });
+  const addButton = h('button.btn.primary', { disabled: true, onclick: async () => {
+    if (await save({ folders: S.folders.map(f => f.path).concat(current.path) }, 'Folder added')) close();
+  } }, ic('plus', 'sm'), 'Add this folder');
+  async function go(where) {
+    try {
+      const b = await api('browse?path=' + encodeURIComponent(where || ''));
+      current = b;
+      path.value = b.path;
+      fill(places, b.places.map(p => h('button', { onclick: () => go(p.path) }, ic(/^[A-Z]:$/.test(p.name) ? 'hard-drive' : p.name === 'Home' || p.name === 'Desktop' ? 'house' : 'folder', 'sm'), p.name)));
+      fill(listing, b.parent || (b.path && S.platform === 'windows') ? h('button', { onclick: () => go(b.parent) }, ic('arrow-up', 'sm'), h('span.muted', 'Up')) : null,
+        b.folders.length ? b.folders.map(f => h('button', { onclick: () => go(b.path ? (b.path.endsWith(b.separator) ? b.path + f : b.path + b.separator + f) : f) }, ic('folder', 'sm'), f.replace(/\\$/, ''))) : h('div.muted', { style: { padding: '8px' } }, 'No folders in here.'));
+      const added = S.folders.some(f => f.path.toLowerCase() === b.path.toLowerCase());
+      addButton.disabled = !b.path || added;
+      fill(status, b.path ? (added ? [ic('check', 'sm'), 'Already one of your game folders'] : b.games ? [ic('gamepad-2', 'sm'), 'Has games'] : [ic('info', 'sm'), 'No games found right in here']) : 'Pick a drive');
+    } catch (e) { toast(e.message, true); }
+  }
+  const close = modal('Add a game folder', () => [
+    h('div.modal-body', h('div.browser', places, h('div', h('div.crumbs', path, h('button.btn', { onclick: () => go(path.value) }, 'Go')), listing))),
+    h('div.modal-foot', status, h('button.btn', { onclick: () => close() }, 'Cancel'), addButton),
+  ]);
+  go(S && S.folders.length ? S.folders[S.folders.length - 1].path.replace(/[\\/][^\\/]*$/, '') || '' : '');
+}
+
+// Log ------------------------------------------------------------------------------
+
+Pages.log = root => {
+  const box = h('div.log.mono'), filter = h('input.input', { type: 'search', placeholder: 'Filter', oninput: () => { for (const d of box.children) d.hidden = !matches(d.textContent); } });
+  let last = 0, follow = true, busy = false, lines = [];
+  const followBox = h('input', { type: 'checkbox', checked: true, onchange: e => { follow = e.target.checked; if (follow) box.scrollTop = box.scrollHeight; } });
+  root.append(header('Log', 'What the server does, as it does it.',
+      h('label.btn', followBox, 'Follow'),
+      navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(lines.join('\n')).then(() => toast('Log copied')) }, ic('copy', 'sm'), 'Copy') : null,
+      h('button.btn', { onclick: () => { const a = h('a', { href: URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' })), download: 'netdisc-log.txt' }); a.click(); } }, ic('download', 'sm'), 'Download')),
+    h('div.card', h('div', { style: { padding: '12px 18px', borderBottom: '1px solid var(--line)' } }, h('div.input-icon', { style: { maxWidth: '340px' } }, ic('search', 'sm'), filter)), box));
+  box.addEventListener('scroll', () => { const end = box.scrollHeight - box.scrollTop - box.clientHeight < 30; if (end !== follow) { follow = end; followBox.checked = end; } });
+  const matches = text => !filter.value || text.toLowerCase().includes(filter.value.toLowerCase());
+  async function more() {
+    if (busy || !S || S.logId === last) return;
+    busy = true;
+    try {
+      const r = await api('log?after=' + last);
+      for (const line of r.lines) {
+        lines.push(line.text);
+        const time = line.text.slice(0, 8), text = line.text.slice(9);
+        const warn = /couldn't|can't|isn't|stopped|failed|not answering|more than once/i.test(text);
+        const xbox = text.match(/^Xbox [\d.]+: /);
+        const d = h('div', h('span.t', time), xbox ? h('span.xbox', xbox[0]) : null, h('span' + (warn ? '.warn' : ''), xbox ? text.slice(xbox[0].length) : text));
+        d.hidden = !matches(line.text);
+        box.appendChild(d);
+      }
+      while (box.children.length > 4000) { box.firstChild.remove(); lines.shift(); }
+      last = r.last;
+      if (follow) box.scrollTop = box.scrollHeight;
+    } catch (e) { /* refresh() reports it */ }
+    busy = false;
+  }
+  return { update: more };
+};
+
+// Updates ------------------------------------------------------------------------------
+
+// Versions as GitHub tags them: <0, 0 or >0 as a is older than, the same as or
+// newer than b ("1.2.0", "v1.10.0", "1.2.0-beta.2"; a pre-release is older than its release).
+function versionCompare(a, b) {
+  const split = v => { v = String(v || '').replace(/^v/i, '').split('+')[0]; const i = v.indexOf('-'); return [v.slice(0, i < 0 ? v.length : i).split('.').map(n => parseInt(n, 10) || 0), i < 0 ? '' : v.slice(i + 1)]; };
+  const [x, px] = split(a), [y, py] = split(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0 ? -1 : 1; }
+  if (!px || !py) return px ? -1 : py ? 1 : 0;
+  const p = px.split('.'), q = py.split('.');
+  for (let i = 0; ; i++) {
+    if (i >= p.length || i >= q.length) return Math.sign(p.length - q.length);
+    const m = /^\d+$/.test(p[i]), n = /^\d+$/.test(q[i]);
+    const d = m && n ? Math.sign(p[i] - q[i]) : m !== n ? (m ? -1 : 1) : p[i] < q[i] ? -1 : p[i] > q[i] ? 1 : 0;
+    if (d) return d;
+  }
+}
+
+// What's known about updates: the server's own check (NetDisc360.exe), or, where
+// the server can't reach GitHub (Docker), this browser's, kept for six hours.
+let U = null;
+const ReleasesApi = 'https://api.github.com/repos/marcusisdahl/NetDisc360/releases?per_page=20';
+async function browserCheck(force) {
+  const pre = !!S.settings.updatePrerelease;
+  try {
+    const kept = JSON.parse(store('update') || 'null');
+    if (!force && kept && kept.pre === pre && Date.now() - kept.at < 6 * 3600e3) return kept.info;
+  } catch (e) { /* checked again */ }
+  const info = { checkedAt: 0, error: '', latest: null };
+  try {
+    const r = await fetch(ReleasesApi, { referrerPolicy: 'no-referrer', headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(r.status === 404 ? 'GitHub has no releases of NetDisc360 to show (404).' : r.status === 403 || r.status === 429 ? 'GitHub turned the check away for now (too many checks from this network). Try again later.' : 'GitHub answered with status ' + r.status + '.');
+    const list = (await r.json()).filter(x => !x.draft && x.tag_name && (pre || !x.prerelease));
+    info.checkedAt = Date.now() / 1000;
+    list.sort((a, b) => versionCompare(b.tag_name, a.tag_name));
+    if (!list.length) info.error = 'There are no releases on GitHub yet.';
+    else {
+      const x = list[0];
+      info.latest = { tag: x.tag_name, version: x.tag_name.replace(/^v/i, ''), name: x.name || '', notes: x.body || '', page: x.html_url, published: x.published_at, prerelease: !!x.prerelease };
+    }
+  } catch (e) {
+    info.error = e instanceof TypeError ? 'This browser couldn\u2019t reach GitHub. Is it online?' : e.message;
+  }
+  store('update', JSON.stringify({ at: Date.now(), pre, info }));
+  return info;
+}
+// Fills U: the server's, or this browser's check.
+async function loadUpdate(force) {
+  if (S.update.checks) {
+    const r = force ? await api('update/check', {}) : await api('update');
+    U = Object.assign({}, r.update, { version: r.version });
+  } else {
+    const info = await browserCheck(force);
+    U = Object.assign({ how: S.update.how, checks: false, installing: false }, info, { version: S.version });
+    U.newer = !!(U.latest && versionCompare(U.latest.version, S.version) > 0);
+  }
+  return U;
+}
+// Whether there's a newer version, for the sidebar and the dashboard.
+function updateOut() {
+  if (!S || !S.settings.updateCheck && !(U && U.newer)) return null;
+  if (S.update.checks) return S.update.newer ? S.update.latest.version : null;
+  return U && U.newer ? U.latest.version : null;
+}
+
+// Release notes: GitHub's Markdown, its headings, lists, bold, code and links, as text.
+function markdown(text) {
+  const inline = line => {
+    const out = [];
+    const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s)]+)/g;
+    let at = 0, m;
+    while ((m = re.exec(line))) {
+      if (m.index > at) out.push(line.slice(at, m.index));
+      if (m[1]) out.push(h('b', m[1]));
+      else if (m[2]) out.push(h('code', m[2]));
+      else { const url = m[4] || m[5]; out.push(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, m[3] || url.replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/(pull|issues)\/(\d+)$/, '#$2'))); }
+      at = re.lastIndex;
+    }
+    if (at < line.length) out.push(line.slice(at));
+    return out;
+  };
+  const nodes = [];
+  let list = null, para = null;
+  for (const raw of String(text || '').replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    const head = line.match(/^(#{1,4})\s+(.*)$/), item = line.match(/^[-*+]\s+(.*)$/);
+    if (!line || head || item) para = null;
+    if (!item) list = null;
+    if (!line || /^!\[/.test(line) || /^<!--/.test(line)) continue;
+    if (head) nodes.push(h(head[1].length <= 2 ? 'h3' : 'h4', inline(head[2])));
+    else if (item) { if (!list) nodes.push(list = h('ul')); list.appendChild(h('li', inline(item[1]))); }
+    else if (para) para.append(' ', ...inline(line));
+    else nodes.push(para = h('p', inline(line)));
+  }
+  return nodes.length ? nodes : [h('p.muted', 'This release has no notes.')];
+}
+
+// Waits for the server to come back after a restart, then loads its page.
+let restarting = false;
+function awaitRestart(text) {
+  if (restarting) return;
+  restarting = true;
+  store('restarted', text);
+  let tries = 0;
+  const before = S && S.uptime;
+  const look = async () => {
+    try {
+      const r = await fetch('/api/state', { headers: { 'X-NetDisc': '1' } });
+      if (r.ok || r.status === 401) {
+        const st = r.ok ? await r.json() : null;
+        if (!st || st.uptime < before || st.version !== S.version) { location.reload(); return; }
+      }
+    } catch (e) { /* not back yet */ }
+    if (++tries < 120) setTimeout(look, 1000);
+    else { restarting = false; toast('NetDisc360 didn\u2019t come back. Start it again from its folder or the Start menu.', true); }
+  };
+  setTimeout(look, 2000);
+}
+
+// Asks before something that can't be undone; true for ok.
+function confirmBox(title, text, ok, danger) {
+  return new Promise(done => {
+    let yes = false;
+    modal(title, close => [
+      h('div.modal-body', text),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
+        h('button.btn' + (danger ? '.danger' : '.primary'), { onclick: () => { yes = true; close(); } }, ok)),
+    ], true, () => done(yes));
+  });
+}
+
+// Settings ---------------------------------------------------------------------------
+
+const Sections = [
+  ['xbox', 'Xbox & Aurora', 'gamepad-2'],
+  ['dashboard', 'Dashboard', 'layout-dashboard'],
+  ['updates', 'Updates', 'refresh-cw'],
+  ['backups', 'Backups', 'archive'],
+  ['windows', 'Windows', 'power'],
+  ['about', 'About', 'info'],
+];
+const BackupKinds = {
+  manual: ['Made by you', 'archive', 'k-good'],
+  scheduled: ['Automatic', 'calendar-clock', 'k-xbox'],
+  update: ['Before an update', 'refresh-cw', 'k-play'],
+  restore: ['Before a restore', 'rotate-ccw', 'k-warning'],
+};
+const fullDate = t => new Date(t * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+Pages.settings = root => {
+  const nav = h('nav.subnav'), body = h('div.stack');
+  root.append(header('Settings', null), h('div.settings', nav, body));
+  let section = null, part = null, key = '';
+  function toggle(checked, onchange, disabled) {
+    return h('label.switch', h('input', { type: 'checkbox', checked, disabled, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
+  }
+  function row(title, help, control) { return h('div.setting', h('div.text', h('div.title', title), help && h('div.help', help)), control); }
+  async function flip(name, value, input, said) {
+    if (!(await save({ [name]: value }, said))) input.checked = !value;
+  }
+  const card = (icon, title, sub, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub && h('span.sub', sub)), h('div.card-body', content));
+  const head = (title, lead) => h('div.section-head', h('h2', title), lead && h('p', lead));
+  const shown = () => Sections.filter(([id]) => id !== 'windows' || S.settings.startWithWindows !== undefined);
+
+  // Each section: build() makes it from S; update() keeps its live parts current.
+  const Parts = {};
+
+  Parts.xbox = () => {
+    const st = S.settings;
+    const user = h('input.input', { value: st.ftpUser, autocomplete: 'off' });
+    const password = h('input.input', { type: 'password', placeholder: st.ftpPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
+    const xboxFolder = h('input.input.mono', { value: st.xboxFolder });
+    const aurora = h('input.input.mono', { value: st.aurora });
+    fill(body,
+      head('Xbox & Aurora', 'How your games get into Aurora\u2019s game list on each console.'),
+      card('gamepad-2', 'Your games in Aurora', null,
+        row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s Hdd1:\\NetISO, so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
+        row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
+        row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i))),
+        row('Consoles to update', st.xboxes.length ? st.xboxes.join(', ') : 'Every console that connects.', h('a.btn', { href: '#consoles' }, 'Change', ic('chevron-right', 'sm')))),
+      card('plug', 'Aurora\u2019s FTP login', 'used to add your games to each console\u2019s Aurora',
+        h('div.form.cols',
+          h('label.field', h('span', 'User name'), user),
+          h('label.field', h('span', 'Password'), password),
+          h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The same login as in Aurora\u2019s settings (Aurora\u2019s default is xboxftp / xboxftp; changing it is a good idea). It\u2019s kept ', S.platform === 'windows' ? 'encrypted for your Windows user.' : 'in the settings file, readable only by NetDisc360\u2019s user.')),
+          h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login')))),
+      card('folder', 'Folders on the Xbox', null,
+        h('div.form.cols',
+          h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path. Add it to Aurora\u2019s scan paths (depth 1).')),
+          h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
+          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders')))));
+  };
+
+  Parts.dashboard = () => {
+    const st = S.settings;
+    const theme = store('theme') || 'system';
+    const themes = h('div.segmented', [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([v, l, i]) =>
+      h('button', { class: v === theme ? 'on' : '', onclick: e => { store('theme', v); applyTheme(); for (const b of themes.children) b.classList.toggle('on', b === e.currentTarget); } }, ic(i, 'sm'), l)));
+    const newPassword = h('input.input', { type: 'password', placeholder: st.password ? 'New password' : 'Password', autocomplete: 'new-password' });
+    fill(body,
+      head('Dashboard', 'This page: how it looks, and who can open it.'),
+      card('sun', 'Look', 'kept in this browser',
+        row('Theme', null, themes),
+        row('Cover art', 'Loaded by this browser from the XboxUnity archive on GitHub. Only for this page; your Xbox gets its art from Aurora.', toggle(showCovers(), v => { store('covers', v ? 'on' : 'off'); toast(v ? 'Covers on' : 'Covers off'); }))),
+      card('lock', 'Who can open it', null,
+        st.lanSwitch ? row('Other devices can open it', ['Open the dashboard from your phone or another computer at ', h('b', (S.addresses[0] || 'this computer') + ':' + S.ports.web), '. It needs a password.'],
+          toggle(st.webLan, (v, input) => flip('webLan', v, input, v ? 'Other devices can open the dashboard' : 'The dashboard is on this computer only'))) : null,
+        row('Password', st.passwordFixed ? 'Set with NETDISC_WEB_PASSWORD.' : st.password ? 'Set. Anyone opening the dashboard needs it.' : st.webAddress === '0.0.0.0' ? 'None. Anyone on your network can open the dashboard and change its settings.' : 'None. Only this computer can open the dashboard.',
+          st.passwordFixed ? h('span.pill.good', ic('lock', 'sm'), 'Set') : h('div', { style: { display: 'flex', gap: '8px' } }, newPassword,
+            h('button.btn', { onclick: async () => {
+              if (!newPassword.value) { toast('Type the new password first.', true); newPassword.focus(); return; }
+              try { await api('password', { password: newPassword.value }); newPassword.value = ''; await refresh(); toast('Password saved'); key = ''; } catch (e) { toast(e.message, true); }
+            } }, st.password ? 'Change' : 'Set'),
+            st.password ? h('button.btn.ghost', { title: 'Remove the password', onclick: async () => {
+              try { await api('password', { password: '' }); await refresh(); toast('Password removed'); key = ''; } catch (e) { toast(e.message, true); }
+            } }, 'Remove') : null)),
+        st.password && !st.passwordFixed ? row('Log out', 'On this browser.', h('button.btn', { onclick: async () => { await api('logout', {}); location.reload(); } }, ic('log-out', 'sm'), 'Log out')) : null));
+  };
+
+  Parts.updates = () => {
+    const st = S.settings, app = S.update.how === 'app';
+    const hero = h('div.card'), notes = h('div');
+    fill(body,
+      head('Updates', 'New versions of NetDisc360, from its releases on GitHub.'),
+      hero, notes,
+      S.update.how === 'docker' ? card('container', 'Updating the Docker image', null,
+        h('p', { style: { margin: '0 0 10px' } }, 'In the folder with your docker-compose.yml:'),
+        h('div.command', h('code', 'docker compose pull && docker compose up -d'),
+          h('button.btn.small.ghost', { title: 'Copy', onclick: () => navigator.clipboard.writeText('docker compose pull && docker compose up -d').then(() => toast('Copied')) }, ic('copy', 'sm'))),
+        h('p.muted', { style: { margin: '10px 0 0', fontSize: '13px' } }, 'Your settings in /config and your games stay as they are.')) : null,
+      card('settings', 'Update options', null,
+        row('Look for updates', S.update.checks ? 'NetDisc360 asks GitHub every 12 hours. Nothing about you or your games is sent.' : 'This browser asks GitHub when you open the dashboard. Nothing about you or your games is sent.',
+          toggle(st.updateCheck, (v, i) => flip('updateCheck', v, i, v ? 'Looking for updates' : 'Not looking for updates'))),
+        app ? row('Install updates by themselves', 'When no console is playing. Your settings are backed up first, and NetDisc360 restarts in a few seconds.',
+          toggle(st.updateAuto, (v, i) => flip('updateAuto', v, i, v ? 'Updates install by themselves' : 'Updates wait for you'))) : null,
+        row('Include test versions', 'Pre-releases, to try what\u2019s coming before everyone else. They may have rough edges.',
+          toggle(st.updatePrerelease, async (v, i) => { await flip('updatePrerelease', v, i); store('update', null); load(false); }))));
+    let busy = false;
+    async function load(force) {
+      busy = true; draw();
+      try { await loadUpdate(force); } catch (e) { toast(e.message, true); }
+      busy = false; draw();
+    }
+    async function install() {
+      try { await api('update/install', {}); await refresh(); } catch (e) { toast(e.message, true); }
+    }
+    let drawn = '';
+    function draw() {
+      const u = S.update.checks ? Object.assign({}, U || {}, S.update, { latest: U && U.latest || S.update.latest }) : U;
+      const now = JSON.stringify([u, busy]);
+      if (now === drawn) return;
+      drawn = now;
+      const latest = u && u.latest, here = S.version;
+      const checked = u && u.checkedAt ? 'Checked ' + ago(u.checkedAt) : '';
+      const checkBtn = (small) => h('button.btn' + (small ? '.small' : ''), { onclick: () => load(true), disabled: busy || (u && u.checking) }, ic('refresh-cw', 'sm' + (busy || (u && u.checking) ? ' spin' : '')), 'Check now');
+      let mark, title, text, actions = [], extra = null;
+      if (u && u.installing) {
+        const stage = { download: 'Downloading', check: 'Checking the download', restart: 'Restarting' }[u.stage] || 'Installing';
+        mark = ['loader-circle', 'k-xbox', true]; title = 'Installing NetDisc360 ' + (latest ? latest.version : '');
+        text = stage + (u.stage === 'download' && u.total ? ': ' + bytes(u.got, 1) + ' of ' + bytes(u.total, 1) : '\u2026');
+        extra = h('div.progress' + (u.stage === 'download' && u.total ? '' : '.busy'), h('i', { style: u.total ? { width: Math.round(100 * u.got / u.total) + '%' } : null }));
+        if (u.stage === 'restart') awaitRestart('Updated to NetDisc360 ' + (latest ? latest.version : ''));
+      } else if (!u || (busy && !u.checkedAt)) {
+        mark = ['refresh-cw', 'k-info', true]; title = 'Checking for updates\u2026'; text = 'Asking GitHub for the newest release.';
+      } else if (u.newer) {
+        mark = ['sparkles', 'k-xbox']; title = 'NetDisc360 ' + latest.version + ' is out';
+        text = 'You have ' + here + '.' + (latest.published ? ' Released ' + ago(Date.parse(latest.published) / 1000) + '.' : '') + (latest.prerelease ? ' It\u2019s a test version.' : '');
+        if (app && latest.exe !== false) actions.push(h('button.btn.primary', { onclick: install }, ic('download', 'sm'), 'Install and restart'));
+        else if (S.update.how !== 'docker') actions.push(h('a.btn.primary', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, ic('download', 'sm'), 'Download'));
+        actions.push(h('a.btn', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'On GitHub', ic('external-link', 'sm')));
+      } else if (u.error && !latest) {
+        mark = ['circle-alert', 'k-warning']; title = 'Couldn\u2019t check for updates'; text = u.error; actions.push(checkBtn());
+      } else {
+        mark = ['circle-check', 'k-good']; title = 'You\u2019re up to date';
+        text = 'NetDisc360 ' + here + ' is the newest version' + (st.updatePrerelease ? ', test versions included.' : '.');
+        actions.push(checkBtn());
+      }
+      if (u && u.installError && !u.installing) extra = h('div.notice', { style: { marginTop: '12px' } }, ic('triangle-alert'), h('span', 'The update wasn\u2019t installed: ' + u.installError));
+      fill(hero,
+        h('div.hero', h('div.mark.' + mark[1], ic(mark[0], mark[2] ? 'spin' : null)), h('div.text', h('h3', title), h('p', text), extra), actions.length ? h('div.actions', actions) : null),
+        h('div.hero-foot', h('span', 'This version: ', h('b', here)), h('span', 'Built ' + S.built), checked && h('span', checked), u && u.newer && checkBtn(true)));
+      fill(notes, latest ? card('scroll-text', u.newer ? 'What\u2019s new in ' + latest.version : 'About ' + latest.version, latest.name && latest.name !== latest.tag ? latest.name : null,
+        h('div.notes', markdown(latest.notes)), h('div', { style: { marginTop: '12px' } }, h('a.link', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'The release on GitHub', ic('external-link', 'sm')))) : null);
+    }
+    draw();
+    load(false);
+    return {
+      update() {
+        // Checked again elsewhere (by itself, or another browser): its notes too.
+        if (S.update.checks && !busy && S.update.latest && !(U && U.latest && U.latest.version === S.update.latest.version)) load(false);
+        draw();
+      },
+    };
+  };
+
+  Parts.backups = () => {
+    const st = S.settings;
+    const list = h('div'), foot = h('div.card-foot.muted');
+    const file = h('input', { type: 'file', accept: '.zip,.ini', hidden: true, onchange: () => { const f = file.files[0]; file.value = ''; if (f) restoreFile(f); } });
+    const every = h('div.segmented', [[0, 'Off'], [1, 'Every day'], [7, 'Every week']].map(([v, l]) =>
+      h('button', { class: v === st.backupEvery ? 'on' : '', onclick: () => save({ backupEvery: v }, v ? 'Backed up ' + l.toLowerCase() : 'Backed up only by you') }, l)));
+    const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ backupKeep: +e.target.value }, 'Keeping ' + e.target.value) },
+      [...new Set([3, 5, 10, 20, 50, st.backupKeep])].sort((a, b) => a - b).map(n => h('option', { value: String(n), selected: n === st.backupKeep }, String(n))));
+    fill(body,
+      head('Backups', 'NetDisc360\u2019s settings and disc map, to bring back after a mistake or move to another computer. Never your games.'),
+      h('div.card', h('div.hero', h('div.mark.k-good', ic('archive')),
+        h('div.text', h('h3', 'Back up your settings'), h('p', 'Your game folders, consoles, Aurora login, dashboard password, chosen copies and disc map, in one small zip file.')),
+        h('div.actions', h('button.btn.primary', { onclick: backupNow }, ic('archive', 'sm'), 'Back up now'), h('button.btn', { onclick: () => file.click() }, ic('upload', 'sm'), 'Restore from a file\u2026'), file))),
+      card('calendar-clock', 'Automatic backups', null,
+        row('Back up by itself', 'Your settings now and then, in case.', every),
+        row('Keep the newest', 'Automatic backups and the ones made before an update or a restore. Older ones are deleted; yours never are.', keep)),
+      h('div.card', h('div.card-head', ic('history'), h('h2', 'Your backups')), list, foot));
+    async function load() {
+      try {
+        const r = await api('backups');
+        if (!r.available) { fill(list, h('div.empty', ic('archive'), h('h3', 'Nothing to back up'), h('p', 'The settings aren\u2019t kept in a file. Start NetDisc360 with --config to keep them, and to back them up.'))); return; }
+        fill(foot, 'Kept in ', h('code', r.folder));
+        fill(list, r.backups.length ? r.backups.map(b => {
+          const [label, icon, tone] = BackupKinds[b.kind] || BackupKinds.manual;
+          return h('div.backup-row', h('div.kindmark.' + tone, ic(icon)),
+            h('div.grow', h('div.when', fullDate(b.time)), h('div.sub', label + (b.version ? ' \u00b7 version ' + b.version : '') + (b.platform && b.platform !== r.platform ? ' \u00b7 from ' + (b.platform === 'windows' ? 'Windows' : 'Linux') : '') + ' \u00b7 ' + bytes(b.size))),
+            h('div.actions',
+              h('a.btn.small', { href: '/api/backup?name=' + encodeURIComponent(b.name), download: b.name, title: 'Save this backup on this device' }, ic('download', 'sm'), 'Download'),
+              h('button.btn.small', { onclick: () => restore({ name: b.name }, fullDate(b.time)) }, ic('rotate-ccw', 'sm'), 'Restore'),
+              h('button.btn.small.icon.ghost', { title: 'Delete', onclick: () => remove(b) }, ic('trash-2', 'sm'))));
+        }) : h('div.empty', ic('archive'), h('h3', 'No backups yet'), h('p', st.backupEvery ? 'The first automatic one is made within a few minutes of starting. Or make one now.' : 'Make one with Back up now.')));
+      } catch (e) { fill(list, h('div.empty', ic('circle-alert'), h('p', e.message))); }
+    }
+    async function backupNow() {
+      try { await api('backup', {}); toast('Settings backed up'); load(); } catch (e) { toast(e.message, true); }
+    }
+    async function remove(b) {
+      if (!(await confirmBox('Delete this backup?', 'The backup from ' + fullDate(b.time) + ' is deleted for good.', 'Delete', true))) return;
+      try { await api('backup/delete', { name: b.name }); toast('Backup deleted'); load(); } catch (e) { toast(e.message, true); }
+    }
+    async function restore(what, label) {
+      if (!(await confirmBox('Restore these settings?', ['The settings from ', h('b', label), ' take the place of the ones now, right away. The ones now are backed up first, so you can go back.'], 'Restore'))) return;
+      try {
+        const r = await api('restore', what);
+        await refresh();
+        key = '';
+        toast('Settings restored');
+        if (r.notes.length) modal('Settings restored', close => [h('div.modal-body', h('p', { style: { marginTop: 0 } }, 'A few things to know:'), h('ul', r.notes.map(n => h('li', n)))), h('div.modal-foot', h('span.note'), h('button.btn.primary', { onclick: close }, 'OK'))], true);
+      } catch (e) { toast(e.message, true); }
+      load();
+    }
+    function restoreFile(f) {
+      if (f.size > 180 * 1024) { toast('That file is too big to be NetDisc360\u2019s settings.', true); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const a = new Uint8Array(reader.result);
+        let text = '';
+        for (let i = 0; i < a.length; i += 0x8000) text += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+        restore({ file: btoa(text) }, f.name);
+      };
+      reader.readAsArrayBuffer(f);
+    }
+    load();
+  };
+
+  Parts.windows = () => {
+    const st = S.settings;
+    fill(body,
+      head('Windows', 'NetDisc360 on this PC.'),
+      card('power', 'Starting', null,
+        row('Start with Windows', 'Starts NetDisc360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))),
+        row('Restart NetDisc360', 'Consoles playing a game lose their disc for a few seconds.', h('button.btn', { onclick: async () => {
+          if (S.consoles.some(c => c.playing) && !(await confirmBox('Restart while a game is running?', 'A console is playing a game from NetDisc360. It loses its disc while NetDisc360 restarts.', 'Restart'))) return;
+          try { await api('restart', {}); toast('Restarting\u2026'); awaitRestart('NetDisc360 restarted'); } catch (e) { toast(e.message, true); }
+        } }, ic('rotate-ccw', 'sm'), 'Restart'))));
+  };
+
+  Parts.about = () => {
+    const st = S.settings, f = S.files;
+    fill(body,
+      head('About', null),
+      h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
+        h('div.actions', h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
+      card('info', 'This copy', null, h('div.facts',
+        h('div.k', 'Version'), h('div.v', S.version + ', built ' + S.built),
+        h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : S.update.how === 'docker' ? 'Docker' : 'Linux'),
+        h('div.k', 'NetISO port'), h('div.v', S.ports.netiso + (S.addresses.length ? ' on ' + S.addresses.join(', ') : '')),
+        h('div.k', 'Dashboard'), h('div.v', 'Port ' + S.ports.web + (st.webAddress === '0.0.0.0' ? ', open to the network' : ', this computer only')),
+        h('div.k', 'Settings'), h('div.v', f.settings ? h('code', f.settings) : 'Not saved: changes last until the server stops (start it with --config to keep them)'),
+        f.discMap ? [h('div.k', 'Disc map'), h('div.v', h('code', f.discMap))] : null,
+        f.backups ? [h('div.k', 'Backups'), h('div.v', h('code', f.backups))] : null,
+        h('div.k', 'License'), h('div.v', 'MIT. NetISO.xex is cOz\u2019s and comes with the NetISO kit, not with NetDisc360.'))));
+  };
+
+  function choose() {
+    const want = (location.hash.split('/')[1] || 'xbox');
+    const list = shown();
+    const id = list.some(([s]) => s === want) ? want : 'xbox';
+    const out = updateOut();
+    fill(nav, list.map(([s, label, icon]) => h('a', { href: '#settings/' + s, class: s === id ? 'on' : '' }, ic(icon, 'sm'), label,
+      s === 'updates' && out ? h('span.pill.new', 'New') : null)));
+    if (id !== section) { section = id; key = ''; }
+    const on = $('a.on', nav);
+    if (on && nav.scrollWidth > nav.clientWidth) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  return {
+    route() { choose(); this.update(); window.scrollTo(0, 0); },
+    update() {
+      choose();
+      // Built when a setting changes, unless something in it is being typed
+      // in, so typing isn't undone by the next refresh.
+      const now = section + JSON.stringify(S.settings) + S.platform;
+      if (key !== now && !(key.startsWith(section) && body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox')) {
+        key = now;
+        part = Parts[section]() || null;
+      } else if (part && part.update) part.update();
+    },
+  };
+};
+
+// Logging in -------------------------------------------------------------------------
+
+function showLogin() {
+  if ($('.login')) return;
+  clearTimeout(timer);
+  const password = h('input.input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
+  const problem = h('p.muted', { style: { minHeight: '20px', margin: '10px 0 0', color: 'var(--bad)' } });
+  const go = async e => {
+    e.preventDefault();
+    try { await api('login', { password: password.value }); location.reload(); }
+    catch (err) { fill(problem, err.message); password.select(); }
+  };
+  fill($('#app'), h('div.login', { style: { flex: 1 } }, h('form.card', { onsubmit: go },
+    mark(), h('h1', 'NetDisc360'), h('p.muted', { style: { margin: '0 0 18px' } }, 'Enter the dashboard\u2019s password.'),
+    password, problem, h('button.btn.primary', { type: 'submit', style: { width: '100%', marginTop: '6px' } }, 'Log in'))));
+  password.focus();
+}
+
+applyTheme();
+refresh();
+</script>
+</body>
+</html>

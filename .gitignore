@@ -1,2 +1,26 @@
 build/
 __pycache__/
+*.tlog
+
+# Visual Studio output and per-user files
+.vs/
+x64/
+*.user
+*.obj
+*.pdb
+*.ilk
+
+# Console logs, dumps and test copies from a real console: they hold
+# addresses, Aurora's databases and game files, and never belong here.
+console-logs/
+*.log
+*.db
+*.xex
+*.xbe
+*.iso
+*.bin
+netiso.xex.txt
+launch.ini
+
+# Games next to docker-compose.yml
+/games/
