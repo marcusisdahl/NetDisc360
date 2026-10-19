@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game, and a chart of the game data sent to each console over the last two minutes" width="800">
+  <img src="docs/images/dashboard.png" alt="The NetDisc 360 dashboard: 13 games served, two consoles each playing a different game at 24 MB/s together, and a chart of the game data sent to each console over the last two minutes" width="800">
   <br>
   <sub>The dashboard on your PC or NAS: your games, every console and what it's playing, and how fast each game streams.</sub>
 </p>
@@ -36,6 +36,13 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
 - **Multi-disc games just work.** Each disc gets its own tile, and when a game asks for its next disc, NetDisc 360 puts it in for you. A game with an install disc, like GTA V, offers to install it first.
 - **Feels like the real thing.** A loading screen you can cancel with B, a clear message when something is wrong, and the Guide keeps working in your games.
 - **Faster than the disc.** With a gigabit USB network adapter, games read at up to about 26 MB/s, where the console's own DVD drive manages about 16 MB/s at best and NetISO on its own about 7 MB/s.
+
+<p align="center">
+  <img src="docs/images/dashboard.gif" alt="The dashboard as two consoles connect: new games are added to each console's Aurora, then one console starts Halo Reach while the other plays Gears of War 3" width="42%">
+  <img src="docs/images/launcher.gif" alt="A game starting on the Xbox: the NetDisc 360 logo, then the loading screen's four steps, Server, Mount, Disc and Start" width="56%">
+  <br>
+  <sub>In action: two consoles get their games and play at the same time (left), and a game starts on the Xbox (right).</sub>
+</p>
 
 **For the homebrew crowd.** NetDisc 360 is an open-source [NetISO](https://consolemods.org/wiki/Xbox_360:Playing_Games_over_Network_(NetISO)) server that replaces `netiso-srv`, for any modded 360 with DashLaunch and Aurora: RGH, JTAG, or a stock console with BadUpdate or ABadAvatar. Extracted games and GOD packages are served as virtual discs, so nothing gets converted to ISO. Each game gets a small launcher XEX with the game's own Title ID and Media ID, so Aurora scans it as the real game and fetches its art, title updates and DLC itself. A DashLaunch plugin patches `NetISO.xex` in memory: it stops NetISO from killing the Guide, lifts its read loop from 4 KB per request to 64 KB or more with a bigger receive buffer, and answers a game's `XSwapDisc` by mounting the other disc. One exe for Windows with a web dashboard, or a Docker image for Linux and NAS. [How it works](docs/how-it-works.md) has the details.
 
@@ -157,6 +164,27 @@ NetDisc 360 brings the PC side and the console plugin that ties it to Aurora. Th
 - When Windows Firewall asks, allow it on **private networks**.
 - **From your phone or another computer:** under **Settings > Dashboard**, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
 
+<p align="center">
+  <img src="docs/images/first-run.png" alt="The dashboard on a first run: Get started, with the game folder added (13 games) and the next two steps, telling NetISO where the PC is and turning on Aurora's FTP server" width="49%">
+  <img src="docs/images/games.jpg" alt="The Games page: games as covers, each marked ISO, Extracted or GOD, two of them showing the console playing them" width="49%">
+  <br>
+  <sub>The first run walks you through setup (left). The Games page shows every game, its format, and which console is playing it (right).</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/game-details.jpg" alt="A game's details: Gears of War, an ISO disc image of 7.54 GB, its Title ID, disc number, folder and path, and its name in Aurora" width="49%">
+  <img src="docs/images/consoles.png" alt="The Consoles page: two consoles, each playing a game, with what it was sent, its ping, whether its Aurora answers, when its game folders were updated, and its recent activity" width="49%">
+  <br>
+  <sub>A game's details (left), and the Consoles page with what each console is doing (right).</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/settings-dashboard.png" alt="Settings, Dashboard: the theme, cover art, Other devices can open it (on) and the dashboard's password (set)" width="72.5%">
+  <img src="docs/images/phone.png" alt="The dashboard on a phone: games served, two consoles playing, 20 MB/s streaming and the bandwidth chart" width="24.5%">
+  <br>
+  <sub>Set a password and let other devices in (left), then check on your games from your phone (right).</sub>
+</p>
+
 Settings are saved in `%APPDATA%\NetDisc 360\netdisc.ini`, with the FTP password encrypted for your Windows user. The **Log** page shows what the server does. The exe also still runs from a command prompt with [options](#the-server-in-detail), with the same dashboard.
 
 **With Docker** (Linux, a NAS, a Raspberry Pi): see [Docker](#docker) below.
@@ -210,13 +238,24 @@ It uses the image `ghcr.io/marcusisdahl/netdisc-360`, published with each releas
 
 ## Playing
 
-Pick the game's tile. The loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
+Pick the game's tile. The NetDisc 360 logo plays for two seconds while the game already loads underneath (any button skips it). Then the loading screen shows four steps (Server, Mount, Disc and Start), a bar that fills to 100%, and how long it has been since you pressed the tile. Then the game starts.
+
+<p align="center">
+  <img src="docs/images/logo-intro.gif" alt="The NetDisc 360 logo intro: the disc draws itself, then the name and the tagline, Network games for homebrew Xbox 360" width="480">
+</p>
 
 <p align="center">
   <img src="docs/images/loading-screen.png" alt="The loading screen: Skate 3 at the Disc step, 62%, with B to cancel" width="49%">
   <img src="docs/images/install-notice.png" alt="GTA V's install notice: A starts the install disc, X plays anyway, B goes back to Aurora" width="49%">
   <br>
   <sub>The loading screen, and the notice for a game whose install disc hasn't been installed yet.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/loading-wait.png" alt="The loading screen right after a reboot: The Xbox's network is still starting after the reboot. Waiting for the server... 42 s" width="49%">
+  <img src="docs/images/loading-error.png" alt="The loading screen's error for a server that doesn't answer: Can't reach the NetISO server, with what to check, and A for Aurora or X to try again" width="49%">
+  <br>
+  <sub>Right after a reboot it waits for the network (left). When something is wrong, it says what and what to do (right).</sub>
 </p>
 
 - **B cancels at any step** and goes back to Aurora at once.
@@ -299,7 +338,14 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Updating
 
-**On Windows** NetDisc 360 looks for a new version on GitHub twice a day. When one is out, the dashboard says so and **Settings > Updates** shows what's new; **Install and restart** backs up your settings, downloads the new `NetDisc.exe`, checks it against the release's checksum, puts it in place of the old one and starts it again. Turn on **Install updates by themselves** and it does that on its own while no console is playing. **Include test versions** offers pre-releases too. To update by hand instead, quit NetDisc 360 from its notification-area icon, replace `NetDisc.exe` with the new one and start it again; the settings stay either way.
+**On Windows** NetDisc 360 looks for a new version on GitHub twice a day. When one is out, the dashboard says so and **Settings > Updates** shows what's new; **Install and restart** backs up your settings, downloads the new `NetDisc.exe`, checks it against the release's checksum, puts it in place of the old one and starts it again. Should the new version not start, the old one puts itself back within two minutes, says so on the dashboard, and doesn't install that version by itself again. Turn on **Install updates by themselves** and it does that on its own while no console is playing. **Include test versions** offers pre-releases too. To update by hand instead, quit NetDisc 360 from its notification-area icon, replace `NetDisc.exe` with the new one and start it again; the settings stay either way.
+
+<p align="center">
+  <img src="docs/images/updates.png" alt="Settings, Updates: NetDisc 360 1.1.0 is out, with Install and restart, what's new in it, and the update options" width="49%">
+  <img src="docs/images/backups.png" alt="Settings, Backups: Back up now, Restore from a file, weekly automatic backups keeping the newest five, and the list of backups with Download and Restore" width="49%">
+  <br>
+  <sub>A new version, with what's new and one click to install it (left), and your settings' backups (right).</sub>
+</p>
 
 **With Docker** the dashboard shows that a new version is out, and you update the image yourself: `docker compose pull && docker compose up -d`.
 
@@ -319,6 +365,12 @@ What `NetDisc.exe` does, all from one file:
 - **Puts the games in Aurora's Xbox 360 category** (see below).
 - **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is a conflict: the dashboard shows a notice and a badge on **Games**, the activity list says so, and on Windows the icon shows a notification. The **Games** page lists every copy with its path; **Play this one** picks the copy to serve, and the choice is kept in the settings file. Until you choose, an ISO is served before a GOD package before a folder. A copy that turns up later, or the chosen copy going, asks again.
 - **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
+
+<p align="center">
+  <img src="docs/images/conflicts.png" alt="Choose which copy to play: Halo Reach is in the folders twice, as E:\Games\Halo Reach (backup).iso (playing now) and D:\Xbox 360\Halo Reach.iso, each with a button to play it" width="800">
+  <br>
+  <sub>A game that's in your folders twice: pick the copy to play on the Games page.</sub>
+</p>
 
 | Option | Default | |
 |---|---|---|
@@ -366,10 +418,10 @@ Some games come on two discs, one of which only installs content: GTA V's second
 
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
-- **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and settings only change from its own page. Don't forward port 8360 from the internet either.
+- **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and it only takes requests from its own page. The login cookie is signed with a random key kept next to the settings file (`session.key`), not with anything a backup holds. Don't forward port 8360 from the internet either.
 - **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc 360, FastFTP and CUsbEnet only when you open it. Apart from the update check below, the server itself never goes online.
 - **Backups hold Aurora's FTP login and the dashboard password's hash**, like the settings file (the FTP password is encrypted on Windows, so a backup restored on another PC or in Docker keeps the FTP password already set there). Keep downloaded backups where only you can read them.
-- **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc.exe` over HTTPS and installs it only if its size and SHA-256 match what GitHub lists for the release. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
+- **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc.exe` over HTTPS and installs it only if it comes from this project's releases and its size and SHA-256 match what GitHub lists for the release. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
 
 ## Limitations
