@@ -114,6 +114,16 @@ Options CommandLine;
 // start instead (the new one didn't, and was swapped back), the new one is
 // skipped by automatic updates (UpdateSkip).
 std::string UpdatedFrom, UpdateTo, UpdateSkip;
+// The backup of the settings made just before that update (update_backup).
+std::string UpdateBackup;
+// The versions this copy has run, oldest first, for the dashboard's update
+// history (update_history, under SettingsLock). how: app (NetDisc360
+// installed it), other (put in place another way: by hand, or a new Docker
+// image), first (the first start) or failed (it didn't start, so from was
+// put back).
+struct Installed { std::string version, from, how, backup; long long at; };
+std::vector<Installed> UpdateHistory;
+enum { HistoryKeep = 20 };
 // Raised by a settings change that needs every console's game folders checked again.
 std::atomic<int> PushGeneration(0);
 // When the game folders were last changed on the dashboard, in Now() ms: like
@@ -1494,6 +1504,74 @@ std::string Number(long long n) { char text[24]; _snprintf_s(text,sizeof(text),_
 // from a file made by hand or a backup could otherwise be any number.
 long long Listed(const config::File& f, const char* key) { return std::max(0LL,std::min(1000LL,f.Number(key,0))); }
 
+// A version as the settings file and the dashboard take it: what a tag can hold.
+std::string CleanVersion(const std::string& version) {
+    std::string out;
+    for(size_t i=0;i<version.size() && out.size()<40;++i) {
+        char c=version[i];
+        if((c>='0' && c<='9') || (c>='a' && c<='z') || (c>='A' && c<='Z') || c=='.' || c=='-' || c=='+') out+=c;
+    }
+    return out;
+}
+
+// The update history as one setting: "version|time|how|from|backup", comma between.
+std::string HistoryText(const std::vector<Installed>& history) {
+    std::string text;
+    for(size_t i=0;i<history.size();++i)
+        text+=(i ? "," : "")+history[i].version+"|"+Number(history[i].at)+"|"+history[i].how+"|"+history[i].from+"|"+history[i].backup;
+    return text;
+}
+
+std::vector<Installed> ReadHistory(const std::string& text) {
+    std::vector<Installed> out;
+    for(size_t at=0;at<text.size();) {
+        size_t end=text.find(',',at);
+        if(end==std::string::npos) end=text.size();
+        std::vector<std::string> parts;
+        for(size_t p=at;p<=end;) {
+            size_t bar=text.find('|',p);
+            if(bar==std::string::npos || bar>end) bar=end;
+            parts.push_back(text.substr(p,bar-p));
+            p=bar+1;
+        }
+        at=end+1;
+        if(parts.size()<3) continue;
+        Installed e;
+        e.version=CleanVersion(parts[0]);
+        e.at=atoll(parts[1].c_str());
+        e.how=parts[2]=="app" || parts[2]=="other" || parts[2]=="failed" ? parts[2] : "first";
+        e.from=parts.size()>3 ? CleanVersion(parts[3]) : std::string();
+        e.backup=parts.size()>4 && backup::Named(parts[4]) ? parts[4] : std::string();
+        if(!e.version.empty()) out.push_back(e);
+    }
+    if(out.size()>HistoryKeep) out.erase(out.begin(),out.end()-HistoryKeep);
+    return out;
+}
+
+// Adds this start to the update history: an update NetDisc360 installed (or
+// one that didn't start, so this version was put back), or a version that
+// came another way; false if there's nothing to add. Under SettingsLock.
+bool NoteStart(const std::string& updatedFrom, const std::string& updateTo, const std::string& backupName) {
+    long long now=(long long)time(NULL);
+    std::string last;
+    for(size_t i=UpdateHistory.size();i-->0 && last.empty();) if(UpdateHistory[i].how!="failed") last=UpdateHistory[i].version;
+    Installed e;
+    e.at=now;
+    if(!updatedFrom.empty() && updatedFrom!=NETDISC_VERSION) {
+        e.version=NETDISC_VERSION; e.from=CleanVersion(updatedFrom); e.how="app"; e.backup=backupName;
+    } else if(!updateTo.empty()) {
+        e.version=CleanVersion(updateTo); e.from=NETDISC_VERSION; e.how="failed"; e.backup=backupName;
+        UpdateHistory.push_back(e);
+        if(last==NETDISC_VERSION) e.version.clear();
+        else { e.version=NETDISC_VERSION; e.from=last; e.how=last.empty() ? "first" : "other"; e.backup.clear(); }
+    } else if(last!=NETDISC_VERSION) {
+        e.version=NETDISC_VERSION; e.from=last; e.how=last.empty() ? "first" : "other";
+    } else return false;
+    if(!e.version.empty()) UpdateHistory.push_back(e);
+    if(UpdateHistory.size()>HistoryKeep) UpdateHistory.erase(UpdateHistory.begin(),UpdateHistory.end()-HistoryKeep);
+    return true;
+}
+
 bool Save() {
     Options o;
     std::vector<KnownConsole> known;
@@ -1531,6 +1609,9 @@ bool Save() {
         else f.Set("update_to",UpdateTo);
         if(UpdateSkip.empty()) f.Remove("update_skip");
         else f.Set("update_skip",UpdateSkip);
+        if(UpdateBackup.empty()) f.Remove("update_backup");
+        else f.Set("update_backup",UpdateBackup);
+        f.Set("update_history",HistoryText(UpdateHistory));
     }
     std::map<std::string,Choice> choices;
     { std::lock_guard<std::mutex> hold(DuplicatesLock); choices=Choices; }
@@ -1617,6 +1698,8 @@ bool LoadConfig(Options& o) {
         UpdatedFrom=f.Get("updated_from");
         UpdateTo=f.Get("update_to");
         UpdateSkip=f.Get("update_skip");
+        UpdateBackup=f.Get("update_backup");
+        UpdateHistory=ReadHistory(f.Get("update_history"));
     }
     // Which copy of a game to play: "key|copy ids|path" (see Choice).
     {
@@ -1702,6 +1785,7 @@ struct UpdateStatus {
     std::string error;       // Why the last check got none.
     bool found;              // latest is GitHub's newest release.
     update::Release latest;
+    std::vector<update::Release> releases;  // All of them, newest first, for the changes since this version.
     std::string stage;       // While installing: download, check or restart.
     long long got, total;    // Of the download.
     std::string installError;
@@ -1725,6 +1809,8 @@ const char* UpdateHow() {
 bool ChecksUpdates(const Options& o) { return update::CanFetch() || !o.releasesFile.empty(); }
 
 void UpdateJson(web::Json& j, const Options& o, bool notes) {
+    std::vector<Installed> history;
+    { std::lock_guard<std::mutex> hold(SettingsLock); history=UpdateHistory; }
     std::lock_guard<std::mutex> hold(UpdateLock);
     const UpdateStatus& u=Updates;
     bool newer=u.found && update::Compare(u.latest.version,NETDISC_VERSION)>0;
@@ -1738,6 +1824,21 @@ void UpdateJson(web::Json& j, const Options& o, bool notes) {
         if(notes) j.Set("notes",u.latest.notes);
         j.Close('}');
     } else j.Key("latest").Null();
+    if(notes) {
+        // Every release GitHub lists, newer: those since this version (the
+        // changelog before an update), and this one's own notes.
+        j.Key("releases").Open('[');
+        for(size_t i=0;u.found && i<u.releases.size();++i) {
+            const update::Release& r=u.releases[i];
+            j.Open('{').Set("tag",r.tag).Set("version",r.version).Set("name",r.name).Set("notes",r.notes);
+            j.Set("page",r.page).Set("published",r.published).Set("prerelease",r.prerelease).Set("newer",update::Compare(r.version,NETDISC_VERSION)>0).Close('}');
+        }
+        j.Close(']');
+    }
+    j.Key("history").Open('[');
+    for(size_t i=history.size();i-->0;)
+        j.Open('{').Set("version",history[i].version).Set("at",history[i].at).Set("how",history[i].how).Set("from",history[i].from).Set("backup",history[i].backup).Close('}');
+    j.Close(']');
     j.Close('}');
 }
 
@@ -2337,6 +2438,11 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
     }
     f.Remove("updated_from");
     f.Remove("update_to");
+    f.Remove("update_backup");
+    {   // The update history is this copy's own, not the backup's.
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        f.Set("update_history",HistoryText(UpdateHistory));
+    }
     int missing=0, folders=int(Listed(f,"folders"));
     for(int i=1;i<=folders;++i) if(!config::IsFolder(config::FromUtf8(f.Get(("folder"+Number(i)).c_str())))) ++missing;
     if(missing) notes.push_back(Count(missing,"of the backup's game folders isn't","of the backup's game folders aren't")+" on this computer; change them on the Game folders page.");
@@ -2414,8 +2520,10 @@ bool CheckForUpdate(std::string& error) {
     }
     std::string body;
     update::Release r;
+    std::vector<update::Release> releases;
     bool answered=FetchReleases(o,body,error);
-    bool ok=answered && update::Newest(body,o.updatePrerelease,r,error);
+    bool ok=answered && update::List(body,o.updatePrerelease,releases,error);
+    if(ok) r=releases[0];
     std::string tell;
     {
         std::lock_guard<std::mutex> hold(UpdateLock);
@@ -2423,7 +2531,7 @@ bool CheckForUpdate(std::string& error) {
         if(answered) Updates.checkedAt=(long long)time(NULL);
         Updates.error=ok ? std::string() : error;
         Updates.found=ok;
-        if(ok) Updates.latest=r;
+        if(ok) { Updates.latest=r; Updates.releases.swap(releases); }
         if(ok && update::Compare(r.version,NETDISC_VERSION)>0 && Updates.told!=r.version) tell=Updates.told=r.version;
     }
     if(!ok) Log("Update check: %s",error.c_str());
@@ -2452,12 +2560,19 @@ bool ConsolesBusy() {
 // Downloads the newest release's NetDisc360.exe, checks it, backs up the
 // settings and puts it in place of this exe, which then restarts as it. One
 // installing by itself (automatic) leaves it should a console start a game.
-void InstallUpdate(bool automatic) {
+// wanted: the version whose changes were shown, if any; should a newer one
+// have come out since, nothing is installed, so its changes can be seen first.
+void InstallUpdate(bool automatic, std::string wanted) {
     Options o=Current();
     std::string body, exe, error, name;
     update::Release r;
     bool ok=FetchReleases(o,body,error) && update::Newest(body,o.updatePrerelease,r,error);
     if(ok && update::Compare(r.version,NETDISC_VERSION)<=0) { ok=false; error="This is the newest version already."; }
+    if(ok && !wanted.empty() && r.version!=wanted) {
+        ok=false;
+        error="NetDisc360 "+r.version+" came out since you looked. Check now to see its changes, then install it.";
+        CheckSoon=true;
+    }
     if(ok && r.exeUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc360.exe to install; download it from GitHub."; }
     if(ok && o.releasesFile.empty() && !update::FromRepo(r.exeUrl)) { ok=false; error="Release "+r.tag+"'s NetDisc360.exe isn't on "+NETDISC_REPO+"'s releases, so it wasn't installed."; }
     if(ok) {
@@ -2469,20 +2584,30 @@ void InstallUpdate(bool automatic) {
         Updates.stage="check";
     }
     ok=ok && update::CheckExe(exe,r,error);
+#ifdef _WIN32
+    if(ok && automatic && ConsolesBusy()) { ok=false; error="A console started a game; it installs later."; }
+#endif
+    // The settings are backed up first, to go back to from the Backups page.
     if(ok) {
-        if(!MakeBackup("update",name,error)) Log("Installing anyway, without a backup of the settings.");
+        std::lock_guard<std::mutex> hold(UpdateLock);
+        Updates.stage="backup";
+    }
+    if(ok && !o.configPath.empty() && !MakeBackup("update",name,error)) {
+        ok=false;
+        error="The settings couldn't be backed up first, so nothing was installed. "+error;
+    }
+    if(ok) {
         std::lock_guard<std::mutex> hold(UpdateLock);
         Updates.stage="restart";
     }
 #ifdef _WIN32
-    if(ok && automatic && ConsolesBusy()) { ok=false; error="A console started a game; it installs later."; }
     if(ok) {
-        { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; UpdateTo=r.version; }
+        { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom=NETDISC_VERSION; UpdateTo=r.version; UpdateBackup=name; }
         Save();
         Log("Installing NetDisc360 %s in place of %s; it restarts.",r.version.c_str(),NETDISC_VERSION);
         Event(EventInfo,"Installing NetDisc360 %s; it restarts in a moment",r.version.c_str());
         ok=InstallExe(exe,error);
-        if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); UpdateTo.clear(); } Save(); }
+        if(!ok) { { std::lock_guard<std::mutex> hold(SettingsLock); UpdatedFrom.clear(); UpdateTo.clear(); UpdateBackup.clear(); } Save(); }
     }
 #else
     if(ok) { ok=false; error="This build doesn't install updates itself."; }
@@ -2496,7 +2621,7 @@ void InstallUpdate(bool automatic) {
     Updates.installError=error;
 }
 
-bool StartInstall(std::string& error, bool automatic=false) {
+bool StartInstall(std::string& error, bool automatic=false, const std::string& wanted=std::string()) {
     if(strcmp(UpdateHow(),"app")) {
         error=InDocker ? "The Docker image is updated by pulling the new one: docker compose pull, then docker compose up -d."
                        : "This copy is updated by hand: download the new one from GitHub.";
@@ -2505,7 +2630,7 @@ bool StartInstall(std::string& error, bool automatic=false) {
     std::lock_guard<std::mutex> hold(UpdateLock);
     if(Updates.installing) { error="It's installing already."; return false; }
     Updates.installing=true; Updates.stage="download"; Updates.got=Updates.total=0; Updates.installError.clear();
-    std::thread(InstallUpdate,automatic).detach();
+    std::thread(InstallUpdate,automatic,wanted).detach();
     return true;
 }
 
@@ -2606,7 +2731,9 @@ void Api(const web::Request& r, web::Reply& out) {
         if(!ChecksUpdates(Current())) out.Error(400,"The dashboard checks for updates itself here.");
         else { CheckForUpdate(error); UpdateInfo(out); }
     } else if(r.method=="POST" && r.path=="/api/update/install") {
-        if(StartInstall(error)) out.body="{\"ok\":true}";
+        std::string wanted;
+        Text(body,"version",wanted);
+        if(StartInstall(error,false,wanted)) out.body="{\"ok\":true}";
         else out.Error(400,error);
 #ifdef _WIN32
     } else if(r.method=="POST" && r.path=="/api/restart" && InTray) {
@@ -2825,15 +2952,19 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     o.updateAuto=false;
 #endif
     std::string updatedFrom, updateTo;
+    bool noted;
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings=o;
         updatedFrom.swap(UpdatedFrom);
         updateTo.swap(UpdateTo);
+        std::string backupName;
+        backupName.swap(UpdateBackup);
         if(updatedFrom==NETDISC_VERSION && !updateTo.empty()) UpdateSkip=updateTo;  // It didn't take.
         else if(!updatedFrom.empty()) UpdateSkip.clear();
+        noted=!o.configPath.empty() && NoteStart(updatedFrom,updatedFrom==NETDISC_VERSION ? updateTo : std::string(),backupName);
     }
-    if(fresh || !updatedFrom.empty()) Save();
+    if(fresh || !updatedFrom.empty() || noted) Save();
     web::SetSessionSecret(SessionSecret(o));
     if(!updatedFrom.empty() && updatedFrom!=NETDISC_VERSION) {
         Log("Updated from NetDisc360 %s to %s.",updatedFrom.c_str(),NETDISC_VERSION);

@@ -4,6 +4,7 @@
 #include "version.h"
 #include "web.h"
 #include "../shared/platform.h"
+#include <algorithm>
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
@@ -84,25 +85,17 @@ int Compare(const std::string& a, const std::string& b) {
 
 std::string ReleasesUrl() { return "https://api.github.com/repos/" NETDISC_REPO "/releases?per_page=20"; }
 
-bool Newest(const std::string& json, bool prereleases, Release& out, std::string& error) {
-    web::Value list;
-    if(!web::Parse(json,list) || list.type!=web::Value::Array) { error="GitHub's answer wasn't a list of releases."; return false; }
-    const web::Value* best=NULL;
-    for(size_t i=0;i<list.items.size();++i) {
-        const web::Value& r=list.items[i];
-        if(r.type!=web::Value::Object || Flag(r,"draft") || (Flag(r,"prerelease") && !prereleases) || Text(r,"tag_name").empty()) continue;
-        if(!best || Compare(Text(r,"tag_name"),Text(*best,"tag_name"))>0) best=&r;
-    }
-    if(!best) { error=prereleases ? "There are no releases on GitHub yet." : "There are no releases on GitHub yet (only test versions, if any)."; return false; }
-    out=Release();
-    out.tag=Text(*best,"tag_name");
+namespace {
+Release Read(const web::Value& r) {
+    Release out;
+    out.tag=Text(r,"tag_name");
     out.version=out.tag[0]=='v' || out.tag[0]=='V' ? out.tag.substr(1) : out.tag;
-    out.name=Text(*best,"name");
-    out.notes=Text(*best,"body");
-    out.page=Text(*best,"html_url");
-    out.published=Text(*best,"published_at");
-    out.prerelease=Flag(*best,"prerelease");
-    const web::Value* assets=best->Get("assets");
+    out.name=Text(r,"name");
+    out.notes=Text(r,"body");
+    out.page=Text(r,"html_url");
+    out.published=Text(r,"published_at");
+    out.prerelease=Flag(r,"prerelease");
+    const web::Value* assets=r.Get("assets");
     for(size_t i=0;assets && assets->type==web::Value::Array && i<assets->items.size();++i) {
         const web::Value& a=assets->items[i];
         if(a.type!=web::Value::Object || Lower(Text(a,"name"))!="netdisc360.exe") continue;
@@ -111,6 +104,29 @@ bool Newest(const std::string& json, bool prereleases, Release& out, std::string
         const web::Value* size=a.Get("size");
         out.exeSize=size && size->type==web::Value::Number ? (long long)size->number : 0;
     }
+    return out;
+}
+}  // namespace
+
+bool List(const std::string& json, bool prereleases, std::vector<Release>& out, std::string& error) {
+    out.clear();
+    web::Value list;
+    if(!web::Parse(json,list) || list.type!=web::Value::Array) { error="GitHub's answer wasn't a list of releases."; return false; }
+    for(size_t i=0;i<list.items.size();++i) {
+        const web::Value& r=list.items[i];
+        if(r.type!=web::Value::Object || Flag(r,"draft") || (Flag(r,"prerelease") && !prereleases) || Text(r,"tag_name").empty()) continue;
+        out.push_back(Read(r));
+    }
+    // Newest first; of two with the same version, the one GitHub listed first.
+    std::stable_sort(out.begin(),out.end(),[](const Release& a, const Release& b) { return Compare(a.tag,b.tag)>0; });
+    if(out.empty()) { error=prereleases ? "There are no releases on GitHub yet." : "There are no releases on GitHub yet (only test versions, if any)."; return false; }
+    return true;
+}
+
+bool Newest(const std::string& json, bool prereleases, Release& out, std::string& error) {
+    std::vector<Release> list;
+    if(!List(json,prereleases,list,error)) return false;
+    out=list[0];
     return true;
 }
 

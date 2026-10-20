@@ -365,6 +365,20 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .notes p { margin: 6px 0; }
 .notes ul { margin: 6px 0; padding-left: 20px; }
 .notes li { margin: 3px 0; }
+.change { padding: 16px 0; border-top: 1px solid var(--line); }
+.change:first-child { padding-top: 0; border-top: 0; }
+.change-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.change-head b { font-size: 15px; font-weight: 650; }
+.change-head .sub { color: var(--muted); font-size: 13px; }
+.earlier { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.earlier summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.earlier[open] summary { margin-bottom: 12px; }
+.earlier summary + .change { padding-top: 0; border-top: 0; }
+.history-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+.history-row:first-child { padding-top: 0; border-top: 0; }
+.history-row .kindmark { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.history-row .grow { flex: 1; min-width: 0; }
+.history-row .sub { color: var(--muted); font-size: 13px; }
 .command { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line-strong); }
 .command code { flex: 1; min-width: 0; background: none; border: 0; padding: 0; overflow-x: auto; white-space: nowrap; }
 .backup-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
@@ -422,6 +436,9 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
   .hero .actions { width: 100%; justify-content: flex-start; }
   .backup-row { flex-wrap: wrap; }
   .backup-row .actions { width: 100%; justify-content: flex-start; padding-left: 52px; }
+  .history-row { flex-wrap: wrap; }
+  .history-row .grow { flex-basis: calc(100% - 48px); }
+  .history-row > .btn { margin-left: 48px; }
   .covers { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px 12px; }
   .table .hide-narrow { display: none; }
   .offline-bar { padding: 8px 16px; }
@@ -866,7 +883,11 @@ Pages.dashboard = root => {
       if (st.webAddress === '0.0.0.0' && !st.password) fill(open, h('div.notice', ic('shield-alert'), h('span', 'Anyone on your network can open this dashboard and change its settings. Set a password to keep it yours.'), h('a.btn.small', { href: '#settings/dashboard' }, 'Set a password')));
       else open.replaceChildren();
       const out = updateOut();
+      const fresh = justUpdated();
       if (out) fill(news, h('div.notice.info', ic('sparkles'), h('span', 'NetDisc360 ' + out + ' is out.'), h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new')));
+      else if (fresh) fill(news, h('div.notice.info', ic('circle-check'), h('span', 'Updated to NetDisc360 ' + fresh.version + (fresh.from ? ' from ' + fresh.from : '') + '.'),
+        h('a.btn.small', { href: '#settings/updates' }, 'See what\u2019s new'),
+        h('button.btn.small.ghost', { title: 'Hide', onclick: () => { store('seen-update', fresh.version); news.replaceChildren(); } }, ic('x', 'sm'))));
       else news.replaceChildren();
       // A game in the folders more than once, with no copy chosen yet.
       const n = S.library.conflicts;
@@ -1220,8 +1241,8 @@ async function browserCheck(force) {
     list.sort((a, b) => versionCompare(b.tag_name, a.tag_name));
     if (!list.length) info.error = 'There are no releases on GitHub yet.';
     else {
-      const x = list[0];
-      info.latest = { tag: x.tag_name, version: x.tag_name.replace(/^v/i, ''), name: x.name || '', notes: x.body || '', page: x.html_url, published: x.published_at, prerelease: !!x.prerelease };
+      info.releases = list.map(x => ({ tag: x.tag_name, version: x.tag_name.replace(/^v/i, ''), name: x.name || '', notes: x.body || '', page: x.html_url, published: x.published_at, prerelease: !!x.prerelease }));
+      info.latest = info.releases[0];
     }
   } catch (e) {
     info.error = e instanceof TypeError ? 'This browser couldn\u2019t reach GitHub. Is it online?' : e.message;
@@ -1238,6 +1259,7 @@ async function loadUpdate(force) {
     const info = await browserCheck(force);
     U = Object.assign({ how: S.update.how, checks: false, installing: false }, info, { version: S.version });
     U.newer = !!(U.latest && versionCompare(U.latest.version, S.version) > 0);
+    U.releases = (U.releases || []).map(r => Object.assign({}, r, { newer: versionCompare(r.version, S.version) > 0 }));
   }
   return U;
 }
@@ -1246,6 +1268,13 @@ function updateOut() {
   if (!S || !S.settings.updateCheck && !(U && U.newer)) return null;
   if (S.update.checks) return S.update.newer ? S.update.latest.version : null;
   return U && U.newer ? U.latest.version : null;
+}
+
+// The update this version came with, for a few days after it, until its changes were seen.
+function justUpdated() {
+  const last = S && S.update.history && S.update.history[0];
+  if (!last || last.version !== S.version || (last.how !== 'app' && last.how !== 'other') || Date.now() / 1000 - last.at > 7 * 86400) return null;
+  return store('seen-update') === last.version ? null : last;
 }
 
 // Release notes: GitHub's Markdown, its headings, lists, bold, code and links, as text.
@@ -1404,10 +1433,13 @@ Pages.settings = root => {
 
   Parts.updates = () => {
     const st = S.settings, app = S.update.how === 'app';
-    const hero = h('div.card'), notes = h('div');
+    const hero = h('div.card'), notes = h('div'), history = h('div');
+    // Just updated: this page shows what's new in it, and the dashboard stops saying so.
+    const fresh = justUpdated();
+    if (fresh) store('seen-update', fresh.version);
     fill(body,
       head('Updates', 'New versions of NetDisc360, from its releases on GitHub.'),
-      hero, notes,
+      hero, notes, history,
       S.update.how === 'docker' ? card('container', 'Updating the Docker image', null,
         h('p', { style: { margin: '0 0 10px' } }, 'In the folder with your docker-compose.yml:'),
         h('div.command', h('code', 'docker compose pull && docker compose up -d'),
@@ -1426,8 +1458,48 @@ Pages.settings = root => {
       try { await loadUpdate(force); } catch (e) { toast(e.message, true); }
       busy = false; draw();
     }
-    async function install() {
-      try { await api('update/install', {}); await refresh(); } catch (e) { toast(e.message, true); }
+    // Says what an update does before it starts: the changes were shown above it.
+    async function install(latest) {
+      const busy = S.consoles.filter(c => c.playing);
+      const yes = await confirmBox('Install NetDisc360 ' + latest.version + '?', h('div',
+        h('ul', { style: { margin: '0', paddingLeft: '20px' } },
+          h('li', 'Your settings and disc map are backed up first. You can bring them back under Backups.'),
+          h('li', 'NetDisc360 restarts, which takes a few seconds. The dashboard comes back by itself.'),
+          h('li', 'If the new version doesn\u2019t start, the one you have now is put back.')),
+        busy.length ? h('div.notice', { style: { marginTop: '12px' } }, ic('triangle-alert'),
+          h('span', (busy.length === 1 ? 'A console is' : busy.length + ' consoles are') + ' playing. The game loses its disc while NetDisc360 restarts.')) : null),
+        'Install and restart');
+      if (!yes) return;
+      try { await api('update/install', { version: latest.version }); await refresh(); } catch (e) { toast(e.message, true); }
+    }
+    // A release's notes, with its version, name and date.
+    function release(r, label) {
+      return h('div.change',
+        h('div.change-head', h('b', r.version), r.name && ![r.tag, r.version, 'NetDisc360 ' + r.version, 'NetDisc360 ' + r.tag].includes(r.name) ? h('span', r.name) : null,
+          r.published ? h('span.sub', new Date(r.published).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })) : null,
+          r.prerelease ? h('span.pill.warn', 'Test version') : null, label || null),
+        h('div.notes', markdown(r.notes)),
+        h('div', { style: { marginTop: '8px' } }, h('a.link', { href: r.page, target: '_blank', rel: 'noopener noreferrer' }, 'On GitHub', ic('external-link', 'sm'))));
+    }
+    const HistoryKinds = {
+      app: ['refresh-cw', 'k-good'], other: ['download', 'k-info'], first: ['sparkles', 'k-xbox'], failed: ['triangle-alert', 'k-warning'],
+    };
+    function drawHistory() {
+      const list = S.update.history || [];
+      if (!list.length) { history.replaceChildren(); return; }
+      const running = list.find(e => e.how !== 'failed');
+      fill(history, card('history', 'Update history', null, list.map(e => {
+        const [icon, tone] = HistoryKinds[e.how] || HistoryKinds.other;
+        const what = e.how === 'app' ? 'Updated' + (e.from ? ' from ' + e.from : '') + ' by NetDisc360.'
+          : e.how === 'failed' ? 'Didn\u2019t start, so ' + (e.from || 'the version before') + ' was put back. It won\u2019t install by itself.'
+          : e.how === 'first' ? 'The first start.'
+          : 'Put in place' + (e.from ? ' over ' + e.from : '') + (S.update.how === 'docker' ? ' with a new image.' : ' by hand.');
+        return h('div.history-row', h('div.kindmark.' + tone, ic(icon)),
+          h('div.grow', h('div', h('b', e.how === 'failed' ? 'NetDisc360 ' + e.version + ' didn\u2019t start' : 'NetDisc360 ' + e.version),
+            e === running && e.version === S.version ? [' ', h('span.pill.good', 'Running')] : null),
+            h('div.sub', fullDate(e.at) + '. ' + what)),
+          e.backup ? h('a.btn.small', { href: '#settings/backups', title: 'The settings as they were before this update: ' + e.backup }, ic('archive', 'sm'), 'Settings before') : null);
+      })));
     }
     let drawn = '';
     function draw() {
@@ -1440,7 +1512,7 @@ Pages.settings = root => {
       const checkBtn = (small) => h('button.btn' + (small ? '.small' : ''), { onclick: () => load(true), disabled: busy || (u && u.checking) }, ic('refresh-cw', 'sm' + (busy || (u && u.checking) ? ' spin' : '')), 'Check now');
       let mark, title, text, actions = [], extra = null;
       if (u && u.installing) {
-        const stage = { download: 'Downloading', check: 'Checking the download', restart: 'Restarting' }[u.stage] || 'Installing';
+        const stage = { download: 'Downloading', check: 'Checking the download', backup: 'Backing up your settings', restart: 'Restarting' }[u.stage] || 'Installing';
         mark = ['loader-circle', 'k-xbox', true]; title = 'Installing NetDisc360 ' + (latest ? latest.version : '');
         text = stage + (u.stage === 'download' && u.total ? ': ' + bytes(u.got, 1) + ' of ' + bytes(u.total, 1) : '\u2026');
         extra = h('div.progress' + (u.stage === 'download' && u.total ? '' : '.busy'), h('i', { style: u.total ? { width: Math.round(100 * u.got / u.total) + '%' } : null }));
@@ -1450,7 +1522,7 @@ Pages.settings = root => {
       } else if (u.newer) {
         mark = ['sparkles', 'k-xbox']; title = 'NetDisc360 ' + latest.version + ' is out';
         text = 'You have ' + here + '.' + (latest.published ? ' Released ' + ago(Date.parse(latest.published) / 1000) + '.' : '') + (latest.prerelease ? ' It\u2019s a test version.' : '');
-        if (app && latest.exe !== false) actions.push(h('button.btn.primary', { onclick: install }, ic('download', 'sm'), 'Install and restart'));
+        if (app && latest.exe !== false) actions.push(h('button.btn.primary', { onclick: () => install(latest) }, ic('download', 'sm'), 'Install and restart'));
         else if (S.update.how !== 'docker') actions.push(h('a.btn.primary', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, ic('download', 'sm'), 'Download'));
         actions.push(h('a.btn', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'On GitHub', ic('external-link', 'sm')));
       } else if (u.error && !latest) {
@@ -1464,8 +1536,20 @@ Pages.settings = root => {
       fill(hero,
         h('div.hero', h('div.mark.' + mark[1], ic(mark[0], mark[2] ? 'spin' : null)), h('div.text', h('h3', title), h('p', text), extra), actions.length ? h('div.actions', actions) : null),
         h('div.hero-foot', h('span', 'This version: ', h('b', here)), h('span', 'Built ' + S.built), checked && h('span', checked), u && u.newer && checkBtn(true)));
-      fill(notes, latest ? card('scroll-text', u.newer ? 'What\u2019s new in ' + latest.version : 'About ' + latest.version, latest.name && latest.name !== latest.tag ? latest.name : null,
-        h('div.notes', markdown(latest.notes)), h('div', { style: { marginTop: '12px' } }, h('a.link', { href: latest.page, target: '_blank', rel: 'noopener noreferrer' }, 'The release on GitHub', ic('external-link', 'sm')))) : null);
+      // The changes: every version since this one (not only the newest), then the earlier ones.
+      const all = u && u.releases && u.releases.length ? u.releases : latest ? [Object.assign({ newer: !!u.newer }, latest)] : [];
+      const newer = all.filter(r => r.newer), older = all.filter(r => !r.newer);
+      const before = new Set((S.update.history || []).filter(e => e.how !== 'failed' && e.version !== here).map(e => e.version));
+      const label = r => r.version === here ? h('span.pill.good', 'Installed') : before.has(r.version) ? h('span.pill.off', 'Installed before') : null;
+      const mine = older.find(r => r.version === here);
+      let heading, shown = newer, rest = older;
+      if (newer.length) heading = newer.length === 1 ? 'What\u2019s new in ' + newer[0].version : 'What\u2019s new since ' + here + ' (' + plural(newer.length, 'version') + ')';
+      else if (mine) { heading = fresh ? 'What\u2019s new in ' + here : 'About ' + here; shown = [mine]; rest = older.filter(r => r !== mine); }
+      else if (latest) { heading = 'About ' + latest.version; shown = [latest]; rest = older.filter(r => r.version !== latest.version); }
+      fill(notes, shown.length ? card('scroll-text', heading, null,
+        shown.map(r => release(r, label(r))),
+        rest.length ? h('details.earlier', h('summary', 'Earlier versions (' + rest.length + ')'), rest.map(r => release(r, label(r)))) : null) : null);
+      drawHistory();
     }
     draw();
     load(false);

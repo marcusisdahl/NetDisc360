@@ -7,6 +7,7 @@
 // is updated by pulling it, so there the dashboard only says that a new one
 // is out (it asks GitHub itself, as the Linux server has no HTTPS).
 #include <string>
+#include <vector>
 
 namespace update {
 struct Release {
@@ -23,6 +24,10 @@ int Compare(const std::string& a, const std::string& b);
 // The newest release in GitHub's list of releases (its JSON), leaving out
 // drafts, and pre-releases unless asked for; false with why in error.
 bool Newest(const std::string& json, bool prereleases, Release& out, std::string& error);
+// Every release in GitHub's list, newest first, leaving out drafts, and
+// pre-releases unless asked for: the changes since a version, for the
+// dashboard. False with why in error when there's none.
+bool List(const std::string& json, bool prereleases, std::vector<Release>& out, std::string& error);
 // GitHub's list of releases, as Newest reads it.
 std::string ReleasesUrl();
 

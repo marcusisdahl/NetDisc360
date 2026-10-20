@@ -748,6 +748,16 @@ std::string ServedName(const std::string& name) {
 
 void UniqueNames(std::vector<IsoFile>& discs) {
     for(size_t i=0;i<discs.size();++i) discs[i].name=ServedName(discs[i].name);
+    // The discs by name, ignoring case as _stricmp does, so a name is checked
+    // against the few discs with it rather than every disc (thousands, and
+    // this runs every second).
+    auto keyOf=[](const std::string& name) {
+        std::string key(name);
+        for(size_t i=0;i<key.size();++i) if(key[i]>='A' && key[i]<='Z') key[i]=char(key[i]-'A'+'a');
+        return key;
+    };
+    std::map<std::string,std::vector<size_t> > named;
+    for(size_t i=0;i<discs.size();++i) named[keyOf(discs[i].name)].push_back(i);
     // An ISO keeps its name over a folder or GOD package, and otherwise the
     // first in order keeps it. ISOs are named first; a numbered name
     // ("Game 2.iso") sorts before "Game.iso", so a real one is named already.
@@ -757,15 +767,21 @@ void UniqueNames(std::vector<IsoFile>& discs) {
         std::string name=discs[i].name;
         size_t cut=name.size()-4;  // Before ".iso".
         for(int n=2;;++n) {
+            std::string key=keyOf(discs[i].name);
+            const std::vector<size_t>& same=named[key];
             bool taken=false;
-            for(size_t k=0;k<discs.size() && !taken;++k) {
-                if(k==i || _stricmp(discs[k].name.c_str(),discs[i].name.c_str())) continue;
+            for(size_t s=0;s<same.size() && !taken;++s) {
+                size_t k=same[s];
+                if(k==i) continue;
                 bool other=discs[k].kind==DiscIso;
                 taken=other==iso ? k<i : other;
             }
             if(!taken) break;
             char number[16]; _snprintf_s(number,sizeof(number),_TRUNCATE," %d",n);
+            std::vector<size_t>& was=named[key];
+            was.erase(std::find(was.begin(),was.end(),i));
             discs[i].name=name.substr(0,cut)+number+name.substr(cut);
+            named[keyOf(discs[i].name)].push_back(i);
         }
     }
 }
