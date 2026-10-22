@@ -7,6 +7,7 @@
 #include <time.h>
 #include <map>
 #include <mutex>
+#include <set>
 #ifndef _WIN32
 #include <dirent.h>
 #endif
@@ -813,6 +814,16 @@ void ReadTitles(std::vector<IsoFile>& discs) {
         Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages };
         std::lock_guard<std::mutex> hold(TitlesLock);
         Titles[d.path]=known;
+    }
+    // Discs gone for good (renamed, moved, deleted) are forgotten once there
+    // are many of them; ones only missing for now (a drive or share that's
+    // away) are kept, so they needn't be read again when it's back.
+    std::lock_guard<std::mutex> hold(TitlesLock);
+    if(Titles.size()>2*discs.size()+1000) {
+        std::set<std::string> here;
+        for(size_t i=0;i<discs.size();++i) here.insert(discs[i].path);
+        for(std::map<std::string,Known>::iterator k=Titles.begin();k!=Titles.end();)
+            if(here.count(k->first)) ++k; else Titles.erase(k++);
     }
 }
 

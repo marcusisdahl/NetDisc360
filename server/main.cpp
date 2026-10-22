@@ -222,6 +222,13 @@ std::vector<IsoFile> GamesList;
 std::map<std::string,std::pair<long long,U64> > FolderSizes;  // Path: the default.xex time it was counted for, and the bytes.
 long long GamesVersion;  // Changes with either, or with the conflicts.
 bool GamesScanned;       // The folders were read once.
+// WatchLoop looks at the folders every second, or, where that takes long (a
+// NAS, a slow share, a big library), less often: ScanEffort times as long
+// as the last look took, at most ScanMostSeconds apart, so a NAS's disks can
+// sleep. ScanSoon has it look again at once (a change on the dashboard, or a
+// console asking for a game the latest look didn't find).
+const double ScanEffort = 10, ScanMostSeconds = 30;
+std::atomic<bool> ScanSoon(false);
 
 // Games that are in the folders more than once. Each is a conflict: every
 // copy of one game (Title ID and disc), and the one served. Until the user
@@ -397,6 +404,17 @@ std::vector<IsoFile> Isos() {
     }
     NoteConflicts(dropped,kept);
     return isos;
+}
+
+// The games WatchLoop found at its latest look at the folders, so a console
+// listing or mounting doesn't have them all read again (over a network, that
+// takes a while); the folders themselves before the first look.
+std::vector<IsoFile> LatestGames() {
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        if(GamesScanned) return GamesList;
+    }
+    return Isos();
 }
 
 // What the push compares: an ISO that is still being copied keeps changing.
@@ -808,7 +826,7 @@ private:
         }
         case GetIsoName: {
             if(length>MaxNameBytes) return false;
-            if(!index || index>listing_.size()) listing_=Isos();
+            if(!index || index>listing_.size()) listing_=LatestGames();
             std::vector<unsigned char> reply(length,0);
             if(index<listing_.size()) memcpy(reply.data(),listing_[index].name.data(),std::min<size_t>(length,listing_[index].name.size()));
             return SendAll(reply.data(),reply.size());
@@ -838,12 +856,13 @@ private:
             Mounted();
             return 0;
         }
-        std::vector<IsoFile> isos=Isos();
-        const IsoFile* found=NULL;
-        for(size_t i=0;i<isos.size() && !found && !name.empty();++i) if(!_stricmp(isos[i].name.c_str(),name.c_str())) found=&isos[i];
-        // netiso-srv takes the first ISO whose name ends with the request.
-        for(size_t i=0;i<isos.size() && !found && !name.empty();++i)
-            if(isos[i].name.size()>=name.size() && !_stricmp(isos[i].name.c_str()+isos[i].name.size()-name.size(),name.c_str())) found=&isos[i];
+        std::vector<IsoFile> isos=LatestGames();
+        const IsoFile* found=Find(isos,name);
+        if(!found && !name.empty()) {  // Added since the latest look, perhaps.
+            isos=Isos();
+            found=Find(isos,name);
+            ScanSoon=true;
+        }
         if(!found) { Log("%s asked to mount \"%s\", which isn't here.",peer_,name.c_str()); return 0; }
         if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); Mounted(); return 0; }
         mounted_=found->name; pastEnd_=false;
@@ -856,6 +875,14 @@ private:
             else Event(EventPlay,"%s started on %s",WithoutIso(found->name).c_str(),peer_);
         }
         return 1;
+    }
+    static const IsoFile* Find(const std::vector<IsoFile>& isos, const std::string& name) {
+        const IsoFile* found=NULL;
+        for(size_t i=0;i<isos.size() && !found && !name.empty();++i) if(!_stricmp(isos[i].name.c_str(),name.c_str())) found=&isos[i];
+        // netiso-srv takes the first ISO whose name ends with the request.
+        for(size_t i=0;i<isos.size() && !found && !name.empty();++i)
+            if(isos[i].name.size()>=name.size() && !_stricmp(isos[i].name.c_str()+isos[i].name.size()-name.size(),name.c_str())) found=&isos[i];
+        return found;
     }
     // The console's disc is the one its latest mount asked for.
     void Mounted() {
@@ -1403,18 +1430,25 @@ void WatchLoop() {
     double changedAt=-1e9;
     std::map<DWORD,PushState> states;
     std::set<std::string> names;
+    std::string state;
+    double nextScan=0;
     for(int tick=0;;++tick) {
-        std::vector<IsoFile> isos=Isos();
-        std::string state=Fingerprint(isos);
-        if(state!=previous || !tick) {
-            if(state!=previous && (!previous.empty() || changedAt>-1e9)) changedAt=Now();
-            previous=state;
-            std::set<std::string> now;
-            for(size_t i=0;i<isos.size();++i) now.insert(isos[i].name);
-            if(tick) NoteChanges(names,now);
-            names.swap(now);
-            std::lock_guard<std::mutex> hold(GamesListLock);
-            GamesList=isos; ++GamesVersion; GamesScanned=true;
+        bool soon=ScanSoon.exchange(false);
+        if(!tick || soon || Now()>=nextScan) {
+            double began=Now();
+            std::vector<IsoFile> isos=Isos();
+            nextScan=Now()+std::max(1.0,std::min(ScanMostSeconds,(Now()-began)*ScanEffort))-0.05;
+            state=Fingerprint(isos);
+            if(state!=previous || !tick) {
+                if(state!=previous && (!previous.empty() || changedAt>-1e9)) changedAt=Now();
+                previous=state;
+                std::set<std::string> now;
+                for(size_t i=0;i<isos.size();++i) now.insert(isos[i].name);
+                if(tick) NoteChanges(names,now);
+                names.swap(now);
+                std::lock_guard<std::mutex> hold(GamesListLock);
+                GamesList=isos; ++GamesVersion; GamesScanned=true;
+            }
         }
         Options o=Current();
         // A missing game folder coming back pushes again, removing what is really gone.
@@ -2251,7 +2285,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
 #endif
     bool folders=next.folders.size()!=was.folders.size();
     for(size_t i=0;i<next.folders.size() && !folders;++i) folders=next.folders[i]!=was.folders[i];
-    if(folders) FoldersChangedAt=(long long)(Now()*1000);
+    if(folders) { FoldersChangedAt=(long long)(Now()*1000); ScanSoon=true; }
     if(folders) changed.push_back("game folders: "+(next.folders.empty() ? std::string("none") : Count(int(next.folders.size()),"folder","folders")));
     if(next.xboxes!=was.xboxes) changed.push_back("consoles to update: "+(next.xboxes.empty() ? std::string("every console that connects") : AddressList(next.xboxes)));
     bool login=next.ftpUser!=was.ftpUser || next.ftpPassword!=was.ftpPassword;
@@ -2313,8 +2347,9 @@ bool ChooseCopy(const web::Value& v, std::string& error) {
         for(size_t i=0;i<c->copies.size();++i) choice.copies.insert(CopyId(c->copies[i].path));
         Choices[key]=choice;
         name=c->name; kind=copy->kind==DiscIso ? "ISO" : copy->kind==DiscGod ? "Games on Demand" : "extracted";
-        // Shown as chosen right away; the served copy changes at the next look at the folders.
+        // Shown as chosen right away; the served copy changes at the next look at the folders, now.
         c->chosen=true; c->open=false;
+        ScanSoon=true;
         std::lock_guard<std::mutex> games(GamesListLock);
         ++GamesVersion;
     }
@@ -2408,6 +2443,7 @@ void Reload(std::vector<std::string>& notes) {
     }
     UpdateConsoles(o.xboxes);
     FoldersChangedAt=(long long)(Now()*1000);
+    ScanSoon=true;
     ++PushGeneration;
     { std::lock_guard<std::mutex> hold(GamesListLock); ++GamesVersion; }
     if(o.webLan!=was.webLan) StartWeb(Current(),true);
@@ -2439,9 +2475,11 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
     f.Remove("updated_from");
     f.Remove("update_to");
     f.Remove("update_backup");
-    {   // The update history is this copy's own, not the backup's.
+    {   // The update history, and a version skipped since it didn't start here, are this copy's own, not the backup's.
         std::lock_guard<std::mutex> hold(SettingsLock);
         f.Set("update_history",HistoryText(UpdateHistory));
+        if(UpdateSkip.empty()) f.Remove("update_skip");
+        else f.Set("update_skip",UpdateSkip);
     }
     int missing=0, folders=int(Listed(f,"folders"));
     for(int i=1;i<=folders;++i) if(!config::IsFolder(config::FromUtf8(f.Get(("folder"+Number(i)).c_str())))) ++missing;

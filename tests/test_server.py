@@ -286,11 +286,21 @@ class Protocol(ServerTest):
         c = Client(self.port)
         self.assertEqual(c.names(), ["a.iso"])
         self.add_iso("c.iso", 3, 0x33333333)
-        self.assertEqual(c.names(), ["a.iso", "c.iso"])  # Same connection, listed again.
+        # A game added since the server last looked at the folders mounts at once,
         self.assertEqual(c.mount("c.iso"), 1)
+        # and is listed from its next look (each second here), on the same connection.
+        self.assertTrue(self.eventually(lambda: c.names() == ["a.iso", "c.iso"]))
         os.remove(os.path.join(self.isos, "a.iso"))
-        self.assertEqual(c.names(), ["c.iso"])
+        self.assertTrue(self.eventually(lambda: c.names() == ["c.iso"]))
         c.close()
+
+    def eventually(self, check, seconds=5):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if check():
+                return True
+            time.sleep(0.2)
+        return False
 
     def test_a_read_over_16_mb_closes_the_connection(self):
         # Past the end is zeros instead (test_discs.py).
@@ -1202,8 +1212,14 @@ class Dashboard(ServerTest):
             self.assertIn("xbox=192.168.1.20\n", f.read())
         self.assertEqual(sorted(b["kind"] for b in self.backups()), ["manual", "restore"])
         # Restored from a file: the zip as downloaded, or a netdisc.ini by itself.
-        self.json("POST", "/api/restore", {"file": base64.b64encode(b"[Server]\nxbox=192.168.1.77\nscan=1\n").decode()})
+        history = self.json("GET", "/api/state")["update"]["history"]
+        self.json("POST", "/api/restore", {"file": base64.b64encode(
+            b"[Server]\nxbox=192.168.1.77\nscan=1\nupdate_skip=9.9.9\nupdate_history=0.1.0|5|first||\n").decode()})
         self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.77"])
+        # The update history and a skipped version are this computer's, not the backup's.
+        self.assertEqual(self.json("GET", "/api/state")["update"]["history"], history)
+        with open(self.config) as f:
+            self.assertNotIn("update_skip", f.read())
         self.json("POST", "/api/restore", {"file": base64.b64encode(data).decode()})
         self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
         # Anything else is refused, and changes nothing.

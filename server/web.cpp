@@ -207,14 +207,18 @@ std::string Hex(const std::string& data) {
     return out;
 }
 
+// Bytes from the system's random source, for salts and the session key. A
+// predictable one would let sessions be forged, so without one the server stops.
 std::string Random(size_t count) {
     std::string out(count,'\0');
 #ifdef _WIN32
-    BCryptGenRandom(NULL,reinterpret_cast<PUCHAR>(&out[0]),ULONG(count),BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    bool ok=BCRYPT_SUCCESS(BCryptGenRandom(NULL,reinterpret_cast<PUCHAR>(&out[0]),ULONG(count),BCRYPT_USE_SYSTEM_PREFERRED_RNG));
 #else
+    bool ok=false;
     FILE* f=fopen("/dev/urandom","rb");
-    if(f) { if(fread(&out[0],1,count,f)!=count) out.assign(count,'\0'); fclose(f); }
+    if(f) { ok=fread(&out[0],1,count,f)==count; fclose(f); }
 #endif
+    if(!ok) { fprintf(stderr,"The system's random numbers can't be read, so NetDisc360 can't keep the dashboard safe; it stops.\n"); abort(); }
     return out;
 }
 

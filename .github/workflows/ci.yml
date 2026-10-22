@@ -1,6 +1,7 @@
-# Runs the Linux tests and builds the Docker image on every push and pull
-# request. The Xbox and Windows builds need the Xbox 360 SDK, so they are
-# made on a PC with build.ps1.
+# Runs the Linux tests, compiles the Windows server and builds the Docker
+# image on every push and pull request. The Xbox builds (and the release exe,
+# which carries them) need the Xbox 360 SDK, so they are made on a PC with
+# build.ps1.
 name: CI
 
 on:
@@ -19,6 +20,22 @@ jobs:
         run: python3 tools/make_web.py --check
       - name: Server, discs, Sync and generator tests
         run: python3 tests/run_ci.py
+
+  # The release exe is built with MSVC on a PC (build.ps1). This builds the
+  # same server with MinGW, without the launchers, so Windows-only code
+  # (the tray icon, the updater) can't break unnoticed between releases.
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW
+        run: sudo apt-get update -q && sudo apt-get install -y -q g++-mingw-w64-x86-64-posix
+      - name: The Windows server compiles and links
+        run: |
+          x86_64-w64-mingw32-g++-posix -std=c++14 -O1 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS \
+            -o NetDisc360-check.exe server/main.cpp server/tray.cpp server/web.cpp server/config.cpp server/discs.cpp \
+            server/discmap.cpp server/ftp.cpp server/backup.cpp server/update.cpp shared/isvr.cpp shared/library.cpp \
+            -static -lws2_32 -lwinhttp -liphlpapi -lbcrypt -lcrypt32 -lshell32 -lole32 -luuid -luser32 -lgdi32 -lcomctl32 -ladvapi32
 
   docker:
     runs-on: ubuntu-latest
