@@ -1413,6 +1413,11 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
 // a netiso.ini with iso= and title_id=. Folder is then where to read them.
 static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     if(!xex) return false;
+    // Every title Aurora starts comes through here. A tile's path is short
+    // (Hdd1:\NetISO\<folder>\default.xex); a longer one, with room left for
+    // its device name and netiso.ini, is someone else's, and the _s calls
+    // below would end Aurora over it.
+    if(strlen(xex)+(mountPath ? strlen(mountPath)+1 : 0)>=MAX_PATH-64) return false;
     char path[MAX_PATH];
     if(mountPath && mountPath[0]) sprintf_s(path,"%s\\%s",mountPath,xex); else strcpy_s(path,xex);
     char* name=strrchr(path,'\\');

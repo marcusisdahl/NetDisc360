@@ -286,11 +286,21 @@ class Protocol(ServerTest):
         c = Client(self.port)
         self.assertEqual(c.names(), ["a.iso"])
         self.add_iso("c.iso", 3, 0x33333333)
-        self.assertEqual(c.names(), ["a.iso", "c.iso"])  # Same connection, listed again.
+        # A game added since the server last looked at the folders mounts at once,
         self.assertEqual(c.mount("c.iso"), 1)
+        # and is listed from its next look (each second here), on the same connection.
+        self.assertTrue(self.eventually(lambda: c.names() == ["a.iso", "c.iso"]))
         os.remove(os.path.join(self.isos, "a.iso"))
-        self.assertEqual(c.names(), ["c.iso"])
+        self.assertTrue(self.eventually(lambda: c.names() == ["c.iso"]))
         c.close()
+
+    def eventually(self, check, seconds=5):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if check():
+                return True
+            time.sleep(0.2)
+        return False
 
     def test_a_read_over_16_mb_closes_the_connection(self):
         # Past the end is zeros instead (test_discs.py).
@@ -1202,8 +1212,14 @@ class Dashboard(ServerTest):
             self.assertIn("xbox=192.168.1.20\n", f.read())
         self.assertEqual(sorted(b["kind"] for b in self.backups()), ["manual", "restore"])
         # Restored from a file: the zip as downloaded, or a netdisc.ini by itself.
-        self.json("POST", "/api/restore", {"file": base64.b64encode(b"[Server]\nxbox=192.168.1.77\nscan=1\n").decode()})
+        history = self.json("GET", "/api/state")["update"]["history"]
+        self.json("POST", "/api/restore", {"file": base64.b64encode(
+            b"[Server]\nxbox=192.168.1.77\nscan=1\nupdate_skip=9.9.9\nupdate_history=0.1.0|5|first||\n").decode()})
         self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.77"])
+        # The update history and a skipped version are this computer's, not the backup's.
+        self.assertEqual(self.json("GET", "/api/state")["update"]["history"], history)
+        with open(self.config) as f:
+            self.assertNotIn("update_skip", f.read())
         self.json("POST", "/api/restore", {"file": base64.b64encode(data).decode()})
         self.assertEqual(self.json("GET", "/api/state")["settings"]["xboxes"], ["192.168.1.20"])
         # Anything else is refused, and changes nothing.
@@ -1278,6 +1294,77 @@ class Dashboard(ServerTest):
         update = self.json("POST", "/api/update/check", {})["update"]
         self.assertEqual((update["newer"], update["latest"]), (False, None))
         self.assertIn("no releases", update["error"])
+
+    def test_lists_the_changes_since_this_version(self):
+        releases = os.path.join(self.tmp.name, "releases.json")
+        here = "0.0.1"
+
+        def release(tag, prerelease=False):
+            return {"tag_name": tag, "name": "", "body": "Notes of " + tag, "html_url": "https://example.com/" + tag,
+                    "published_at": "2026-10-18T10:00:00Z", "draft": False, "prerelease": prerelease, "assets": []}
+        with open(releases, "w") as f:
+            json.dump([release("v99.1.0"), release("v99.3.0"), release("v99.2.0"), release("v99.4.0-beta.1", prerelease=True),
+                       release("v0.0.1")], f)
+        self.start("--releases", releases)
+        version = self.json("GET", "/api/state")["version"]
+        update = self.json("POST", "/api/update/check", {})["update"]
+        # Every release, newest first, so the changes of each version since this one show, not only the newest's.
+        self.assertEqual([r["version"] for r in update["releases"]], ["99.3.0", "99.2.0", "99.1.0", "0.0.1"])
+        self.assertEqual([r["newer"] for r in update["releases"]], [True, True, True, False])
+        self.assertEqual(update["releases"][1]["notes"], "Notes of v99.2.0")
+        self.assertNotIn("releases", self.json("GET", "/api/state")["update"])
+        self.json("POST", "/api/settings", {"updatePrerelease": True})
+        update = self.json("POST", "/api/update/check", {})["update"]
+        self.assertEqual(update["releases"][0]["version"], "99.4.0-beta.1")
+        self.assertTrue(update["releases"][0]["prerelease"])
+        self.assertNotEqual(version, here)
+
+    def test_keeps_an_update_history(self):
+        self.start()
+        version = self.json("GET", "/api/state")["version"]
+        # The first start.
+        history = self.json("GET", "/api/state")["update"]["history"]
+        self.assertEqual([(e["version"], e["how"], e["from"]) for e in history], [(version, "first", "")])
+        self.assertAlmostEqual(history[0]["at"], time.time(), delta=60)
+        # An update NetDisc360 installed: the old version wrote where it went, and its backup.
+        with open(self.config) as f:
+            saved = f.read()
+        with open(self.config, "w") as f:
+            f.write(saved.replace("update_history=%s|" % version, "update_history=0.9.0|") +
+                    "updated_from=0.9.0\nupdate_to=%s\nupdate_backup=NetDisc360_2026-10-20_10-00-00_update.zip\n" % version)
+        self.restart()
+        history = self.json("GET", "/api/update")["update"]["history"]
+        self.assertEqual([(e["version"], e["how"], e["from"], e["backup"]) for e in history],
+                         [(version, "app", "0.9.0", "NetDisc360_2026-10-20_10-00-00_update.zip"), ("0.9.0", "first", "", "")])
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertNotIn("updated_from", saved)
+        self.assertNotIn("update_backup", saved)
+        # An update that didn't start: this version was put back.
+        with open(self.config, "w") as f:
+            f.write(saved + "updated_from=%s\nupdate_to=99.0.0\n" % version)
+        self.restart()
+        history = self.json("GET", "/api/state")["update"]["history"]
+        self.assertEqual([(e["version"], e["how"], e["from"]) for e in history[:2]], [("99.0.0", "failed", version), (version, "app", "0.9.0")])
+        # Put in place another way (by hand, or a new Docker image).
+        with open(self.config) as f:
+            saved = f.read()
+        with open(self.config, "w") as f:
+            f.write(re.sub(r"(?m)^update_history=.*$", "update_history=0.9.5|100|app|0.9.0|", saved))
+        self.restart()
+        history = self.json("GET", "/api/state")["update"]["history"]
+        self.assertEqual([(e["version"], e["how"], e["from"]) for e in history], [(version, "other", "0.9.5"), ("0.9.5", "app", "0.9.0")])
+        # A restart without a new version adds nothing; nonsense in the setting is left out.
+        with open(self.config) as f:
+            saved = f.read()
+        with open(self.config, "w") as f:
+            f.write(saved.replace("update_history=", "update_history=<b>|x|evil|a|../../x,"))
+        self.restart()
+        again = self.json("GET", "/api/state")["update"]["history"]
+        self.assertEqual(again[0], history[0])
+        self.assertTrue(all(e["backup"] in ("", "NetDisc360_2026-10-20_10-00-00_update.zip") for e in again))
+        self.assertTrue(all(e["how"] in ("app", "other", "first", "failed") for e in again))
+        self.assertTrue(all(re.fullmatch(r"[0-9A-Za-z.+-]+", e["version"]) for e in again))
 
     def test_a_password_locks_it(self):
         self.start()
