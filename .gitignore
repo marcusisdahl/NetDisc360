@@ -22,5 +22,6 @@ console-logs/
 netiso.xex.txt
 launch.ini
 
-# Games next to docker-compose.yml
+# Games and settings next to docker-compose.yml
 /games/
+/config/

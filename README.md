@@ -86,13 +86,14 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
    ```
 
 3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetISO` with depth 1.
-4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it in Docker instead and open `http://<its address>:8360`:
+4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it with Docker Compose instead and open `http://<its address>:8360`:
 
    ```sh
-   mkdir -p ~/netdisc && sudo chown 1000:1000 ~/netdisc
-   docker run -d --name netdisc --network host --restart unless-stopped \
-     -v /path/to/games:/games:ro -v ~/netdisc:/config \
-     -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc360
+   mkdir netdisc && cd netdisc
+   curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
+   mkdir config && sudo chown 1000:1000 config
+   printf 'GAMES=/path/to/games\nNETDISC_WEB_PASSWORD=<a password>\n' > .env
+   docker compose up -d
    ```
 
 5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
@@ -206,20 +207,44 @@ For more consoles, repeat step 1 on each one (their `NetISO.xex.txt` holds the s
 
 ## Docker
 
-The same server runs in Docker on Linux, a NAS or anything else with Docker, with the same dashboard. Put [`docker-compose.yml`](docker-compose.yml) in a folder, set the path to your games in it, then:
+The same server runs in Docker on Linux, a NAS or anything else with Docker, with the same dashboard.
 
-```
+### Quick install with Docker Compose
+
+In an empty folder, download [`docker-compose.yml`](docker-compose.yml), give the server its settings folder, tell it where your games are, and start it:
+
+```sh
+mkdir netdisc && cd netdisc
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
 mkdir config && sudo chown 1000:1000 config
+cat > .env <<'END'
+GAMES=/path/to/your/games
+NETDISC_WEB_PASSWORD=<a password for the dashboard>
+END
+chmod 600 .env
 docker compose up -d
 ```
 
-and open the dashboard at `http://<the machine's address>:8360`. Set a password for it on its **Settings** page (or with `NETDISC_WEB_PASSWORD`): without one, anyone on your network can open it and change its settings. `docker compose logs -f` shows the server's log too.
+Then open the dashboard at `http://<the machine's address>:8360`. Without a password (in `.env`, or set on the dashboard's **Settings** page), anyone on your network can open it and change its settings. `docker compose logs -f` shows the server's log, and `docker compose pull && docker compose up -d` updates it to the latest release.
 
-It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker compose up -d --build`.
+`.env` holds one `NAME=value` per line and fills in `docker-compose.yml`, so you don't have to edit the compose file itself:
+
+| In `.env` | Default | |
+|---|---|---|
+| `GAMES` | `./games` | The folder with your games, mounted read-only at `/games`. |
+| `CONFIG` | `./config` | The folder for the dashboard's settings, mounted at `/config`. |
+| `NETDISC_TAG` | `latest` | The image version, like `1.0.0`, to stay on one release. |
+| `TZ`, `NETDISC_WEB_PASSWORD`, `NETDISC_XBOX`, `NETDISC_FTP_USER`, `NETDISC_FTP_PASSWORD` | | As in the table below. |
+
+More game folders: mount them in `docker-compose.yml` under `volumes:` (for example `- /mnt/nas/isos:/isos:ro`) and add them on the dashboard.
+
+### Settings
+
+It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker build -t ghcr.io/marcusisdahl/netdisc360 .`, then `docker compose up -d` (a later `docker compose pull` swaps it back for the published one).
 
 | Setting | Default | |
 |---|---|---|
-| volume `/games` | | Your games (read-only is fine). Mount more folders under it, like `/games/isos`, or anywhere else and add them on the dashboard. |
+| volume `/games` | | Your games (read-only is fine). Mount more folders next to it, like `/isos`, and add them on the dashboard. |
 | volume `/config` | | The dashboard's settings (`netdisc.ini`). It must be writable by user 1000:1000. |
 | `NETDISC_WEB_PASSWORD` | | The dashboard's password. Or `NETDISC_WEB_PASSWORD_FILE` with the path of a Docker secret. Set this way, it can't be changed on the dashboard. |
 | `NETDISC_WEB_PORT` | 8360 | The dashboard's port. `0`: no dashboard. |
