@@ -86,7 +86,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
    ```
 
 3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetISO` with depth 1.
-4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it with Docker Compose instead: get `docker-compose.yml` and `.env.example`, copy `.env.example` to `.env` and fill it in (see [Quick install with Docker Compose](#quick-install-with-docker-compose)), run `docker compose up -d` and open `http://<its address>:8360`.
+4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it with Docker Compose instead: get `docker-compose.yml` and `.env.example`, rename `.env.example` to `.env` and fill it in (see [Quick install with Docker Compose](#quick-install-with-docker-compose)), run `docker compose up -d` and open `http://<its address>:8360`.
 
 5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
 
@@ -203,13 +203,71 @@ The same server runs in Docker on Linux, a NAS or anything else with Docker, wit
 
 ### Quick install with Docker Compose
 
-In a new folder, get [`docker-compose.yml`](docker-compose.yml) and [`.env.example`](.env.example), copy `.env.example` to `.env`, and set your games folder and a password in it:
+You need two files in a new folder: `docker-compose.yml` and `.env`.
+
+**1. `docker-compose.yml`** ([download](docker-compose.yml)):
+
+```yaml
+# NetDisc360. Rename .env.example to .env, fill it in, then: docker compose up -d
+services:
+  netdisc360:
+    image: ghcr.io/marcusisdahl/netdisc360:${NETDISC_TAG:-latest}
+    container_name: netdisc360
+    network_mode: host                                       # the Xbox connects on port 4323, the dashboard is on 8360
+    environment:
+      - TZ=${TZ:-Etc/UTC}
+      - NETDISC_WEB_PASSWORD=${NETDISC_WEB_PASSWORD:-}       # the dashboard's password
+      - NETDISC_FTP_USER=${NETDISC_FTP_USER:-xboxftp}        # Aurora's FTP login (Aurora: Settings > FTP)
+      - NETDISC_FTP_PASSWORD=${NETDISC_FTP_PASSWORD:-xboxftp}
+      - NETDISC_XBOX=${NETDISC_XBOX:-}                       # only these consoles (IPs, commas); empty: all
+    volumes:
+      - ${NETDISC_CONFIG_DIR:-./config}:/config              # settings, owned by 1000:1000
+      - ${NETDISC_GAMES_DIR:?set NETDISC_GAMES_DIR in .env}:/games:ro   # ISOs, extracted games and GOD packages
+    restart: unless-stopped
+```
+
+**2. `.env.example`** ([download](.env.example)), the settings the compose file reads:
+
+```ini
+# NetDisc360's settings for docker-compose.yml. Rename this file to .env next
+# to docker-compose.yml and fill it in:   mv .env.example .env
+
+# The folder with your games: ISOs, extracted games and GOD packages,
+# subfolders too. Mounted read-only.
+NETDISC_GAMES_DIR=/path/to/games
+
+# The folder for the dashboard's settings (netdisc.ini). It must be writable
+# by user 1000:1000:   sudo chown 1000:1000 ./config
+NETDISC_CONFIG_DIR=./config
+
+# The dashboard's password. Without one, anyone on your network can open the
+# dashboard and change its settings.
+NETDISC_WEB_PASSWORD=changeme
+
+# Aurora's FTP login (Aurora: Settings > FTP).
+NETDISC_FTP_USER=xboxftp
+NETDISC_FTP_PASSWORD=xboxftp
+
+# Only these consoles' game folders are kept up to date: IP addresses,
+# separated by commas. Empty: every console that connects.
+NETDISC_XBOX=
+
+# Your time zone, for the log's times.
+TZ=Etc/UTC
+
+# The image version: latest, or a release like 1.0.0 to stay on it.
+NETDISC_TAG=latest
+```
+
+> [!IMPORTANT]
+> Rename `.env.example` to `.env` (Docker Compose only reads `.env`), set `NETDISC_GAMES_DIR` to your games folder, and change `NETDISC_WEB_PASSWORD` from `changeme` to a password of your own before you use it for real.
+
+**3. Start it.** In that folder:
 
 ```sh
-mkdir netdisc360 && cd netdisc360
 curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
 curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/.env.example
-cp .env.example .env && nano .env
+mv .env.example .env && nano .env
 mkdir config && sudo chown 1000:1000 config
 docker compose up -d
 ```
