@@ -11,7 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/marcusisdahl/NetDisc360/releases/latest"><img alt="Download the latest release" src="https://img.shields.io/github/v/release/marcusisdahl/NetDisc360?label=download&color=3ED9BC"></a>
-  <a href="https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml"><img alt="Tests" src="https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Tests" src="https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Adev"><img alt="Tests on the dev branch" src="https://img.shields.io/github/actions/workflow/status/marcusisdahl/NetDisc360/ci.yml?branch=dev&label=dev"></a>
   <a href="#docker"><img alt="Runs on Windows or Docker" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20Docker-73B8FF"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
 </p>
@@ -450,7 +451,14 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 **With Docker** the dashboard shows that a new version is out, and you update the image yourself: `docker compose pull && docker compose up -d`.
 
-**To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the `dev` branch each time something is added there, so it can have bugs a release won't; back up your settings first (**Settings > Backups**). Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
+**To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev) each time something is added there ([what's new since the last release](https://github.com/marcusisdahl/NetDisc360/compare/main...dev), [its tests](https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Adev), [its image builds](https://github.com/marcusisdahl/NetDisc360/actions/workflows/docker.yml?query=branch%3Adev)), so it can have bugs a release won't; back up your settings first (**Settings > Backups**). When `dev` changes `docker-compose.yml` or `.env.example`, take them from the `dev` branch too:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/.env.example
+```
+
+Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
 
 On its next visit to the console the new version replaces the launchers in `Hdd1:\NetISO` with its own by itself. Only `NetIsoTiles.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
 
@@ -556,7 +564,7 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 
 This makes `build\NetDisc360.exe` (with the launcher built in), `build\NetIsoTiles.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
 
-To make a release, see [RELEASING.md](RELEASING.md).
+Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev), not `main`: each change there is published as the `dev` Docker image for testing, and `main` only gets `dev` merged into it for a release. To make a release, see [RELEASING.md](RELEASING.md).
 
 ## Tests
 

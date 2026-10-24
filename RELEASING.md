@@ -1,6 +1,6 @@
 # Branches
 
-- **`dev`** is where new work goes: every pull request targets `dev`. Each push to `dev` publishes the Docker image `ghcr.io/marcusisdahl/netdisc360:dev` (and `dev-<commit>`), so it can be tested with `NETDISC_TAG=dev` in `.env` before a release. It uses the latest release's launchers.
+- **`dev`** is where new work goes: every pull request targets `dev`, never `main` directly. Each push to `dev` publishes the Docker image `ghcr.io/marcusisdahl/netdisc360:dev` (and `dev-<commit>`), so it can be tested with `NETDISC_TAG=dev` in `.env` before a release. It uses the latest release's launchers.
 - **`main`** is the released code: it only changes when `dev` is merged into it for a release (a pull request from `dev` into `main`, merged with a merge commit so the two stay in step), plus an urgent fix now and then, which is then merged back into `dev`.
 
 # Making a release
