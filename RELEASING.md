@@ -1,5 +1,11 @@
+# Branches
+
+- **`dev`** is where new work goes: every pull request targets `dev`. Each push to `dev` publishes the Docker image `ghcr.io/marcusisdahl/netdisc360:dev` (and `dev-<commit>`), so it can be tested with `NETDISC_TAG=dev` in `.env` before a release. It uses the latest release's launchers.
+- **`main`** is the released code: it only changes when `dev` is merged into it for a release (a pull request from `dev` into `main`, merged with a merge commit so the two stay in step), plus an urgent fix now and then, which is then merged back into `dev`.
+
 # Making a release
 
+0. Open a pull request from `dev` into `main`, check CI is green, test the `dev` image and a build from it, and merge it. Steps 1 to 6 happen on `main`.
 1. Set the new version in `server/version.h` (`NETDISC_VERSION` and `NETDISC_VERSION_NUMBERS`) and commit it. The tag must be that version with a `v` in front: the installed apps compare it with their own version to see that an update is out, and the Docker workflow stops if the two differ.
 2. On the PC with Visual Studio and the Xbox 360 SDK, on the commit to release: `.\build.ps1 -Tests`.
 3. Test on a console: the new `NetIsoTiles.xex`, and a game started from its tile with the new `NetDisc360.exe`.

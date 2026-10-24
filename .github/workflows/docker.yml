@@ -1,12 +1,18 @@
-# Publishes the Docker image to ghcr.io/marcusisdahl/netdisc360 when a
-# release is published, with that release's launchers (NetISO-Sync.zip, which
-# must be attached before the release is published). It can also be run by
-# hand for an existing release tag.
+# Publishes the Docker image to ghcr.io/marcusisdahl/netdisc360:
+# - when a release is published: tagged with its version and latest, with that
+#   release's launchers (NetISO-Sync.zip, which must be attached before the
+#   release is published). It can also be run by hand for an existing release
+#   tag.
+# - on every push to the dev branch: tagged dev (and dev-<commit>), for
+#   testing what will be in the next release. It uses the latest release's
+#   launchers.
 name: Docker image
 
 on:
   release:
     types: [published]
+  push:
+    branches: [dev]
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +23,13 @@ permissions:
   contents: read
   packages: write
 
+# A newer push to dev replaces a dev build still running; releases always finish.
+concurrency:
+  group: docker-${{ github.event_name == 'push' && 'dev' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 env:
+  DEV: ${{ github.event_name == 'push' }}
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
@@ -26,8 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.DEV == 'true' && github.sha || env.TAG }}
       - name: Check the tag matches server/version.h
+        if: env.DEV != 'true'
         run: |
           grep -q "NETDISC_VERSION \"${TAG#v}\"" server/version.h || {
             echo "::error::Tag $TAG doesn't match NETDISC_VERSION in server/version.h; set the version there before tagging."
@@ -44,11 +57,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/marcusisdahl/netdisc360
+          # A release gets its version and latest; a test version
+          # (v1.2.0-beta.1) isn't "latest". The dev branch gets dev and
+          # dev-<commit>, never latest.
+          flavor: latest=false
           tags: |
-            type=semver,pattern={{version}},value=${{ env.TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
-            # A test version (v1.2.0-beta.1) isn't "latest".
-            type=raw,value=latest,enable=${{ !contains(env.TAG, '-') }}
+            type=semver,pattern={{version}},value=${{ env.TAG }},enable=${{ env.DEV != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ env.DEV != 'true' }}
+            type=raw,value=latest,enable=${{ env.DEV != 'true' && !contains(env.TAG, '-') }}
+            type=raw,value=dev,enable=${{ env.DEV == 'true' }}
+            type=sha,prefix=dev-,enable=${{ env.DEV == 'true' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -57,5 +75,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/download/${{ env.TAG }}/NetISO-Sync.zip
+            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/${{ env.DEV == 'true' && 'latest/download' || format('download/{0}', env.TAG) }}/NetISO-Sync.zip
             REQUIRE_LAUNCHER=1

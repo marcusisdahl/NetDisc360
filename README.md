@@ -259,7 +259,8 @@ NETDISC_XBOX=
 # Your time zone, for the log's times.
 TZ=Etc/UTC
 
-# The image version: latest, or a release like 1.0.0 to stay on it.
+# The image version: latest, or a release like 1.0.0 to stay on it, or dev
+# for a test build of what's coming in the next release.
 NETDISC_TAG=latest
 ```
 
@@ -448,6 +449,8 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 </p>
 
 **With Docker** the dashboard shows that a new version is out, and you update the image yourself: `docker compose pull && docker compose up -d`.
+
+**To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the `dev` branch each time something is added there, so it can have bugs a release won't; back up your settings first (**Settings > Backups**). Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
 
 On its next visit to the console the new version replaces the launchers in `Hdd1:\NetISO` with its own by itself. Only `NetIsoTiles.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
 
