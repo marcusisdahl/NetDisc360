@@ -3,9 +3,10 @@ services:
   netdisc360:
     image: ghcr.io/marcusisdahl/netdisc360:${NETDISC_TAG:-latest}
     container_name: netdisc360
-    network_mode: host                                       # the Xbox connects on port 4323, the dashboard is on 8360
+    network_mode: host                                       # the Xbox connects on port 4323, the dashboard on NETDISC_WEB_PORT
     environment:
       - TZ=${TZ:-Etc/UTC}
+      - NETDISC_WEB_PORT=${NETDISC_WEB_PORT:-8360}           # the dashboard's port
       - NETDISC_WEB_PASSWORD=${NETDISC_WEB_PASSWORD:-}       # the dashboard's password
       - NETDISC_FTP_USER=${NETDISC_FTP_USER:-xboxftp}        # Aurora's FTP login (Aurora: Settings > FTP)
       - NETDISC_FTP_PASSWORD=${NETDISC_FTP_PASSWORD:-xboxftp}
