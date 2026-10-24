@@ -213,9 +213,10 @@ services:
   netdisc360:
     image: ghcr.io/marcusisdahl/netdisc360:${NETDISC_TAG:-latest}
     container_name: netdisc360
-    network_mode: host                                       # the Xbox connects on port 4323, the dashboard is on 8360
+    network_mode: host                                       # the Xbox connects on port 4323, the dashboard on NETDISC_WEB_PORT
     environment:
       - TZ=${TZ:-Etc/UTC}
+      - NETDISC_WEB_PORT=${NETDISC_WEB_PORT:-8360}           # the dashboard's port
       - NETDISC_WEB_PASSWORD=${NETDISC_WEB_PASSWORD:-}       # the dashboard's password
       - NETDISC_FTP_USER=${NETDISC_FTP_USER:-xboxftp}        # Aurora's FTP login (Aurora: Settings > FTP)
       - NETDISC_FTP_PASSWORD=${NETDISC_FTP_PASSWORD:-xboxftp}
@@ -239,6 +240,9 @@ NETDISC_GAMES_DIR=/path/to/games
 # The folder for the dashboard's settings (netdisc.ini). It must be writable
 # by user 1000:1000:   sudo chown 1000:1000 ./config
 NETDISC_CONFIG_DIR=./config
+
+# The dashboard's port: open it at http://<this machine>:8360.
+NETDISC_WEB_PORT=8360
 
 # The dashboard's password. Without one, anyone on your network can open the
 # dashboard and change its settings.
@@ -272,7 +276,7 @@ mkdir config && sudo chown 1000:1000 config
 docker compose up -d
 ```
 
-Then open the dashboard at `http://<the machine's address>:8360`.
+Then open the dashboard at `http://<the machine's address>:8360` (or the port you set in `NETDISC_WEB_PORT`).
 
 **Or add it to your own `docker-compose.yml`**, next to your other containers, with the values written in directly instead of in `.env`:
 
@@ -281,9 +285,10 @@ services:
   netdisc360:
     image: ghcr.io/marcusisdahl/netdisc360:latest
     container_name: netdisc360
-    network_mode: host                          # the Xbox connects on port 4323, the dashboard is on 8360
+    network_mode: host                          # the Xbox connects on port 4323, the dashboard on NETDISC_WEB_PORT
     environment:
       - TZ=Etc/UTC
+      - NETDISC_WEB_PORT=8360                   # the dashboard's port
       - NETDISC_WEB_PASSWORD=changeme           # the dashboard's password
       - NETDISC_FTP_USER=xboxftp                # Aurora's FTP login (Aurora: Settings > FTP)
       - NETDISC_FTP_PASSWORD=xboxftp
@@ -295,7 +300,7 @@ services:
 
 Give the config folder to user 1000:1000 (`sudo chown 1000:1000 /path/to/netdisc360/config`), then `docker compose up -d`.
 
-More game folders: add them as more volumes (for example `- /mnt/nas/isos:/isos:ro`) and add them on the dashboard. `docker compose logs -f netdisc360` shows the server's log, and `docker compose pull && docker compose up -d` updates it to the latest release. Docker Desktop on Windows or macOS has no host networking: use `ports:` with `4323:4323` and `8360:8360` instead and set `NETDISC_XBOX`.
+More game folders: add them as more volumes (for example `- /mnt/nas/isos:/isos:ro`) and add them on the dashboard. `docker compose logs -f netdisc360` shows the server's log, and `docker compose pull && docker compose up -d` updates it to the latest release. Docker Desktop on Windows or macOS has no host networking: use `ports:` with `4323:4323` and `8360:8360` (your `NETDISC_WEB_PORT`) instead and set `NETDISC_XBOX`.
 
 ### Settings
 
