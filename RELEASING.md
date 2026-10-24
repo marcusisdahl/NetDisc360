@@ -5,7 +5,7 @@
 
 # Making a release
 
-0. Open a pull request from `dev` into `main`, check CI is green, test the `dev` image and a build from it, and merge it. Steps 1 to 6 happen on `main`.
+0. On `dev`, the README's Quick install downloads `docker-compose.yml` and `.env.example` from the `dev` branch (`raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/...`). In the pull request from `dev` into `main`, change those two links to `main`, check CI is green, test the `dev` image and a build from it, and merge it; then merge `main` back into `dev` and set the links to `dev` again. Steps 1 to 6 happen on `main`.
 1. Set the new version in `server/version.h` (`NETDISC_VERSION` and `NETDISC_VERSION_NUMBERS`) and commit it. The tag must be that version with a `v` in front: the installed apps compare it with their own version to see that an update is out, and the Docker workflow stops if the two differ.
 2. On the PC with Visual Studio and the Xbox 360 SDK, on the commit to release: `.\build.ps1 -Tests`.
 3. Test on a console: the new `NetIsoTiles.xex`, and a game started from its tile with the new `NetDisc360.exe`.

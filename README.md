@@ -272,8 +272,8 @@ NETDISC_TAG=latest
 **3. Start it.** In that folder:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/.env.example
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/.env.example
 mv .env.example .env && nano .env
 mkdir config && sudo chown 1000:1000 config
 docker compose up -d
@@ -452,14 +452,7 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 **With Docker** the dashboard shows that a new version is out, and you update the image yourself: `docker compose pull && docker compose up -d`.
 
-**To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev) each time something is added there ([what's new since the last release](https://github.com/marcusisdahl/NetDisc360/compare/main...dev), [its tests](https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Adev), [its image builds](https://github.com/marcusisdahl/NetDisc360/actions/workflows/docker.yml?query=branch%3Adev)), so it can have bugs a release won't; back up your settings first (**Settings > Backups**). When `dev` changes `docker-compose.yml` or `.env.example`, take them from the `dev` branch too:
-
-```sh
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/.env.example
-```
-
-Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
+**To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev) each time something is added there ([what's new since the last release](https://github.com/marcusisdahl/NetDisc360/compare/main...dev), [its tests](https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Adev), [its image builds](https://github.com/marcusisdahl/NetDisc360/actions/workflows/docker.yml?query=branch%3Adev)), so it can have bugs a release won't; back up your settings first (**Settings > Backups**). Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
 
 On its next visit to the console the new version replaces the launchers in `Hdd1:\NetISO` with its own by itself. Only `NetIsoTiles.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
 
