@@ -1,48 +1,14 @@
-# NetDisc360 (a NetISO server for Aurora) in Docker. Quick install, in an
-# empty folder:
-#
-#   curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
-#   mkdir config && sudo chown 1000:1000 config
-#   echo "GAMES=/path/to/your/games" > .env
-#   docker compose up -d
-#
-# then open the dashboard at http://<this machine>:8360. The settings below can
-# be put in .env (one NAME=value per line) instead of editing this file.
-# See "Docker" in README.md for every setting.
 services:
-  netdisc:
-    image: ghcr.io/marcusisdahl/netdisc360:${NETDISC_TAG:-latest}
-    container_name: netdisc
-    restart: unless-stopped
-    # Host networking: the Xbox connects straight to this machine on port 4323,
-    # and the server sees the Xbox's real address. (Docker Desktop on Windows
-    # or macOS: remove this line, uncomment the ports below and set
-    # NETDISC_XBOX.)
-    network_mode: host
-    # ports:
-    #   - "4323:4323"   # NetISO
-    #   - "8360:8360"   # the dashboard
-    volumes:
-      # Your games: ISOs, extracted games and GOD packages, subfolders too.
-      # Read-only: the server never writes to them.
-      - ${GAMES:-./games}:/games:ro
-      # The dashboard's settings. Must be writable by user 1000:1000
-      # (sudo chown 1000:1000 ./config).
-      - ${CONFIG:-./config}:/config
+  netdisc360:
+    image: ghcr.io/marcusisdahl/netdisc360:latest
+    container_name: netdisc360
+    network_mode: host                          # the Xbox connects on port 4323, the dashboard is on 8360
     environment:
-      TZ: ${TZ:-Etc/UTC}           # your time zone, for the log's times
-      # A password for the dashboard. Without one, anyone on your network can
-      # open it and change the settings. (Or set one on the dashboard.)
-      NETDISC_WEB_PASSWORD: ${NETDISC_WEB_PASSWORD:-}
-      # The rest can be set on the dashboard instead. These are only the first
-      # start's settings: once saved in ./config, the dashboard's win.
-      # Only these consoles' game folders are kept up to date (IP addresses,
-      # separated by commas). Empty: every console that connects.
-      NETDISC_XBOX: ${NETDISC_XBOX:-}
-      # Aurora's FTP login (Aurora: Settings > FTP).
-      NETDISC_FTP_USER: ${NETDISC_FTP_USER:-xboxftp}
-      NETDISC_FTP_PASSWORD: ${NETDISC_FTP_PASSWORD:-xboxftp}
-      # NETDISC_NO_CATEGORY: "true"   # leave Aurora's Xbox 360 category alone
-      # NETDISC_NO_PUSH: "true"       # only serve games, don't touch the Xbox
-    # Files must be readable by this user (default 1000:1000).
-    # user: "1000:1000"
+      - TZ=Etc/UTC
+      - NETDISC_WEB_PASSWORD=changeme           # the dashboard's password
+      - NETDISC_FTP_USER=xboxftp                # Aurora's FTP login (Aurora: Settings > FTP)
+      - NETDISC_FTP_PASSWORD=xboxftp
+    volumes:
+      - /path/to/netdisc360/config:/config      # settings, owned by 1000:1000
+      - /path/to/games:/games:ro                # ISOs, extracted games and GOD packages
+    restart: unless-stopped

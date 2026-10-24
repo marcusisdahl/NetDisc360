@@ -86,15 +86,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, the NetISO plugin (`NetIS
    ```
 
 3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetISO` with depth 1.
-4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it with Docker Compose instead and open `http://<its address>:8360`:
-
-   ```sh
-   mkdir netdisc && cd netdisc
-   curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
-   mkdir config && sudo chown 1000:1000 config
-   printf 'GAMES=/path/to/games\nNETDISC_WEB_PASSWORD=<a password>\n' > .env
-   docker compose up -d
-   ```
+4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, add NetDisc360 to your `docker-compose.yml` instead (see [Docker](#docker)), run `docker compose up -d` and open `http://<its address>:8360`.
 
 5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
 
@@ -211,36 +203,37 @@ The same server runs in Docker on Linux, a NAS or anything else with Docker, wit
 
 ### Quick install with Docker Compose
 
-In an empty folder, download [`docker-compose.yml`](docker-compose.yml), give the server its settings folder, tell it where your games are, and start it:
+Add this service to your `docker-compose.yml` (or save it as a new one, the same as [`docker-compose.yml`](docker-compose.yml) in this repository), with your own paths and password:
+
+```yaml
+services:
+  netdisc360:
+    image: ghcr.io/marcusisdahl/netdisc360:latest
+    container_name: netdisc360
+    network_mode: host                          # the Xbox connects on port 4323, the dashboard is on 8360
+    environment:
+      - TZ=Etc/UTC
+      - NETDISC_WEB_PASSWORD=changeme           # the dashboard's password
+      - NETDISC_FTP_USER=xboxftp                # Aurora's FTP login (Aurora: Settings > FTP)
+      - NETDISC_FTP_PASSWORD=xboxftp
+    volumes:
+      - /path/to/netdisc360/config:/config      # settings, owned by 1000:1000
+      - /path/to/games:/games:ro                # ISOs, extracted games and GOD packages
+    restart: unless-stopped
+```
+
+Then give the server its settings folder and start it:
 
 ```sh
-mkdir netdisc && cd netdisc
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
-mkdir config && sudo chown 1000:1000 config
-cat > .env <<'END'
-GAMES=/path/to/your/games
-NETDISC_WEB_PASSWORD=<a password for the dashboard>
-END
-chmod 600 .env
+mkdir -p /path/to/netdisc360/config && sudo chown 1000:1000 /path/to/netdisc360/config
 docker compose up -d
 ```
 
-Then open the dashboard at `http://<the machine's address>:8360`. Without a password (in `.env`, or set on the dashboard's **Settings** page), anyone on your network can open it and change its settings. `docker compose logs -f` shows the server's log, and `docker compose pull && docker compose up -d` updates it to the latest release.
-
-`.env` holds one `NAME=value` per line and fills in `docker-compose.yml`, so you don't have to edit the compose file itself:
-
-| In `.env` | Default | |
-|---|---|---|
-| `GAMES` | `./games` | The folder with your games, mounted read-only at `/games`. |
-| `CONFIG` | `./config` | The folder for the dashboard's settings, mounted at `/config`. |
-| `NETDISC_TAG` | `latest` | The image version, like `1.0.0`, to stay on one release. |
-| `TZ`, `NETDISC_WEB_PASSWORD`, `NETDISC_XBOX`, `NETDISC_FTP_USER`, `NETDISC_FTP_PASSWORD` | | As in the table below. |
-
-More game folders: mount them in `docker-compose.yml` under `volumes:` (for example `- /mnt/nas/isos:/isos:ro`) and add them on the dashboard.
+and open the dashboard at `http://<the machine's address>:8360`. Add more game folders as more volumes (for example `- /mnt/nas/isos:/isos:ro`) and add them on the dashboard. `docker compose logs -f netdisc360` shows the server's log, and `docker compose pull && docker compose up -d` updates it to the latest release. Docker Desktop on Windows or macOS has no host networking: use `ports:` with `4323:4323` and `8360:8360` instead and set `NETDISC_XBOX` (below).
 
 ### Settings
 
-It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker build -t ghcr.io/marcusisdahl/netdisc360 .`, then `docker compose up -d` (a later `docker compose pull` swaps it back for the published one).
+It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release for x86-64 and ARM64. To build it yourself instead, clone this repository and run `docker build -t ghcr.io/marcusisdahl/netdisc360 .`, then `docker compose up -d` (a later `docker compose pull` swaps it back for the published one). Every setting below is an `environment:` line in the compose file.
 
 | Setting | Default | |
 |---|---|---|
@@ -261,8 +254,8 @@ It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release
 
 - The variables from `NETDISC_XBOX` down are only the first start's settings. Once the server has saved its settings in `/config`, what's saved there wins, and you change them on the dashboard. (`NETDISC_WEB_PASSWORD`, the ports and `NETDISC_VERBOSE` always apply.)
 - The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports:` with `4323:4323` and `8360:8360`, as on Docker Desktop), set `NETDISC_XBOX`.
-- The server runs as user 1000:1000. If it can't read your games, set `user:` in the compose file to an ID that can (and give `config` to that ID).
-- Without Docker Compose: `docker run -d --name netdisc --network host --restart unless-stopped -v /path/to/games:/games:ro -v /path/to/config:/config -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc360`.
+- The server runs as user 1000:1000. If it can't read your games, add `user: "<uid>:<gid>"` to the service with an ID that can (and give the config folder to that ID).
+- Without Docker Compose: `docker run -d --name netdisc360 --network host --restart unless-stopped -v /path/to/games:/games:ro -v /path/to/config:/config -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc360`.
 
 ## Playing
 
