@@ -401,6 +401,80 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .log .warn { color: var(--warn); }
 .log .xbox { color: var(--info); font-weight: 600; }
 
+/* The setup wizard */
+.wizard { flex: 1; min-height: 100vh; display: grid; place-items: center; padding: 28px 20px; }
+.wz-card { width: min(980px, 100%); height: min(700px, calc(100vh - 56px)); display: grid; grid-template-columns: 240px minmax(0, 1fr); overflow: hidden; }
+.wz-side { background: var(--side); border-right: 1px solid var(--line); padding: 22px 14px; display: flex; flex-direction: column; }
+.wz-side .brand { padding: 2px 8px 22px; }
+.wz-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; counter-reset: step; }
+.wz-steps li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; color: var(--faint); font-weight: 550; white-space: nowrap; }
+.wz-steps .n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--line-strong); flex: none; }
+.wz-steps li.done { color: var(--muted); }
+.wz-steps li.done .n { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+.wz-steps li.on { background: var(--accent-soft); color: var(--accent-text); }
+.wz-steps li.on .n { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.wz-progress { margin-top: auto; height: 6px; border-radius: 99px; background: var(--hover); overflow: hidden; }
+.wz-progress i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.wz-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.wz-body { flex: 1; overflow: auto; padding: 30px 34px 24px; display: flex; flex-direction: column; gap: 16px; animation: wz-in .25s ease-out; }
+@keyframes wz-in { from { opacity: 0; transform: translateX(10px); } }
+.wz-foot { display: flex; gap: 8px; align-items: center; padding: 14px 20px; border-top: 1px solid var(--line); }
+.wz-foot .grow, .wz-row .grow { flex: 1; }
+.wz-head h2 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+.wz-head p { margin: 6px 0 0; color: var(--muted); max-width: 620px; }
+.wz-hero { text-align: center; padding: 18px 0 4px; }
+.wz-hero h1 { margin: 14px 0 6px; font-size: 26px; font-weight: 680; letter-spacing: -.02em; }
+.wz-hero p { margin: 0 auto; color: var(--muted); max-width: 480px; font-size: 15px; }
+.wz-mark { width: 64px; height: 64px; margin: 0 auto; display: grid; place-items: center; }
+.wz-mark .brand-mark { width: 64px; height: 64px; }
+.wz-mark.done { border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); }
+.wz-mark.done .i { width: 30px; height: 30px; }
+.wz-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.wz-list li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.wz-icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
+.wz-list li b { display: block; }
+.wz-list li .muted { font-size: 13px; }
+.wz-alt { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; background: var(--hover); color: var(--muted); flex-wrap: wrap; }
+.wz-alt span { flex: 1; min-width: 200px; }
+.wz-box { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.wz-box h3 { margin: 0; font-size: 14.5px; font-weight: 620; }
+.wz-box > p { margin: 8px 0; }
+.wz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wz-typed { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.wz-found { display: grid; gap: 8px; margin-top: 12px; }
+.wz-console { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.wz-console.on { border-color: var(--accent); background: var(--accent-soft); }
+.wz-console .icon { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; background: var(--hover); color: var(--muted); flex: none; }
+.wz-console.on .icon { background: var(--accent); color: var(--on-accent); }
+.wz-console .grow { flex: 1; min-width: 0; }
+.wz-console .sub { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; font-size: 12.5px; }
+.wz-scan { display: flex; align-items: center; gap: 14px; padding: 14px 4px; }
+.wz-radar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; position: relative; }
+.wz-radar::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--accent); animation: ping 1.4s ease-out infinite; }
+@keyframes ping { from { transform: scale(.8); opacity: .8; } to { transform: scale(1.6); opacity: 0; } }
+.wz-status { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--info-soft); color: var(--info); }
+.wz-status.good { background: var(--good-soft); color: var(--good); }
+.wz-status b { font-weight: 650; }
+.wz-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.wz-check { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; }
+.wz-check .badge { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: none; }
+.wz-check.good .badge { background: var(--good-soft); color: var(--good); }
+.wz-check.warn .badge { background: var(--warn-soft); color: var(--warn); }
+.wz-check.bad .badge { background: var(--bad-soft); color: var(--bad); }
+.wz-check.info .badge { background: var(--hover); color: var(--muted); }
+.wz-check .t { font-weight: 580; padding-top: 3px; }
+.wz-check .d { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.wz-folders { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.wz-total { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.wz-total b { color: var(--text); }
+.wz-how { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
+.wz-preset, .wz-note { display: flex; gap: 8px; align-items: center; color: var(--info); background: var(--info-soft); padding: 9px 12px; border-radius: 9px; font-size: 13px; margin: 0; }
+.wz-note { color: var(--muted); background: var(--hover); }
+.wz-problem { color: var(--bad); font-weight: 550; min-height: 1px; }
+.wz-problem:empty { display: none; }
+.wz-extras { padding: 0; }
+.wz-extras .setting:first-child { padding-top: 0; }
+.wz-wait { display: grid; }
 /* Login, toasts */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
 .login .card { width: min(380px, 100%); padding: 28px; }
@@ -442,6 +516,19 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
   .covers { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px 12px; }
   .table .hide-narrow { display: none; }
   .offline-bar { padding: 8px 16px; }
+  .wizard { padding: 0; place-items: stretch; }
+  .wz-card { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; border-radius: 0; border: 0; height: auto; min-height: 100vh; overflow: visible; }
+  .wz-side { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 16px; }
+  .wz-side .brand { padding: 0 0 10px; }
+  .wz-steps { flex-direction: row; gap: 4px; overflow-x: auto; }
+  .wz-steps li { padding: 4px; }
+  .wz-steps li > span:last-child { display: none; }
+  .wz-steps li.on > span:last-child { display: inline; padding-right: 6px; }
+  .wz-progress { margin-top: 10px; }
+  .wz-main { max-height: none; }
+  .wz-body { padding: 20px 16px; }
+  .wz-foot { position: sticky; bottom: 0; background: var(--panel); padding: 12px 16px; flex-wrap: wrap; }
+  .wz-list { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
   .tiles { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
@@ -625,9 +712,14 @@ async function refresh() {
       const g = await api('games');
       if (g.version !== G.version) { G = g; if (view && view.games) view.games(); }
     }
-    if (!$('.side')) frame();
-    updateFrame();
-    if (view && view.update) view.update();
+    if (wizardWanted()) {
+      if (!$('.wizard')) openWizard();
+      else if (Wizard.view && Wizard.view.update) Wizard.view.update();
+    } else {
+      if (!$('.side')) frame();
+      updateFrame();
+      if (view && view.update) view.update();
+    }
   } catch (e) {
     if ($('.login')) return;
     if (++failed === 3 && $('.side')) updateFrame(restarting ? 'NetDisc360 is restarting\u2026' : e.message);
@@ -688,6 +780,7 @@ function updateFrame(problem) {
 }
 
 function route() {
+  if (!$('#page')) return;
   const id = (location.hash.slice(1) || 'dashboard').split('/')[0];
   const next = Pages[id] ? id : 'dashboard';
   for (const a of document.querySelectorAll('[data-page]')) a.classList.toggle('on', a.dataset.page === next);
@@ -1644,7 +1737,7 @@ Pages.settings = root => {
     fill(body,
       head('About', null),
       h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
-        h('div.actions', h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
+        h('div.actions', h('button.btn', { onclick: () => openWizard(true) }, ic('sparkles', 'sm'), 'Run the setup again'), h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
       card('info', 'This copy', null, h('div.facts',
         h('div.k', 'Version'), h('div.v', S.version + ', built ' + S.built),
         h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : S.update.how === 'docker' ? 'Docker' : 'Linux'),
@@ -1678,6 +1771,394 @@ Pages.settings = root => {
         key = now;
         part = Parts[section]() || null;
       } else if (part && part.update) part.update();
+    },
+  };
+};
+
+// The setup wizard ---------------------------------------------------------------
+// Opens instead of the dashboard on the first start, and again from Settings,
+// About. What Docker's variables or the command line set is filled in already.
+
+const Wizard = { open: false, step: 0, view: null, console: '', found: null, finding: false, check: null, checking: false };
+const WizardSteps = [
+  ['welcome', 'Welcome', 'sparkles'],
+  ['password', 'Password', 'lock'],
+  ['folders', 'Your games', 'folder'],
+  ['xbox', 'Your Xbox', 'monitor'],
+  ['aurora', 'Aurora', 'plug'],
+  ['extras', 'Extras', 'settings'],
+  ['done', 'Done', 'circle-check'],
+];
+// NetISO.xex isn't ours, so its versions are known by their SHA-256.
+const NetIsoVersions = { '3672c88a7a3542746bd43db0f400a6eb4c0b2ca41aa382c4188e02526e8012ea': 'NetISO 1.0, from ConsoleMods\u2019 kit' };
+const wizardWanted = () => S && (Wizard.open || !S.settings.wizardDone);
+
+function openWizard(again) {
+  if (again) { Wizard.open = true; Wizard.step = 0; }
+  if (view && view.leave) view.leave();
+  view = null; page = null;
+  const steps = h('ol.wz-steps'), body = h('div.wz-body'), foot = h('div.wz-foot');
+  fill($('#app'), h('div.wizard', h('div.wz-card.card',
+    h('aside.wz-side', h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'Setup'))), steps,
+      h('div.wz-progress', h('i'))),
+    h('section.wz-main', body, foot))));
+  showStep(Wizard.step);
+}
+
+function showStep(n) {
+  Wizard.step = n;
+  const [id] = WizardSteps[n];
+  const steps = $('.wz-steps'), body = $('.wz-body'), foot = $('.wz-foot');
+  fill(steps, WizardSteps.map(([, label, icon], i) => h('li' + (i === n ? '.on' : i < n ? '.done' : ''),
+    h('span.n', i < n ? ic('check', 'sm') : ic(icon, 'sm')), h('span', label))));
+  $('.wz-progress i').style.width = Math.round(n / (WizardSteps.length - 1) * 100) + '%';
+  body.replaceChildren();
+  Wizard.view = WizardParts[id](body) || {};
+  const back = h('button.btn.ghost', { onclick: () => showStep(n - 1) }, ic('arrow-left', 'sm'), 'Back');
+  const next = h('button.btn.primary', { onclick: async () => {
+    next.disabled = true;
+    try { if (!Wizard.view.next || (await Wizard.view.next()) !== false) showStep(n + 1); }
+    catch (e) { toast(e.message, true); }
+    next.disabled = false;
+  } }, Wizard.view.label || 'Continue', ic('chevron-right', 'sm'));
+  if (id === 'done') fill(foot, h('button.btn.ghost', { onclick: () => showStep(n - 1) }, ic('arrow-left', 'sm'), 'Back'), h('span.grow'),
+    h('button.btn.primary', { onclick: () => finishWizard(true) }, 'Open the dashboard', ic('chevron-right', 'sm')));
+  else fill(foot, n ? back : null, h('span.grow'),
+    id === 'welcome' ? null : h('button.btn.ghost', { onclick: () => showStep(n + 1) }, 'Skip this step'),
+    id === 'welcome' ? h('button.btn.ghost', { onclick: () => finishWizard(false) }, 'Skip setup') : null, next);
+  if (Wizard.view.update) Wizard.view.update();
+  // Not on a phone, where it would bring up the keyboard.
+  const first = id !== 'xbox' && matchMedia('(min-width: 861px)').matches && $('input:not([type=checkbox]):not([type=radio]):not([type=file])', body);
+  if (first && !first.value) first.focus();
+  $('.wz-main').scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+// done: the steps were gone through, so the dashboard's Get started card goes too.
+async function finishWizard(done) {
+  const changes = done ? { wizardDone: true, setupDone: true } : { wizardDone: true };
+  try { await api('settings', changes); } catch (e) { toast(e.message, true); return; }
+  Wizard.open = false; Wizard.view = null;
+  $('#app').replaceChildren();
+  location.hash = '#dashboard';
+  await refresh();
+  toast(done ? 'All set' : 'Setup skipped. The dashboard\u2019s Get started card has the steps.');
+}
+
+const wzHead = (title, lead) => h('div.wz-head', h('h2', title), lead && h('p', lead));
+// One line of a check: good, warn, bad or info.
+const wzCheck = (tone, title, detail) => h('li.wz-check.' + tone, h('span.badge', ic({ good: 'circle-check', warn: 'triangle-alert', bad: 'circle-alert', info: 'info' }[tone], 'sm')),
+  h('div', h('div.t', title), detail ? h('div.d', detail) : null));
+const isDocker = () => S.update.how === 'docker';
+function wzToggle(checked, onchange) {
+  return h('label.switch', h('input', { type: 'checkbox', checked, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
+}
+const wzRow = (title, help, control) => h('div.setting', h('div.text', h('div.title', title), help && h('div.help', help)), control);
+function wzField(label, input, help) { return h('label.field', h('span', label), input, help ? h('span.help', help) : null); }
+function wzPreset(text) { return h('div.wz-preset', ic('container', 'sm'), h('span', text)); }
+
+const WizardParts = {};
+
+WizardParts.welcome = body => {
+  const file = h('input', { type: 'file', accept: '.zip,.ini', hidden: true, onchange: () => { const f = file.files[0]; file.value = ''; if (f) restoreBackup(f); } });
+  fill(body,
+    h('div.wz-hero', h('div.wz-mark', mark()), h('h1', 'Welcome to NetDisc360'),
+      h('p', 'Your Xbox 360 games from this ' + (isDocker() ? 'server' : 'computer') + ', in Aurora like installed games. Nothing to copy to the Xbox\u2019s drive.')),
+    h('p.muted', 'A few minutes, and you\u2019re playing. You\u2019ll set up:'),
+    h('ul.wz-list',
+      [['lock', 'A password', 'so the dashboard stays yours'], ['folder', 'Your game folders', 'ISOs, extracted games and Games on Demand'],
+       ['radar', 'Your Xbox', 'found on your network, with its NetISO plugin checked'], ['plug', 'Aurora', 'so every game shows up in its game list, cover art and all']]
+        .map(([icon, t, d]) => h('li', h('span.wz-icon', ic(icon)), h('div', h('b', t), h('span.muted', ' ' + d))))),
+    S.files.settings ? h('div.wz-alt', ic('archive', 'sm'), h('span', 'Moving from another computer? Bring your settings along.'),
+      h('button.btn.small', { onclick: () => file.click() }, ic('upload', 'sm'), 'Restore a backup'), file) : null);
+  return { label: 'Get started' };
+};
+
+function restoreBackup(f) {
+  if (f.size > 180 * 1024) { toast('That file is too big to be NetDisc360\u2019s settings.', true); return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const a = new Uint8Array(reader.result);
+    let text = '';
+    for (let i = 0; i < a.length; i += 0x8000) text += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+    try {
+      const r = await api('restore', { file: btoa(text) });
+      await finishWizard(true);
+      toast('Settings restored');
+      if (r.notes.length) modal('Settings restored', close => [h('div.modal-body', h('p', { style: { marginTop: 0 } }, 'A few things to know:'), h('ul', r.notes.map(n => h('li', n)))), h('div.modal-foot', h('span.note'), h('button.btn.primary', { onclick: close }, 'OK'))], true);
+    } catch (e) { toast(e.message, true); }
+  };
+  reader.readAsArrayBuffer(f);
+}
+
+WizardParts.password = body => {
+  const st = S.settings;
+  const open = st.webAddress === '0.0.0.0' && !st.lanSwitch;  // Docker, or --web-bind 0.0.0.0: always on the network.
+  const password = h('input.input', { type: 'password', placeholder: st.password ? 'New password (or leave empty to keep it)' : 'Password', autocomplete: 'new-password' });
+  const again = h('input.input', { type: 'password', placeholder: 'The same again', autocomplete: 'new-password' });
+  const problem = h('div.wz-problem');
+  const here = h('input', { type: 'radio', name: 'who', checked: !st.webLan }), lan = h('input', { type: 'radio', name: 'who', checked: st.webLan });
+  const address = (S.addresses[0] || 'this computer') + ':' + S.ports.web;
+  if (st.passwordFixed) {
+    fill(body, wzHead('Keep the dashboard yours', null),
+      h('ul.wz-checks', wzCheck('good', 'The password is set', ['With ', h('code', 'NETDISC_WEB_PASSWORD'), ' in your Docker settings. Change it there.'])));
+    return {};
+  }
+  fill(body,
+    wzHead('Keep the dashboard yours', open ? 'Anyone on your network can open this dashboard and change its settings. A password keeps it yours.'
+      : 'Choose who can open this dashboard. A password is needed for other devices, like your phone.'),
+    st.lanSwitch ? h('div.form',
+      h('label.radio', here, h('div', h('div.title', 'Only this computer'), h('div.help', 'Open it from here at http://127.0.0.1:' + S.ports.web + '. A password is up to you.'))),
+      h('label.radio', lan, h('div', h('div.title', 'This computer, my phone and other devices'), h('div.help', ['From anything on your network at ', h('b', address), '. Needs a password.'])))) : null,
+    h('div.form.cols', { style: { marginTop: '16px' } }, wzField('Password', password), wzField('Confirm it', again)),
+    st.password ? h('p.wz-note', ic('lock', 'sm'), 'A password is set already. Type a new one only to change it.') : null,
+    problem);
+  return {
+    async next() {
+      fill(problem);
+      if (password.value !== again.value) { fill(problem, 'The two passwords aren\u2019t the same.'); again.focus(); return false; }
+      const wantLan = st.lanSwitch && lan.checked;
+      if (wantLan && !password.value && !st.password) { fill(problem, 'Other devices need a password. Type one, or choose Only this computer.'); password.focus(); return false; }
+      if (open && !password.value && !st.password &&
+          !(await confirmBox('Continue without a password?', 'Anyone on your network can open the dashboard and change its settings, until you set one under Settings, Dashboard.', 'Continue without'))) return false;
+      if (password.value) await api('password', { password: password.value });
+      if (st.lanSwitch && wantLan !== st.webLan) await api('settings', { webLan: wantLan });
+      await refresh();
+      if (password.value) toast('Password saved');
+      return true;
+    },
+  };
+};
+
+WizardParts.folders = body => {
+  const list = h('div.wz-folders'), total = h('div.wz-total');
+  fill(body,
+    wzHead('Where are your games?', 'ISOs, extracted game folders and Games on Demand packages, in subfolders too. NetDisc360 only reads them; it never changes or moves a file.'),
+    !S.settings.preset.folders || !S.folders.length ? null : isDocker() ? wzPreset('The folders mounted into the container, like /games in your docker-compose.yml, are filled in already.')
+      : h('p.wz-note', ic('info', 'sm'), S.platform === 'windows' ? 'The folder NetDisc360.exe is in has games, so it\u2019s here already.' : 'The folders from the command line are here already.'),
+    list, h('div.wz-row', h('button.btn', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder'), total));
+  let drawn = '';
+  return {
+    update() {
+      const key = JSON.stringify(S.folders) + S.library.games + S.library.scanned;
+      if (key === drawn) return;
+      drawn = key;
+      fill(list, S.folders.length ? S.folders.map(f => h('div.folder-row' + (f.found ? '' : '.missing'),
+        h('div.icon', ic(f.found ? 'folder' : 'folder-x')),
+        h('div.grow', h('div.path', f.path), h('div.sub', f.found ? plural(f.games, 'game') : 'This folder can\u2019t be opened right now')),
+        h('button.btn.small.ghost', { title: 'Stop serving this folder', onclick: () => save({ folders: S.folders.map(x => x.path).filter(p => p !== f.path) }, 'Folder removed') }, ic('x', 'sm')))) :
+        h('div.empty', ic('folder-open'), h('h3', 'No game folders yet'), h('p', 'Add the folder with your games. You can add more later on the Game folders page.')));
+      fill(total, S.folders.length ? (S.library.scanned || S.library.games ? [ic('gamepad-2', 'sm'), h('b', plural(S.library.games, 'game')), ' found'] : [ic('loader-circle', 'sm spin'), 'Looking for games\u2026']) : null);
+    },
+    async next() {
+      if (!S.folders.length && !(await confirmBox('Continue without games?', 'Add a game folder later on the Game folders page. Until then there\u2019s nothing to play.', 'Continue'))) return false;
+      return true;
+    },
+  };
+};
+
+// Waits for nothing: the address NetISO.xex.txt names, as a file to save.
+function downloadNetIsoTxt(address) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([address + '\r\n'], { type: 'text/plain' })), download: 'NetISO.xex.txt' });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+WizardParts.xbox = body => {
+  const results = h('div.wz-found'), status = h('div'), find = h('button.btn', { onclick: () => findConsoles() }, ic('radar', 'sm'), 'Look again');
+  const typed = h('input.input', { placeholder: '192.168.1.30', style: { maxWidth: '200px' }, onkeydown: e => { if (e.key === 'Enter') use(typed.value.trim()); } });
+  let pick = S.addresses[0] || '';
+  const which = S.addresses.length > 1 ? h('select.input', { style: { width: 'auto' }, onchange: e => { pick = e.target.value; fill(code, pick); } }, S.addresses.map(a => h('option', { value: a }, a))) : null;
+  const code = h('code', pick || 'this computer\u2019s address');
+  fill(body,
+    wzHead('Find your Xbox', 'Turn the Xbox on and start Aurora with its FTP server on. NetDisc360 looks for it on your network.'),
+    h('div.wz-box', h('div.wz-row', h('h3', 'Consoles on your network'), h('span.grow'), find), results,
+      h('div.wz-row.wz-typed', h('span.muted', 'Not listed? Type its address:'), typed, h('button.btn.small', { onclick: () => use(typed.value.trim()) }, 'Use'))),
+    h('div.wz-box', h('h3', 'Tell NetISO where this computer is'),
+      h('p', 'Put a text file named ', h('code', 'NetISO.xex.txt'), ' next to ', h('code', 'NetISO.xex'), ' on the Xbox\u2019s USB drive, with this one line:'),
+      h('div.wz-row', which, code,
+        navigator.clipboard ? h('button.btn.small', { onclick: () => navigator.clipboard.writeText(pick).then(() => toast('Copied')) }, ic('copy', 'sm'), 'Copy') : null,
+        h('button.btn.small', { disabled: !pick, onclick: () => downloadNetIsoTxt(pick) }, ic('download', 'sm'), 'Download NetISO.xex.txt')),
+      h('p.muted', { style: { marginBottom: 0 } }, 'Then restart the Xbox: DashLaunch loads its plugins only when it starts. Give this computer a fixed address in your router, so the file stays right.')),
+    status);
+  async function findConsoles() {
+    Wizard.finding = true; draw();
+    try { Wizard.found = await api('consoles/find', {}); }
+    catch (e) { toast(e.message, true); }
+    Wizard.finding = false; draw();
+    // One Xbox found and none chosen: that one.
+    const xboxes = (Wizard.found ? Wizard.found.found : []);
+    if (!Wizard.console && xboxes.length === 1) use(xboxes[0].address, true);
+  }
+  async function use(address, quiet) {
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) { toast('Type an address like 192.168.1.30.', true); typed.focus(); return; }
+    try { await api('consoles/add', { address }); } catch (e) { toast(e.message, true); return; }
+    Wizard.console = address; Wizard.check = null;
+    typed.value = '';
+    if (!quiet) toast('Using the Xbox at ' + address);
+    await refresh();
+    draw();
+  }
+  function draw() {
+    const known = S.consoles.filter(c => c.seen > 0);
+    if (!Wizard.console && known.length) Wizard.console = known[0].address;
+    const list = Wizard.found ? Wizard.found.found.slice() : [];
+    for (const c of S.consoles) if (!list.some(f => f.address === c.address)) list.push({ address: c.address, known: true, listed: true });
+    find.disabled = Wizard.finding;
+    fill(results, Wizard.finding ? h('div.wz-scan', h('span.wz-radar', ic('radar')), h('div', h('b', 'Looking for consoles\u2026'), h('div.muted', 'On ' + (S.addresses.length ? S.addresses.map(a => a.replace(/\.\d+$/, '.x')).join(', ') : 'your network') + '. This takes a few seconds.'))) :
+      list.length ? list.map(f => {
+        const c = S.consoles.find(x => x.address === f.address);
+        const on = Wizard.console === f.address;
+        return h('div.wz-console' + (on ? '.on' : ''), h('div.icon', ic('monitor')),
+          h('div.grow', h('b', f.address), h('div.sub',
+            c && c.seen > 0 ? h('span.pill.good', h('span.dot.good'), 'NetISO connected') : null,
+            f.aurora ? h('span.pill.info', 'Aurora\u2019s FTP') : f.ftp ? h('span.pill.info', 'FTP') : null,
+            f.xbdm ? h('span.pill.off', 'xbdm') : null,
+            f.listed && !f.aurora && !(c && c.seen > 0) ? h('span.muted', 'Added before') : null)),
+          on ? h('span.pill.good', ic('check', 'sm'), 'This one') : h('button.btn.small', { onclick: () => use(f.address) }, 'Use this one'));
+      }) : Wizard.found ? h('div.wz-scan', h('span.wz-icon', ic('search')), h('div', h('b', 'No Xbox found'),
+        h('div.muted', 'Is it on, in Aurora, with the FTP server turned on? ' + (isDocker() ? 'In Docker, the container needs host networking to see the network. ' : '') + 'You can also type its address below.'))) : null);
+    const c = S.consoles.find(x => x.address === Wizard.console);
+    fill(status, Wizard.console ? h('div.wz-status' + (c && c.seen > 0 ? '.good' : ''),
+      c && c.seen > 0 ? [ic('circle-check'), h('span', h('b', 'NetISO on ' + Wizard.console + ' is connected.'), ' It sees your games.')]
+        : [h('span.wz-wait', ic('loader-circle', 'spin')), h('span', 'Waiting for NetISO on ', h('b', Wizard.console), ' to connect. Restart the Xbox once NetISO.xex.txt is in place.')]) : null);
+  }
+  if (!Wizard.found && !Wizard.finding) findConsoles(); else draw();
+  return { update: draw };
+};
+
+// Which release of a project a file on the console is from: GitHub's list
+// of releases gives each file's SHA-256. Asked by this browser.
+const ReleaseLists = {};
+function releaseList(repo) {
+  if (!ReleaseLists[repo]) ReleaseLists[repo] = fetch('https://api.github.com/repos/' + repo + '/releases?per_page=50', { referrerPolicy: 'no-referrer' })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('GitHub said ' + r.status)))
+    .then(list => list.filter(r => !r.draft && !r.prerelease))
+    .catch(e => { delete ReleaseLists[repo]; throw e; });
+  return ReleaseLists[repo];
+}
+// { version, newest, page } for the file with this SHA-256 (version '' if no release has it), names: its file names.
+async function fromRelease(repo, sha, names) {
+  const list = await releaseList(repo);
+  const named = r => r.assets.some(a => names.includes(a.name.toLowerCase()));
+  const newest = list.find(named);
+  const from = list.find(r => r.assets.some(a => (a.digest || '').toLowerCase() === 'sha256:' + sha));
+  const v = r => r ? r.tag_name.replace(/^v/, '') : '';
+  return { version: v(from), newest: v(newest), page: newest ? newest.html_url : 'https://github.com/' + repo + '/releases' };
+}
+
+function consoleChecks(r) {
+  const st = S.settings, out = [];
+  if (!r.ftp) return [wzCheck('bad', 'Aurora\u2019s FTP server doesn\u2019t answer at ' + r.address, 'Is the Xbox on and in Aurora, with the FTP server turned on (Aurora\u2019s settings, Network)?')];
+  if (!r.login) return [wzCheck('good', 'Aurora\u2019s FTP server answers'), wzCheck('bad', 'The login didn\u2019t work', 'Use the user name and password from Aurora\u2019s FTP settings. (' + r.error + ')')];
+  out.push(wzCheck('good', 'Logged in to Aurora\u2019s FTP server'));
+  out.push(r.aurora ? wzCheck('good', 'Aurora is in ' + st.aurora.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\'))
+    : wzCheck('warn', 'Aurora isn\u2019t in ' + st.aurora, 'NetDisc360 can\u2019t add the Xbox 360 category rule there. Set Aurora\u2019s folder under Settings, Xbox & Aurora.'));
+  const games = st.xboxFolder.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\');
+  out.push(r.gameFolder ? wzCheck('good', games + ' is there') : wzCheck('info', games + ' isn\u2019t there yet', 'NetDisc360 makes it. Add it to Aurora\u2019s scan paths with depth 1.'));
+  if (!r.launchIni) {
+    out.push(wzCheck('warn', 'No launch.ini found', 'DashLaunch reads it from the root of the USB drive or hard drive. The plugins couldn\u2019t be checked.'));
+    return out;
+  }
+  const where = r.launchIni.replace(/^\/(\w+)\//, '$1:\\');
+  const plugin = kind => r.plugins.find(p => p.kind === kind);
+  const netiso = plugin('netiso'), tiles = plugin('tiles'), usb = plugin('usbnet');
+  if (!netiso) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t loaded', ['Add it to the [Plugins] section of ', h('code', where), ', like ', h('code', 'plugin2 = Usb:\\NetISO.xex'), '.']));
+  else if (!netiso.found) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t where launch.ini says', h('code', netiso.path)));
+  else {
+    const known = NetIsoVersions[netiso.sha256];
+    out.push(wzCheck(known ? 'good' : 'info', netiso.name + ' is plugin ' + netiso.slot, known ? known + '.' : 'Not a version NetDisc360 knows (' + bytes(netiso.size) + '). It works if it\u2019s the one from ConsoleMods\u2019 NetISO kit.'));
+    if (!netiso.txt) out.push(wzCheck('warn', 'NetISO.xex.txt is missing', 'Without it NetISO doesn\u2019t know this computer. Download it on the step before and put it next to NetISO.xex.'));
+    else if (!netiso.here) out.push(wzCheck('warn', 'NetISO.xex.txt says ' + (netiso.server || 'nothing'), 'This computer is ' + (S.addresses.join(' or ') || 'somewhere else') + '. Download a new one on the step before.'));
+    else out.push(wzCheck('good', 'NetISO.xex.txt points to this computer', netiso.server));
+  }
+  const release = (p, repo, names, title, missing, unknown) => {
+    if (!p) { if (missing) out.push(missing); return; }
+    if (!p.found) { out.push(wzCheck('warn', p.name + ' isn\u2019t where launch.ini says', h('code', p.path))); return; }
+    const line = wzCheck('info', title + ' is plugin ' + p.slot, 'Asking GitHub which version it is\u2026');
+    out.push(line);
+    fromRelease(repo, p.sha256, names).then(v => {
+      line.replaceWith(v.version && v.version === v.newest ? wzCheck('good', title + ' ' + v.version + ' is plugin ' + p.slot, 'The newest version.')
+        : v.version ? wzCheck('warn', title + ' ' + v.version + ' is plugin ' + p.slot, [v.newest + ' is out. ', h('a', { href: v.page, target: '_blank', rel: 'noopener noreferrer' }, 'Get it'), ', copy it over ', h('code', p.path), ' and restart the Xbox.'])
+        : wzCheck('info', title + ' is plugin ' + p.slot, unknown || 'It isn\u2019t from a release on GitHub (a build of your own?).'));
+    }).catch(() => line.replaceWith(wzCheck('info', title + ' is plugin ' + p.slot, 'GitHub didn\u2019t answer, so its version wasn\u2019t checked.')));
+  };
+  release(tiles, 'marcusisdahl/NetDisc360', ['netisotiles.xex'], 'NetIsoTiles.xex',
+    wzCheck('warn', 'NetIsoTiles.xex isn\u2019t loaded', ['It keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
+  release(usb, 'marcusisdahl/UsbNet360', ['usbnet360.xex', 'usbnet360-acksmall.xex'], usb ? usb.name : '', null,
+    ['Not a UsbNet360 release. ', h('a', { href: 'https://github.com/marcusisdahl/UsbNet360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'UsbNet360'), ' loads games faster with a gigabit USB adapter.']);
+  if (r.plugins.length > 5) out.push(wzCheck('warn', 'launch.ini has ' + r.plugins.length + ' plugins', 'DashLaunch loads 5 at most.'));
+  if (r.default && !/aurora/i.test(r.default)) out.push(wzCheck('info', 'The Xbox starts ' + r.default, 'Set Default in launch.ini to Aurora.xex to start straight in Aurora.'));
+  out.push(r.connected ? wzCheck('good', 'NetISO is connected to NetDisc360') : wzCheck('info', 'NetISO hasn\u2019t connected yet', 'Restart the Xbox after changing launch.ini or NetISO.xex.txt.'));
+  return out;
+}
+
+WizardParts.aurora = body => {
+  const st = S.settings;
+  const user = h('input.input', { value: st.ftpUser, autocomplete: 'off' });
+  const password = h('input.input', { type: 'password', placeholder: st.ftpPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
+  const results = h('ul.wz-checks'), checkButton = h('button.btn', { onclick: () => check() }, ic('scan', 'sm'), 'Check my Xbox');
+  fill(body,
+    wzHead('Put your games in Aurora', 'NetDisc360 adds a small folder for every game to the Xbox over Aurora\u2019s FTP server. Aurora then lists them with their cover art, like installed games.'),
+    h('ol.wz-how', h('li', 'In Aurora\u2019s settings, turn the ', h('b', 'FTP server'), ' on.'),
+      h('li', 'Under Content, ', h('b', 'Scan paths'), ', add ', h('code', 'Hdd1:\\NetISO'), ' with depth 1. It can be empty; NetDisc360 fills it.')),
+    st.preset.ftp && isDocker() ? wzPreset('The login from your Docker settings is filled in.') : null,
+    h('div.form.cols', wzField('Aurora\u2019s FTP user', user), wzField('Password', password, 'Aurora\u2019s default login is xboxftp / xboxftp.')),
+    wzRow('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', wzToggle(st.category, (v, i) => save({ category: v }).then(ok => { if (!ok) i.checked = !v; }))),
+    h('div.wz-box', h('div.wz-row', h('h3', 'Check your Xbox'), h('span.grow'), checkButton),
+      h('p.muted', { style: { margin: '0 0 8px' } }, 'Logs in with this login, and looks at DashLaunch\u2019s launch.ini: is NetISO loaded, does NetISO.xex.txt point here, and are the plugins the newest?'),
+      results));
+  async function check() {
+    if (!Wizard.console) { fill(results, wzCheck('info', 'No Xbox chosen', 'Find it on the step before, or type its address there.')); return; }
+    Wizard.checking = true; checkButton.disabled = true;
+    fill(results, wzCheck('info', 'Checking the Xbox at ' + Wizard.console + '\u2026', null));
+    try { Wizard.check = await api('consoles/check', { address: Wizard.console, ftpUser: user.value, ftpPassword: password.value }); fill(results, consoleChecks(Wizard.check)); }
+    catch (e) { fill(results, wzCheck('bad', 'The check didn\u2019t work', e.message)); }
+    Wizard.checking = false; checkButton.disabled = false;
+  }
+  if (Wizard.check && Wizard.check.address === Wizard.console) fill(results, consoleChecks(Wizard.check));
+  else if (Wizard.console) check();
+  return {
+    async next() {
+      if (user.value !== st.ftpUser || password.value) {
+        const c = { ftpUser: user.value };
+        if (password.value) c.ftpPassword = password.value;
+        if (!(await save(c, 'FTP login saved'))) return false;
+      }
+      return true;
+    },
+  };
+};
+
+WizardParts.extras = body => {
+  const st = S.settings;
+  const flip = name => (v, i) => save({ [name]: v }).then(ok => { if (!ok) i.checked = !v; });
+  fill(body,
+    wzHead('A few extras', 'All of these can be changed later in Settings.'),
+    h('div.card-body.wz-extras',
+      st.startWithWindows !== undefined ? wzRow('Start with Windows', 'Runs NetDisc360 behind its icon by the clock when you sign in, so your games are always there.', wzToggle(st.startWithWindows, flip('startWithWindows'))) : null,
+      wzRow('Look for updates', 'Asks GitHub now and then for a new NetDisc360. Nothing about you or your games is sent.', wzToggle(st.updateCheck, flip('updateCheck'))),
+      S.update.how === 'app' ? wzRow('Install updates by themselves', 'When no console is playing. Your settings are backed up first.', wzToggle(st.updateAuto, flip('updateAuto'))) : null,
+      S.files.settings ? wzRow('Back up the settings every week', 'Your folders, consoles and logins, in case. Never your games.', wzToggle(st.backupEvery > 0, (v, i) => save({ backupEvery: v ? 7 : 0 }).then(ok => { if (!ok) i.checked = !v; }))) : null,
+      wzRow('Cover art on this page', 'Loaded by this browser from the XboxUnity archive on GitHub.', wzToggle(showCovers(), v => store('covers', v ? 'on' : 'off')))));
+  return {};
+};
+
+WizardParts.done = body => {
+  const list = h('ul.wz-checks');
+  fill(body, h('div.wz-hero', h('div.wz-mark.done', ic('party-popper', 'lg')), h('h1', 'You\u2019re set'),
+    h('p', 'NetDisc360 keeps running and serving your games. New games you put in your folders show up in Aurora by themselves.')), list);
+  return {
+    update() {
+      const st = S.settings, c = S.consoles.find(x => x.address === Wizard.console) || S.consoles.find(x => x.seen > 0);
+      fill(list,
+        st.password ? wzCheck('good', 'The dashboard has a password') : wzCheck(st.webAddress === '0.0.0.0' ? 'warn' : 'info', 'No password', st.webAddress === '0.0.0.0' ? 'Anyone on your network can change the settings. Set one under Settings, Dashboard.' : 'Only this computer can open the dashboard.'),
+        S.folders.length ? wzCheck('good', plural(S.library.games, 'game') + ' in ' + plural(S.folders.length, 'folder')) : wzCheck('warn', 'No game folders yet', 'Add one on the Game folders page.'),
+        !c ? wzCheck('info', 'No Xbox yet', 'It shows up on the Consoles page when NetISO connects.')
+          : c.seen > 0 ? wzCheck('good', 'NetISO on ' + c.address + ' is connected') : wzCheck('info', 'Waiting for NetISO on ' + c.address, 'Restart the Xbox once NetISO.xex.txt is in place.'),
+        !c || !st.push ? null : c.synced ? wzCheck('good', 'Your games are in Aurora on ' + c.address, 'Aurora fetches their cover art within a minute or so.')
+          : c.ftp === 1 ? wzCheck('warn', 'Aurora\u2019s FTP server on ' + c.address + ' doesn\u2019t answer', 'Your games go in once it does.')
+          : wzCheck('info', 'Adding your games to Aurora on ' + c.address + '\u2026', 'Within a minute or two of the Xbox showing up.'));
     },
   };
 };
