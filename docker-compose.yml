@@ -1,14 +1,16 @@
+# NetDisc360. Copy .env.example to .env, fill it in, then: docker compose up -d
 services:
   netdisc360:
-    image: ghcr.io/marcusisdahl/netdisc360:latest
+    image: ghcr.io/marcusisdahl/netdisc360:${NETDISC_TAG:-latest}
     container_name: netdisc360
-    network_mode: host                          # the Xbox connects on port 4323, the dashboard is on 8360
+    network_mode: host                                       # the Xbox connects on port 4323, the dashboard is on 8360
     environment:
-      - TZ=Etc/UTC
-      - NETDISC_WEB_PASSWORD=changeme           # the dashboard's password
-      - NETDISC_FTP_USER=xboxftp                # Aurora's FTP login (Aurora: Settings > FTP)
-      - NETDISC_FTP_PASSWORD=xboxftp
+      - TZ=${TZ:-Etc/UTC}
+      - NETDISC_WEB_PASSWORD=${NETDISC_WEB_PASSWORD:-}       # the dashboard's password
+      - NETDISC_FTP_USER=${NETDISC_FTP_USER:-xboxftp}        # Aurora's FTP login (Aurora: Settings > FTP)
+      - NETDISC_FTP_PASSWORD=${NETDISC_FTP_PASSWORD:-xboxftp}
+      - NETDISC_XBOX=${NETDISC_XBOX:-}                       # only these consoles (IPs, commas); empty: all
     volumes:
-      - /path/to/netdisc360/config:/config      # settings, owned by 1000:1000
-      - /path/to/games:/games:ro                # ISOs, extracted games and GOD packages
+      - ${NETDISC_CONFIG_DIR:-./config}:/config              # settings, owned by 1000:1000
+      - ${NETDISC_GAMES_DIR:?set NETDISC_GAMES_DIR in .env}:/games:ro   # ISOs, extracted games and GOD packages
     restart: unless-stopped

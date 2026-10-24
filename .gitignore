@@ -25,3 +25,4 @@ launch.ini
 # Games and settings next to docker-compose.yml
 /games/
 /config/
+.env
