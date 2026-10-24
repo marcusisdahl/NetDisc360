@@ -151,8 +151,9 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 
 **On Windows:** put `NetDisc360.exe` anywhere, for example in the folder with your games, and double-click it. It opens its dashboard in your web browser (`http://127.0.0.1:8360`) and keeps running behind its icon in the notification area, by the clock.
 
-- The first time, it serves the folder it is in, if that folder has games (otherwise the list starts empty). Add your other game folders with **Add a folder**. Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
-- The **Dashboard** lists the setup steps on a first run and ticks them off as they are done. Then it shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
+- **The first time, a setup wizard walks you through it:** a password for the dashboard, your game folders, finding your Xbox on the network (with a ready-made `NetISO.xex.txt` to download), and Aurora's FTP login. It then checks the console over FTP: that DashLaunch's `launch.ini` loads NetISO, that `NetISO.xex.txt` points to this PC, and that `NetIsoTiles.xex` and UsbNet360 are the newest releases. Skip any step, or run it again from **Settings > About**.
+- If the folder `NetDisc360.exe` is in has games, it starts out as a game folder. Add more with **Add a folder**. Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
+- The **Dashboard** shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
 - The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details. A game that is in your folders more than once shows at the top, where you choose which copy to play.
 - The **Consoles** page lists every console that has used the server: whether it's on (the server pings each console every 30 seconds, so one that's switched off shows as Offline), what it plays, what it was sent, whether its Aurora answers, when its game folders were updated, and its last five events (a game started, games added, launchers updated to a new version). Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
 - **Settings > Xbox & Aurora** has **Aurora's FTP login** (enter it if you changed it in Aurora), and **Settings > Windows** has **Start with Windows**, to have the server start, hidden, every time you sign in. **Settings** also has [updates and backups](#updating).
@@ -162,7 +163,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 - **From your phone or another computer:** under **Settings > Dashboard**, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
 
 <p align="center">
-  <img src="docs/images/first-run.png" alt="The dashboard on a first run: Get started, with the game folder added (13 games) and the next two steps, telling NetISO where the PC is and turning on Aurora's FTP server" width="49%">
+  <img src="docs/images/setup-wizard.png" alt="The setup wizard's Aurora step: the console check shows the FTP login works, NetISO 1.0 is loaded with NetISO.xex.txt pointing to this PC, and NetIsoTiles.xex and UsbNet360.xex are the newest releases" width="49%">
   <img src="docs/images/games.jpg" alt="The Games page: games as covers, each marked ISO, Extracted or GOD, two of them showing the console playing them" width="49%">
   <br>
   <sub>The first run walks you through setup (left). The Games page shows every game, its format, and which console is playing it (right).</sub>
