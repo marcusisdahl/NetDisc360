@@ -1183,6 +1183,56 @@ class Dashboard(ServerTest):
         self.assertEqual(state["settings"]["xboxes"], ["192.168.1.30"])
         self.assertEqual([f["path"] for f in state["folders"]], [self.isos, more])
 
+    def test_the_setup_wizard_shows_once(self):
+        # A first start (no settings file) opens the wizard; finishing it is kept.
+        self.start()
+        settings = self.json("GET", "/api/state")["settings"]
+        self.assertFalse(settings["wizardDone"])
+        self.assertEqual(settings["preset"], {"folders": True, "xboxes": False, "ftp": False})
+        self.json("POST", "/api/settings", {"wizardDone": True})
+        self.restart()
+        self.assertTrue(self.json("GET", "/api/state")["settings"]["wizardDone"])
+        # A settings file from before the wizard: that copy was set up already.
+        with open(self.config, "w") as f:
+            f.write("[Server]\nscan=1\n")
+        self.restart()
+        self.assertTrue(self.json("GET", "/api/state")["settings"]["wizardDone"])
+
+    def test_finds_and_checks_a_console(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        for folder in ("Usb0", "Hdd1/Apps/Aurora"):
+            os.makedirs(os.path.join(xbox, folder))
+        files = {"Usb0/launch.ini": b"[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n[Plugins]\r\n"
+                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n",
+                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES"}
+        for name, data in files.items():
+            with open(os.path.join(xbox, name), "wb") as f:
+                f.write(data)
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            found = self.json("POST", "/api/consoles/find", {"around": "127.0.0.2"})
+            self.assertEqual(found["networks"], ["127.0.0.0/24"])
+            self.assertEqual([(c["address"], c["aurora"]) for c in found["found"]], [("127.0.0.2", True)])
+            self.assertEqual(self.call("POST", "/api/consoles/find", {"around": "xbox"})[0], 400)
+            r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2"})
+            self.assertEqual([r[k] for k in ("ftp", "login", "aurora", "gameFolder", "launchIni")], [True, True, True, False, "/Usb0/launch.ini"])
+            self.assertEqual(r["default"], "Hdd:\\Apps\\Aurora\\Aurora.xex")
+            netiso, tiles, gone = r["plugins"]
+            self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
+            self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())
+            self.assertEqual([tiles["kind"], tiles["sha256"]], ["tiles", hashlib.sha256(b"TILES").hexdigest()])
+            self.assertEqual([gone["kind"], gone["found"]], ["other", False])
+            # A login typed in the wizard is tried before it's saved.
+            r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
+            self.assertEqual([r["ftp"], r["login"]], [True, False])
+            self.assertFalse(self.json("POST", "/api/consoles/check", {"address": "127.0.0.3"})["ftp"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
     def backups(self):
         return self.json("GET", "/api/backups")["backups"]
 

@@ -77,6 +77,7 @@ struct Options {
     bool push, filter, scan, verbose, pushOnce;
     bool webLan;      // The dashboard's "other devices" switch: listens on 0.0.0.0 instead of webAddress.
     bool setupDone;   // The dashboard's setup steps were done once.
+    bool wizardDone;  // The first start's setup wizard was finished or skipped.
     bool toldTray;    // The notification-area icon's first tip was shown.
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see WatchLoop).
@@ -91,7 +92,7 @@ struct Options {
     std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
+                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
@@ -105,6 +106,9 @@ bool CanPush;         // A launcher is built in (or given), so game folders can 
 bool InTray;          // NetDisc360.exe behind its notification-area icon (tray.cpp).
 bool PasswordFixed;   // The dashboard's password comes from NETDISC_WEB_PASSWORD.
 bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated by pulling it.
+// Settings the first start got from its command line or environment (in
+// Docker, the NETDISC_* variables), which the setup wizard shows as filled in.
+struct Preset { bool folders, xboxes, ftp; } Given;
 double StartedAt;
 // The command line's options, under the settings file's: what a restored
 // backup's settings go over (Reload).
@@ -1627,6 +1631,7 @@ bool Save() {
     f.Set("category",o.filter ? "1" : "0");
     f.Set("scan",o.scan ? "1" : "0");
     f.Set("setup_done",o.setupDone ? "1" : "0");
+    f.Set("wizard_done",o.wizardDone ? "1" : "0");
     f.Set("told_tray",o.toldTray ? "1" : "0");
     f.Set("web_lan",o.webLan ? "1" : "0");
     if(!PasswordFixed) f.Set("web_password",web::PasswordHash());
@@ -1718,6 +1723,8 @@ bool LoadConfig(Options& o) {
     o.filter=Flag(f,"category",o.filter);
     o.scan=Flag(f,"scan",o.scan);
     o.setupDone=Flag(f,"setup_done",o.setupDone);
+    // A settings file from before the wizard: that copy was set up already.
+    o.wizardDone=Flag(f,"wizard_done",true);
     o.toldTray=Flag(f,"told_tray",o.toldTray);
     o.webLan=Flag(f,"web_lan",o.webLan);
     if(f.Has("web_port")) o.webPort=int(f.Number("web_port",o.webPort));
@@ -1900,7 +1907,8 @@ void State(web::Reply& out) {
     j.Close(']');
     j.Set("ftpUser",o.ftpUser).Set("ftpPasswordSet",!o.ftpPassword.empty());  // Never the password itself.
     j.Set("push",o.push).Set("canPush",CanPush).Set("category",o.filter).Set("scan",o.scan);
-    j.Set("xboxFolder",o.xboxFolder).Set("aurora",o.aurora).Set("setupDone",o.setupDone);
+    j.Set("xboxFolder",o.xboxFolder).Set("aurora",o.aurora).Set("setupDone",o.setupDone).Set("wizardDone",o.wizardDone);
+    j.Key("preset").Open('{').Set("folders",Given.folders).Set("xboxes",Given.xboxes).Set("ftp",Given.ftp).Close('}');
     j.Set("saved",!o.configPath.empty()).Set("webLan",o.webLan).Set("webAddress",WebAddress(o)).Set("lanSwitch",o.webAddress=="127.0.0.1");
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
@@ -2190,6 +2198,259 @@ bool Bool(const web::Value& v, const char* key, bool& out) {
     return true;
 }
 
+// The setup wizard ---------------------------------------------------------------
+
+// Finding consoles: every address of the /24 around this computer's (or the
+// one asked for) is tried on Aurora's FTP port and xbdm's (730), and what
+// greets there tells an Xbox: Aurora's FtpDll, another Xbox FTP server, or
+// xbdm's "201- connected". The Xbox answers no ICMP ping, so it's TCP.
+const int XbdmPort = 730;
+struct Probe { DWORD address; int port; SOCKET s; bool open; std::string greeting; };
+
+void ProbeBatch(std::vector<Probe>& batch, int timeoutMs) {
+    for(size_t i=0;i<batch.size();++i) {
+        Probe& p=batch[i];
+        p.s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+        if(p.s==INVALID_SOCKET) continue;
+        u_long nonblocking=1;
+        ioctlsocket(p.s,FIONBIO,&nonblocking);
+        sockaddr_in to; memset(&to,0,sizeof(to)); to.sin_family=AF_INET; to.sin_addr.s_addr=p.address; to.sin_port=htons(u_short(p.port));
+        int status=connect(p.s,reinterpret_cast<sockaddr*>(&to),sizeof(to)) ? WSAGetLastError() : 0;
+        if(status && status!=WSAEWOULDBLOCK) { closesocket(p.s); p.s=INVALID_SOCKET; }
+        else if(!status) p.open=true;
+    }
+    // Connected, then greeted: each within the time left.
+    double until=Now()+timeoutMs/1000.0;
+    for(int phase=0;phase<2;++phase) {
+        for(;;) {
+            fd_set set,failed; FD_ZERO(&set); FD_ZERO(&failed);
+            int waiting=0;
+            for(size_t i=0;i<batch.size();++i) {
+                Probe& p=batch[i];
+                if(p.s==INVALID_SOCKET || (phase==0 ? p.open : !p.open || !p.greeting.empty())) continue;
+                FD_SET(p.s,&set); FD_SET(p.s,&failed); ++waiting;
+            }
+            double left=until-Now();
+            if(!waiting || left<=0) break;
+            timeval interval={0,long(std::min(left,0.1)*1e6)};
+            int rc=phase==0 ? select(0,NULL,&set,&failed,&interval) : select(0,&set,NULL,&failed,&interval);
+            if(rc==SOCKET_ERROR) break;
+            for(size_t i=0;i<batch.size() && rc>0;++i) {
+                Probe& p=batch[i];
+                if(p.s==INVALID_SOCKET) continue;
+                if(FD_ISSET(p.s,&failed)) { closesocket(p.s); p.s=INVALID_SOCKET; continue; }
+                if(!FD_ISSET(p.s,&set)) continue;
+                if(phase==0) {
+                    int error=0; int length=sizeof(error);
+                    if(getsockopt(p.s,SOL_SOCKET,SO_ERROR,reinterpret_cast<char*>(&error),&length) || error) { closesocket(p.s); p.s=INVALID_SOCKET; }
+                    else p.open=true;
+                } else {
+                    char text[200];
+                    int got=recv(p.s,text,sizeof(text)-1,0);
+                    if(got<=0) { closesocket(p.s); p.s=INVALID_SOCKET; continue; }
+                    p.greeting.assign(text,size_t(got));
+                }
+            }
+        }
+        until=Now()+timeoutMs/1000.0;  // The greeting gets its own time.
+    }
+    for(size_t i=0;i<batch.size();++i) if(batch[i].s!=INVALID_SOCKET) { closesocket(batch[i].s); batch[i].s=INVALID_SOCKET; }
+}
+
+bool Has(const std::string& text, const char* word) {
+    std::string lower=text;
+    for(size_t i=0;i<lower.size();++i) lower[i]=char(tolower((unsigned char)lower[i]));
+    return lower.find(word)!=std::string::npos;
+}
+
+void FindConsoles(const web::Value& body, web::Reply& out) {
+    Options o=Current();
+    std::vector<std::string> own=PcAddresses();
+    std::string around;
+    Text(body,"around",around);
+    std::vector<DWORD> networks;
+    if(!around.empty()) {
+        DWORD a=inet_addr(around.c_str());
+        if(a==INADDR_NONE) { out.Error(400,"\""+around+"\" isn't an IPv4 address like 192.168.1.20."); return; }
+        networks.push_back(htonl(ntohl(a)&0xFFFFFF00));
+    }
+    for(size_t i=0;i<own.size() && around.empty();++i) {
+        DWORD net=htonl(ntohl(inet_addr(own[i].c_str()))&0xFFFFFF00);
+        if(std::find(networks.begin(),networks.end(),net)==networks.end()) networks.push_back(net);
+    }
+    if(networks.size()>4) networks.resize(4);
+    std::vector<Probe> probes;
+    for(size_t n=0;n<networks.size();++n)
+        for(DWORD host=1;host<255;++host) {
+            DWORD address=htonl(ntohl(networks[n])+host);
+            char text[16]; AddressText(address,text,sizeof(text));
+            if(std::find(own.begin(),own.end(),std::string(text))!=own.end()) continue;
+            int ports[2]={o.ftpPort,XbdmPort};
+            for(int k=0;k<2;++k) { Probe p={address,ports[k],INVALID_SOCKET,false,std::string()}; probes.push_back(p); }
+        }
+    // Winsock's select takes 64 sockets at most; a few batches at once.
+    const size_t Batch=48;
+    std::vector<std::thread> threads;
+    std::atomic<size_t> next(0);
+    for(int t=0;t<6;++t) threads.push_back(std::thread([&]() {
+        for(size_t at;(at=next.fetch_add(Batch))<probes.size();) {
+            std::vector<Probe> batch(probes.begin()+at,probes.begin()+std::min(probes.size(),at+Batch));
+            ProbeBatch(batch,800);
+            std::copy(batch.begin(),batch.end(),probes.begin()+at);
+        }
+    }));
+    for(size_t t=0;t<threads.size();++t) threads[t].join();
+    struct Found { DWORD address; bool aurora, ftp, xbdm; };
+    std::vector<Found> found;
+    for(size_t i=0;i<probes.size();++i) {
+        const Probe& p=probes[i];
+        if(!p.open || p.greeting.empty()) continue;
+        bool aurora=p.port==o.ftpPort && Has(p.greeting,"ftpdll");
+        bool ftp=p.port==o.ftpPort && !aurora && !p.greeting.compare(0,3,"220") && (Has(p.greeting,"xbox") || Has(p.greeting,"aurora") || Has(p.greeting,"fastftp"));
+        bool xbdm=p.port==XbdmPort && !p.greeting.compare(0,3,"201");
+        if(!aurora && !ftp && !xbdm) continue;
+        size_t k=0;
+        while(k<found.size() && found[k].address!=p.address) ++k;
+        if(k==found.size()) { Found f={p.address,false,false,false}; found.push_back(f); }
+        found[k].aurora=found[k].aurora || aurora; found[k].ftp=found[k].ftp || ftp; found[k].xbdm=found[k].xbdm || xbdm;
+    }
+    web::Json j;
+    j.Open('{').Key("networks").Open('[');
+    for(size_t n=0;n<networks.size();++n) { char text[16]; AddressText(networks[n],text,sizeof(text)); j.String(std::string(text)+"/24"); }
+    j.Close(']').Key("found").Open('[');
+    for(size_t i=0;i<found.size();++i) {
+        char text[16]; AddressText(found[i].address,text,sizeof(text));
+        j.Open('{').Set("address",text).Set("aurora",found[i].aurora).Set("ftp",found[i].ftp).Set("xbdm",found[i].xbdm)
+         .Set("known",ConsoleIfKnown(found[i].address)!=NULL).Close('}');
+    }
+    j.Close(']').Close('}');
+    Log("Looked for consoles on %s: %s.",Count(int(networks.size()),"network","networks").c_str(),Count(int(found.size()),"found","found").c_str());
+    out.body=j.Text();
+}
+
+// A console found on the network, or typed in: it's listed and gets its game
+// folders like one whose NetISO connected.
+bool AddConsole(const web::Value& body, std::string& error) {
+    std::string text;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { error="Send the console's IPv4 address, like 192.168.1.30."; return false; }
+    bool added;
+    if(!ConsoleAt(address,&added)) { error="That's this computer."; return false; }
+    if(added) Log("Xbox %s added on the dashboard.",text.c_str());
+    ++PushGeneration;
+    return true;
+}
+
+// DashLaunch's device names in launch.ini, as Aurora's FTP server has them.
+std::string FtpPath(std::string path) {
+    for(size_t i=0;i<path.size();++i) if(path[i]=='\\') path[i]='/';
+    size_t colon=path.find(':');
+    if(colon==std::string::npos) return std::string();
+    std::string device=path.substr(0,colon), rest=path.substr(colon+1);
+    std::string lower=device;
+    for(size_t i=0;i<lower.size();++i) lower[i]=char(tolower((unsigned char)lower[i]));
+    if(lower=="usb") device="Usb0";
+    else if(lower=="hdd") device="Hdd1";
+    else if(lower=="usbmu" || lower=="usbmu0") device="UsbMu0";
+    if(rest.empty() || rest[0]!='/') rest="/"+rest;
+    return "/"+device+rest;
+}
+
+std::string Trim(const std::string& text) {
+    size_t a=text.find_first_not_of(" \t\r\n\xEF\xBB\xBF"), b=text.find_last_not_of(" \t\r\n");
+    return a==std::string::npos ? std::string() : text.substr(a,b-a+1);
+}
+
+// What the console has: Aurora's FTP login works, Aurora and the game folder
+// are where the settings say, and DashLaunch's launch.ini loads NetISO.xex
+// (with NetISO.xex.txt naming this computer) and NetIsoTiles.xex, each
+// file's SHA-256 for the dashboard to match with the releases.
+void CheckConsole(const web::Value& body, web::Reply& out) {
+    Options o=Current();
+    std::string text, user=o.ftpUser, password=o.ftpPassword;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { out.Error(400,"Send the console's IPv4 address, like 192.168.1.30."); return; }
+    // The wizard tries a login before saving it.
+    if(Text(body,"ftpUser",user) && user.empty()) user=o.ftpUser;
+    if(!Text(body,"ftpPassword",password) || password.empty()) password=o.ftpPassword;
+    if(std::find_if(user.begin(),user.end(),[](char c) { return (unsigned char)c<' '; })!=user.end() ||
+       std::find_if(password.begin(),password.end(),[](char c) { return (unsigned char)c<' '; })!=password.end()) { out.Error(400,"That can't have a line break or tab in it."); return; }
+    FtpClient ftp(address,o.ftpPort,user.c_str(),password.c_str(),8);
+    web::Json j;
+    j.Open('{').Set("address",text);
+    if(!ftp.Greets()) {
+        j.Set("ftp",false).Close('}');
+        out.body=j.Text();
+        return;
+    }
+    j.Set("ftp",true);
+    if(!ftp.Open()) {
+        j.Set("login",false).Set("error",std::string(ftp.Error())).Close('}');
+        out.body=j.Text();
+        return;
+    }
+    j.Set("login",true).Set("aurora",ftp.Exists(o.aurora.c_str())).Set("gameFolder",ftp.Exists(o.xboxFolder.c_str()));
+    // DashLaunch reads the first launch.ini it finds, USB before the hard drive.
+    static const char* const places[]={"/Usb0/launch.ini","/Usb1/launch.ini","/Usb2/launch.ini","/Hdd1/launch.ini"};
+    std::vector<unsigned char> data;
+    std::string ini;
+    for(size_t i=0;i<sizeof(places)/sizeof(places[0]) && ini.empty();++i)
+        if(ftp.Retrieve(places[i],data,256<<10)) ini=places[i];
+        else if(!ftp.Missing()) ftp.Close();  // Not there is fine; anything else starts over.
+    j.Set("launchIni",ini);
+    std::string defaultPath;
+    std::vector<std::pair<int,std::string> > plugins;
+    if(!ini.empty()) {
+        std::string file(data.begin(),data.end()), section;
+        for(size_t at=0;at<file.size();) {
+            size_t end=file.find('\n',at);
+            if(end==std::string::npos) end=file.size();
+            std::string line=Trim(file.substr(at,end-at));
+            at=end+1;
+            size_t comment=line.find(';');
+            if(comment!=std::string::npos) line=Trim(line.substr(0,comment));
+            if(line.empty() || line[0]=='#') continue;
+            if(line[0]=='[') { section=line; for(size_t i=0;i<section.size();++i) section[i]=char(tolower((unsigned char)section[i])); continue; }
+            size_t equals=line.find('=');
+            if(equals==std::string::npos) continue;
+            std::string key=Trim(line.substr(0,equals)), value=Trim(line.substr(equals+1));
+            for(size_t i=0;i<key.size();++i) key[i]=char(tolower((unsigned char)key[i]));
+            if(section=="[paths]" && key=="default") defaultPath=value;
+            if(section=="[plugins]" && key.size()==7 && !key.compare(0,6,"plugin") && key[6]>='1' && key[6]<='9' && !value.empty())
+                plugins.push_back(std::make_pair(key[6]-'0',value));
+        }
+    }
+    j.Set("default",defaultPath);
+    j.Key("plugins").Open('[');
+    std::vector<std::string> addresses=PcAddresses();
+    for(size_t i=0;i<plugins.size();++i) {
+        std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1), lower=name;
+        for(size_t k=0;k<lower.size();++k) lower[k]=char(tolower((unsigned char)lower[k]));
+        const char* kind=lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
+                       : lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
+        j.Open('{').Set("slot",plugins[i].first).Set("path",plugins[i].second).Set("name",name).Set("kind",kind);
+        bool found=!path.empty() && ftp.Retrieve(path.c_str(),data,16<<20);
+        if(!found && !ftp.Missing()) ftp.Close();
+        j.Set("found",found);
+        if(found) j.Set("size",(long long)data.size()).Set("sha256",web::Sha256Hex(std::string(data.begin(),data.end())));
+        // NetISO.xex.txt: the address of the server NetISO connects to.
+        if(found && !strcmp(kind,"netiso")) {
+            std::vector<unsigned char> txt;
+            bool has=ftp.Retrieve((path+".txt").c_str(),txt,4096);
+            if(!has && !ftp.Missing()) ftp.Close();
+            std::string server=Trim(std::string(txt.begin(),txt.end()));
+            j.Set("txt",has).Set("server",server)
+             .Set("here",has && std::find(addresses.begin(),addresses.end(),server)!=addresses.end());
+        }
+        j.Close('}');
+    }
+    j.Close(']');
+    Console* known=ConsoleIfKnown(address);
+    j.Set("connected",known && known->seenAt>=0).Close('}');
+    ftp.Close();
+    out.body=j.Text();
+}
+
 // A whole number from low to high; false if it isn't there, and error if it isn't one.
 bool Whole(const web::Value& v, const char* key, int low, int high, int& out, std::string& error) {
     const web::Value* f=v.Get(key);
@@ -2263,6 +2524,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Bool(v,"category",next.filter);
     Bool(v,"scan",next.scan);
     Bool(v,"setupDone",next.setupDone);
+    Bool(v,"wizardDone",next.wizardDone);
     Whole(v,"backupEvery",0,365,next.backupEvery,error);
     Whole(v,"backupKeep",1,100,next.backupKeep,error);
     if(!error.empty()) return false;
@@ -2306,7 +2568,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings.folders=next.folders; Settings.xboxes=next.xboxes; Settings.ftpUser=next.ftpUser; Settings.ftpPassword=next.ftpPassword;
         Settings.xboxFolder=next.xboxFolder; Settings.aurora=next.aurora; Settings.push=next.push; Settings.filter=next.filter;
-        Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.webLan=next.webLan;
+        Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.wizardDone=next.wizardDone; Settings.webLan=next.webLan;
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
     }
@@ -2437,7 +2699,7 @@ void Reload(std::vector<std::string>& notes) {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings.folders=o.folders; Settings.xboxes=o.xboxes; Settings.ftpUser=o.ftpUser; Settings.ftpPassword=o.ftpPassword;
         Settings.xboxFolder=o.xboxFolder; Settings.aurora=o.aurora; Settings.push=o.push; Settings.filter=o.filter; Settings.scan=o.scan;
-        Settings.setupDone=o.setupDone; Settings.toldTray=o.toldTray; Settings.webLan=o.webLan;
+        Settings.setupDone=o.setupDone; Settings.wizardDone=o.wizardDone; Settings.toldTray=o.toldTray; Settings.webLan=o.webLan;
         Settings.backupEvery=o.backupEvery; Settings.backupKeep=o.backupKeep;
         Settings.updateCheck=o.updateCheck; Settings.updateAuto=o.updateAuto && !strcmp(UpdateHow(),"app"); Settings.updatePrerelease=o.updatePrerelease;
     }
@@ -2711,6 +2973,12 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/games") Games(out);
     else if(r.method=="GET" && r.path=="/api/log") LogSince(atoll(r.Param("after").c_str()),out);
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
+    else if(r.method=="POST" && r.path=="/api/consoles/find") FindConsoles(body,out);
+    else if(r.method=="POST" && r.path=="/api/consoles/check") CheckConsole(body,out);
+    else if(r.method=="POST" && r.path=="/api/consoles/add") {
+        if(AddConsole(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
     else if(r.method=="POST" && r.path=="/api/settings") {
         if(ChangeSettings(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
@@ -2960,7 +3228,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     if(!ParseArguments(args,o)) return 2;
     if(!configPath.empty()) o.configPath=configPath;
     CommandLine=o;
+    Given.folders=!o.folders.empty(); Given.xboxes=!o.xboxes.empty();
+    Given.ftp=getenv("NETDISC_FTP_PASSWORD") || o.ftpUser!=Options().ftpUser || o.ftpPassword!=Options().ftpPassword;
     bool fresh=!o.configPath.empty() && !LoadConfig(o);
+    // Without a settings file nothing the wizard sets would be kept.
+    if(o.configPath.empty()) o.wizardDone=true;
     if(o.folders.empty() && o.configPath.empty()) o.folders.push_back(".");
     if(const char* password=getenv("NETDISC_WEB_PASSWORD")) {
         if(*password) { web::SetPasswordHash(web::HashPassword(password)); PasswordFixed=true; }
