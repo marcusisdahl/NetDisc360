@@ -325,7 +325,7 @@ static bool XbeIds(DWORD& titleId,DWORD& mediaId) {
 // disc's default.xbe.
 static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
     HANDLE file=CreateFile(DiscXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) return false;
+    if(file==INVALID_HANDLE_VALUE) return XbeIds(titleId,mediaId);
     bool found=false;
     DWORD header[6],done=0; // Read as words: the console is big-endian, like the file.
     if(ReadFile(file,header,sizeof(header),&done,NULL)&&done==sizeof(header)&&!memcmp(header,"XEX2",4)) {
