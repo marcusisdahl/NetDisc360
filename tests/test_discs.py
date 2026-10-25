@@ -364,6 +364,8 @@ class Discs(ServerTest):
         self.assertEqual(log.count("more than once"), 1)  # Once, not at every listing.
 
     def test_original_xbox_games_and_other_folders(self):
+        # An original Xbox game's folder is a disc of its own; what's inside
+        # it isn't looked at.
         xbe = os.path.join(self.isos, "Halo 2")
         os.makedirs(os.path.join(xbe, "inside"))
         with open(os.path.join(xbe, "default.xbe"), "wb") as f:
@@ -374,7 +376,7 @@ class Discs(ServerTest):
         self.make_game("Elsewhere", 0x33333333, folder=other)
         self.start(other)
         c = Client(self.port)
-        self.assertEqual(c.names(), ["Elsewhere.iso"])
+        self.assertEqual(c.names(), ["Halo 2.iso", "Elsewhere.iso"])
         c.close()
 
     def test_a_served_folder_is_not_a_game(self):

@@ -231,7 +231,27 @@ static bool ReadIso(IsvrClient& client, U64 offset, DWORD length, unsigned char*
     return true;
 }
 
-bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity) {
+// An original Xbox game's default.xbe: the Title ID from its certificate
+// (little-endian, at the certificate's address less the base address), made
+// into execution info as a XEX has it, with no Media ID and as disc 1 of 1.
+static bool XbeInfo(IsvrClient& client, U64 xbeAt, DWORD xbeSize, unsigned char* info, char* error, size_t capacity) {
+    unsigned char block[0x120];
+    if(xbeSize<sizeof(block) || !client.Read(xbeAt,sizeof(block),block)) return Fail(error,capacity,xbeSize<sizeof(block) ? "default.xbe is too small" : client.Error());
+    if(memcmp(block,"XBEH",4)) return Fail(error,capacity,"default.xbe is not an XBE file");
+    DWORD base=Little32(block+0x104),certificate=Little32(block+0x118);
+    if(certificate<base || certificate-base>xbeSize-12) return Fail(error,capacity,"default.xbe has a bad certificate address");
+    unsigned char cert[12];
+    if(!client.Read(xbeAt+(certificate-base),12,cert)) return Fail(error,capacity,client.Error());
+    DWORD titleId=Little32(cert+8);
+    if(!titleId) return Fail(error,capacity,"default.xbe has no Title ID");
+    memset(info,0,ExecutionInfoSize);
+    Write32(info+12,titleId);
+    info[18]=1; info[19]=1;
+    return true;
+}
+
+bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity, bool* xbe) {
+    if(xbe) *xbe=false;
     unsigned char block[64];
     U64 start=0; bool found=false;
     for(int i=0;i<3 && !found;++i) {
@@ -246,7 +266,7 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
     unsigned char* root=static_cast<unsigned char*>(malloc(rootSize));
     if(!root) return Fail(error,capacity,"out of memory");
     if(!ReadIso(client,start+U64(rootSector)*IsvrSector,rootSize,root)) { free(root); return Fail(error,capacity,client.Error()); }
-    U64 xexAt=0; DWORD xexSize=0;
+    U64 xexAt=0,xbeAt=0; DWORD xexSize=0,xbeSize=0;
     for(DWORD pos=0;pos+14<=rootSize;) {
         if(root[pos]==0xFF && root[pos+1]==0xFF) { pos=(pos/IsvrSector+1)*IsvrSector; continue; } // Padding to the next sector.
         DWORD length=root[pos+13];
@@ -254,9 +274,17 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
         if(length==11 && !_strnicmp(reinterpret_cast<const char*>(root+pos+14),"default.xex",11)) {
             xexAt=start+U64(Little32(root+pos+4))*IsvrSector; xexSize=Little32(root+pos+8); break;
         }
+        if(length==11 && !_strnicmp(reinterpret_cast<const char*>(root+pos+14),"default.xbe",11)) {
+            xbeAt=start+U64(Little32(root+pos+4))*IsvrSector; xbeSize=Little32(root+pos+8);
+        }
         pos=(pos+14+length+3)&~3u;
     }
     free(root);
+    if(!xexSize && xbeSize) {
+        if(!XbeInfo(client,xbeAt,xbeSize,info,error,capacity)) return false;
+        if(xbe) *xbe=true;
+        return true;
+    }
     if(!xexSize) return Fail(error,capacity,"no default.xex in the root of the disc");
     if(xexSize<24 || !client.Read(xexAt,24,block)) return Fail(error,capacity,xexSize<24 ? "default.xex is too small" : client.Error());
     if(memcmp(block,"XEX2",4)) return Fail(error,capacity,"default.xex is not a XEX2 file");
@@ -483,8 +511,8 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(!client.Connected()) return false;
             continue;
         }
-        unsigned char info[ExecutionInfoSize]; char error[160];
-        if(!GameInfo(client,info,error,sizeof(error))) {
+        unsigned char info[ExecutionInfoSize]; char error[160]; bool xbe=false;
+        if(!GameInfo(client,info,error,sizeof(error),&xbe)) {
             Say(note,"Skipped %s: %s",isos[i],error); ++result.skipped;
             if(!client.Connected()) return false;
             continue;
@@ -502,6 +530,9 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         char text[IsvrNameBytes+260];
         int length=_snprintf_s(text,sizeof(text),_TRUNCATE,"; Written by NetISO Sync. iso is the file name the NetISO server lists.\r\niso=%s\r\ntitle_id=%08X\r\nmedia_id=%08X\r\n",
             isos[i],Read32(info+12),Read32(info));
+        // An original Xbox game: the launcher starts default.xbe, which the
+        // console runs in its original Xbox emulator.
+        if(xbe && length>0) { int more=_snprintf_s(text+length,sizeof(text)-length,_TRUNCATE,"xbe=1\r\n"); length=more>0 ? length+more : -1; }
         if(findRole && length>0) {  // A disc of a set says which (see RefreshRole).
             static DiscRoleInfo role;
             memset(&role,0,sizeof(role));

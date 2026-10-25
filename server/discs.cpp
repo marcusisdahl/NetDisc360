@@ -513,6 +513,19 @@ bool FileTitle(const std::string& path, DWORD& titleId, DWORD& mediaId, int& dis
     return HeaderTitle([&](U64 at, unsigned char* data, DWORD n) { return f.Read(at,data,n)==(long long)n; },
                        size>0xFFFFFFFFULL ? 0xFFFFFFFFu : DWORD(size),titleId,mediaId,disc);
 }
+// An original Xbox game's Title ID, from the certificate in its default.xbe
+// (little-endian, at the certificate's address less the base address).
+bool XbeTitle(const std::string& path, DWORD& titleId) {
+    File f; U64 size=0;
+    unsigned char header[0x120],cert[12];
+    if(!f.Open(path) || !f.Size(size) || size<sizeof(header) || f.Read(0,header,sizeof(header))!=(long long)sizeof(header)) return false;
+    if(memcmp(header,"XBEH",4)) return false;
+    DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+    if(certificate<base || U64(certificate-base)+sizeof(cert)>size) return false;
+    if(f.Read(certificate-base,cert,sizeof(cert))!=(long long)sizeof(cert)) return false;
+    titleId=Little32(cert+8);
+    return titleId!=0;
+}
 // A disc image's game partition: where it starts and its root directory table.
 struct Volume { U64 start; DWORD rootSector, rootSize; };
 // As NetISO Sync finds it (shared/library.cpp GameInfo).
@@ -643,6 +656,7 @@ bool IsIsoName(const std::string& name) { return name.size()>4 && !_stricmp(name
 void AddFolder(const std::string& path, const std::string& name, const std::vector<Entry>& entries, std::vector<IsoFile>& out) {
     IsoFile disc; disc.path=path; disc.kind=DiscFolder; disc.size=0; disc.titleId=0; disc.mediaId=0; disc.disc=0;
     const Entry* xex=Find(entries,"default.xex",false);
+    if(!xex) xex=Find(entries,"default.xbe",false);
     disc.modified=xex ? xex->modified : 0;
     std::string clean=CleanName(name);
     disc.name=(clean.empty() ? std::string("Game") : clean)+".iso";
@@ -685,8 +699,9 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
         }
         return true;
     }
-    // An original Xbox game, which NetISO can't start; no need to look inside.
-    if(depth>0 && Find(entries,"default.xbe",false)) return true;
+    // An original Xbox game: served the same way, and its tile's launcher
+    // starts default.xbe in the console's original Xbox emulator.
+    if(depth>0 && Find(entries,"default.xbe",false)) { AddFolder(folder,Leaf(folder),entries,out); return true; }
     for(size_t i=0;i<entries.size();++i) {
         const Entry& e=entries[i];
         if(e.folder) continue;
@@ -799,7 +814,7 @@ void ReadTitles(std::vector<IsoFile>& discs) {
         }
         DWORD titleId=0,mediaId=0; int disc=0;
         if(d.kind==DiscFolder) {
-            FileTitle(Join(d.path,"default.xex"),titleId,mediaId,disc);
+            if(!FileTitle(Join(d.path,"default.xex"),titleId,mediaId,disc) && XbeTitle(Join(d.path,"default.xbe"),titleId)) { mediaId=0; disc=1; }
             if(titleId) FolderPackages(d.path,titleId,d.packages);
         } else if(d.kind==DiscGod) {  // The Title ID is from its header already.
             titleId=d.titleId; mediaId=d.mediaId; disc=d.disc;

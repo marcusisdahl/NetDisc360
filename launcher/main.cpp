@@ -65,6 +65,10 @@ static const DWORD NovaLaunchFlags=0x10;
 // flags 0. Started that way, the game has a working Guide. The same call
 // with \Device\Cdrom0\default.xex instead ended on the Xbox dashboard.
 static const char AuroraDiscLink[]="\\??\\Dvd:",AuroraDiscXex[]="Dvd:\\default.xex";
+// An original Xbox game (xbe=1 in netiso.ini): xam starts an XBE in the
+// console's original Xbox emulator (HddX:\Compatibility), as Aurora does for
+// one on the hard drive.
+static const char DiscXbe[]="NIsoD:\\default.xbe",AuroraDiscXbe[]="Dvd:\\default.xbe",DiscXbeName[]="default.xbe";
 // What XLaunchNewImage takes to start whatever disc is in the drive, like
 // the Xbox dashboard does (read from Aurora's copy of XLaunchNewImage).
 static const char DetectMedia[]="XLNI_DET_MEDIA";
@@ -296,8 +300,29 @@ static bool ReadSettings(const char* ini,Settings& settings) {
     return true;
 }
 
+// An original Xbox disc's Title ID, from the certificate in its default.xbe
+// (little-endian, at the certificate's address less the base address); it
+// has no Media ID.
+static DWORD Little32(const BYTE* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
+static bool XbeIds(DWORD& titleId,DWORD& mediaId) {
+    HANDLE file=CreateFile(DiscXbe,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return false;
+    bool found=false;
+    BYTE header[0x120],cert[12]; DWORD done=0;
+    if(ReadFile(file,header,sizeof(header),&done,NULL)&&done==sizeof(header)&&!memcmp(header,"XBEH",4)) {
+        DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+        if(certificate>=base && SetFilePointer(file,certificate-base,NULL,FILE_BEGIN)!=INVALID_SET_FILE_POINTER
+           && ReadFile(file,cert,sizeof(cert),&done,NULL) && done==sizeof(cert)) {
+            titleId=Little32(cert+8); mediaId=0; found=titleId!=0;
+        }
+    }
+    CloseHandle(file);
+    return found;
+}
+
 // Title ID and Media ID from the execution info header (0x40006) of the
-// default.xex on the disc that is in the drive now.
+// default.xex on the disc that is in the drive now, or of an original Xbox
+// disc's default.xbe.
 static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
     HANDLE file=CreateFile(DiscXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     if(file==INVALID_HANDLE_VALUE) return false;
@@ -318,7 +343,7 @@ static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
         }
     }
     CloseHandle(file);
-    return found;
+    return found || XbeIds(titleId,mediaId);
 }
 static bool DiscIsGame(const Settings& settings) {
     DWORD titleId=0,mediaId=0;
@@ -675,6 +700,17 @@ static void StartDisc(const char* ini) {
     nia::IniValue(ini,"start",start,sizeof(start));
     ClearLaunchData();
     ScreenStop();
+    if(IniNumber(ini,"xbe",0)) {
+        LONG status=LinkDrive(AuroraDiscLink,DiscDevice);
+        if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
+        else { Note("Starting %s in the original Xbox emulator",AuroraDiscXbe); Launch(AuroraDiscXbe); }
+        Note("Starting %s from %s",DiscXbeName,DiscMount);
+        CloseLog();
+        DWORD result=XLaunchNewImageEx(DiscXbeName,DiscMount,NULL,NovaLaunchFlags);
+        OpenLog(false);
+        Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
+        return;
+    }
     if(!_stricmp(start,"media")) {
         Note("Starting the disc in the drive (start=media)");
         Launch(DetectMedia);
