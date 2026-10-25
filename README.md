@@ -531,7 +531,7 @@ Some games come on two discs, one of which only installs content: GTA V's second
 
 ## Limitations
 
-- Original Xbox games (`default.xbe`) are not supported, as NetISO doesn't play them; they are skipped.
+- Original Xbox games (`default.xbe` folders and `.xiso` images) are experimental. They stream and start in the console's original Xbox emulator, which needs the community's hacked emulator files in `HddX:\Compatibility`. Halo: Combat Evolved has been tested. On a BadUpdate console, DashLaunch can show "Fatal Crash Intercepted!" during play, and leaving the game can freeze the console; turn it off and on to go back to Aurora.
 - Disc swaps work for a game started from its tile, with every disc in your game folders. They have been tested with GTA V.
 - The launcher has no title name of its own; Aurora names each game from its online lookup by Title ID.
 - `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix and the speed-up are off.
@@ -563,7 +563,7 @@ Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc36
 ## Tests
 
 - `python tests\test_server.py` builds `netdisc` for Linux and checks the NetISO protocol (listing, mounting, reading, new ISOs without a restart, reads past the end), the push to `tests/aurora_ftp.py`, a stand-in for Aurora's FTP server (folders, removal, repair, and the category edit), and the dashboard's web API (games, consoles and bandwidth, settings kept in the settings file, the password, and changes only from its own page).
-- `python tests\test_discs.py` checks extracted folders and GOD packages: every file of a folder's disc reads back as it is on disk, walked as the console walks it; GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files; duplicates are served once and reported once; original Xbox folders are skipped; a file over 4 GB is refused.
+- `python tests\test_discs.py` checks extracted folders and GOD packages: every file of a folder's disc reads back as it is on disk, walked as the console walks it; GOD packages in iso2god's and Microsoft's layouts read back across hash groups and `Data` files; duplicates are served once and reported once; original Xbox folders and ISOs are served with the Title ID from `default.xbe`; a file over 4 GB is refused.
 - `python tests\test_sync.py` builds Sync's core for Linux and runs it against `tests/netiso_server.py`.
 - `python tests\test_generator.py` builds small XGD ISOs (XSF, XGD2 and XGD3 layouts) and checks the launcher folders made from them.
 - `tests/ui_preview.cpp` draws the loading screen on a PC into a BMP, for each step and error.
