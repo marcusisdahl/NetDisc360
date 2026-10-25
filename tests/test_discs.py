@@ -379,6 +379,28 @@ class Discs(ServerTest):
         self.assertEqual(c.names(), ["Halo 2.iso", "Elsewhere.iso"])
         c.close()
 
+    def test_an_original_xbox_iso_and_folder_are_one_game(self):
+        # Both have the Title ID from default.xbe's certificate, so the ISO is
+        # served and the folder is reported as the same game.
+        base, cert = 0x10000, 0x10180
+        xbe = bytearray(0x300)
+        xbe[0:4] = b"XBEH"
+        struct.pack_into("<I", xbe, 0x104, base)
+        struct.pack_into("<I", xbe, 0x118, cert)
+        struct.pack_into("<I", xbe, cert - base + 8, 0x4D530004)
+        write_iso(os.path.join(self.isos, "Halo.iso"), {"default.xbe": bytes(xbe)})
+        folder = os.path.join(self.isos, "Halo CE")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xbe"), "wb") as f:
+            f.write(bytes(xbe))
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Halo.iso"])
+        c.close()
+        log = self.log()
+        self.assertIn(folder + "\n    is the same game as " + os.path.join(self.isos, "Halo.iso"), log)
+        self.assertIn("(Title ID 4D530004, disc 1)", log)
+
     def test_a_served_folder_is_not_a_game(self):
         # Game files left at the top of the ISO folder don't hide the ISOs.
         with open(os.path.join(self.isos, "default.xex"), "wb") as f:
