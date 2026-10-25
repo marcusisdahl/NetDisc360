@@ -1,15 +1,18 @@
 # Making a release
 
 1. Set the new version in `server/version.h` (`NETDISC_VERSION` and `NETDISC_VERSION_NUMBERS`) and commit it. The tag must be that version with a `v` in front: the installed apps compare it with their own version to see that an update is out, and the Docker workflow stops if the two differ.
-2. On the PC with Visual Studio and the Xbox 360 SDK, on the commit to release: `.\build.ps1 -Tests`.
+2. On the PC with Visual Studio and the Xbox 360 SDK, on the commit to release: `.\build.ps1 -Tests`, then `.\store\package.ps1` (needs 7-Zip) for the Xbox 360 Homebrew Store files.
 3. Test on a console: the new `NetIsoTiles.xex`, and a game started from its tile with the new `NetDisc360.exe`.
 4. On GitHub, draft a new release with a tag like `v1.0.0`, and attach these files from `build\` **before publishing**:
    - `NetDisc360.exe` (exactly this name: the in-app update looks for it)
    - `NetIsoTiles.xex`
    - `NetISO-Sync.zip`
+   - `NetDisc360-<version>.7z` (the store package: `NetIsoTiles.xex`, its `readme.txt` and the license)
 5. Make the repository public (Settings, General, Danger Zone, Change visibility), if it isn't yet. Do this before publishing: the Docker workflow downloads `NetISO-Sync.zip` from the release, which only works once the repository is public.
 6. Publish the release. The "Docker image" workflow then builds `ghcr.io/marcusisdahl/netdisc360` for x86-64 and ARM64 with that release's launchers, tagged with the version and `latest`.
 7. The first time only: on GitHub, open the package (your profile, Packages, `netdisc360`), Package settings, and set its visibility to **Public**, so `docker compose pull` works without a login.
+
+When `NetIsoTiles.xex` changed, send `build\NetDisc360-<version>.ini` to whoever keeps the Homebrew Store repo listing it, so the store offers the new plugin. Its `dataurl` points at the 7z on this release; the text comes from [`store/consolemods.ini`](store/consolemods.ini), and the 7z's readme from [`store/readme.txt`](store/readme.txt).
 
 If the workflow ran before the files were attached, run it again from the Actions tab ("Docker image", Run workflow) with the release's tag.
 
