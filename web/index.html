@@ -265,6 +265,15 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .cover .tag { position: absolute; left: 8px; top: 8px; z-index: 1; }
 .cover .now { position: absolute; left: 8px; bottom: 8px; right: 8px; z-index: 1; }
 .cover .now .pill { background: var(--play); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 100%; overflow: hidden; }
+.cover .start {
+  position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 38px; height: 38px; border-radius: 50%; border: 0; padding: 0;
+  display: grid; place-items: center; background: var(--accent); color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+  cursor: pointer; opacity: 0; transform: scale(.9); transition: opacity .15s, transform .15s;
+}
+.game:hover .cover .start, .game:focus-within .cover .start { opacity: 1; transform: none; }
+.cover .start:focus-visible { opacity: 1; outline: 2px solid #fff; outline-offset: 2px; }
+@media (hover: none) { .cover .start { opacity: 1; transform: none; } }
+.cover .now ~ .start { bottom: 40px; }
 .game:hover .cover { border-color: var(--accent); }
 .game .name { font-weight: 600; margin-top: 8px; font-size: 13.5px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .game .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
@@ -1037,7 +1046,8 @@ Pages.games = root => {
     let games = G.games.filter(g => (kind === 'all' || g.kind === kind) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
     const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     games.sort(sort === 'size' ? (a, b) => b.size - a.size || byName(a, b) : sort === 'kind' ? (a, b) => a.kind.localeCompare(b.kind) || byName(a, b) : sort === 'folder' ? (a, b) => a.folder - b.folder || byName(a, b) : byName);
-    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers')]);
+    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers'),
+      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join()), S ? S.consoles.map(c => c.address + (c.playing ? '+' : '')) : []]);
     if (key === drawn) return;
     drawn = key;
     const total = G.games.reduce((n, g) => n + g.size, 0);
@@ -1053,6 +1063,8 @@ Pages.games = root => {
         const c = cover(g);
         c.append(h('div.tag', h('span.kind', KindNames[g.kind])));
         if (on) c.append(h('div.now', { title: 'Playing on ' + on.join(', ') }, h('span.pill', ic('play', 'sm'), on.length > 1 ? plural(on.length, 'console') : on[0])));
+        const start = startButton(g, 'button.start');
+        if (start) c.append(start);
         return h('div.game', { tabindex: 0, onclick: () => details(g), onkeydown: e => { if (e.key === 'Enter') details(g); } }, c, h('div.name', { title: g.name }, g.name),
           h('div.meta', g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : ''));
       })));
@@ -1062,7 +1074,7 @@ Pages.games = root => {
         h('tbody', games.map(g => {
           const on = now[g.name.toLowerCase()];
           return h('tr.click', { onclick: () => details(g) },
-            h('td', h('div.cell-name', cover(g, true), h('div', g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null))),
+            h('td', h('div.cell-name', cover(g, true), h('div', { style: { flex: 1 } }, g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null), startButton(g, 'button.btn.small'))),
             h('td', h('span.kind-text', KindNames[g.kind])),
             h('td.hide-narrow.mono', g.titleId || '\u2014'),
             h('td.num', g.sizeKnown ? bytes(g.size) : '\u2026'),
@@ -1117,6 +1129,19 @@ async function choose(c, g, button) {
 // with it installed.
 function playable(g) {
   return S ? S.consoles.filter(c => (g.tiles || []).includes(c.address) || (g.installedOn || []).includes(c.address)) : [];
+}
+
+// A Start button for a game a console has: one console starts it there,
+// several open its details to pick one.
+function startButton(g, tag) {
+  const consoles = playable(g);
+  if (!consoles.length) return null;
+  const title = consoles.length === 1 ? 'Start on ' + consoles[0].address : 'Start on a console';
+  const round = tag.includes('.start');
+  return h(tag, { title, 'aria-label': title + ': ' + g.name, onclick: e => {
+    e.stopPropagation();
+    if (consoles.length === 1) playOn(g, consoles[0], e.currentTarget); else details(g);
+  }, onkeydown: e => e.stopPropagation() }, ic('play', 'sm'), round ? null : 'Start');
 }
 
 async function playOn(g, c, button) {
