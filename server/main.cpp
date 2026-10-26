@@ -2427,7 +2427,7 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
         std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1), lower=name;
         for(size_t k=0;k<lower.size();++k) lower[k]=char(tolower((unsigned char)lower[k]));
         const char* kind=lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
-                       : lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
+                       : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
         j.Open('{').Set("slot",plugins[i].first).Set("path",plugins[i].second).Set("name",name).Set("kind",kind);
         bool found=!path.empty() && ftp.Retrieve(path.c_str(),data,16<<20);
         if(!found && !ftp.Missing()) ftp.Close();
