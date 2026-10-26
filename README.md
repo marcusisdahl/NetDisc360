@@ -531,7 +531,7 @@ Some games come on two discs, one of which only installs content: GTA V's second
 
 ## Limitations
 
-- Original Xbox games (`default.xbe` folders and `.xiso` images) are experimental. They stream and start in the console's original Xbox emulator, which needs the community's hacked emulator files in `HddX:\Compatibility`. Halo: Combat Evolved has been tested. On a BadUpdate console, DashLaunch can show "Fatal Crash Intercepted!" during play, and leaving the game can freeze the console; turn it off and on to go back to Aurora.
+- Original Xbox games (`default.xbe` folders and `.xiso` images) are experimental. They stream and start in the console's original Xbox emulator, which needs the community's hacked emulator files in `HddX:\Compatibility`. Halo: Combat Evolved and Burnout 3 have been tested, over the console's own network port. With the UsbNet360 (CUsbEnet) USB network plugin loaded, DashLaunch shows "Fatal Crash Intercepted!" during play and leaving the game freezes the console, so leave it out of `launch.ini` for Xbox games for now. `NetIsoTiles.xex` must stay: without it the Guide stops working after the mount.
 - Disc swaps work for a game started from its tile, with every disc in your game folders. They have been tested with GTA V.
 - The launcher has no title name of its own; Aurora names each game from its online lookup by Title ID.
 - `NetIsoTiles.xex` patches `NetISO.xex` 1.0 in memory and checks that its code is exactly where it expects; with any other NetISO version it leaves the plugin alone, so the Guide fix and the speed-up are off.
