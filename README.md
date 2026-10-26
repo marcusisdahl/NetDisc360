@@ -107,7 +107,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 **On your PC or NAS**
 
 - **`NetDisc360.exe`** from the [Releases](../../releases) page, for Windows 10 or 11, or the [Docker image](#docker) for Linux or a NAS. It replaces NetISO's own server, so you don't need `server.exe` or `netiso-srv`.
-- **Your games:** ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
+- **Your games:** ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages. ISOs in `.7z` or `.zip` archives play once the dashboard has compressed them (see [Compressed games](#compressed-games)).
 
 **Optional:** [NetUsb360](https://github.com/marcusisdahl/NetUsb360) with a gigabit USB network adapter for faster loading, and [FastFTP360](https://github.com/marcusisdahl/FastFTP360) for copying files to the console; see [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
@@ -515,6 +515,16 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 - A GOD package is the disc's game partition cut into `Data0000`, `Data0001`, ... with hash blocks between; reads skip them.
 - A folder given on the command line is never taken as a game itself, even with a `default.xex` at its top; only what is inside it counts.
 
+### Compressed games
+
+An ISO, or an ISO inside a `.7z` or `.zip` archive, can be compressed once into a `.cso` file next to it, which plays like the ISO and usually takes much less room. Archives in your game folders show on the dashboard's Games page with a **Compress to play** button; an ISO has a **Compress** button in its details. The same from a command line: `NetDisc360.exe --compress <file> ...` (`netdisc --compress` in Docker).
+
+- Retail Xbox 360 discs fill the space no file uses with random bytes, which don't compress. The compressed copy keeps every file of the disc and writes that space as zeros, as an extracted game or a Games on Demand package also leaves it out. A disc whose file table can't be read is kept whole (`--whole` keeps it whole anyway).
+- The file is a standard CSO (CISO version 1: the disc in 32 KB blocks, each deflated on its own, with a table of where each starts), so the server unpacks only the blocks a read touches. CSO files made by other tools, such as `maxcso --format=cso1`, play too.
+- The new file is written as `<name>.cso.part`, read back and checked, then renamed. Nothing is ever deleted: while the ISO is still next to its `.cso`, the ISO plays, and once you delete the ISO the `.cso` takes over with the same tile in Aurora. An archive's discs are checked against the archive's own CRCs.
+- `.7z` archives packed with LZMA, LZMA2 or no compression are read as they stream, so a disc never has to fit in memory; ones with filters (BCJ, Delta) or encryption need extracting with 7-Zip first. `.zip` archives can be stored or deflated, Zip64 included.
+- The `.cso` is written next to the original, so in Docker the games folder must be mounted writable to compress.
+
 ### Install discs
 
 Some games come on two discs, one of which only installs content: GTA V's second disc (8.3 GB in 4 packages) and Forza Motorsport 4's (car packs). The server reads the packages each disc carries for its game (`content\0000000000000000\<Title ID>\` on an extracted folder, ISO or GOD package) and writes `install.ini` into the game folder of each other disc of that game, naming the install disc and its packages. Before such a game starts, the launcher looks for each package under `Content` on the hard drive (and USB storage set up for the console) at its full size, and offers to start the install disc if one is missing. A disc you swap to during a game, such as Red Dead Redemption's second disc, carries no packages and gets no `install.ini`.
@@ -574,6 +584,7 @@ Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc36
 - [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
 - [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
+- [miniz](https://github.com/richgel999/miniz) (MIT, `third_party/miniz/LICENSE`) for compressed games and `.zip` archives, and the [LZMA SDK](https://www.7-zip.org/sdk.html) by Igor Pavlov (public domain, `third_party/lzma/lzma-sdk.txt`) for `.7z` archives.
 - [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the dashboard. Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.

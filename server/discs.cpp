@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "discs.h"
+#include "compress.h"
 #include <algorithm>
 #include <ctype.h>
 #include <stdio.h>
@@ -660,7 +661,7 @@ struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; s
 std::mutex TitlesLock;
 std::map<std::string,Known> Titles;
 
-int Rank(DiscKind kind) { return kind==DiscIso ? 0 : kind==DiscGod ? 1 : 2; }
+int Rank(DiscKind kind) { return kind==DiscIso ? 0 : kind==DiscCso ? 1 : kind==DiscGod ? 2 : 3; }
 
 // Finding discs --------------------------------------------------------------
 
@@ -722,6 +723,13 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
             IsoFile iso; iso.path=Join(folder,e.name); iso.name=e.name; iso.size=e.size; iso.modified=e.modified; iso.kind=DiscIso;
             iso.titleId=0; iso.mediaId=0; iso.disc=0;
             out.push_back(iso);
+        } else if(IsCsoName(e.name)) {
+            // Listed as the ISO it was made from, so its tile on the Xbox
+            // stays the same. While that ISO is next to it, the ISO plays.
+            if(Find(entries,e.name.substr(0,e.name.size()-4)+".iso",false)) continue;
+            IsoFile cso; cso.path=Join(folder,e.name); cso.name=e.name.substr(0,e.name.size()-4)+".iso"; cso.size=e.size; cso.modified=e.modified;
+            cso.kind=DiscCso; cso.titleId=0; cso.mediaId=0; cso.disc=0;
+            out.push_back(cso);
         } else if(Find(entries,e.name+".data",true)) AddGod(folder,depth,e,out);
     }
     for(size_t i=0;i<entries.size();++i) {
@@ -834,6 +842,10 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::string error;
             std::unique_ptr<DiscImage> god(OpenGodImage(d.path,error));
             if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
+        } else if(d.kind==DiscCso) {
+            std::string error;
+            std::unique_ptr<DiscImage> cso(OpenCsoImage(d.path,error));
+            if(cso.get() && ImageTitle(*cso,titleId,mediaId,disc)) ImagePackages(*cso,titleId,d.packages);
         } else {
             IsoImage iso; std::string error;
             if(iso.Open(d.path,error) && ImageTitle(iso,titleId,mediaId,disc)) ImagePackages(iso,titleId,d.packages);
@@ -904,6 +916,7 @@ bool IsoReader::Open(const IsoFile& disc) {
     DiscImage* image=NULL;
     if(disc.kind==DiscFolder) image=OpenFolderImage(disc.path,error);
     else if(disc.kind==DiscGod) image=OpenGodImage(disc.path,error);
+    else if(disc.kind==DiscCso) image=OpenCsoImage(disc.path,error);
     else {
         std::unique_ptr<IsoImage> iso(new IsoImage);
         if(iso->Open(disc.path,error)) image=iso.release();

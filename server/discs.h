@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// What the server lists as discs: ISO files, Xbox 360 games extracted to a
-// folder (default.xex at the top), and Games on Demand packages. The NetISO
+// What the server lists as discs: ISO files, compressed ones (CSO, see
+// compress.h), Xbox 360 games extracted to a folder (default.xex at the top),
+// and Games on Demand packages. The NetISO
 // plugin reads a disc only as sectors, so an extracted folder or a GOD
 // package is shown as the disc image it came from, put together while it is
 // read. Nothing is written next to the games.
@@ -12,12 +13,12 @@
 #include <vector>
 
 namespace nia {
-enum DiscKind { DiscIso, DiscGod, DiscFolder };
+enum DiscKind { DiscIso, DiscGod, DiscFolder, DiscCso };
 // A content package on an install disc: its path under Content
 // (0000000000000000\<Title ID>\<type>\<name>, as on the disc) and size.
 struct Package { std::string path; U64 size; };
-// name is what the server lists. For folders and GOD packages it is the
-// game's name with ".iso" added, so NetISO Sync names the console's game
+// name is what the server lists. For folders, GOD packages and CSO files it
+// is the game's name with ".iso" added, so NetISO Sync names the console's game
 // folder from it as for an ISO.
 // titleId, mediaId and disc come from the game's default.xex (0: not known yet, or not a game).
 // packages are those the disc carries for its own game, under content at its
@@ -41,7 +42,8 @@ void ReadTitles(std::vector<IsoFile>& discs);
 // another disc of it does: GTA V's play disc, Forza 4's first disc.
 void LinkInstallDiscs(std::vector<IsoFile>& discs);
 // The same game (Title ID and disc number) more than once: keeps the copy
-// whose path is in chosen, else an ISO over a GOD package over a folder, and
+// whose path is in chosen, else an ISO over a CSO file over a GOD package
+// over a folder, and
 // moves the others to dropped, with kept naming the one kept for each.
 void DropDuplicates(std::vector<IsoFile>& discs, std::vector<IsoFile>& dropped, std::vector<IsoFile>& kept,
                     const std::set<std::string>& chosen);

@@ -296,6 +296,11 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .copies .kind-text { width: 68px; flex: none; }
 .copies .size { width: 64px; flex: none; font-size: 12.5px; color: var(--muted); }
 .copies .path { flex: 1 1 200px; min-width: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.packs .card-body { display: grid; gap: 10px; }
+.pack { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; }
+.pack .what { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.pack .what .muted { font-size: 12.5px; }
+.pack .progress { flex: 1 0 100%; margin-top: 2px; }
 @media (max-width: 640px) { .copies { margin-left: 0; } }
 
 /* Folders and the folder browser */
@@ -1018,17 +1023,95 @@ Pages.dashboard = root => {
 
 // Games ---------------------------------------------------------------------------
 
-const KindNames = { iso: 'ISO', folder: 'Extracted', god: 'GOD' };
+const KindNames = { iso: 'ISO', cso: 'CSO', folder: 'Extracted', god: 'GOD' };
+const KindWords = { iso: 'ISO', cso: 'compressed', folder: 'extracted', god: 'Games on Demand' };
+
+// Compressing games: the one being made, the archives in the game folders,
+// and how the latest ones went (/api/compress).
+const Packs = { data: null, at: 0, loading: false };
+async function loadPacks(fresh) {
+  if (Packs.loading) return Packs.data;
+  Packs.loading = true;
+  try { Packs.data = await api('compress' + (fresh ? '?fresh=1' : '')); Packs.at = Date.now(); }
+  catch (e) { if (fresh) toast(e.message, true); }
+  finally { Packs.loading = false; }
+  return Packs.data;
+}
+const packsBusy = () => Packs.data && (Packs.data.busy || Packs.data.queue.length);
+async function compress(path, entry, name, button) {
+  if (button) button.disabled = true;
+  try { Packs.data = await api('compress', entry == null ? { path } : { path, entry }); Packs.at = Date.now(); toast('Compressing ' + name); }
+  catch (e) { toast(e.message, true); if (button) button.disabled = false; }
+  if (view && view.packs) view.packs();
+}
+async function stopCompress(path) {
+  try { Packs.data = await api('compress/stop', { path }); } catch (e) { toast(e.message, true); }
+  if (view && view.packs) view.packs();
+}
+const leaf = path => path.split(/[\\/]/).pop();
+const PackSteps = { table: 'Reading its file table', compress: 'Compressing', check: 'Checking the new file' };
+function packsCard() {
+  const d = Packs.data;
+  if (!d) return null;
+  const rows = [];
+  if (d.busy) {
+    const n = d.now, part = n.total ? n.done / n.total : 0;
+    const speed = n.step === 'compress' && n.seconds > 3 ? n.done / n.seconds : 0;
+    rows.push(h('div.pack', ic('loader-circle', 'sm'),
+      h('div.what', h('b', n.name), h('div.muted', (n.stopping ? 'Stopping' : PackSteps[n.step]) + ' \u00b7 ' + Math.floor(part * 100) + '%' +
+        (speed && part < 1 ? ' \u00b7 about ' + duration((n.total - n.done) / speed) + ' left' : ''))),
+      h('button.btn.small', { onclick: e => { e.target.disabled = true; stopCompress(n.source); } }, ic('x', 'sm'), 'Stop'),
+      h('div.progress', h('i', { style: { width: (part * 100).toFixed(1) + '%' } }))));
+  }
+  for (const q of d.queue) rows.push(h('div.pack', ic('history', 'sm'), h('div.what', h('b', q.name), h('div.muted', 'Next')),
+    h('button.btn.small.ghost', { onclick: () => stopCompress(q.source) }, 'Cancel')));
+  for (const a of d.archives) {
+    if (a.problem) { rows.push(h('div.pack', ic('triangle-alert', 'sm'), h('div.what', h('b', leaf(a.path)), h('div.muted', 'Can\u2019t be read: ' + a.problem + '.')))); continue; }
+    a.discs.forEach((disc, i) => {
+      if (disc.done || disc.planned) return;
+      rows.push(h('div.pack', ic('archive', 'sm'),
+        h('div.what', h('b', disc.name), h('div.muted', bytes(disc.size) + ' ISO in ' + leaf(a.path))),
+        h('button.btn.small.primary', { onclick: e => compress(a.path, i, disc.name, e.target) }, 'Compress to play')));
+    });
+  }
+  for (const r of d.recent.filter(r => S && S.time - r.time < 86400).slice(0, 3)) {
+    const fromIso = /\.iso$/i.test(r.source);
+    rows.push(h('div.pack', ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
+      h('div.what', h('b', r.name), h('div.muted', r.ok
+        ? bytes(r.image) + ' \u2192 ' + bytes(r.bytes) + ' in ' + duration(r.seconds) + (r.whole ? ' (kept whole: its file table couldn\u2019t be read)' : '') + '. ' +
+          (fromIso ? 'The ISO still plays until you delete it; then the compressed copy plays, with the same tile.' : 'You can delete ' + leaf(r.source) + ' now.')
+        : 'Not compressed: ' + r.error + '.'))));
+  }
+  if (!rows.length) return null;
+  return h('div.card.packs', { style: { marginBottom: '20px' } },
+    h('div.card-head', ic('archive', 'sm'), h('h2', 'Compressed games'), h('span.sub', 'one smaller file per disc, played like the ISO')),
+    h('div.card-body', rows),
+    h('div.card-foot.muted', 'NetDisc360 writes the compressed copy (.cso) next to the original and never deletes anything. It leaves out the space on the disc that no file uses, so a game usually takes much less room.'));
+}
 Pages.games = root => {
   let mode = store('games.view') || 'covers', kind = 'all', sort = store('games.sort') || 'name', query = '';
-  const list = h('div'), open = h('div'), dupes = h('div'), count = h('span.muted');
+  const list = h('div'), open = h('div'), dupes = h('div'), packs = h('div'), count = h('span.muted');
   const search = h('input.input', { type: 'search', placeholder: 'Search games', oninput: e => { query = e.target.value.toLowerCase(); draw(); } });
-  const kinds = h('div.segmented', ['all', 'iso', 'folder', 'god'].map(k => h('button', { 'data-kind': k, class: k === kind ? 'on' : '', onclick: () => { kind = k; draw(); } }, k === 'all' ? 'All' : KindNames[k])));
+  const kinds = h('div.segmented', ['all', 'iso', 'cso', 'folder', 'god'].map(k => h('button', { 'data-kind': k, class: k === kind ? 'on' : '', onclick: () => { kind = k; draw(); } }, k === 'all' ? 'All' : KindNames[k])));
   const views = h('div.segmented', [['covers', 'layout-grid'], ['list', 'list']].map(([m, icon]) => h('button', { 'data-mode': m, title: m === 'covers' ? 'Covers' : 'List', class: m === mode ? 'on' : '', onclick: () => { mode = m; store('games.view', m); draw(); } }, ic(icon, 'sm'))));
   const sorts = h('select.input', { style: { width: 'auto' }, onchange: e => { sort = e.target.value; store('games.sort', sort); draw(); } },
     [['name', 'Name'], ['size', 'Size'], ['kind', 'Format'], ['folder', 'Folder']].map(([v, l]) => h('option', { value: v, selected: v === sort }, 'Sort by ' + l.toLowerCase())));
   root.append(header('Games', h('span', count), h('button.btn', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')),
-    open, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
+    open, packs, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
+  let packsDrawn = '';
+  function drawPacks() {
+    const key = JSON.stringify([Packs.data, S && Math.floor(S.time / 60)]);
+    if (key === packsDrawn) return;
+    packsDrawn = key;
+    const card = packsCard();
+    if (card) fill(packs, card); else packs.replaceChildren();
+  }
+  // While one is being made every second, otherwise every 15 s.
+  function update() {
+    draw();
+    if (Date.now() - Packs.at > (packsBusy() ? 1000 : 15000)) loadPacks().then(drawPacks);
+  }
+  loadPacks(true).then(drawPacks);
   let drawn = '';
   function draw() {
     for (const b of kinds.children) b.classList.toggle('on', b.dataset.kind === kind);
@@ -1074,7 +1157,7 @@ Pages.games = root => {
     if (waiting.length) fill(open, h('div.card.conflicts', { style: { marginBottom: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Choose which copy to play'), h('span.sub', waiting.length === 1 ? 'this game is in your folders more than once' : 'these games are in your folders more than once')),
       h('div.card-body', waiting.map(conflict)),
-      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.')));
+      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a compressed copy, then a Games on Demand one, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.')));
     else open.replaceChildren();
     if (settled.length) fill(dupes, h('div.card.conflicts', { style: { marginTop: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Games with more than one copy'), h('span.sub', 'the copy you chose plays')),
@@ -1082,7 +1165,7 @@ Pages.games = root => {
       h('div.card-foot.muted', 'Delete the copies you don\u2019t play from your folders to free up space.')));
     else dupes.replaceChildren();
   }
-  return { update: draw, games: draw };
+  return { update, games: draw, packs: drawPacks };
 };
 
 const choosePhrase = n => n === 1 ? '1 game to choose a copy of' : n + ' games to choose a copy of';
@@ -1108,7 +1191,7 @@ async function choose(c, g, button) {
   button.disabled = true;
   try {
     await api('conflict', { key: c.key, path: g.path });
-    toast(c.name + ': the ' + { iso: 'ISO', folder: 'extracted', god: 'Games on Demand' }[g.kind] + ' copy plays from now on');
+    toast(c.name + ': the ' + KindWords[g.kind] + ' copy plays from now on');
     await refresh();
   } catch (e) { toast(e.message, true); button.disabled = false; }
 }
@@ -1120,7 +1203,7 @@ function details(g) {
     h('div.modal-body', h('div.detail',
       h('div.detail-cover', cover(g)),
       h('div.facts',
-        h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', god: 'Games on Demand package' }[g.kind] || g.kind),
+        h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', cso: 'Compressed disc image (CSO)', god: 'Games on Demand package' }[g.kind] || g.kind),
         h('div.k', 'Size'), h('div.v', g.sizeKnown ? bytes(g.size, 2) : 'Counting\u2026'),
         h('div.k', 'Title ID'), h('div.v.mono', g.titleId || 'Not known'),
         g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
@@ -1129,6 +1212,7 @@ function details(g) {
         h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path)))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
+      g.kind === 'iso' ? h('button.btn', { title: 'Write a smaller copy next to the ISO, which plays the same', onclick: e => { compress(g.path, null, g.name, e.target); close(); if (page !== 'games') location.hash = '#games'; } }, ic('archive', 'sm'), 'Compress') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
   ]);
 }

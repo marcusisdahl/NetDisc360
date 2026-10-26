@@ -3,3 +3,5 @@
 !shared/
 !tests/posix_compat.h
 !docker/
+!third_party/miniz/
+!third_party/lzma/

@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TESTS = ["test_server", "test_discs", "test_sync", "test_generator"]
+TESTS = ["test_server", "test_discs", "test_compress", "test_sync", "test_generator"]
 
 
 def annotate(title, text):
