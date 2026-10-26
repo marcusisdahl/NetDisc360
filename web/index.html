@@ -1193,14 +1193,50 @@ Pages.consoles = root => {
       const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c));
       fill(list, sorted.length ? sorted.map(x => {
         const card = consoleCard(x.c, x.i, true);
-        if (x.c.connections === 0) $('.console-facts', card).appendChild(h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' } },
-          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget')));
+        const actions = h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px' } });
+        // Aurora's FTP server is up only while Aurora runs (1: it didn't answer).
+        if (x.c.ftp !== 1 && !x.c.playing) actions.appendChild(h('button.btn.small.ghost', { title: 'Find the games in Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(x.c.address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art'));
+        if (x.c.connections === 0) actions.appendChild(
+          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
+        if (actions.childNodes.length) $('.console-facts', card).appendChild(actions);
         return card;
       }) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
         h('p', 'Make NetISO.xex.txt next to NetISO.xex on the console\u2019s USB drive, with this computer\u2019s address: ', h('code', S.addresses[0] || '?'), '. A console shows up here when it connects.'))));
     },
   };
 };
+
+// Aurora looks a game up online only once, when it first adds the tile. A
+// tile whose lookup failed gets a new one when the server renames its folder
+// and Aurora scans.
+async function missingArt(address, button) {
+  button.disabled = true;
+  fill(button, ic('loader-circle', 'sm spin'), 'Looking in Aurora…');
+  let found;
+  try { found = await api('consoles/art', { address }); }
+  catch (e) { toast(e.message, true); return; }
+  finally { button.disabled = false; fill(button, ic('image', 'sm'), 'Fix missing art'); }
+  if (!found.tiles.length) { toast('Every game in Aurora on ' + address + ' has its cover.'); return; }
+  modal(plural(found.tiles.length, 'game') + ' without a cover', close => {
+    const go = h('button.btn.primary', { onclick: async () => {
+      go.disabled = true;
+      try {
+        const done = await api('consoles/art', { address, repair: true });
+        if (done.error) toast(done.error, true);
+        if (done.renamed.length) toast('Aurora is fetching the art for ' + plural(done.renamed.length, 'game') + '. It shows in about a minute.');
+        close();
+        refresh();
+      } catch (e) { toast(e.message, true); go.disabled = false; }
+    } }, ic('image', 'sm'), 'Fetch the art again');
+    return [
+      h('div.modal-body',
+        h('p', { style: { marginTop: 0 } }, 'Aurora on ', h('b', address), ' found no cover for these games when it added them, and won’t look again by itself.'),
+        h('ul', found.tiles.map(t => h('li', t.title, t.title !== t.folder ? h('span.muted', ' · ' + t.folder) : null))),
+        h('p.muted', { style: { marginBottom: 0 } }, 'NetDisc360 renames each game’s folder in ', h('code', S.settings.xboxFolder || '/Hdd1/NetISO'), ', so Aurora adds it as a new game and looks it up online again. Aurora forgets anything else it kept for those tiles.')),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'), go),
+    ];
+  }, true);
+}
 
 // Game folders ------------------------------------------------------------------------
 

@@ -231,27 +231,9 @@ static void Unhook(Hook& hook) {
 // Appended to the tile's netiso.log, in the launcher's format.
 static HANDLE Log=INVALID_HANDLE_VALUE;
 static char LogLine[1024];
-// The log is a handle of Aurora's process, which the system thread doing
-// the mount can't write to, so its lines wait here until it's done.
-static volatile DWORD DeferThread=0;
-static char Deferred[16384];
-static size_t DeferredLength=0;
-static bool Deferring() { return DeferThread && DeferThread==GetCurrentThreadId(); }
 static void Write(const char* text) {
     if(Log==INVALID_HANDLE_VALUE) return;
-    if(Deferring()) {
-        size_t length=strlen(text);
-        if(DeferredLength+length<sizeof(Deferred)) { memcpy(Deferred+DeferredLength,text,length); DeferredLength+=length; }
-        return;
-    }
     DWORD done=0; WriteFile(Log,text,strlen(text),&done,NULL);
-}
-// Writes the system thread's lines once it has finished.
-static void WriteDeferred() {
-    DeferThread=0;
-    if(!DeferredLength) return;
-    Deferred[DeferredLength]=0; DeferredLength=0;
-    Write(Deferred);
 }
 static void Note(const char* format,...) {
     if(Log==INVALID_HANDLE_VALUE) return;
@@ -288,12 +270,10 @@ static void Show(const char* text) {
     wide[i]=0;
     Notice(0x22,0xFF,1,wide,NULL);
 }
-// Logged and shown. One the system thread asks for waits in Pending and is
-// shown from Aurora's thread.
-static char Pending[128];
+// Logged and shown.
 static void Tell(const char* text) {
     Note("Notice: %s",text);
-    if(Deferring()) strcpy_s(Pending,text); else Show(text);
+    Show(text);
 }
 
 // ---- NetISO's unload call ----
@@ -305,8 +285,8 @@ static void Tell(const char* text) {
 // launcher, the helper, this plugin on Aurora's thread) left the Guide dead
 // until reboot, and so did a failed one (seen on the console); that this
 // call is why is inferred, since there is no Guide app to close there. So
-// NetISO's import of it is pointed here: the plugin's own mount thread and
-// title threads skip it, and system threads such as the Guide's still get it.
+// NetISO's import of it is pointed here: title threads (Aurora's and the
+// games') skip it, and system threads such as the Guide's still get it.
 static const DWORD AppUnloadSelfOrdinal=581;
 static DWORD* const UnloadThunk=(DWORD*)0x9110c12c;
 static const DWORD* const UnloadCall=(const DWORD*)0x91104dc0;
@@ -315,7 +295,7 @@ typedef DWORD (*AppUnload)(DWORD,DWORD,DWORD,DWORD);
 static AppUnload AppUnloadSelf=NULL;
 static volatile LONG UnloadsSkipped=0;
 static DWORD UnloadHooked(DWORD a,DWORD b,DWORD c,DWORD d) {
-    if(KeGetCurrentProcessType()!=SystemProcess || Deferring()) { InterlockedIncrement(&UnloadsSkipped); return 0; }
+    if(KeGetCurrentProcessType()!=SystemProcess) { InterlockedIncrement(&UnloadsSkipped); return 0; }
     return AppUnloadSelf(a,b,c,d);
 }
 // Points NetISO's import of XamAppUnloadSelf at UnloadHooked, once. Checks
@@ -498,31 +478,18 @@ static bool FindMountFolder(const Settings& settings,char* folder,size_t capacit
     return true;
 }
 // Opening and listing a Mount folder mounts: the plugin swaps the disc before
-// the listing returns (empty), then fakes the tray open and close. With hold,
-// the folder stays open (in MountHandle) until the caller closes it.
-static HANDLE MountHandle=NULL;
-static bool ListMountFolder(const char* folder,bool hold) {
+// the listing returns (empty), then fakes the tray open and close.
+static bool ListMountFolder(const char* folder) {
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
     LONG result=QueryFolder(handle,true);
     Note("%s: listed (status %08X)",folder,result);
-    if(hold) MountHandle=handle; else NtClose(handle);
+    NtClose(handle);
     return true;
-}
-static void CloseMountFolder() {
-    if(!MountHandle) return;
-    NtClose(MountHandle); MountHandle=NULL;
-    Note("Closed the Mount folder (hold_mount).");
 }
 
 static char Folder[MAX_PATH],Ini[2048];
-// Whole number from the tile's netiso.ini, or fallback.
-static int IniNumber(const char* key,int fallback) {
-    char value[16];
-    if(!IniValue(Ini,key,value,sizeof(value)) || !value[0]) return fallback;
-    return atoi(value);
-}
 
 // ---- Server ----
 
@@ -594,21 +561,6 @@ static ServerState CheckServer(char* where,size_t capacity) {
     return state;
 }
 
-// tiles_stop= in a game folder's netiso.ini stops the plugin after one step
-// and goes back to Aurora, with no notice and without the tile's launcher, to
-// find the step that kills the Guide: after the server check (server),
-// reading the disc drive (disc), listing the NetISO drive's root (root),
-// finding the ISO's Mount folder (iso), or the mount, before the start (mount).
-enum Step { StepServer, StepDisc, StepRoot, StepIso, StepMount, NoStop };
-static int StopStep() {
-    static const char* const steps[]={"server","disc","root","iso","mount"};
-    char value[16];
-    if(!IniValue(Ini,"tiles_stop",value,sizeof(value)) || !value[0]) return NoStop;
-    for(int i=0;i<NoStop;++i) if(!_stricmp(value,steps[i])) { Note("Test: stopping after %s (tiles_stop).",steps[i]); return i; }
-    Note("Unknown tiles_stop=%s; not stopping.",value);
-    return NoStop;
-}
-
 // What the plugin made of a tile.
 enum Outcome {
     Started,    // the disc is the game; start it
@@ -616,37 +568,22 @@ enum Outcome {
     Cancelled   // back to Aurora, starting nothing
 };
 
-// Two test switches in a game folder's netiso.ini, to find what Aurora's file
-// browser does around its mount that keeps the Guide: hold_mount=1 keeps the
-// Mount folder open until the disc is the game, and relist=1 lists the ISO's
-// folder and the root again right after the mount, as a user leaving the
-// Mount folder would.
-static Outcome MountSteps(const Settings& settings,int stop) {
+static Outcome MountSteps(const Settings& settings) {
     bool game=DiscIsGame(settings);
     Note(game ? "The game is already mounted." : "The disc isn't the game.");
-    if(stop==StepDisc) return Cancelled;
     if(game) return Started;
     if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
-    if(stop==StepRoot) { ListFolder(IsoDevice); return Cancelled; }
-    bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
     bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
     if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
-    if(stop==StepIso) return Cancelled;
     LONG skipped=UnloadsSkipped;
-    if(!ListMountFolder(folder,hold)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
+    if(!ListMountFolder(folder)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
     Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
-    if(relist) {
-        Note("Listing the ISO's folder and the root again (relist).");
-        if(isoFolder[0]) ListFolder(isoFolder);
-        ListFolder(IsoDevice);
-    }
     Sleep(QuietMs);
     for(int waited=QuietMs;waited<QuietMs+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return stop==StepMount ? Cancelled : Started; }
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return Started; }
         Sleep(PollMs);
     }
-    CloseMountFolder();
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
@@ -654,46 +591,7 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     return Fallback;
 }
 
-// tiles_thread=system in netiso.ini runs the drive steps on a system thread
-// while Aurora's thread waits, as a request from the Guide comes from the
-// system process. NetISO doesn't look at the requester's process in its
-// mount path apart from the unload call above (read from the binary), so
-// this is only a test switch.
-struct MountJob { const Settings* settings; int stop; Outcome outcome; };
-static MountJob Job;
-static DWORD WINAPI MountThread(void* job) {
-    DeferThread=GetCurrentThreadId(); // Aurora's thread is waiting meanwhile.
-    MountJob* mount=(MountJob*)job;
-    mount->outcome=MountSteps(*mount->settings,mount->stop);
-    return 0;
-}
-static const DWORD MountThreadMs=QuietMs+MountWaitMs+30000;
-// Set while a system thread that overran its time may still be running.
-static volatile bool ThreadOverran=false;
-static Outcome MountOnSystemThread(const Settings& settings,int stop) {
-    if(ThreadOverran) { Note("An earlier mount thread may still be running; not starting another."); return Fallback; }
-    Job.settings=&settings; Job.stop=stop; Job.outcome=Fallback;
-    Pending[0]=0;
-    Note("Mounting from a system thread.");
-    HANDLE thread=NULL; DWORD id=0;
-    LONG status=ExCreateThread(&thread,0x10000,&id,NULL,MountThread,&Job,SystemThread);
-    if(status<0) { Note("No system thread (status %08X); mounting from Aurora's thread.",status); return MountSteps(settings,stop); }
-    DWORD waited=WaitForSingleObject(thread,MountThreadMs);
-    CloseHandle(thread);
-    if(waited!=WAIT_OBJECT_0) {
-        // It still uses Job and keeps its lines to itself.
-        ThreadOverran=true;
-        Note("The system thread didn't finish in %lu ms.",MountThreadMs);
-        Tell("NetDisc360: the mount didn't finish.");
-        return Cancelled;
-    }
-    WriteDeferred();
-    if(Pending[0]) Show(Pending);
-    return Job.outcome;
-}
-
 static Outcome Mount(const Settings& settings) {
-    int stop=StopStep();
     char where[16]="";
     if(CheckServer(where,sizeof(where))==ServerDown) {
         static char text[96];
@@ -701,10 +599,7 @@ static Outcome Mount(const Settings& settings) {
         Tell(text);
         return Cancelled;
     }
-    if(stop==StepServer) return Cancelled;
-    char thread[16];
-    if(IniValue(Ini,"tiles_thread",thread,sizeof(thread)) && !_stricmp(thread,"system")) return MountOnSystemThread(settings,stop);
-    return MountSteps(settings,stop);
+    return MountSteps(settings);
 }
 
 // ---- NetISO's read size and receive buffer ----
@@ -1226,7 +1121,7 @@ static DWORD WINAPI SwapThread(void*) {
     strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
     if(!FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
-    else if(!ListMountFolder(folder,false)) SwapNote("Can't open %s.",folder);
+    else if(!ListMountFolder(folder)) SwapNote("Can't open %s.",folder);
     else {
         for(int waited=0;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
             in=DiscNumber()==disc;
