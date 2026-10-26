@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import socket
+import socketserver
 import struct
 import subprocess
 import sys
@@ -123,27 +124,43 @@ def free_port():
 AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
 
 
+# Aurora's web server's routes: the newer API's (Aurora 0.7b.2's own Nova)
+# and the older Nova's of the NetISO kit, by what they do.
+AURORA_ROUTES = {
+    "title": ("GET", "/title", "GET", "/getGameInfo"),
+    "launch": ("POST", "/title/launch", "POST", "/postLaunchGame"),
+    "temperature": ("GET", "/temperature", "GET", "/getTemperatureInfo"),
+    "profiles": ("GET", "/profile", "GET", "/getProfileInfo"),
+    "memory": ("GET", "/memory", "GET", "/getMemoryInfo"),
+    "shots": ("GET", "/screencapture/meta/list", "GET", "/getScreenCaptures"),
+    "take": ("GET", "/screencapture/meta", "GET", "/getScreenCapture"),
+    "shot": ("GET", "/image/screencapture", "GET", "/getScreenCaptureImage"),
+    "delete": ("DELETE", "/screencapture", "POST", "/postScreenCaptureDelete"),
+}
+SHOT = b"BM" + bytes(60)  # A screenshot as Aurora gives it: a BMP.
+
+
 class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
     """Aurora's web server as NetISO-Manager uses it (port 9999): a login
-    (xboxhttp/xboxhttp) for a token, what runs, and starting a title. With
-    basic (Aurora's "HTTP security"), every request needs HTTP's own login,
-    /authenticate too. With old, it's the NetISO kit's older Nova: no
-    /authenticate or /title, the same as /getGameInfo and /postLaunchGame,
-    and a session cookie."""
+    (xboxhttp/xboxhttp) for a token, what runs, starting a title, the
+    console's temperatures, profiles and screenshots. With basic (Aurora's
+    "HTTP security"), every request needs HTTP's own login, /authenticate
+    too. With old, it's the NetISO kit's older Nova: no /authenticate, its
+    own paths for the rest, and a session cookie."""
 
     def log_message(self, *args):
         pass
 
-    def answer(self, status, body):
+    def answer(self, status, body, kind="application/json"):
         if self.server.basic and self.headers.get("Authorization") != "Basic " + base64.b64encode(b"xboxhttp:xboxhttp").decode():
-            status, body = 401, {}
-        data = json.dumps(body).encode()
+            status, body, kind = 401, {}, "application/json"
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
         if self.server.old:
             self.send_header("Set-Cookie", "fsplugin_http_session=s1; path=/")
         if status == 401 and self.server.basic:
             self.send_header("WWW-Authenticate", 'Basic realm="Freestyle Plugin"')
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -155,31 +172,57 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
     def allowed(self):
         return self.server.basic or self.headers.get("Authorization") == "Bearer t0ken"
 
-    def do_POST(self):
-        form = self.form()
-        routes = ("/postLaunchGame", "/getGameInfo") if self.server.old else ("/title/launch", "/title")
-        if self.path in ("/title/launch", "/postLaunchGame") and self.path != routes[0] or self.server.old and self.path == "/authenticate":
-            self.answer(404, {})
-        elif self.path == "/authenticate":
+    def route(self):
+        path, _, query = self.path.partition("?")
+        for name, (method, new, old_method, old) in AURORA_ROUTES.items():
+            if (self.command, path) == ((old_method, old) if self.server.old else (method, new)):
+                return name, dict(urllib.parse.parse_qsl(query))
+        return None, {}
+
+    def handle_any(self):
+        form = self.form() if self.command == "POST" else {}
+        name, query = self.route()
+        if self.path == "/authenticate" and not self.server.old:
             if form.get("username") == "xboxhttp" and form.get("password") == "xboxhttp":
                 self.answer(200, {"token": "t0ken"})
             else:
                 self.answer(401, {})
-        elif self.path == routes[0] and self.allowed():
+        elif not name:
+            self.answer(404, {})
+        elif not self.allowed():
+            self.answer(401, {})
+        elif name == "title":
+            self.answer(200, {"path": self.server.running, "titleid": "0xFFFE07D1"})
+        elif name == "launch":
             self.server.launched.append((form.get("path"), form.get("exec"), form.get("type")))
             self.server.cookies.append(self.headers.get("Cookie"))
             self.answer(200, {})
-        else:
-            self.answer(401, {})
+        elif name == "temperature":
+            self.answer(200, {"celsius": True, "cpu": 51.25, "gpu": 48.0, "memory": 45.5, "case": 40.0})
+        elif name == "profiles":
+            self.answer(200, [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
+                              {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}])
+        elif name == "memory":
+            self.answer(200, {"total": 536870912, "used": 268435456, "free": 268435456})
+        elif name == "shots":
+            self.answer(200, [{"filename": f, "titleid": "0x4D5307E6", "timestamp": f[8:] + "0"} for f in self.server.shots])
+        elif name == "take":
+            self.server.shots.append("00000000%014d" % (20261026230000 + len(self.server.shots)))
+            self.answer(200, {"filename": self.server.shots[-1]})
+        elif name == "shot":
+            if query.get("uuid") in self.server.shots:
+                self.answer(200, SHOT, "image/bmp")
+            else:
+                self.answer(404, {})
+        elif name == "delete":
+            uuid = query.get("uuid") or form.get("uuid")
+            if uuid in self.server.shots:
+                self.server.shots.remove(uuid)
+                self.answer(200, {})
+            else:
+                self.answer(404, {})
 
-    def do_GET(self):
-        routes = ("/postLaunchGame", "/getGameInfo") if self.server.old else ("/title/launch", "/title")
-        if self.path in ("/title", "/getGameInfo") and self.path != routes[1]:
-            self.answer(404, {})
-        elif self.path == routes[1] and self.allowed():
-            self.answer(200, {"path": self.server.running, "titleid": "0xFFFE07D1"})
-        else:
-            self.answer(401, {})
+    do_GET = do_POST = do_DELETE = handle_any
 
 
 class AuroraWeb(http.server.ThreadingHTTPServer):
@@ -192,6 +235,36 @@ class AuroraWeb(http.server.ThreadingHTTPServer):
         self.old = old
         self.cookies = []
         self.launched = []
+        self.shots = ["000000002026101900442758"]
+        self.port = self.server_address[1]
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+
+
+class Xbdm(socketserver.ThreadingTCPServer):
+    """The console's debug monitor (xbdm, port 730), as far as turning it off goes."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self):
+        self.commands = []
+        outer = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                self.wfile.write(b"201- connected\r\n")
+                for line in self.rfile:
+                    command = line.strip().decode()
+                    outer.commands.append(command)
+                    if command == "bye":
+                        self.wfile.write(b"200- bye\r\n")
+                        return
+                    self.wfile.write(b"200- OK\r\n" if command == "shutdown" else b"407- unknown command\r\n")
+
+        super().__init__(("127.0.0.1", 0), Handler)
         self.port = self.server_address[1]
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
@@ -685,6 +758,162 @@ class Push(ServerTest):
         self.assertIn("Can't read these game folders", result.stdout)
         self.assertIn("they stay until every game folder can be read again", result.stdout)
         self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
+
+    def test_keeps_the_games_of_a_game_folder_that_empties(self):
+        # A NAS share that isn't mounted shows as the empty folder under it:
+        # its games only seem gone, so they stay in Aurora.
+        self.add_iso("a.iso", 1, 0x11111111)
+        other = os.path.join(self.tmp.name, "nas")
+        os.makedirs(other)
+        moved = os.path.join(self.tmp.name, "away.iso")
+        path = self.add_iso("b.iso", 2, 0x22222222, other)
+        self.web = free_port()
+        server, _ = self.run_server(other, "--remove-wait", "2", "--web-port", str(self.web))
+        try:
+            self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "b")), 15))
+            os.rename(path, moved)
+            state = self.state_when(lambda s: any(f["emptied"] for f in s["folders"]), 10)
+            self.assertEqual([f["emptied"] for f in state["folders"]], [False, True])
+            time.sleep(14)  # Past the settling and the removal wait.
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
+            self.assertIn("(it had games, and has none now)", json.dumps(self.json("GET", "/api/log?after=0")))
+            # Back: nothing held any more.
+            os.rename(moved, path)
+            state = self.state_when(lambda s: not any(f["emptied"] for f in s["folders"]), 10)
+            self.assertEqual([f["emptied"] for f in state["folders"]], [False, False])
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_counts_how_often_and_how_long_each_game_is_played(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        self.web = free_port()
+        server, port = self.run_server("--web-port", str(self.web), "--config", config)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            client = Client(port)
+            # A mount alone isn't a play: NetISO mounts its last disc as the console starts.
+            self.assertEqual(client.mount("Skate 3.iso"), 1)
+            client.read(0, 2048)
+            self.assertEqual(client.mount("Halo 3.iso"), 1)
+            for i in range(17):
+                client.read(i << 20, 1 << 20)
+            games = {}
+            self.assertTrue(self.wait_for(lambda: games.update({g["name"]: g for g in self.json("GET", "/api/games")["games"]}) or games.get("Halo 3", {}).get("plays") == 1, 5))
+            self.assertNotIn("plays", games["Skate 3"])
+            self.assertGreater(games["Halo 3"]["lastPlayed"], time.time() - 60)
+            with open(os.path.join(self.tmp.name, "plays.ini")) as f:
+                self.assertRegex(f.read(), r"^1\|\d+\|\d+\|halo 3\n$")
+            client.close()
+        finally:
+            server.kill()
+            server.communicate()
+        # Kept for the next start.
+        server, port = self.run_server("--web-port", str(self.web), "--config", config)
+        try:
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual(games["Halo 3"]["plays"], 1)
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_console_tools_on_the_dashboard(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        aurora, xbdm = AuroraWeb(), Xbdm()
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--xbdm-port", str(xbdm.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            for old in (False, True):
+                aurora.old = aurora.basic = old
+                # What Aurora says about the console.
+                status = self.json("GET", "/api/console/status?address=127.0.0.1")
+                self.assertEqual(status["temperature"]["cpu"], 51.25)
+                self.assertEqual(status["profiles"][0]["gamertag"], "Player One")
+                self.assertEqual(status["title"]["path"], AURORA_XEX)
+                # Its screenshots: listed, one as an image, taking one, deleting one.
+                shots = self.json("GET", "/api/console/screenshots?address=127.0.0.1")
+                self.assertEqual([x["filename"] for x in shots], aurora.shots)
+                status, response, data = self.call("GET", "/api/console/screenshot?address=127.0.0.1&id=" + aurora.shots[0])
+                self.assertEqual((status, response.getheader("Content-Type"), data), (200, "image/bmp", SHOT))
+                self.json("POST", "/api/console/screenshot/take", {"address": "127.0.0.1"})
+                self.assertEqual(len(self.json("GET", "/api/console/screenshots?address=127.0.0.1")), 2)
+                self.json("POST", "/api/console/screenshot/delete", {"address": "127.0.0.1", "id": aurora.shots[-1]})
+                self.assertEqual(len(aurora.shots), 1)
+                # Aurora started again.
+                aurora.launched.clear()
+                self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "aurora"})
+                self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # Turned off through its debug monitor.
+            self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
+            self.assertEqual(xbdm.commands, ["shutdown", "bye"])
+            xbdm.close()
+            status, _, data = self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"debug monitor (xbdm, port", data)
+            # A game's netiso.log from its folder.
+            log = self.json("GET", "/api/console/gamelog?address=127.0.0.1&game=Halo%203")
+            self.assertEqual((log["missing"], log["folder"]), (True, "/Hdd1/NetISO/Halo 3"))
+            with open(os.path.join(self.games, "Halo 3", "netiso.log"), "w") as f:
+                f.write("==== 2026-10-26\nmounted Halo 3.iso\n")
+            self.assertIn("mounted Halo 3.iso", self.json("GET", "/api/console/gamelog?address=127.0.0.1&game=Halo%203")["text"])
+            status, _, data = self.call("GET", "/api/console/gamelog?address=127.0.0.1&game=Gears")
+            self.assertEqual(status, 400)
+            self.assertIn(b"no folder for it", data)
+            # A console that never used the server.
+            self.assertEqual(self.call("GET", "/api/console/status?address=127.0.0.7")[0], 400)
+        finally:
+            aurora.close()
+            server.kill()
+            server.communicate()
+
+    def test_tells_an_incomplete_iso(self):
+        # Its directory says a file goes on past the end of the ISO: a
+        # download or copy that stopped.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        path = os.path.join(self.isos, "Skate 3.iso")
+        write_iso(path, {"default.xex": xex(execution_info(0x5C087C2C, 0x454108E6)), "data.bin": bytes(range(256)) * 256})
+        os.truncate(path, os.path.getsize(path) - 2048 - 1000)
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web))
+        try:
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual((games["Skate 3"]["incomplete"], games["Halo 3"]["incomplete"]), (True, False))
+            log = json.dumps(self.json("GET", "/api/log?after=0"))
+            self.assertIn("Skate 3.iso is shorter than the files on it say", log)
+            self.assertNotIn("Halo 3.iso is shorter", log)
+            self.assertIn("Skate 3 is incomplete; copy it again", json.dumps(self.json("GET", "/api/state")["events"]))
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_turns_a_console_off_after_its_last_game(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("[Server]\nauto_off_minutes=1\n")
+        xbdm = Xbdm()
+        self.web = free_port()
+        server, port = self.run_server("--web-port", str(self.web), "--config", config, "--xbdm-port", str(xbdm.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertEqual(self.json("GET", "/api/state")["settings"]["autoOffMinutes"], 1)
+            client = Client(port)
+            self.assertEqual(client.mount("Halo 3.iso"), 1)
+            client.read(0, 1 << 20)
+            # Back in Aurora (its FTP server answers 5 s after the mount), then a minute.
+            self.assertTrue(self.wait_for(lambda: "back in Aurora after Halo 3" in json.dumps(self.json("GET", "/api/log?after=0")), 15))
+            self.assertEqual(xbdm.commands, [])
+            self.assertTrue(self.wait_for(lambda: xbdm.commands, 70))
+            self.assertEqual(xbdm.commands, ["shutdown", "bye"])
+            self.assertTrue(self.wait_for(lambda: "turned off, 1 minute after its last game" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
+            client.close()
+        finally:
+            xbdm.close()
+            server.kill()
+            server.communicate()
 
     def test_keeps_a_gone_game_for_a_while_after_starting(self):
         # The window restarts the server for each folder added; a game from a
@@ -1322,7 +1551,7 @@ class Dashboard(ServerTest):
         self.assertIn(b"<title>NetDisc360</title>", gzip.decompress(data))
         state = self.state_when(lambda s: s["library"]["games"] == 1)
         self.assertEqual(state["library"]["games"], 1)
-        self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True}])
+        self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True, "emptied": False}])
         self.assertTrue(state["settings"]["saved"])
         self.assertTrue(state["settings"]["ftpPasswordSet"])
         games = self.json("GET", "/api/games")["games"]
@@ -1511,20 +1740,22 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("POST", "/api/settings", {"installedFolders": "Games"})[0], 400)
         self.assertEqual(self.call("POST", "/api/settings", {"auroraWebPort": 0})[0], 400)
         self.assertEqual(self.call("POST", "/api/settings", {"auroraWebUser": ""})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"autoOffMinutes": -1})[0], 400)
         self.json("POST", "/api/settings", {"skipInstalled": False, "installedFolders": " /Hdd1/Games/ ;/Usb0/Games\n/hdd1/games",
                                              "auroraWebPassword": "w3b pass", "auroraWebPort": 8080, "restartAurora": False,
-                                             "keepAwake": False, "followAddress": False, "auroraScripts": False})
+                                             "keepAwake": False, "followAddress": False, "auroraScripts": False, "autoOffMinutes": 30})
         for _ in range(2):  # As changed, and as saved.
             settings = self.json("GET", "/api/state")["settings"]
             self.assertEqual([settings[k] for k in ("skipInstalled", "installedFolders", "auroraWebUser", "auroraWebPasswordSet", "auroraWebPort",
-                                                    "restartAurora", "keepAwake", "followAddress", "auroraScripts")],
-                             [False, "/Hdd1/Games;/Usb0/Games", "xboxhttp", True, 8080, False, False, False, False])
+                                                    "restartAurora", "keepAwake", "followAddress", "auroraScripts", "autoOffMinutes")],
+                             [False, "/Hdd1/Games;/Usb0/Games", "xboxhttp", True, 8080, False, False, False, False, 30])
             self.assertNotIn("w3b pass", json.dumps(settings))
             self.restart()
         with open(self.config) as f:
             saved = f.read()
         self.assertIn("installed_folders=/Hdd1/Games;/Usb0/Games\n", saved)
         self.assertIn("aurora_web_port=8080\n", saved)
+        self.assertIn("auto_off_minutes=30\n", saved)
         # Empty: Games on Demand only.
         self.json("POST", "/api/settings", {"installedFolders": ""})
         self.assertEqual(self.json("GET", "/api/state")["settings"]["installedFolders"], "")

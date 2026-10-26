@@ -23,15 +23,26 @@ public:
     // Starts Aurora again, when it is what the console shows (never during a
     // game): false if it isn't, or couldn't be.
     bool RestartAurora();
+    // A GET's body as it comes, from path, or from oldPath on the NetISO
+    // kit's older Nova (/getTemperatureInfo for /temperature). Never
+    // /system (/getSystemInfo): its answer has the console's CPU and DVD keys.
+    bool Get(const std::string& path, const std::string& oldPath, std::string& body);
+    // The console's screenshots (JSON, a list of {filename, titleid,
+    // timestamp, ...}), one as an image (BMP), taking one, and deleting one.
+    bool Screenshots(std::string& json);
+    bool TakeScreenshot();
+    bool Screenshot(const std::string& id, std::string& image, std::string& type);
+    bool DeleteScreenshot(const std::string& id);
     const std::string& Error() const { return error_; }
 private:
     bool Login();
-    bool Call(const char* method, const char* path, const std::string& form, std::string& body);
-    bool Call(const char* method, const char* path, const char* oldPath, const std::string& form, std::string& body);
-    bool Send(const char* method, const char* path, const std::string& form, int& status, std::string& body);
+    bool Call(const std::string& method, const std::string& path, const std::string& form, std::string& body);
+    bool Call(const std::string& method, const std::string& path, const std::string& oldMethod, const std::string& oldPath,
+              const std::string& form, std::string& body);
+    bool Send(const std::string& method, const std::string& path, const std::string& form, int& status, std::string& body);
     DWORD address_;
     int port_;
-    std::string user_, password_, token_, cookie_, error_;
+    std::string user_, password_, token_, cookie_, type_, error_;
     double timeout_;
     bool basic_=false;       // The login goes on each request (HTTP Basic).
     bool challenged_=false;  // The last answer asked for that.
@@ -39,6 +50,12 @@ private:
     bool oldNova_=false;     // The NetISO kit's Nova: /getGameInfo, /postLaunchGame.
     int status_=0;           // The last call's HTTP status.
 };
+
+// Sends command to the console's debug monitor (xbdm, port 730), which only
+// runs where xbdm.xex is loaded as a DashLaunch plugin: "shutdown" turns the
+// console off. false with why in error.
+enum { XbdmPort = 730 };
+bool Xbdm(DWORD address, int port, const std::string& command, std::string& error);
 
 // An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path
 // (\Device\Harddisk0\Partition1\NetISO\Halo 3); "" for another drive.

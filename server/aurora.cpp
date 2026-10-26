@@ -12,7 +12,7 @@ const char OnlineScriptPath[] = "/User/Scripts/Content/Filters/NetDiscOnline.lua
 const char OnlineMarker[] = "online.txt", ShownMarker[] = "shown.txt";
 
 namespace {
-enum { ResponseMost = 1 << 20 };
+enum { ResponseMost = 1 << 20, ImageMost = 32 << 20 };
 
 bool Wait(SOCKET s, bool writing, double deadline) {
     while(Now()<deadline) {
@@ -27,7 +27,7 @@ bool Wait(SOCKET s, bool writing, double deadline) {
 
 // One request on a connection of its own, and the whole response (the
 // request asks the server to close the connection after it).
-bool Exchange(DWORD address, int port, const std::string& request, double seconds, std::string& response) {
+bool Exchange(DWORD address, int port, const std::string& request, double seconds, std::string& response, size_t most = ResponseMost) {
     response.clear();
     SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
     if(s==INVALID_SOCKET) return false;
@@ -53,7 +53,7 @@ bool Exchange(DWORD address, int port, const std::string& request, double second
         if(n==0) break;
         if(n<0) { if(WSAGetLastError()!=WSAEWOULDBLOCK) ok=false; continue; }
         response.append(part,size_t(n));
-        if(response.size()>ResponseMost) ok=false;
+        if(response.size()>most) ok=false;
     }
     closesocket(s);
     return ok;
@@ -76,8 +76,8 @@ std::string Lower(std::string text) {
 
 // The status and body of a response; a chunked body is put together. basic:
 // whether it asks for a login of the HTTP kind (Aurora's "HTTP security");
-// cookie: the name=value of a cookie it sets, if any.
-bool ReadResponse(const std::string& response, int& status, std::string& body, bool& basic, std::string& cookie) {
+// cookie: the name=value of a cookie it sets, if any; type: its Content-Type.
+bool ReadResponse(const std::string& response, int& status, std::string& body, bool& basic, std::string& cookie, std::string& type) {
     int major=0,minor=0;
     if(sscanf(response.c_str(),"HTTP/%d.%d %d",&major,&minor,&status)!=3) return false;
     size_t end=response.find("\r\n\r\n");
@@ -85,6 +85,12 @@ bool ReadResponse(const std::string& response, int& status, std::string& body, b
     std::string headers=Lower(response.substr(0,end));
     body=response.substr(end+4);
     basic=headers.find("\nwww-authenticate: basic")!=std::string::npos;
+    size_t typeAt=headers.find("\ncontent-type:");
+    type.clear();
+    if(typeAt!=std::string::npos) {
+        size_t from=headers.find_first_not_of(' ',typeAt+14);
+        type=headers.substr(from,headers.find_first_of(";\r",from)-from);
+    }
     size_t set=headers.find("\nset-cookie:");
     if(set!=std::string::npos) {
         size_t from=response.find_first_not_of(' ',set+12);
@@ -158,20 +164,20 @@ std::string Crlf(const std::string& text) {
 AuroraWeb::AuroraWeb(DWORD address, int port, const std::string& user, const std::string& password, double timeoutSeconds)
     : address_(address), port_(port), user_(user), password_(password), timeout_(timeoutSeconds) {}
 
-bool AuroraWeb::Send(const char* method, const char* path, const std::string& form, int& status, std::string& body) {
+bool AuroraWeb::Send(const std::string& method, const std::string& path, const std::string& form, int& status, std::string& body) {
     char host[16]; AddressText(address_,host,sizeof(host));
-    std::string request=std::string(method)+" "+path+" HTTP/1.1\r\nHost: "+host+":"+std::to_string(port_)+"\r\nConnection: close\r\n";
+    std::string request=method+" "+path+" HTTP/1.1\r\nHost: "+host+":"+std::to_string(port_)+"\r\nConnection: close\r\n";
     if(basic_) request+="Authorization: Basic "+Base64(user_+":"+password_)+"\r\n";
     else if(!token_.empty()) request+="Authorization: Bearer "+token_+"\r\n";
     if(!cookie_.empty()) request+="Cookie: "+cookie_+"\r\n";
-    if(!strcmp(method,"POST")) request+="Content-Type: application/x-www-form-urlencoded\r\nContent-Length: "+std::to_string(form.size())+"\r\n";
+    if(method=="POST") request+="Content-Type: application/x-www-form-urlencoded\r\nContent-Length: "+std::to_string(form.size())+"\r\n";
     request+="\r\n"+form;
     std::string response;
-    if(!Exchange(address_,port_,request,timeout_,response)) {
+    if(!Exchange(address_,port_,request,timeout_,response,ImageMost)) {
         error_="Aurora's web server doesn't answer on port "+std::to_string(port_)+" (Aurora's settings, HTTP server: is it on?)";
         return false;
     }
-    if(!ReadResponse(response,status,body,challenged_,cookie_)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
+    if(!ReadResponse(response,status,body,challenged_,cookie_,type_)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
     return true;
 }
 
@@ -204,15 +210,16 @@ bool AuroraWeb::Login() {
 // Aurora 0.7b.2's own Nova (its web server module) serves /title and
 // /title/launch; the older Nova of the NetISO kit has neither and serves the
 // same as oldPath (/getGameInfo, /postLaunchGame), with the same fields.
-bool AuroraWeb::Call(const char* method, const char* path, const char* oldPath, const std::string& form, std::string& body) {
-    if(oldNova_) return Call(method,oldPath,form,body);
+bool AuroraWeb::Call(const std::string& method, const std::string& path, const std::string& oldMethod, const std::string& oldPath,
+                     const std::string& form, std::string& body) {
+    if(oldNova_) return Call(oldMethod,oldPath,form,body);
     if(Call(method,path,form,body)) return true;
     if(status_!=404) return false;
     oldNova_=true;
-    return Call(method,oldPath,form,body);
+    return Call(oldMethod,oldPath,form,body);
 }
 
-bool AuroraWeb::Call(const char* method, const char* path, const std::string& form, std::string& body) {
+bool AuroraWeb::Call(const std::string& method, const std::string& path, const std::string& form, std::string& body) {
     int& status=status_;
     status=0;
     if(!loggedIn_ && !Login()) return false;
@@ -223,15 +230,23 @@ bool AuroraWeb::Call(const char* method, const char* path, const std::string& fo
         if(!Send(method,path,form,status,body)) return false;
     }
     if(status==401 || status==403) { error_="Aurora's web server refused the login (Aurora's settings, HTTP server, has its user name and password)"; return false; }
-    if(status/100!=2) { error_=std::string("Aurora's web server answered ")+path+" with HTTP "+std::to_string(status); return false; }
+    if(status/100!=2) {
+        std::string shown=path.substr(0,path.find('?'));
+        error_="Aurora's web server answered "+shown+" with HTTP "+std::to_string(status);
+        return false;
+    }
     return true;
+}
+
+bool AuroraWeb::Get(const std::string& path, const std::string& oldPath, std::string& body) {
+    return Call("GET",path,"GET",oldPath,"",body);
 }
 
 bool AuroraWeb::Title(std::string& path) {
     std::string body;
     web::Value v;
     const web::Value* p;
-    if(!Call("GET","/title","/getGameInfo","",body)) return false;
+    if(!Get("/title","/getGameInfo",body)) return false;
     if(!web::Parse(body,v) || !(p=v.Get("path")) || p->type!=web::Value::String) { error_="Aurora's web server didn't say what runs"; return false; }
     path=p->text;
     return true;
@@ -246,7 +261,7 @@ bool AuroraWeb::InAurora() {
 
 bool AuroraWeb::Launch(const std::string& folder, const std::string& exec) {
     std::string body;
-    return Call("POST","/title/launch","/postLaunchGame","path="+FormValue(folder)+"&exec="+FormValue(exec)+"&type=0",body);
+    return Call("POST","/title/launch","POST","/postLaunchGame","path="+FormValue(folder)+"&exec="+FormValue(exec)+"&type=0",body);
 }
 
 bool AuroraWeb::RestartAurora() {
@@ -256,6 +271,48 @@ bool AuroraWeb::RestartAurora() {
     size_t cut=path.rfind('\\');
     if(lower.size()<11 || lower.compare(lower.size()-11,11,"\\aurora.xex") || cut==std::string::npos) { error_="Aurora isn't on screen"; return false; }
     return Launch(path.substr(0,cut),path.substr(cut+1));
+}
+
+bool AuroraWeb::Screenshots(std::string& json) {
+    return Get("/screencapture/meta/list","/getScreenCaptures",json);
+}
+
+bool AuroraWeb::TakeScreenshot() {
+    std::string body;
+    return Get("/screencapture/meta","/getScreenCapture",body);
+}
+
+bool AuroraWeb::Screenshot(const std::string& id, std::string& image, std::string& type) {
+    std::string uuid=FormValue(id);
+    if(!Get("/image/screencapture?uuid="+uuid,"/getScreenCaptureImage?uuid="+uuid,image)) return false;
+    type=type_.empty() ? "image/bmp" : type_;
+    return true;
+}
+
+bool AuroraWeb::DeleteScreenshot(const std::string& id) {
+    std::string uuid=FormValue(id), body;
+    return Call("DELETE","/screencapture?uuid="+uuid,"POST","/postScreenCaptureDelete?uuid="+uuid,"uuid="+uuid,body);
+}
+
+bool Xbdm(DWORD address, int port, const std::string& command, std::string& error) {
+    std::string response;
+    // xbdm greets ("201- connected") before it takes a command; the
+    // greeting and the answer come back on the one connection, which it
+    // closes after "bye". A console that turns off may close it first.
+    bool ok=Exchange(address,port,command+"\r\nbye\r\n",5,response);
+    if(response.compare(0,3,"201")) {
+        error="its debug monitor (xbdm, port "+std::to_string(port)+") doesn't answer; it runs only where xbdm.xex is loaded as a DashLaunch plugin";
+        return false;
+    }
+    size_t line=response.find("\r\n");
+    std::string answer=line==std::string::npos ? std::string() : response.substr(line+2,3);
+    if(!answer.empty() && answer[0]!='2') {
+        size_t end=response.find("\r\n",line+2);
+        error="its debug monitor answered \""+response.substr(line+2,end==std::string::npos ? std::string::npos : end-line-2)+"\"";
+        return false;
+    }
+    (void)ok;
+    return true;
 }
 
 std::string DevicePath(const std::string& ftpPath) {

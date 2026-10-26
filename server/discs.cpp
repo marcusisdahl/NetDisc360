@@ -588,6 +588,34 @@ bool ImageTitle(DiscImage& image, DWORD& titleId, DWORD& mediaId, int& disc) {
     return true;
 }
 
+// Where an image's files end: past the last byte any file in its game
+// partition takes (its directory tables walked). An ISO shorter than that was
+// cut off (a download or copy that stopped), and a game reading the missing
+// part crashes. 0 if the tables can't be read.
+U64 ImageDataEnd(DiscImage& image) {
+    Volume volume;
+    if(!ImageVolume(image,volume) || !volume.rootSize) return 0;
+    struct Table { DWORD sector, size; int depth; };
+    std::vector<Table> pending(1,Table{ volume.rootSector, volume.rootSize, 0 });
+    std::set<DWORD> seen;
+    U64 end=volume.start+U64(volume.rootSector)*Sector+volume.rootSize;
+    std::vector<ImageEntry> entries;
+    while(!pending.empty()) {
+        Table t=pending.back(); pending.pop_back();
+        if(!seen.insert(t.sector).second || seen.size()>100000) continue;
+        U64 at=volume.start+U64(t.sector)*Sector;
+        end=std::max(end,at+t.size);
+        if(at+t.size>image.Size()) continue;  // Cut off before this table already.
+        if(!ReadTable(image,volume,t.sector,t.size,entries)) return 0;
+        for(size_t i=0;i<entries.size();++i) {
+            const ImageEntry& e=entries[i];
+            if(e.folder) { if(e.size && t.depth<64) pending.push_back(Table{ e.sector, e.size, t.depth+1 }); }
+            else if(e.size) end=std::max(end,volume.start+U64(e.sector)*Sector+e.size);
+        }
+    }
+    return end;
+}
+
 // Install discs --------------------------------------------------------------
 //
 // An install disc carries packages for its game in
@@ -656,7 +684,7 @@ void ImagePackages(DiscImage& image, DWORD titleId, std::vector<Package>& out) {
     },titleId,out);
 }
 
-struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; };
+struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete; };
 std::mutex TitlesLock;
 std::map<std::string,Known> Titles;
 
@@ -829,7 +857,9 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::lock_guard<std::mutex> hold(TitlesLock);
             std::map<std::string,Known>::const_iterator k=Titles.find(d.path);
             if(k!=Titles.end() && k->second.size==d.size && k->second.modified==d.modified) {
-                d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages; continue;
+                d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages;
+                d.incomplete=k->second.incomplete;
+                continue;
             }
         }
         DWORD titleId=0,mediaId=0; int disc=0;
@@ -843,10 +873,13 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
         } else {
             IsoImage iso; std::string error;
-            if(iso.Open(d.path,error) && ImageTitle(iso,titleId,mediaId,disc)) ImagePackages(iso,titleId,d.packages);
+            if(iso.Open(d.path,error)) {
+                if(ImageTitle(iso,titleId,mediaId,disc)) ImagePackages(iso,titleId,d.packages);
+                d.incomplete=ImageDataEnd(iso)>iso.Size();
+            }
         }
         d.titleId=titleId; d.mediaId=titleId ? mediaId : 0; d.disc=titleId ? disc : 0;
-        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages };
+        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages, d.incomplete };
         std::lock_guard<std::mutex> hold(TitlesLock);
         Titles[d.path]=known;
     }

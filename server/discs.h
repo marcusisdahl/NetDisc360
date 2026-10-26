@@ -24,9 +24,10 @@ struct Package { std::string path; U64 size; };
 // top; installDisc is the listed name of the disc whose packages this one's
 // game needs installed (see LinkInstallDiscs). role and roleLabel are what
 // the disc map says the disc is (see discmap.h; the label in UTF-8), empty
-// if it has nothing.
+// if it has nothing. incomplete: an ISO shorter than its own files say it is
+// (cut off by a download or copy that stopped; see ReadTitles).
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
-                 std::vector<Package> packages; std::string installDisc, role, roleLabel; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; };
 
 // The discs in folder and its subfolders, sorted by name, added to out;
 // false if folder itself couldn't be read (a drive or share that isn't there).
@@ -35,7 +36,8 @@ bool FindIsos(const std::string& folder, std::vector<IsoFile>& out);
 // gives a disc whose name is taken (ignoring case) a number: an ISO keeps its
 // name over a folder or GOD package, otherwise the first one does.
 void UniqueNames(std::vector<IsoFile>& discs);
-// Reads each disc's Title ID, disc number and packages (remembered between calls).
+// Reads each disc's Title ID, disc number and packages, and whether an ISO is
+// incomplete (remembered between calls).
 void ReadTitles(std::vector<IsoFile>& discs);
 // Sets installDisc on each disc of a game that carries no packages while
 // another disc of it does: GTA V's play disc, Forza 4's first disc.
