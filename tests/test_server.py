@@ -1233,6 +1233,85 @@ class Dashboard(ServerTest):
             ftp.shutdown()
             ftp.server_close()
 
+    def test_installs_a_game_s_content_on_the_console(self):
+        # GTA V extracted, its install disc in Disc 2; Forza 4's car packs on an ISO.
+        packages = "content/0000000000000000/545408A7/00000002/"
+        first, second = os.urandom(3 << 20) + b"END", b"PIRS" + bytes(10)
+        for folder, media_id, disc, content in (("GTA V", 0x79E465C5, 2, {}),
+                                                 ("GTA V/Disc 2", 0x0C48794E, 1, {packages + "545408A700000000": first, packages + "545408A700000001": second})):
+            os.makedirs(os.path.join(self.isos, folder))
+            with open(os.path.join(self.isos, folder, "default.xex"), "wb") as f:
+                f.write(xex(execution_info(media_id, 0x545408A7, disc, 2)))
+            for path, data in content.items():
+                os.makedirs(os.path.dirname(os.path.join(self.isos, folder, path)), exist_ok=True)
+                with open(os.path.join(self.isos, folder, path), "wb") as f:
+                    f.write(data)
+        car_pack = b"PIRS" + os.urandom(5000)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        write_tree_iso(os.path.join(self.isos, "Forza 4 - Disc 2.iso"), {
+            "default.xex": xex(execution_info(0x33334444, 0x4D530910, 2, 2)),
+            "content": {"0000000000000000": {"4D530910": {"00000002": {"4D53091000000001": car_pack}}}}})
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            self.state_when(lambda s: s["library"]["games"] == 5)
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual((games["GTA V - Disc 2"]["packages"], games["GTA V - Disc 2"]["contentSize"]), (2, len(first) + len(second)))
+            self.assertEqual((games["GTA V"]["packages"], games["GTA V"]["installDisc"]), (0, "GTA V - Disc 2"))
+
+            def install(game, address="127.0.0.2"):
+                self.json("POST", "/api/install", {"game": game, "address": address})
+                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] != "copying", 30)
+                return state["installs"][-1]
+
+            def on_xbox(path):
+                with open(os.path.join(content, *path.split("/")), "rb") as f:
+                    return f.read()
+            # From the play disc: its install disc's packages, whole, where the launcher looks.
+            job = install("GTA V")
+            self.assertEqual([job[k] for k in ("state", "game", "disc", "files", "skipped", "address")], ["done", "GTA V", "GTA V - Disc 2", 2, 0, "127.0.0.2"])
+            self.assertEqual(job["done"], job["total"])
+            self.assertEqual(on_xbox("545408A7/00000002/545408A700000000"), first)
+            self.assertEqual(on_xbox("545408A7/00000002/545408A700000001"), second)
+            # Again: nothing to copy. A package cut short is copied again.
+            self.assertEqual(install("GTA V")["skipped"], 2)
+            with open(os.path.join(content, "545408A7", "00000002", "545408A700000000"), "r+b") as f:
+                f.truncate(1000)
+            ftp.stored.clear()
+            job = install("GTA V - Disc 2")
+            self.assertEqual((job["state"], job["skipped"]), ("done", 1))
+            self.assertEqual(on_xbox("545408A7/00000002/545408A700000000"), first)
+            self.assertEqual(len(ftp.stored), 1)
+            # From inside an ISO.
+            self.assertEqual(install("Forza 4")["state"], "done")
+            self.assertEqual(on_xbox("4D530910/00000002/4D53091000000001"), car_pack)
+            self.assertIn("Forza 4's content is installed", json.dumps(self.json("GET", "/api/state")["events"]))
+            # Only games with content, only to known consoles.
+            self.assertEqual(self.call("POST", "/api/install", {"game": "Halo 3", "address": "127.0.0.2"})[0], 400)
+            self.assertEqual(self.call("POST", "/api/install", {"game": "GTA V", "address": "10.9.8.7"})[0], 400)
+            self.assertEqual(self.call("POST", "/api/install/stop", {"address": "127.0.0.2"})[0], 400)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def test_tells_when_aurora_isn_t_there_to_install_to(self):
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        write_tree_iso(os.path.join(self.isos, "Forza 4 - Disc 2.iso"), {
+            "default.xex": xex(execution_info(0x33334444, 0x4D530910, 2, 2)),
+            "content": {"0000000000000000": {"4D530910": {"00000002": {"4D53091000000001": b"PIRS" + bytes(500)}}}}})
+        self.start("--xbox", "127.0.0.2", "--ftp-port", str(free_port()))
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        self.json("POST", "/api/install", {"game": "Forza 4"})
+        job = self.state_when(lambda s: s["installs"][-1]["state"] != "copying", 30)["installs"][-1]
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("Start Aurora", job["error"])
+
     def backups(self):
         return self.json("GET", "/api/backups")["backups"]
 

@@ -913,4 +913,25 @@ bool IsoReader::Open(const IsoFile& disc) {
     note_=image->Description();
     return true;
 }
+
+bool IsoReader::Locate(const std::string& path, U64& at, U64& size) {
+    Volume volume;
+    if(!image_.get() || !ImageVolume(*image_,volume)) return false;
+    std::vector<ImageEntry> table;
+    DWORD sector=volume.rootSector,bytes=volume.rootSize;
+    for(size_t from=0;;) {
+        size_t end=path.find_first_of("/\\",from);
+        std::string step=path.substr(from,end==std::string::npos ? std::string::npos : end-from);
+        bool last=end==std::string::npos;
+        if(!ReadTable(*image_,volume,sector,bytes,table)) return false;
+        size_t k=0;
+        while(k<table.size() && (table[k].folder==last || _stricmp(table[k].name.c_str(),step.c_str()))) ++k;
+        if(k==table.size()) return false;
+        if(last) {
+            at=volume.start+U64(table[k].sector)*Sector; size=table[k].size;
+            return at+size<=image_->Size();
+        }
+        sector=table[k].sector; bytes=table[k].size; from=end+1;
+    }
+}
 }

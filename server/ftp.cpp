@@ -261,6 +261,28 @@ bool FtpClient::Store(const char* path, const void* bytes, size_t size) {
     return true;
 }
 
+bool FtpClient::StoreFrom(const char* path, U64 size, const std::function<bool(U64, unsigned char*, DWORD)>& read,
+                          const std::function<bool(U64)>& progress) {
+    std::string folder,name; SplitPath(path,folder,name);
+    if(!Open() || !Enter(folder)) return false;
+    Link data;
+    if(!Passive(data) || !Send("STOR %s",name.c_str()) || !Reply()) return false;
+    if(code_/100!=1) return Fail("STOR %s: %s",path,text_.c_str());
+    std::vector<unsigned char> part(1<<20);
+    for(U64 sent=0;sent<size;) {
+        DWORD n=size-sent<part.size() ? DWORD(size-sent) : DWORD(part.size());
+        if(!read(sent,&part[0],n)) { code_=0; return Fail("Couldn't read %s here",name.c_str()); }
+        // The data connection closed without its end tells the Xbox the file isn't whole.
+        if(!data.SendAll(&part[0],n,timeout_)) { code_=0; return Fail("Sending %s to the Xbox failed (is its drive full?)",path); }
+        sent+=n;
+        if(!progress(sent)) { code_=0; return Fail("Stopped"); }
+    }
+    data.Finish(); data.Close();
+    if(!Reply()) return false;
+    if(code_/100!=2) return Fail("STOR %s: %s",path,text_.c_str());
+    return true;
+}
+
 bool FtpClient::Exists(const char* folder) {
     if(!Open()) return false;
     if(Enter(folder)) return true;
@@ -309,6 +331,15 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
         while(at<line.size() && line[at]!=' ') ++at;
     }
     if(at==line.size()) return false;
+    // The fifth field is the size.
+    size_t sizeAt=0;
+    for(int field=0;field<5;++field) {
+        while(sizeAt<at && line[sizeAt]==' ') ++sizeAt;
+        if(field==4) break;
+        while(sizeAt<at && line[sizeAt]!=' ') ++sizeAt;
+    }
+    entry.size=0;
+    while(sizeAt<at && isdigit((unsigned char)line[sizeAt])) entry.size=entry.size*10+U64(line[sizeAt++]-'0');
     ++at;  // The one space before the name; the name may start with spaces.
     std::string name=line.substr(at);
     while(!name.empty() && (name[name.size()-1]=='\r' || name[name.size()-1]=='\n')) name.erase(name.size()-1);

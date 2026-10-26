@@ -65,6 +65,9 @@ public:
     void Close() { image_.reset(); }
     U64 Size() const { return image_.get() ? image_->Size() : 0; }
     bool Read(U64 offset, unsigned char* data, DWORD length) { return image_.get() && image_->Read(offset,data,length); }
+    // Where the file at path (from the disc's top, folders split by \ or /)
+    // is in the image: its first byte and size; false if it isn't there.
+    bool Locate(const std::string& path, U64& at, U64& size);
     // Why Open failed, or what was opened.
     const std::string& Note() const { return note_; }
 private:
