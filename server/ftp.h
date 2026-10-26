@@ -9,13 +9,14 @@
 // fall one behind the commands, so any failure drops the connection and the
 // next command logs in again.
 #include "../shared/library.h"
+#include <functional>
 #include <string>
 #include <vector>
 
 namespace nia {
 class Link;
 
-struct FtpEntry { std::string name; bool folder; };
+struct FtpEntry { std::string name; bool folder; U64 size; };
 
 class FtpClient {
 public:
@@ -31,6 +32,11 @@ public:
     // Whole file into data; false if missing (Missing() is then true) or over limit bytes.
     bool Retrieve(const char* path, std::vector<unsigned char>& data, size_t limit);
     bool Store(const char* path, const void* data, size_t size);
+    // A file too big to hold in memory: size bytes, which read(offset, data,
+    // length) gives part by part; progress(sent) hears after each part.
+    // Either one returning false stops it, leaving part of the file there.
+    bool StoreFrom(const char* path, U64 size, const std::function<bool(U64, unsigned char*, DWORD)>& read,
+                   const std::function<bool(U64)>& progress);
     bool MakeFolder(const char* path);
     bool Exists(const char* folder);
     bool Delete(const char* path);

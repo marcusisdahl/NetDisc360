@@ -356,7 +356,7 @@ Pick the game's tile. The NetDisc360 logo plays for three seconds while the game
 - **B cancels at any step** and goes back to Aurora at once.
 - Right after a reboot the console can't reach the server for a minute or two, and the NetISO plugin needs a little longer still. For the first 4 minutes after boot the screen waits for both instead of failing.
 - When something goes wrong, the screen says what and what to do: the server doesn't answer, the NetISO plugin isn't loaded, the game is no longer on the server, the disc didn't show up, a different game is in the drive, or the game didn't start. **A** goes back to Aurora and **X** tries again; after a minute it goes back to Aurora by itself.
-- **Games with an install disc** (GTA V, Forza Motorsport 4) check for the install first. If the install disc's content isn't on the console's hard drive or USB storage, the screen asks: **A** starts the install disc so you can install it, **X** plays anyway, **B** goes back to Aurora. Without its install, GTA V freezes at "Loading story mode".
+- **Games with an install disc** (GTA V, Forza Motorsport 4) check for the install first. If the install disc's content isn't on the console's hard drive or USB storage, the screen asks: **A** starts the install disc so you can install it, **X** plays anyway, **B** goes back to Aurora. Without its install, GTA V freezes at "Loading story mode". You can also skip the install disc: the game's page on the dashboard has an **Install on Xbox** button that copies the content straight to the console's hard drive over Aurora's FTP, with a progress bar.
 - **Games on more than one disc** get a tile for each disc. When the game asks for another disc (GTA V's install disc asks for the play disc once it has installed), NetDisc360 puts that disc in over the network and the game carries on, as if you had swapped it. A notification says when the game is ready to swap and when the other disc goes in. Every disc of the game has to be in your game folders.
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
@@ -518,6 +518,8 @@ Besides ISOs, the server serves Xbox 360 games extracted to a folder (`default.x
 ### Install discs
 
 Some games come on two discs, one of which only installs content: GTA V's second disc (8.3 GB in 4 packages) and Forza Motorsport 4's (car packs). The server reads the packages each disc carries for its game (`content\0000000000000000\<Title ID>\` on an extracted folder, ISO or GOD package) and writes `install.ini` into the game folder of each other disc of that game, naming the install disc and its packages. Before such a game starts, the launcher looks for each package under `Content` on the hard drive (and USB storage set up for the console) at its full size, and offers to start the install disc if one is missing. A disc you swap to during a game, such as Red Dead Redemption's second disc, carries no packages and gets no `install.ini`.
+
+The dashboard can put the packages there itself: **Install on Xbox** on the game's page (or on the install disc's) sends each package from the install disc to `Hdd1:\Content\0000000000000000\<Title ID>\<type>\` over Aurora's FTP (`POST /api/install`, progress in `/api/state` under `installs`). A package already there at its full size is skipped, and one cut short by a stop or a lost connection is deleted, so the launcher never takes it for installed. The console has to be in Aurora while it copies.
 
 ## Security
 
