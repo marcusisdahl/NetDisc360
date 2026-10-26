@@ -125,14 +125,20 @@ AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
 
 class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
     """Aurora's web server as NetISO-Manager uses it (port 9999): a login
-    (xboxhttp/xboxhttp) for a token, what runs, and starting a title."""
+    (xboxhttp/xboxhttp) for a token, what runs, and starting a title. With
+    basic (Aurora's "HTTP security"), every request needs HTTP's own login,
+    /authenticate too."""
 
     def log_message(self, *args):
         pass
 
     def answer(self, status, body):
+        if self.server.basic and self.headers.get("Authorization") != "Basic " + base64.b64encode(b"xboxhttp:xboxhttp").decode():
+            status, body = 401, {}
         data = json.dumps(body).encode()
         self.send_response(status)
+        if status == 401 and self.server.basic:
+            self.send_header("WWW-Authenticate", 'Basic realm="Freestyle Plugin"')
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -143,7 +149,7 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
         return dict(urllib.parse.parse_qsl(self.rfile.read(length).decode()))
 
     def allowed(self):
-        return self.headers.get("Authorization") == "Bearer t0ken"
+        return self.server.basic or self.headers.get("Authorization") == "Bearer t0ken"
 
     def do_POST(self):
         form = self.form()
@@ -168,9 +174,10 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
 class AuroraWeb(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, running=AURORA_XEX):
+    def __init__(self, running=AURORA_XEX, basic=False):
         super().__init__(("127.0.0.1", 0), AuroraWebHandler)
         self.running = running
+        self.basic = basic
         self.launched = []
         self.port = self.server_address[1]
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -1231,6 +1238,16 @@ print('lua ok')
             status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.7"})
             self.assertEqual(status, 400)
             self.assertIn(b"hasn't used NetDisc360", data)
+            # With Aurora's HTTP security on, the login goes on each request.
+            aurora.launched.clear()
+            aurora.basic = True
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+            self.json("POST", "/api/settings", {"auroraWebPassword": "wrong"})
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"refused the login", data)
+            self.assertTrue(self.wait_for(lambda: "couldn't start Halo 3 from the dashboard: Aurora's web server refused the login" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
             # Aurora's web server off.
             aurora.close()
             status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})

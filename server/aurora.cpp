@@ -74,14 +74,16 @@ std::string Lower(std::string text) {
     return text;
 }
 
-// The status and body of a response; a chunked body is put together.
-bool ReadResponse(const std::string& response, int& status, std::string& body) {
+// The status and body of a response; a chunked body is put together. basic:
+// whether it asks for a login of the HTTP kind (Aurora's "HTTP security").
+bool ReadResponse(const std::string& response, int& status, std::string& body, bool& basic) {
     int major=0,minor=0;
     if(sscanf(response.c_str(),"HTTP/%d.%d %d",&major,&minor,&status)!=3) return false;
     size_t end=response.find("\r\n\r\n");
     if(end==std::string::npos) return false;
     std::string headers=Lower(response.substr(0,end));
     body=response.substr(end+4);
+    basic=headers.find("\nwww-authenticate: basic")!=std::string::npos;
     if(headers.find("\ntransfer-encoding: chunked")==std::string::npos) return true;
     std::string whole;
     for(size_t at=0;at<body.size();) {
@@ -94,6 +96,21 @@ bool ReadResponse(const std::string& response, int& status, std::string& body) {
     }
     body=whole;
     return true;
+}
+
+std::string Base64(const std::string& data) {
+    static const char digits[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for(size_t i=0;i<data.size();i+=3) {
+        unsigned n=unsigned((unsigned char)data[i])<<16;
+        if(i+1<data.size()) n|=unsigned((unsigned char)data[i+1])<<8;
+        if(i+2<data.size()) n|=(unsigned char)data[i+2];
+        out+=digits[(n>>18)&63];
+        out+=digits[(n>>12)&63];
+        out+=i+1<data.size() ? digits[(n>>6)&63] : '=';
+        out+=i+2<data.size() ? digits[n&63] : '=';
+    }
+    return out;
 }
 
 // FTP path /Hdd1/NetISO/x as Aurora's scripts name it: Hdd1:\NetISO\x.
@@ -137,7 +154,8 @@ AuroraWeb::AuroraWeb(DWORD address, int port, const std::string& user, const std
 bool AuroraWeb::Send(const char* method, const char* path, const std::string& form, int& status, std::string& body) {
     char host[16]; AddressText(address_,host,sizeof(host));
     std::string request=std::string(method)+" "+path+" HTTP/1.1\r\nHost: "+host+":"+std::to_string(port_)+"\r\nConnection: close\r\n";
-    if(!token_.empty()) request+="Authorization: Bearer "+token_+"\r\n";
+    if(basic_) request+="Authorization: Basic "+Base64(user_+":"+password_)+"\r\n";
+    else if(!token_.empty()) request+="Authorization: Bearer "+token_+"\r\n";
     if(!strcmp(method,"POST")) request+="Content-Type: application/x-www-form-urlencoded\r\nContent-Length: "+std::to_string(form.size())+"\r\n";
     request+="\r\n"+form;
     std::string response;
@@ -145,33 +163,46 @@ bool AuroraWeb::Send(const char* method, const char* path, const std::string& fo
         error_="Aurora's web server doesn't answer on port "+std::to_string(port_)+" (Aurora's settings, HTTP server: is it on?)";
         return false;
     }
-    if(!ReadResponse(response,status,body)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
+    if(!ReadResponse(response,status,body,challenged_)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
     return true;
 }
 
+// With "HTTP security" on in Aurora's settings, its web server asks for the
+// login on every request (HTTP's own, Basic) and refuses /authenticate
+// without it; then the login goes on each request instead of a token.
 bool AuroraWeb::Login() {
     token_.clear();
+    loggedIn_=false;
     int status=0;
     std::string body;
-    if(!Send("POST","/authenticate","username="+FormValue(user_)+"&password="+FormValue(password_),status,body)) return false;
+    const std::string form="username="+FormValue(user_)+"&password="+FormValue(password_);
+    if(!Send("POST","/authenticate",form,status,body)) return false;
+    if(status==401 && challenged_ && !basic_) {
+        basic_=true;
+        if(!Send("POST","/authenticate",form,status,body)) return false;
+    }
+    if(status==401 || status==403) { error_="Aurora's web server refused the login (Aurora's settings, HTTP server, has its user name and password)"; return false; }
     web::Value v;
     const web::Value* token;
-    if(status==401 || status==403) { error_="Aurora's web server refused the login (Aurora's settings, HTTP server, has its user name and password)"; return false; }
-    if(status/100!=2 || !web::Parse(body,v) || !(token=v.Get("token")) || token->type!=web::Value::String || token->text.empty()) {
+    if(status/100==2 && web::Parse(body,v) && (token=v.Get("token")) && token->type==web::Value::String && !token->text.empty()) token_=token->text;
+    else if(!basic_) {
         error_="Aurora's web server didn't log in (HTTP "+std::to_string(status)+")";
         return false;
     }
-    token_=token->text;
+    loggedIn_=true;
     return true;
 }
 
 bool AuroraWeb::Call(const char* method, const char* path, const std::string& form, std::string& body) {
     int status=0;
-    if(token_.empty() && !Login()) return false;
+    if(!loggedIn_ && !Login()) return false;
     if(!Send(method,path,form,status,body)) return false;
-    if(status==401) {  // The login ran out.
-        if(!Login() || !Send(method,path,form,status,body)) return false;
+    if(status==401 && !basic_) {
+        if(challenged_) basic_=true;  // The token isn't enough: the login goes on each request.
+        else if(!Login()) return false;  // The login ran out.
+        if(!Send(method,path,form,status,body)) return false;
     }
+    if(status==401 || status==403) { error_="Aurora's web server refused the login (Aurora's settings, HTTP server, has its user name and password)"; return false; }
     if(status/100!=2) { error_=std::string("Aurora's web server answered ")+path+" with HTTP "+std::to_string(status); return false; }
     return true;
 }

@@ -32,6 +32,9 @@ private:
     int port_;
     std::string user_, password_, token_, error_;
     double timeout_;
+    bool basic_=false;       // The login goes on each request (HTTP Basic).
+    bool challenged_=false;  // The last answer asked for that.
+    bool loggedIn_=false;
 };
 
 // An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path

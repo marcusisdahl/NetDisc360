@@ -3387,7 +3387,11 @@ bool Play(const web::Value& v, std::string& error) {
     std::string device=DevicePath(folder);
     if(device.empty()) { error="Aurora starts games from the dashboard on the hard drive only, and this one is in "+folder+"."; return false; }
     AuroraWeb aurora(c->address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
-    if(!aurora.Launch(device,"default.xex")) { error=aurora.Error()+"."; return false; }
+    if(!aurora.Launch(device,"default.xex")) {
+        error=aurora.Error()+".";
+        XboxLog(*c,"couldn't start %s from the dashboard: %s",WithoutIso(game.name).c_str(),error.c_str());
+        return false;
+    }
     XboxLog(*c,"started %s from the dashboard (%s).",WithoutIso(game.name).c_str(),folder.c_str());
     XboxEvent(*c,EventPlay,WithoutIso(game.name)+" started from the dashboard");
     return true;
