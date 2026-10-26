@@ -262,7 +262,9 @@ class Xbdm(socketserver.ThreadingTCPServer):
                     if command == "bye":
                         self.wfile.write(b"200- bye\r\n")
                         return
-                    self.wfile.write(b"200- OK\r\n" if command == "shutdown" else b"407- unknown command\r\n")
+                    if command == "shutdown":
+                        return  # the console powers off: xbdm closes without an answer
+                    self.wfile.write(b"407- unknown command\r\n")
 
         super().__init__(("127.0.0.1", 0), Handler)
         self.port = self.server_address[1]
@@ -848,7 +850,7 @@ class Push(ServerTest):
                 self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
             # Turned off through its debug monitor.
             self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
-            self.assertEqual(xbdm.commands, ["shutdown", "bye"])
+            self.assertEqual(xbdm.commands, ["shutdown"])
             xbdm.close()
             status, _, data = self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
             self.assertEqual(status, 400)
@@ -907,7 +909,7 @@ class Push(ServerTest):
             self.assertTrue(self.wait_for(lambda: "back in Aurora after Halo 3" in json.dumps(self.json("GET", "/api/log?after=0")), 15))
             self.assertEqual(xbdm.commands, [])
             self.assertTrue(self.wait_for(lambda: xbdm.commands, 70))
-            self.assertEqual(xbdm.commands, ["shutdown", "bye"])
+            self.assertEqual(xbdm.commands, ["shutdown"])
             self.assertTrue(self.wait_for(lambda: "turned off, 1 minute after its last game" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
             client.close()
         finally:
