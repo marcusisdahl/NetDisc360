@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -53,7 +54,7 @@ def build_server():
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
-                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp", "server/auroradb.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -1229,6 +1230,66 @@ class Dashboard(ServerTest):
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
             self.assertEqual([r["ftp"], r["login"]], [True, False])
             self.assertFalse(self.json("POST", "/api/consoles/check", {"address": "127.0.0.3"})["ftp"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def test_finds_and_repairs_tiles_without_art(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        aurora = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data")
+        games = os.path.join(xbox, "Hdd1", "NetISO")
+        for folder in ("Databases", "GameData"):
+            os.makedirs(os.path.join(aurora, folder))
+        for folder in ("Halo 3", "Banjo-Kazooie - Nuts & Bolts", "Skate 3", "New Game", "NetISO Sync", "NetDisc360"):
+            os.makedirs(os.path.join(games, folder))
+        with open(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts", "netiso.ini"), "w") as f:
+            f.write("[NetISO]\r\niso=Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr).iso\r\n")
+        # Aurora's own table, as its content.db has it (tabs and all), on
+        # small pages with long rows, so the file has interior and overflow pages.
+        db = sqlite3.connect(os.path.join(aurora, "Databases", "content.db"))
+        db.execute("PRAGMA page_size=1024")
+        db.execute("CREATE TABLE ContentItems ( Id\t\t\tINTEGER PRIMARY KEY AUTOINCREMENT,  Directory\t\tTEXT COLLATE NOCASE,  "
+                   "Executable\tTEXT COLLATE NOCASE,  TitleId\t\tINTEGER,  TitleName\t\tTEXT COLLATE NOCASE,  Description\tTEXT COLLATE NOCASE,  "
+                   "ScanPathId\tINTEGER, CaseIndex DEFAULT 0,  UNIQUE (Directory, Executable, ScanPathId ) )")
+        rows = [("\\apps\\aurora", 0, "Aurora"), ("\\netiso\\netiso sync", -45495, "NetISO Sync")]
+        rows += [("\\games\\filler %d" % i, i, "Filler %d" % i) for i in range(300)]
+        rows += [("\\netiso\\halo 3", 0x4D5307E6, "Halo 3"), ("\\NetISO\\Banjo-Kazooie - Nuts & Bolts", 0x4D5307ED, "Banjo-Kazooie: Nuts & Bolts"),
+                 ("\\netiso\\skate 3", 0x454108E6 - (1 << 32), "Skate 3")]
+        for directory, title, name in rows:
+            db.execute("INSERT INTO ContentItems (Directory, Executable, TitleId, TitleName, Description, ScanPathId) VALUES (?, 'default.xex', ?, ?, ?, 3)",
+                       (directory, title, name, "A long description. " * 200))
+        db.commit()
+        ids = dict(db.execute("SELECT TitleName, Id FROM ContentItems"))
+        db.close()
+        # Halo 3 has its cover; Banjo got Aurora's empty one; Skate 3 has no GameData folder.
+        for name, title, size in (("Halo 3", 0x4D5307E6, 5000), ("Banjo-Kazooie: Nuts & Bolts", 0x4D5307ED, 2048)):
+            folder = os.path.join(aurora, "GameData", "%08X_%08X" % (title, ids[name]))
+            os.makedirs(folder)
+            with open(os.path.join(folder, "GC%08X.asset" % title), "wb") as f:
+                f.write(b"RXEA" + bytes(size - 4))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            found = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2"})
+            self.assertEqual(found["tiles"], [{"folder": "Banjo-Kazooie - Nuts & Bolts", "title": "Banjo-Kazooie: Nuts & Bolts"},
+                                              {"folder": "Skate 3", "title": "Skate 3"}])
+            self.assertEqual((found["renamed"], ftp.renamed, ftp.scans), ([], [], []))
+            # Just one: its folder gets a new name, and Aurora a scan.
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True, "folders": ["Skate 3"]})
+            self.assertEqual(done["renamed"], [{"from": "Skate 3", "to": "Skate 3 (2)"}])
+            self.assertNotIn("error", done)
+            self.assertEqual(ftp.scans, ["/Hdd1/NetISO"])
+            # The renamed tile isn't Aurora's yet; the rest are fetched again,
+            # under the disc's name with its tags (cut to 42 characters).
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True})
+            self.assertEqual([t["folder"] for t in done["tiles"]], ["Banjo-Kazooie - Nuts & Bolts"])
+            self.assertEqual(done["renamed"], [{"from": "Banjo-Kazooie - Nuts & Bolts", "to": "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr"}])
+            self.assertEqual(sorted(os.listdir(games)), ["Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr", "Halo 3", "NetDisc360", "NetISO Sync", "New Game", "Skate 3 (2)"])
+            self.assertEqual(os.listdir(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr")), ["netiso.ini"])
+            self.assertEqual(len(ftp.scans), 2)
+            self.assertEqual(self.call("POST", "/api/consoles/art", {"address": "127.0.0.3"})[0], 404)
         finally:
             ftp.shutdown()
             ftp.server_close()

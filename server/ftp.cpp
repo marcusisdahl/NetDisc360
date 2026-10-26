@@ -292,6 +292,14 @@ bool FtpClient::Site(const char* command, std::string& reply) {
     return code_/100==2;
 }
 
+bool FtpClient::Rename(const char* from, const char* to) {
+    if(!Open()) return false;
+    if(!Command(3,"RNFR %s",from)) return false;
+    if(!Command(2,"RNTO %s",to)) return false;
+    folder_.clear();  // In case the current folder was the one renamed.
+    return true;
+}
+
 bool FtpClient::RemoveFolder(const char* path) {
     std::string parent,name; SplitPath(path,parent,name);
     if(!Open() || !Enter(parent)) return false;
@@ -303,9 +311,11 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
     // name is what follows the eighth field.
     if(line.size()<10 || (line[0]!='d' && line[0]!='-')) return false;
     size_t at=0;
+    unsigned long long size=0;
     for(int field=0;field<8;++field) {
         while(at<line.size() && line[at]==' ') ++at;
         if(at==line.size()) return false;
+        if(field==4) size=strtoull(line.c_str()+at,NULL,10);  // The fifth field is the size.
         while(at<line.size() && line[at]!=' ') ++at;
     }
     if(at==line.size()) return false;
@@ -313,7 +323,7 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
     std::string name=line.substr(at);
     while(!name.empty() && (name[name.size()-1]=='\r' || name[name.size()-1]=='\n')) name.erase(name.size()-1);
     if(name.empty() || name=="." || name=="..") return false;
-    entry.name=name; entry.folder=line[0]=='d';
+    entry.name=name; entry.folder=line[0]=='d'; entry.size=size;
     return true;
 }
 

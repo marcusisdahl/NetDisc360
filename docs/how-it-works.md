@@ -52,4 +52,4 @@ These go in a game folder's `netiso.ini` and help find out what breaks on a cons
 - `hold_ms=` sets how long the full bar stays up before the game starts (1000).
 - `mount_only=1` mounts the game and goes back to Aurora without starting it.
 - `start=aurora|nova|media` picks how the disc is started: as Aurora's disc entry does (the default), as Nova's file browser does, or whatever disc is in the drive, as the dashboard does. If the chosen start fails, the launcher tries `nova`.
-- `tiles=aurora` has `NetIsoTiles.xex` mount from inside Aurora instead, the older way, with no loading screen and no cancel. With it, `hold_mount=1`, `relist=1`, `tiles_stop=server|disc|root|iso|mount` and `tiles_thread=system` change how the plugin mounts.
+- `tiles=aurora` has `NetIsoTiles.xex` mount from inside Aurora instead, the older way, with no loading screen and no cancel.
