@@ -239,6 +239,24 @@ class Sync(unittest.TestCase):
         self.assertIn("not an Xbox 360 game ISO", out)
         self.assertIn("no default.xex", out)
 
+    def test_an_original_xbox_disc_starts_its_xbe(self):
+        # No default.xex: the Title ID comes from default.xbe's certificate,
+        # and netiso.ini tells the launcher to start the XBE.
+        base, cert = 0x10000, 0x10180
+        xbe = bytearray(0x300)
+        xbe[0:4] = b"XBEH"
+        xbe[0x104:0x108] = base.to_bytes(4, "little")
+        xbe[0x118:0x11C] = cert.to_bytes(4, "little")
+        xbe[cert - base + 8:cert - base + 12] = (0x4D530004).to_bytes(4, "little")
+        write_iso(os.path.join(self.isos, "Halo.iso"), {"default.xbe": bytes(xbe)}, partition=(0xFDA0000, 0xFD90000))
+        out = self.sync()
+        self.assertIn("added=1", out)
+        with open(os.path.join(self.games, "Halo", "netiso.ini")) as f:
+            ini = f.read()
+        self.assertIn("title_id=4D530004", ini)
+        self.assertIn("media_id=00000000", ini)
+        self.assertIn("xbe=1", ini)
+
     def test_name_clash_gets_a_unique_folder(self):
         os.makedirs(os.path.join(self.games, "Halo"))  # Someone else's folder.
         self.add_iso("Halo.iso", 1, 0x11111111)
