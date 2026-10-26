@@ -49,8 +49,10 @@ DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size);
 bool FixHeaderDigest(unsigned char* xex, DWORD size);
 // FATX-safe folder name for an ISO, unique among used (case-insensitive).
 void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out);
-// Reads the execution info of default.xex on the ISO mounted on client.
-bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity);
+// Reads the execution info of default.xex on the ISO mounted on client. An
+// original Xbox disc (default.xbe, no default.xex) gets execution info made
+// from its certificate's Title ID, and xbe (if given) is set.
+bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity, bool* xbe = NULL);
 
 typedef void (*Note)(const char* text);
 
