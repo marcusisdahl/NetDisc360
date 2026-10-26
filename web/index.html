@@ -1152,7 +1152,7 @@ function modal(title, build, narrow, closed) {
 const Releases = [
   { repo: 'marcusisdahl/NetDisc360', name: 'NetDisc360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
   { repo: 'marcusisdahl/FastFTP360', name: 'FastFTP360', icon: 'arrow-down-up', what: 'A fast FTP server app for the Xbox, to copy games and files to it.' },
-  { repo: 'marcusisdahl/UsbNet360', name: 'UsbNet360', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster. Our fork of CUsbEnet.' },
+  { repo: 'marcusisdahl/NetUsb360', name: 'NetUsb360', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster. Our fork of CUsbEnet.' },
 ];
 function releases() {
   modal('Latest releases', close => [
@@ -2085,8 +2085,8 @@ function consoleChecks(r) {
   };
   release(tiles, 'marcusisdahl/NetDisc360', ['netisotiles.xex'], 'NetIsoTiles.xex',
     wzCheck('warn', 'NetIsoTiles.xex isn\u2019t loaded', ['It keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
-  release(usb, 'marcusisdahl/UsbNet360', ['usbnet360.xex', 'usbnet360-acksmall.xex'], usb ? usb.name : '', null,
-    ['Not a UsbNet360 release. ', h('a', { href: 'https://github.com/marcusisdahl/UsbNet360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'UsbNet360'), ' loads games faster with a gigabit USB adapter.']);
+  release(usb, 'marcusisdahl/NetUsb360', ['netusb360.xex', 'netusb360-acksmall.xex', 'usbnet360.xex', 'usbnet360-acksmall.xex'], usb ? usb.name : '', null,
+    ['Not a NetUsb360 release. ', h('a', { href: 'https://github.com/marcusisdahl/NetUsb360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'NetUsb360'), ' loads games faster with a gigabit USB adapter.']);
   if (r.plugins.length > 5) out.push(wzCheck('warn', 'launch.ini has ' + r.plugins.length + ' plugins', 'DashLaunch loads 5 at most.'));
   if (r.default && !/aurora/i.test(r.default)) out.push(wzCheck('info', 'The Xbox starts ' + r.default, 'Set Default in launch.ini to Aurora.xex to start straight in Aurora.'));
   out.push(r.connected ? wzCheck('good', 'NetISO is connected to NetDisc360') : wzCheck('info', 'NetISO hasn\u2019t connected yet', 'Restart the Xbox after changing launch.ini or NetISO.xex.txt.'));
