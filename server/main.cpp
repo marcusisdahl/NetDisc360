@@ -11,6 +11,7 @@
 #include "../shared/library.h"
 #include "app.h"
 #include "backup.h"
+#include "compress.h"
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
@@ -20,6 +21,7 @@
 #include "web.h"
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -1998,7 +2000,7 @@ void State(web::Reply& out) {
     out.body=j.Text();
 }
 
-const char* KindName(DiscKind kind) { return kind==DiscIso ? "iso" : kind==DiscGod ? "god" : "folder"; }
+const char* KindName(DiscKind kind) { return kind==DiscIso ? "iso" : kind==DiscCso ? "cso" : kind==DiscGod ? "god" : "folder"; }
 
 void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& folders) {
     char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",g.titleId);
@@ -2038,6 +2040,159 @@ void Games(web::Reply& out) {
             for(size_t k=0;k<c.copies.size();++k) { j.Open('{'); GameJson(j,c.copies[k],folders); j.Close('}'); }
             j.Close(']').Close('}');
         }
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
+// Compressing games -------------------------------------------------------------
+//
+// One at a time, in the order asked on the dashboard: an ISO in the game
+// folders, or one in a .7z or .zip archive there, into a CSO file next to it
+// (compress.h). The new file is found by the next look at the folders.
+
+struct CompressJob { std::string source, output; int entry; std::string name; };
+struct CompressDone { std::string name, source, output, error; bool ok; CompressResult result; double seconds; long long time; };
+std::mutex CompressLock;
+std::condition_variable CompressWake;
+std::deque<CompressJob> CompressQueue;
+CompressJob CompressNow;
+bool Compressing=false;
+double CompressStarted=0;
+CompressProgress CompressAt;
+std::atomic<bool> CompressStop(false);
+std::vector<CompressDone> CompressRecent;  // The newest last.
+std::once_flag CompressStarter;
+// The archives in the game folders, looked for at most every ArchiveSeconds.
+const double ArchiveSeconds=15;
+std::vector<ArchiveFile> ArchivesFound;
+double ArchivesAt=-1e9;
+
+std::string GB(U64 bytes) { char text[32]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%.1f GB",double(bytes)/1e9); return text; }
+
+void CompressLoop() {
+    for(;;) {
+        CompressJob job;
+        {
+            std::unique_lock<std::mutex> hold(CompressLock);
+            CompressWake.wait(hold,[] { return !CompressQueue.empty(); });
+            job=CompressQueue.front(); CompressQueue.pop_front();
+            CompressNow=job; Compressing=true; CompressStarted=Now(); CompressStop=false;
+        }
+        Log("Compressing %s into %s.",job.name.c_str(),job.output.c_str());
+        Event(EventInfo,"Compressing %s",job.name.c_str());
+        CompressDone done;
+        done.name=job.name; done.source=job.source; done.output=job.output;
+        done.ok=CompressDisc(job.source,job.entry,job.output,false,CompressAt,&CompressStop,done.result,done.error);
+        done.seconds=Now()-CompressStarted; done.time=(long long)time(NULL);
+        if(done.ok) {
+            const CompressResult& r=done.result;
+            Log("%s: compressed in %.0f s, %s of %s%s.",job.name.c_str(),done.seconds,GB(r.outputBytes).c_str(),GB(r.imageBytes).c_str(),
+                r.whole ? " (its file table couldn't be read, so all of the disc was kept)" : "");
+            Event(EventGood,"%s compressed to %s",job.name.c_str(),GB(r.outputBytes).c_str());
+        } else {
+            Log("%s: not compressed: %s.",job.name.c_str(),done.error.c_str());
+            Event(EventWarning,"%s wasn't compressed: %s",job.name.c_str(),done.error.c_str());
+        }
+        ScanSoon=true;
+        std::lock_guard<std::mutex> hold(CompressLock);
+        Compressing=false;
+        ArchivesAt=-1e9;
+        CompressRecent.push_back(done);
+        if(CompressRecent.size()>20) CompressRecent.erase(CompressRecent.begin());
+    }
+}
+
+// Whether output is being made or waits to be.
+bool CompressPlanned(const std::string& output) {
+    if(Compressing && CompressNow.output==output) return true;
+    for(size_t i=0;i<CompressQueue.size();++i) if(CompressQueue[i].output==output) return true;
+    return false;
+}
+
+bool StartCompress(const web::Value& body, std::string& error) {
+    const web::Value* p=body.Get("path");
+    const web::Value* e=body.Get("entry");
+    std::string path=p && p->type==web::Value::String ? config::FromUtf8(p->text) : std::string();
+    int entry=e && e->type==web::Value::Number ? int(e->number) : -1;
+    std::vector<std::string> folders=Current().folders;
+    bool inside=false;
+    for(size_t i=0;i<folders.size() && !inside;++i) inside=Within(path,CleanFolder(folders[i]));
+    bool up=path.find("/../")!=std::string::npos || path.find("\\..\\")!=std::string::npos || path.find("\\../")!=std::string::npos || path.find("/..\\")!=std::string::npos;
+    if(path.empty() || !inside || up) { error="That file isn't in your game folders."; return false; }
+    CompressJob job; job.source=path; job.entry=-1;
+    std::string leaf=path.substr(path.find_last_of("/\\")+1);
+    if(path.size()>4 && !_stricmp(path.c_str()+path.size()-4,".iso")) {
+        job.output=CsoPathFor(path); job.name=WithoutIso(leaf);
+    } else if(IsArchiveName(path)) {
+        std::vector<ArchiveDisc> discs;
+        if(!ListArchive(path,discs,error)) { error="Can't read "+leaf+": "+error+"."; return false; }
+        if(entry<0 && discs.size()==1) entry=0;
+        if(entry<0 || size_t(entry)>=discs.size()) { error="That disc isn't in "+leaf+"."; return false; }
+        job.entry=entry; job.output=CsoPathFor(path,discs,size_t(entry));
+        job.name=WithoutIso(config::FromUtf8(discs[entry].name));
+    } else { error="Only ISOs and .7z or .zip archives can be compressed."; return false; }
+    FILE* there=fopen(job.output.c_str(),"rb");
+    if(there) { fclose(there); error=job.output+" is there already."; return false; }
+    std::call_once(CompressStarter,[] { std::thread(CompressLoop).detach(); });
+    std::lock_guard<std::mutex> hold(CompressLock);
+    if(CompressPlanned(job.output)) { error=job.name+" is being compressed already."; return false; }
+    CompressQueue.push_back(job);
+    CompressWake.notify_one();
+    return true;
+}
+
+// Stops the one being made (path: its source) or takes it off the queue.
+void StopCompress(const web::Value& body) {
+    const web::Value* p=body.Get("path");
+    std::string path=p && p->type==web::Value::String ? config::FromUtf8(p->text) : std::string();
+    std::lock_guard<std::mutex> hold(CompressLock);
+    for(size_t i=CompressQueue.size();i-->0;) if(path.empty() || CompressQueue[i].source==path) CompressQueue.erase(CompressQueue.begin()+i);
+    if(Compressing && (path.empty() || CompressNow.source==path)) CompressStop=true;
+}
+
+void CompressState(bool fresh, web::Reply& out) {
+    std::vector<std::string> folders=Current().folders;
+    bool look;
+    { std::lock_guard<std::mutex> hold(CompressLock); look=fresh || Now()-ArchivesAt>=ArchiveSeconds; }
+    if(look) {
+        std::vector<ArchiveFile> found;
+        for(size_t i=0;i<folders.size();++i) FindArchives(CleanFolder(folders[i]),found);
+        std::lock_guard<std::mutex> hold(CompressLock);
+        ArchivesFound.swap(found); ArchivesAt=Now();
+    }
+    static const char* const Steps[]={ "table", "compress", "check" };
+    web::Json j;
+    std::lock_guard<std::mutex> hold(CompressLock);
+    j.Open('{').Set("busy",Compressing);
+    if(Compressing) {
+        j.Key("now").Open('{').Set("name",config::ToUtf8(CompressNow.name)).Set("source",config::ToUtf8(CompressNow.source));
+        j.Set("output",config::ToUtf8(CompressNow.output)).Set("step",Steps[std::min(2,std::max(0,CompressAt.step.load()))]);
+        j.Set("done",(unsigned long long)CompressAt.done.load()).Set("total",(unsigned long long)CompressAt.total.load());
+        j.Set("seconds",Now()-CompressStarted).Set("stopping",CompressStop.load()).Close('}');
+    }
+    j.Key("queue").Open('[');
+    for(size_t i=0;i<CompressQueue.size();++i)
+        j.Open('{').Set("name",config::ToUtf8(CompressQueue[i].name)).Set("source",config::ToUtf8(CompressQueue[i].source)).Close('}');
+    j.Close(']').Key("recent").Open('[');
+    for(size_t i=CompressRecent.size();i-->0;) {
+        const CompressDone& d=CompressRecent[i];
+        j.Open('{').Set("name",config::ToUtf8(d.name)).Set("source",config::ToUtf8(d.source)).Set("output",config::ToUtf8(d.output));
+        j.Set("ok",d.ok).Set("error",config::ToUtf8(d.error)).Set("seconds",d.seconds).Set("time",d.time);
+        j.Set("image",(unsigned long long)d.result.imageBytes).Set("kept",(unsigned long long)d.result.keptBytes);
+        j.Set("bytes",(unsigned long long)d.result.outputBytes).Set("whole",d.result.whole).Close('}');
+    }
+    j.Close(']').Key("archives").Open('[');
+    for(size_t i=0;i<ArchivesFound.size();++i) {
+        const ArchiveFile& a=ArchivesFound[i];
+        j.Open('{').Set("path",config::ToUtf8(a.path)).Set("size",(unsigned long long)a.size).Set("problem",config::ToUtf8(a.problem)).Key("discs").Open('[');
+        for(size_t d=0;d<a.discs.size();++d) {
+            FILE* there=fopen(a.outputs[d].c_str(),"rb");
+            if(there) fclose(there);
+            j.Open('{').Set("name",WithoutIso(a.discs[d].name)).Set("size",(unsigned long long)a.discs[d].size);
+            j.Set("output",config::ToUtf8(a.outputs[d])).Set("done",there!=NULL).Set("planned",CompressPlanned(a.outputs[d])).Close('}');
+        }
+        j.Close(']').Close('}');
     }
     j.Close(']').Close('}');
     out.body=j.Text();
@@ -2609,7 +2764,7 @@ bool ChooseCopy(const web::Value& v, std::string& error) {
         choice.path=path;
         for(size_t i=0;i<c->copies.size();++i) choice.copies.insert(CopyId(c->copies[i].path));
         Choices[key]=choice;
-        name=c->name; kind=copy->kind==DiscIso ? "ISO" : copy->kind==DiscGod ? "Games on Demand" : "extracted";
+        name=c->name; kind=copy->kind==DiscIso ? "ISO" : copy->kind==DiscCso ? "compressed" : copy->kind==DiscGod ? "Games on Demand" : "extracted";
         // Shown as chosen right away; the served copy changes at the next look at the folders, now.
         c->chosen=true; c->open=false;
         ScanSoon=true;
@@ -2973,6 +3128,11 @@ void Api(const web::Request& r, web::Reply& out) {
     if(r.method=="GET" && r.path=="/api/state") State(out);
     else if(r.method=="GET" && r.path=="/api/games") Games(out);
     else if(r.method=="GET" && r.path=="/api/log") LogSince(atoll(r.Param("after").c_str()),out);
+    else if(r.method=="GET" && r.path=="/api/compress") CompressState(r.Param("fresh")=="1",out);
+    else if(r.method=="POST" && r.path=="/api/compress") {
+        if(!StartCompress(body,error)) out.Error(400,error);
+        else CompressState(false,out);
+    } else if(r.method=="POST" && r.path=="/api/compress/stop") { StopCompress(body); CompressState(false,out); }
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
     else if(r.method=="POST" && r.path=="/api/consoles/find") FindConsoles(body,out);
     else if(r.method=="POST" && r.path=="/api/consoles/check") CheckConsole(body,out);
@@ -3155,6 +3315,9 @@ void Usage() {
         "  --web-bind <address>    where the dashboard listens: 127.0.0.1, this computer only\n"
         "                          (default), or 0.0.0.0, the network too. A password for it\n"
         "                          is set on the dashboard or with NETDISC_WEB_PASSWORD.\n"
+        "  --compress <file> ...   compress ISOs (or the ISOs in .7z and .zip archives) into\n"
+        "                          CSO files next to them, which are served like ISOs, and\n"
+        "                          stop; --whole before them keeps the space no file uses\n"
         "  -v                      log every request\n"
         "  -r, -b                  accepted for netiso-srv's command line; subfolders are always searched\n");
 }
@@ -3356,7 +3519,45 @@ bool FirstTrayStart() {
     return true;
 }
 
+// netdisc --compress [--whole] <ISO or archive> ...: compresses each disc
+// as the dashboard does, here and now.
+int CompressCommand(const std::vector<std::string>& args) {
+    bool whole=false; int failed=0;
+    for(size_t i=0;i<args.size();++i) {
+        if(args[i]=="--whole") { whole=true; continue; }
+        const std::string& path=args[i];
+        std::vector<std::pair<int,std::string> > jobs;
+        if(IsArchiveName(path)) {
+            std::vector<ArchiveDisc> discs; std::string error;
+            if(!ListArchive(path,discs,error)) { fprintf(stderr,"%s: %s.\n",path.c_str(),error.c_str()); ++failed; continue; }
+            if(discs.empty()) { fprintf(stderr,"%s: there is no ISO in it.\n",path.c_str()); ++failed; continue; }
+            for(size_t d=0;d<discs.size();++d) jobs.push_back(std::make_pair(int(d),CsoPathFor(path,discs,d)));
+        } else jobs.push_back(std::make_pair(-1,CsoPathFor(path)));
+        for(size_t k=0;k<jobs.size();++k) {
+            CompressProgress progress; CompressResult result; std::string error;
+            std::atomic<bool> finished(false);
+            double began=Now();
+            std::thread show([&] {
+                static const char* const Steps[]={ "reading the file table", "compressing", "checking" };
+                while(!finished) {
+                    U64 total=progress.total, done=progress.done;
+                    printf("\r%s: %s %3.0f%%   ",jobs[k].second.c_str(),Steps[std::min(2,std::max(0,progress.step.load()))],total ? 100.0*double(done)/double(total) : 0.0);
+                    fflush(stdout);
+                    for(int t=0;t<10 && !finished;++t) Sleep(100);
+                }
+            });
+            bool ok=CompressDisc(path,jobs[k].first,jobs[k].second,whole,progress,NULL,result,error);
+            finished=true; show.join();
+            if(!ok) { printf("\n"); fprintf(stderr,"%s: %s.\n",path.c_str(),error.c_str()); ++failed; continue; }
+            printf("\r%s: %s of %s (the files use %s)%s, in %.0f s.\n",jobs[k].second.c_str(),GB(result.outputBytes).c_str(),GB(result.imageBytes).c_str(),
+                   GB(result.keptBytes).c_str(),result.whole ? ", kept whole: its file table couldn't be read" : "",Now()-began);
+        }
+    }
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+    if(argc>=3 && !strcmp(argv[1],"--compress")) return CompressCommand(std::vector<std::string>(argv+2,argv+argc));
 #ifdef _WIN32
     int tray=TrayMain(argc,argv);
     if(tray>=0) return tray;
