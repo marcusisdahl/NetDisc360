@@ -34,7 +34,7 @@ jobs:
         run: |
           x86_64-w64-mingw32-g++-posix -std=c++14 -O1 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS \
             -o NetDisc360-check.exe server/main.cpp server/tray.cpp server/web.cpp server/config.cpp server/discs.cpp \
-            server/discmap.cpp server/ftp.cpp server/backup.cpp server/update.cpp shared/isvr.cpp shared/library.cpp \
+            server/discmap.cpp server/ftp.cpp server/backup.cpp server/update.cpp server/saves.cpp server/wake.cpp shared/isvr.cpp shared/library.cpp \
             -static -lws2_32 -lwinhttp -liphlpapi -lbcrypt -lcrypt32 -lshell32 -lole32 -luuid -luser32 -lgdi32 -lcomctl32 -ladvapi32
 
   docker:

@@ -24,6 +24,10 @@ struct Info { std::string name, kind, version, platform; long long time, size; }
 // A stored zip of files (name: content), and back.
 std::string Zip(const std::map<std::string,std::string>& files, long long time);
 bool Unzip(const std::string& data, std::map<std::string,std::string>& files, std::string& error);
+// A stored zip's files by their whole names (folders and all), each at most
+// maxFile bytes; Unzip keeps only the names, in lower case, of files of
+// settings' size.
+bool Unpack(const std::string& data, std::map<std::string,std::string>& files, std::string& error, size_t maxFile);
 
 // Makes a backup of files in folder (made if need be); name gets its file name.
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,

@@ -53,7 +53,7 @@ def build_server():
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
-                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp", "server/saves.cpp", "server/wake.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -504,6 +504,24 @@ class Push(ServerTest):
         self.assertIn("Xbox 127.0.0.2: game folders up to date: 1 added", out)
         self.assertTrue(os.path.isfile(os.path.join(self.games, "Halo 3", "default.xex")))
         self.assertTrue(os.path.isfile(os.path.join(other, "Hdd1", "NetISO", "Halo 3", "default.xex")))
+
+    def test_tells_the_launcher_how_to_wake_this_computer(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        wake = os.path.join(self.games, "NetDisc360", "wake.ini")
+        # The console here is this computer itself, whose loopback adapter
+        # has no MAC address; a MAC address given in the settings is used.
+        with open(config, "w") as f:
+            f.write("[Server]\nwake_mac=aa-bb-cc-dd-ee-0f\n")
+        self.push(extra=("--config", config))
+        with open(wake, "rb") as f:
+            self.assertEqual(f.read(), b"mac=AA:BB:CC:DD:EE:0F\r\naddress=127.0.0.1\r\nbroadcast=127.0.0.255\r\n")
+        # Waking off: the file goes.
+        with open(config, "w") as f:
+            f.write("[Server]\nwake=0\nwake_mac=AA:BB:CC:DD:EE:0F\n")
+        self.add_iso("Gears of War 2.iso", 0x2B3C4D5E, 0x4D53082D)
+        self.assertIn("doesn't wake this computer", self.push(extra=("--config", config, "-v")))
+        self.assertFalse(os.path.exists(wake))
 
     def test_updates_netiso_sync_to_this_build(self):
         sync = os.path.join(self.games, "NetISO Sync")
@@ -1121,6 +1139,89 @@ class Dashboard(ServerTest):
             finally:
                 ftp.shutdown()
                 ftp.server_close()
+
+    def save_console(self, root):
+        """A console's hard drive with Halo 3 saves in one profile, and another game's in it too."""
+        profile = os.path.join(root, "Hdd1", "Content", "E0000123456789AB")
+        os.makedirs(os.path.join(profile, "4D5307E6", "00000001"))
+        os.makedirs(os.path.join(profile, "41560817", "00000001"))
+        os.makedirs(os.path.join(profile, "FFFE07D1", "00010000"))
+        os.makedirs(os.path.join(root, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000"))
+        package = bytearray(0x1000)
+        package[0:4] = b"CON "
+        package[0x411:0x411 + 12] = "Marcus".encode("utf-16-be")
+        with open(os.path.join(profile, "FFFE07D1", "00010000", "E0000123456789AB"), "wb") as f:
+            f.write(package)
+        for name, data in (("4D5307E6/00000001/Campaign", b"halo save 1"), ("41560817/00000001/Save", b"other game")):
+            with open(os.path.join(profile, *name.split("/")), "wb") as f:
+                f.write(data)
+        return os.path.join(profile, "4D5307E6", "00000001", "Campaign")
+
+    def test_backs_up_a_game_s_saves_after_it_ends_and_restores_them(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        with open(self.config, "w") as f:
+            f.write("[Server]\nsave_delay=0\n")
+        ftp_port = free_port()
+        self.start("--xbox", "127.0.0.2", "-v", "--ftp-port", str(ftp_port))
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
+        with connect_from("127.0.0.2", self.port) as plugin:
+            c = Client.__new__(Client)
+            c.conn = plugin
+            self.assertEqual(c.mount("Halo 3.iso"), 1)
+            self.state_when(lambda s: console(s)["playing"])
+            ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+            threading.Thread(target=ftp.serve_forever, daemon=True).start()
+            try:
+                state = self.state_when(lambda s: "Saves of Halo 3 backed up" in [e["text"] for e in console(s)["events"]], 30)
+                self.assertIn("Saves of Halo 3 backed up", [e["text"] for e in console(state)["events"]])
+                listed = self.json("GET", "/api/saves")
+                self.assertTrue(listed["on"])
+                self.assertEqual([(b["titleId"], b["game"], b["profiles"]) for b in listed["saves"]], [("4D5307E6", "Halo 3", ["Marcus"])])
+                name = listed["saves"][0]["name"]
+                self.assertTrue(re.match(r"4D5307E6_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.zip$", name), name)
+                # Only that game's saves, by profile, and what they are.
+                status, response, data = self.call("GET", "/api/save?name=" + name)
+                self.assertEqual(status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "application/zip")
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    self.assertEqual(sorted(z.namelist()), ["E0000123456789AB/Campaign", "save.ini"])
+                    self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+                    self.assertIn(b"profile_E0000123456789AB=Marcus\r\n", z.read("save.ini"))
+                self.assertEqual(self.call("GET", "/api/save?name=../netdisc.ini")[0], 404)
+                # Not while it plays.
+                for _ in range(33 * 16):
+                    c.read(0, 65536)
+                self.state_when(lambda s: console(s)["playing"])
+                status, _, data = self.call("POST", "/api/saves/restore", {"name": name, "address": "127.0.0.2"})
+                self.assertEqual(status, 400)
+                self.assertIn(b"is playing a game", data)
+            finally:
+                ftp.shutdown()
+                ftp.server_close()
+        # Back in Aurora with the save changed: Back up now keeps both, and
+        # skips games that aren't this server's and saves already kept.
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.assertEqual(self.json("POST", "/api/saves/backup", {"address": "127.0.0.2"}), {"ok": True, "made": 0, "same": 1})
+            with open(save, "wb") as f:
+                f.write(b"halo save 2")
+            self.assertEqual(self.json("POST", "/api/saves/backup", {"address": "127.0.0.2"}), {"ok": True, "made": 1, "same": 0})
+            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 2)
+            # Restored: the old save is back, and the one there before is kept.
+            self.assertEqual(self.json("POST", "/api/saves/restore", {"name": name, "address": "127.0.0.2"}), {"ok": True})
+            with open(save, "rb") as f:
+                self.assertEqual(f.read(), b"halo save 1")
+            saves = self.json("GET", "/api/saves")["saves"]
+            self.assertEqual(len(saves), 2)  # The save before was kept already.
+            self.assertEqual(self.json("POST", "/api/saves/delete", {"name": saves[-1]["name"]}), {"ok": True})
+            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 1)
+            self.assertEqual(self.call("POST", "/api/saves/restore", {"name": name, "address": "127.0.0.9"})[0], 400)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
 
     def test_pings_each_console(self):
         # A ping now and then (a connect to its FTP port, refused here) shows
