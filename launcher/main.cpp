@@ -701,6 +701,9 @@ static void StartDisc(const char* ini) {
     ClearLaunchData();
     ScreenStop();
     if(IniNumber(ini,"xbe",0)) {
+        char xefu[32];
+        if(nia::IniValue(ini,"xefu",xefu,sizeof(xefu)) && xefu[0])
+            Note("netiso.ini names the %s emulator; NetIsoTiles starts it instead of the console's pick.",xefu);
         LONG status=LinkDrive(AuroraDiscLink,DiscDevice);
         if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
         else { Note("Starting %s in the original Xbox emulator",AuroraDiscXbe); Launch(AuroraDiscXbe); }

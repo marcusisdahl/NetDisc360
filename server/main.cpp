@@ -873,7 +873,7 @@ private:
         Mounted();
         if(console_) { console_->inAurora=false; console_->probeAt=(long long)((Now()+FirstProbeSeconds)*1000); }
         if(!quiet_) {
-            if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
+            if(found->kind==DiscIso && iso_.Note()=="ISO") Log("%s: mounted %s.",peer_,found->name.c_str());
             else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
             if(console_) XboxEvent(*console_,EventPlay,WithoutIso(found->name)+" started");
             else Event(EventPlay,"%s started on %s",WithoutIso(found->name).c_str(),peer_);
@@ -1203,7 +1203,8 @@ void InstallFor(const char* iso, InstallNeed& need) {
     memcpy(need.packages,lines.c_str(),lines.size()+1);
 }
 
-// What the disc map says a disc is, for its game folder's netiso.ini.
+// What the disc map says a disc is, and an original Xbox game's emulator
+// (see xefu.h), for its game folder's netiso.ini.
 void RoleFor(const char* iso, DiscRoleInfo& info) {
     std::lock_guard<std::mutex> hold(GamesListLock);
     for(size_t i=0;i<GamesList.size();++i) {
@@ -1212,6 +1213,7 @@ void RoleFor(const char* iso, DiscRoleInfo& info) {
         info.known=true;
         _snprintf_s(info.role,sizeof(info.role),_TRUNCATE,"%s",g.role.c_str());
         _snprintf_s(info.label,sizeof(info.label),_TRUNCATE,"%s",g.roleLabel.c_str());
+        _snprintf_s(info.xefu,sizeof(info.xefu),_TRUNCATE,"%s",g.xefu.c_str());
         return;
     }
 }
@@ -2014,6 +2016,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
     j.Set("disc",g.disc).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
     j.Set("role",g.role).Set("roleLabel",g.roleLabel);
+    j.Set("xbe",g.xbe).Set("xefu",g.xefu).Set("xefuWhy",g.xefuWhy);
 }
 
 void Games(web::Reply& out) {

@@ -24,14 +24,17 @@
 // mounts from inside Aurora.
 //
 // A game started from a tile that asks for another of its discs gets that
-// disc's ISO mounted (see Disc swaps below), and NetISO's read size and
-// receive buffer are raised at start-up (see NetIsoTiles.ini below).
+// disc's ISO mounted (see Disc swaps below), an original Xbox game starts in
+// the emulator version its netiso.ini names (see Original Xbox emulator
+// below), and NetISO's read size and receive buffer are raised at start-up
+// (see NetIsoTiles.ini below).
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include "../shared/isvr.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
@@ -852,9 +855,10 @@ static __declspec(naked) void SwapPreviousStub() {
         li r3,0x408
     }
 }
-// The tile a launch came from, for the disc start that follows it.
+// The tile a launch came from, for the disc start that follows it, and the
+// emulator its netiso.ini names for an original Xbox game (see Emulator).
 static char TileDevice[MAX_PATH];
-static struct { char folder[MAX_PATH]; DWORD titleId,at; } LastTile;
+static struct { char folder[MAX_PATH]; DWORD titleId,at; char xefu[32]; } LastTile;
 static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.at<10*60*1000; }
 // The armed game: its tile folder, Title ID and discs (by number), set on
 // the launching title's thread before the watcher is told; and the module
@@ -1407,6 +1411,128 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
     SwapNote("Launch %s%s%s (flags %X): %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",flags,what);
 }
 
+// ---- Original Xbox emulator ----
+//
+// An original Xbox disc starts the console's xbox.xex, which picks the
+// emulator version from its own list of games and starts it for the disc:
+// XamLoaderLaunchTitleEx("X:\xefu.xex","\Device\Cdrom0",...) for a game it
+// doesn't know, xefu6.xex for Burnout 3 (seen in the logs). A tile's
+// netiso.ini can name another one, xefu= (from the server's list, see
+// server/xefu.h): when the emulator starts for that tile's disc, the one it
+// names starts instead, from the same folder, if it's there. The files in
+// HddX:\Compatibility stay as they are, but for one: xefu2019 and xefu2021a
+// to c load xefutitle.xex, which the Hacked Xefu Pack has as
+// xefutitle2019.xex and xefutitle2021.xex. Xefu Spoofer copies the one that
+// goes with the version to xefutitle.xex, and so does this.
+
+// The Title ID in the certificate of the disc's default.xbe (little-endian,
+// at the certificate's address less the base address).
+static DWORD Little32(const BYTE* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
+static const char DiscXbe[]="\\Device\\Cdrom0\\default.xbe";
+static bool XbeTitle(DWORD& titleId) {
+    HANDLE file;
+    if(OpenPath(DiscXbe,false,file)<0) return false;
+    static BYTE header[0x120];
+    BYTE cert[12];
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,header,sizeof(header),&offset);
+    bool found=false;
+    if(read>=0 && status.information==sizeof(header) && !memcmp(header,"XBEH",4)) {
+        DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+        offset.QuadPart=certificate-base;
+        IoStatusBlock more={0,0};
+        if(certificate>=base && NtReadFile(file,NULL,NULL,NULL,&more,cert,sizeof(cert),&offset)>=0 && more.information==sizeof(cert)) {
+            titleId=Little32(cert+8); found=titleId!=0;
+        }
+    }
+    NtClose(file);
+    return found;
+}
+// The emulator's folder as a device path for the kernel's calls, found by
+// opening name in it: xam's own path (X:\) through \??, or else where
+// HddX:\Compatibility is (xefu.xex names it).
+static const char CompatibilityDevice[]="\\Device\\Harddisk0\\SystemPartition\\Compatibility\\";
+static bool EmulatorFolder(const char* folder,const char* name,char* device,size_t capacity) {
+    char candidates[2][MAX_PATH];
+    if(sprintf_s(candidates[0],folder[0]=='\\' ? "%s" : "\\??\\%s",folder)<0) candidates[0][0]=0;
+    strcpy_s(candidates[1],CompatibilityDevice);
+    for(int i=0;i<2;++i) {
+        char path[MAX_PATH]; HANDLE file;
+        if(!candidates[i][0] || sprintf_s(path,"%s%s",candidates[i],name)<0 || OpenPath(path,false,file)<0) continue;
+        NtClose(file);
+        return strcpy_s(device,capacity,candidates[i])==0;
+    }
+    return false;
+}
+// The whole of a small file; its size, or -1.
+static int ReadSmall(const char* device,BYTE* data,DWORD capacity) {
+    HANDLE file;
+    if(OpenPath(device,false,file)<0) return -1;
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,data,capacity,&offset);
+    NtClose(file);
+    return read>=0 && status.information<capacity ? int(status.information) : -1;
+}
+// Makes xefutitle.xex in the emulator's folder (a device path) a copy of
+// from there, unless it is one already.
+static const DWORD TitleFileMax=0x10000;
+static BYTE TitleFrom[TitleFileMax],TitleNow[TitleFileMax];
+static bool PutTitleFile(const char* folder,const char* from) {
+    char source[MAX_PATH],target[MAX_PATH];
+    if(sprintf_s(source,"%s%s",folder,from)<0 || sprintf_s(target,"%sxefutitle.xex",folder)<0) return false;
+    int size=ReadSmall(source,TitleFrom,TitleFileMax);
+    if(size<=0) { SwapNote("Can't read %s.",source); return false; }
+    if(ReadSmall(target,TitleNow,TitleFileMax)==size && !memcmp(TitleFrom,TitleNow,size_t(size))) return true;
+    KernelString name={USHORT(strlen(target)),USHORT(sizeof(target)),target};
+    ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+    IoStatusBlock io={0,0}; HANDLE file=NULL;
+    // GENERIC_WRITE with SYNCHRONIZE, FILE_OVERWRITE_IF, a synchronous file.
+    LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,0,5,0x60);
+    if(status>=0) {
+        LARGE_INTEGER at; at.QuadPart=0;
+        status=NtWriteFile(file,NULL,NULL,NULL,&io,TitleFrom,DWORD(size),&at);
+        if(status>=0 && io.information!=DWORD(size)) status=-1;
+        NtClose(file);
+    }
+    if(status<0) { SwapNote("Can't write %s (status %08X).",target,status); return false; }
+    SwapNote("Copied %s to %s, which %s loads.",from,target,LastTile.xefu);
+    return true;
+}
+// What the emulator start for path from mountPath starts instead: the tile's
+// xefu in chosen, or path itself.
+static const char* Emulator(const char* path,const char* mountPath,char* chosen,size_t capacity) {
+    if(!path || !mountPath || _stricmp(mountPath,DiscDevice) || !TileFresh() || !LastTile.xefu[0]) return path;
+    const char* name=strrchr(path,'\\');
+    if(!name || _strnicmp(name+1,"xefu",4) || !_strnicmp(name+1,"xefutitle",9)) return path;
+    size_t folder=size_t(name+1-path);
+    char leaf[48];
+    if(folder>=MAX_PATH || folder+sizeof(leaf)>=capacity || sprintf_s(leaf,"%s.xex",LastTile.xefu)<0) return path;
+    memcpy(chosen,path,folder); chosen[folder]=0;
+    strcat_s(chosen,capacity,leaf);
+    if(!_stricmp(chosen,path)) return path; // What the console picked.
+    DWORD titleId=0;
+    if(!XbeTitle(titleId) || titleId!=LastTile.titleId) {
+        SwapNote("The disc isn't the tile's game (Title ID %08X), so %s starts as the console picked.",titleId,path);
+        return path;
+    }
+    char folderPath[MAX_PATH],device[MAX_PATH]; memcpy(folderPath,path,folder); folderPath[folder]=0;
+    if(!EmulatorFolder(folderPath,leaf,device,sizeof(device))) {
+        SwapNote("%s isn't there, so %s starts as the console picked.",chosen,path);
+        return path;
+    }
+    const char* title=!_strnicmp(LastTile.xefu,"xefu2019",8) ? "xefutitle2019.xex" : !_strnicmp(LastTile.xefu,"xefu2021",8) ? "xefutitle2021.xex" : NULL;
+    if(title && !PutTitleFile(device,title)) { SwapNote("So %s starts as the console picked.",path); return path; }
+    SwapNote("Starting %s instead of %s, as the tile's netiso.ini says.",chosen,path);
+    return chosen;
+}
+// xefu or config_loader_xefu, then letters, digits and _ (see server/xefu.h).
+static bool XefuName(const char* name) {
+    size_t start=!strncmp(name,"xefu",4) ? 4 : !strncmp(name,"config_loader_xefu",18) ? 18 : 0;
+    if(!start || !strncmp(name,"xefutitle",9) || strlen(name)>start+24) return false;
+    for(const char* c=name+start;*c;++c) if(!isalnum((unsigned char)*c) && *c!='_') return false;
+    return true;
+}
+
 // ---- Tiles ----
 
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
@@ -1503,6 +1629,8 @@ static Handling Handled(const char* path,const char* mountPath) {
     Handling handling=NotTile;
     if(IsTile(path,mountPath,settings)) {
         strcpy_s(LastTile.folder,TileDevice); LastTile.titleId=settings.titleId; LastTile.at=GetTickCount();
+        if(!IniValue(Ini,"xefu",LastTile.xefu,sizeof(LastTile.xefu)) || !XefuName(LastTile.xefu)) LastTile.xefu[0]=0;
+        else Note("Original Xbox emulator: %s (from netiso.ini).",LastTile.xefu);
         SwapLogTo(LastTile.folder);
         PrepareDiscs(settings);
         // The tile's own launcher starts it (see the top of this file);
@@ -1558,6 +1686,8 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     bool disc=handling==NotTile && DiscStart(path,mountPath);
     NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
+    static char emulator[MAX_PATH];
+    if(handling==NotTile && !disc) path=Emulator(path,mountPath,emulator,sizeof(emulator));
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;

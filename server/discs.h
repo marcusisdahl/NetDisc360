@@ -24,9 +24,12 @@ struct Package { std::string path; U64 size; };
 // top; installDisc is the listed name of the disc whose packages this one's
 // game needs installed (see LinkInstallDiscs). role and roleLabel are what
 // the disc map says the disc is (see discmap.h; the label in UTF-8), empty
-// if it has nothing.
+// if it has nothing. xbe is set for an original Xbox game (default.xbe, no
+// default.xex); xefu is the emulator version it starts in and xefuWhy why
+// (see xefu.h; from discs.ini or NetDisc360's list), empty for the console's
+// own pick.
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
-                 std::vector<Package> packages; std::string installDisc, role, roleLabel; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool xbe; std::string xefu, xefuWhy; };
 
 // The discs in folder and its subfolders, sorted by name, added to out;
 // false if folder itself couldn't be read (a drive or share that isn't there).
