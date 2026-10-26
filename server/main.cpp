@@ -1957,7 +1957,8 @@ void State(web::Reply& out) {
             j.Open('{').Set("address",c.text).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
             j.Set("ftp",c.ftp.load()).Set("synced",c.synced.load()).Set("mounted",config::ToUtf8(WithoutIso(c.mounted))).Set("push",c.push.load());
             j.Set("playing",c.connections>0 && !c.mounted.empty() && !c.inAurora).Set("inAurora",c.inAurora.load());
-            j.Set("ping",c.pingMs.load()).Set("answers",c.answers && !c.offline).Set("offline",c.offline.load());
+            bool answers=c.answers && !c.offline;  // Before pingMs: PingLoop sets pingMs first, so answers implies a ping time.
+            j.Set("ping",c.pingMs.load()).Set("answers",answers).Set("offline",c.offline.load());
             long long answered=c.answeredAt;
             j.Set("answered",answered<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-answered/1000.0));
             j.Set("seen",at<0 ? 0LL : (long long)time(NULL)-(long long)(Now()-at/1000.0));
