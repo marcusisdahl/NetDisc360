@@ -211,6 +211,14 @@ std::string FolderOf(const std::string& path) {
 #ifdef _WIN32
 bool RemoveFile(const std::string& utf8Path) { return DeleteFileW(Wide(utf8Path,CP_UTF8).c_str())!=0; }
 
+bool Stamp(const std::string& utf8Path, long long& size, long long& time) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if(!GetFileAttributesExW(Wide(utf8Path,CP_UTF8).c_str(),GetFileExInfoStandard,&data) || (data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) return false;
+    size=((long long)data.nFileSizeHigh<<32)|data.nFileSizeLow;
+    time=((long long)data.ftLastWriteTime.dwHighDateTime<<32)|data.ftLastWriteTime.dwLowDateTime;
+    return true;
+}
+
 bool MakeFolder(const std::string& utf8Path) {
     std::wstring path=Wide(utf8Path,CP_UTF8);
     if(CreateDirectoryW(path.c_str(),NULL)) return true;
@@ -237,6 +245,14 @@ std::vector<Entry> Files(const std::string& utf8Folder) {
 }
 #else
 bool RemoveFile(const std::string& utf8Path) { return !unlink(utf8Path.c_str()); }
+
+bool Stamp(const std::string& utf8Path, long long& size, long long& time) {
+    struct stat st;
+    if(stat(utf8Path.c_str(),&st) || !S_ISREG(st.st_mode)) return false;
+    size=(long long)st.st_size;
+    time=(long long)st.st_mtim.tv_sec*1000000000LL+st.st_mtim.tv_nsec;
+    return true;
+}
 
 bool MakeFolder(const std::string& utf8Path) { return !mkdir(utf8Path.c_str(),0700) || IsFolder(utf8Path); }
 

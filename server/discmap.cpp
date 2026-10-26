@@ -146,8 +146,13 @@ static void Parse(const std::string& text, std::map<DWORD,MapGame>& games, std::
 }
 
 void DiscMap::Load(const std::string& path, std::vector<std::string>& problems) {
+    // Each scan comes here: the file is read only once it has changed.
+    long long size=-1,time=0;
+    if(!path.empty() && !config::Stamp(path,size,time)) size=-1;
+    if(path==path_ && size==size_ && time==time_) return;
+    size_=size; time_=time;
     std::string text;
-    if(!path.empty()) {
+    if(size>=0) {
         FILE* file=config::Open(path,"rb");
         if(file) {
             char buffer[4096]; size_t got;
