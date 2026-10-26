@@ -391,7 +391,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall,
-          FindRole findRole) {
+          FindRole findRole, Wanted wanted, Placed placed) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -404,6 +404,8 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!isos[isoCount][0]) break;
     }
     Say(note,"The server has %d ISO(s).",isoCount);
+    static bool unwanted[IsvrMaxIsos];
+    for(int i=0;i<isoCount;++i) unwanted[i]=wanted && !wanted(isos[i]);
 
     // What is already here. A folder is a game folder when its netiso.ini names an ISO.
     storage.MakeFolder(root);
@@ -446,6 +448,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     }
 
     for(int i=0;i<isoCount;++i) {
+        if(unwanted[i]) { ++result.installed; continue; }
         bool have=false;
         for(int k=0;k<folderCount;++k) if(folders[k].game && !_stricmp(folders[k].iso,isos[i])) { folders[k].keep=true; have=true; }
         if(have) {
@@ -537,11 +540,17 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     // so nothing is removed then.
     for(int k=0;k<folderCount && isoCount;++k) {
         if(!folders[k].game || folders[k].keep) continue;
-        if(!removeGone) { ++result.held; continue; }
+        bool installed=false;
+        for(int i=0;i<isoCount && !installed;++i) installed=unwanted[i] && !_stricmp(folders[k].iso,isos[i]);
+        if(!removeGone && !installed) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
-        if(storage.RemoveGame(folder)) { Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso); ++result.removed; }
-        else { Say(note,"Couldn't remove %s.",folder); ++result.failed; }
+        if(!storage.RemoveGame(folder)) { Say(note,"Couldn't remove %s.",folder); ++result.failed; continue; }
+        if(installed) Say(note,"Removed %s: the game on %s is installed on this console.",folders[k].name,folders[k].iso);
+        else Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso);
+        folders[k].game=false;
+        ++result.removed;
     }
+    if(placed) for(int k=0;k<folderCount;++k) if(folders[k].game && folders[k].keep) placed(folders[k].iso,folders[k].name);
     return true;
 }
 }

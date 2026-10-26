@@ -707,6 +707,13 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
 }
 }
 
+bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) { return XexTitle(xex,size,titleId,mediaId,disc); }
+bool GodIds(const unsigned char* h, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) {
+    if(size<0x368 || (memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) || Big32(h+0x344)!=GodContentType) return false;
+    titleId=Big32(h+0x360); mediaId=Big32(h+0x354); disc=h[0x366] ? h[0x366] : 1;
+    return titleId!=0;
+}
+
 bool FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
     bool listed=Scan(folder,0,out);
     std::sort(out.begin(),out.end(),[](const IsoFile& a, const IsoFile& b) {

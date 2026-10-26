@@ -72,6 +72,12 @@ private:
     std::string note_;
 };
 
+// The Title ID, Media ID and disc number in the start of a default.xex (as
+// much of its header as holds the execution info) or of a Games on Demand
+// package's header file (0x368 bytes); false if it isn't one.
+bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
+bool GodIds(const unsigned char* header, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
+
 // For the tests: the disc image of a folder or GOD package, or NULL with why in error.
 DiscImage* OpenFolderImage(const std::string& folder, std::string& error);
 DiscImage* OpenGodImage(const std::string& header, std::string& error);

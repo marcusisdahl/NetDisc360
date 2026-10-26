@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import hmac
 import http.client
+import http.server
 import io
 import json
 import os
@@ -24,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +56,7 @@ def build_server():
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "server/installed.cpp", "server/aurora.cpp", "server/system.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -115,6 +118,77 @@ def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
+
+
+class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
+    """Aurora's web server as NetISO-Manager uses it (port 9999): a login
+    (xboxhttp/xboxhttp) for a token, what runs, and starting a title."""
+
+    def log_message(self, *args):
+        pass
+
+    def answer(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def form(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return dict(urllib.parse.parse_qsl(self.rfile.read(length).decode()))
+
+    def allowed(self):
+        return self.headers.get("Authorization") == "Bearer t0ken"
+
+    def do_POST(self):
+        form = self.form()
+        if self.path == "/authenticate":
+            if form.get("username") == "xboxhttp" and form.get("password") == "xboxhttp":
+                self.answer(200, {"token": "t0ken"})
+            else:
+                self.answer(401, {})
+        elif self.path == "/title/launch" and self.allowed():
+            self.server.launched.append((form.get("path"), form.get("exec"), form.get("type")))
+            self.answer(200, {})
+        else:
+            self.answer(401, {})
+
+    def do_GET(self):
+        if self.path == "/title" and self.allowed():
+            self.answer(200, {"path": self.server.running, "titleid": "0xFFFE07D1"})
+        else:
+            self.answer(401, {})
+
+
+class AuroraWeb(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, running=AURORA_XEX):
+        super().__init__(("127.0.0.1", 0), AuroraWebHandler)
+        self.running = running
+        self.launched = []
+        self.port = self.server_address[1]
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+
+
+def god_header(media_id, title_id, disc=1):
+    """A Games on Demand package's header file, as far as it names the game."""
+    header = bytearray(0x400)
+    header[0:4] = b"LIVE"
+    struct.pack_into(">I", header, 0x344, 0x7000)
+    struct.pack_into(">I", header, 0x354, media_id)
+    struct.pack_into(">I", header, 0x360, title_id)
+    header[0x366] = disc
+    return bytes(header)
 
 
 def connect_from(address, port):
@@ -963,6 +1037,210 @@ class Push(ServerTest):
                 if part.startswith("content"):
                     self.assertGreater(len(part), len("content "), name)
 
+    def install(self, folder, media_id, title_id):
+        """A game installed on the console: its default.xex in folder (under Hdd1)."""
+        path = os.path.join(self.xbox, "Hdd1", *folder.split("/"))
+        os.makedirs(path)
+        with open(os.path.join(path, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(media_id, title_id)))
+
+    def test_leaves_out_games_installed_on_the_console(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Gears.iso", 0x11111111, 0x4D5307D5)
+        out = self.push()
+        self.assertIn("3 added", out)
+        # Halo 3 is installed in Hdd1:\Games (two folders down), Skate 3 as
+        # Games on Demand; Gears has only a save there.
+        self.install("Games/Shooters/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        os.makedirs(os.path.join(content, "454108E6", "00007000", "0123456789ABCDEF0123.data"))
+        with open(os.path.join(content, "454108E6", "00007000", "0123456789ABCDEF0123"), "wb") as f:
+            f.write(god_header(0x5C087C2C, 0x454108E6))
+        os.makedirs(os.path.join(content, "4D5307D5", "00000001"))
+        # Hdd1 itself is looked into too, but not the game folders in it,
+        # whose launchers have the games' IDs.
+        out = self.push(extra=["--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("2 games are installed on it (in /Hdd1/Games;/Hdd1, or as Games on Demand)", out)
+        self.assertIn("2 games installed on it get no game folder", out)
+        self.assertIn("2 removed", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "NetDisc360"])
+        # Only the package's header is read, and only its first bytes.
+        self.assertNotIn("RETR 0123456789ABCDEF0123.data", self.ftp.log)
+        # Without it, they're back.
+        out = self.push(extra=["--no-installed"])
+        self.assertIn("2 added", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "Halo 3", "NetDisc360", "Skate 3"])
+
+    def test_writes_aurora_s_cleanup_script_and_online_filter(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        out = self.push()
+        self.assertIn("wrote Aurora's \"Hide PC games while NetDisc360 is off\" filter", out)
+        scripts = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts")
+        cleanup = os.path.join(scripts, "Utility", "NetDisc360 Cleanup", "Main.lua")
+        online = os.path.join(scripts, "Content", "Filters", "NetDiscOnline.lua")
+        for path in (cleanup, online):
+            with open(path, "rb") as f:
+                self.assertIn(b"\r\n", f.read())
+        # The marker is there while the server runs; it goes as it quits.
+        self.assertIn("online.txt", self.ftp.stored)
+        self.assertIn("DELE online.txt", self.ftp.log)
+        self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc360")), ["boot.xex"])
+        # Nothing new: neither is written again.
+        self.ftp.stored.clear()
+        self.push()
+        self.assertEqual(self.ftp.stored, ["online.txt"])
+        if LUA:
+            check = os.path.join(self.tmp.name, "check.lua")
+            with open(check, "w") as f:
+                f.write(r"""
+local files = { ['Hdd1:\\NetISO\\NetDisc360\\online.txt'] = 'x' }
+FileSystem = {
+   FileExists = function(path) return files[path] ~= nil end,
+   DeleteFile = function(path) files[path] = nil end,
+   WriteFile = function(path, text) files[path] = text end }
+local shown = 'Hdd1:\\NetISO\\NetDisc360\\shown.txt'
+local tile = { Directory = '\\NetISO\\Halo 3\\' }
+local installed = { Directory = '\\Games\\Halo 3\\' }
+-- Aurora starts while NetDisc360 runs: everything shows.
+files[shown] = 'offline'
+GameListFilterCategories = { User = {} }
+dofile(%(online)r)
+local show = GameListFilterCategories.User['Hide PC games while NetDisc360 is off']
+assert(files[shown] == nil)
+assert(show(tile) and show(installed))
+assert(files[shown] == 'online')
+-- Aurora starts while it doesn't: the tiles are hidden.
+files = {}
+GameListFilterCategories = { User = {} }
+dofile(%(online)r)
+show = GameListFilterCategories.User['Hide PC games while NetDisc360 is off']
+assert(not show(tile) and show(installed))
+assert(not show({ Directory = 'NetISO\\Skate 3' }))
+assert(files[shown] == 'offline')
+-- The cleanup takes the rows of tiles that are gone off the list, after asking.
+local done, asked, refreshed = {}, nil, false
+Sql = {
+   ExecuteFetchRows = function(query) return {
+      { Id = 1, Directory = '\\NetISO\\Halo 3\\' },
+      { Id = '2', Directory = 'Hdd1:\\NetISO\\Old Game\\' },
+      { Id = 3, Directory = '\\Games\\Old Game\\' },
+      { Id = 4, Directory = '\\NETISO\\Gone\\' },
+      { Id = 5, Directory = '\\NetISO\\Skate 3' } } end,
+   Execute = function(query) table.insert(done, query) end }
+Script = {
+   ShowMessageBox = function(title, text, ...) asked = { ... }; return { Button = 1 } end,
+   RefreshListOnExit = function(on) refreshed = on end }
+dofile(%(cleanup)r)
+assert(scriptTitle == 'NetDisc360 Cleanup' and scriptPermissions[1] == 'sql')
+main()
+assert(#done == 5, #done)
+assert(done[1] == 'DELETE FROM Config.UserRecentGames WHERE ContentId IN (2,4)', done[1])
+assert(done[5] == 'DELETE FROM ContentItems WHERE Id IN (2,4)', done[5])
+assert(refreshed and asked[1] == 'OK')
+-- Cancel changes nothing.
+done = {}
+Script.ShowMessageBox = function() return { Button = 2 } end
+main()
+assert(#done == 0)
+print('lua ok')
+""" % {"online": online, "cleanup": cleanup})
+            result = subprocess.run([LUA, check], capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
+    def test_restarts_aurora_when_its_filter_hid_the_games(self):
+        # Aurora started while the server didn't run, and the filter hid the
+        # games: Aurora, on screen, is restarted once so they show.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        helper = os.path.join(self.games, "NetDisc360")
+        os.makedirs(helper)
+        with open(os.path.join(helper, "shown.txt"), "w") as f:
+            f.write("offline")
+        aurora = AuroraWeb()
+        try:
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter shows the PC games again", out)
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # The filter showed them as the server quit: restarted to hide them.
+            with open(os.path.join(helper, "shown.txt"), "w") as f:
+                f.write("online")
+            aurora.launched.clear()
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter hides the PC games while NetDisc360 is off", out)
+            self.assertEqual(len(aurora.launched), 1)
+            # Never during a game.
+            aurora.running = "\\Device\\Cdrom0\\default.xex"
+            aurora.launched.clear()
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("didn't restart Aurora so its filter hides the PC games while NetDisc360 is off: Aurora isn't on screen", out)
+            self.assertEqual(aurora.launched, [])
+        finally:
+            aurora.close()
+
+    def test_follows_this_computer_s_new_address(self):
+        # NetISO.xex.txt names 127.0.0.9, an address this computer had: once
+        # the console is quiet and nothing answers there, it names this one.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        usb = os.path.join(self.xbox, "Usb0")
+        os.makedirs(os.path.join(usb, "Plugins"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.9\r\n")
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("[Server]\nown_addresses=10.0.0.5,127.0.0.9\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetISO.xex.txt (/Usb0/Plugins/NetISO.xex.txt) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), newline="") as f:
+            self.assertEqual(f.read(), "127.0.0.1\r\n")
+        # An address this computer never had is left alone.
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.8")
+        out = self.push(extra=["--config", config])
+        self.assertNotIn("NetISO.xex.txt (", out)
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
+            self.assertEqual(f.read(), "127.0.0.8")
+        # And so is all of it when following is off.
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.9")
+        with open(config, "a") as f:
+            f.write("follow_address=0\n")
+        self.push(extra=["--config", config])
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
+            self.assertEqual(f.read(), "127.0.0.9")
+
+    def test_starts_a_game_from_the_dashboard(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.install("Games/Skate 3", 0x5C087C2C, 0x454108E6)
+        aurora = AuroraWeb()
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual(games["Halo 3"]["tiles"], ["127.0.0.1"])
+            self.assertEqual(games["Skate 3"]["installedOn"], ["127.0.0.1"])
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            # An installed game starts from where it's installed.
+            self.json("POST", "/api/play", {"game": "Skate 3", "console": "127.0.0.1"})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0"),
+                                               ("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0")])
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.7"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"hasn't used NetDisc360", data)
+            # Aurora's web server off.
+            aurora.close()
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"doesn't answer on port", data)
+        finally:
+            aurora.close()
+            server.kill()
+            server.communicate()
+
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push(expect=1, ftp_port=free_port())
@@ -1058,6 +1336,28 @@ class Dashboard(ServerTest):
         self.assertEqual(state["library"]["duplicates"], 2)
         conflict = self.json("GET", "/api/games")["conflicts"][0]
         self.assertEqual([conflict[k] for k in ("served", "open", "chosen")], [folder, True, True])
+
+    def test_checks_its_own_setup(self):
+        # A game there twice, named with an address: the report leaves it out.
+        self.add_iso("Halo 3 10.1.2.3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        folder = os.path.join(self.isos, "Halo 3 extracted")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(0x1234, 0x4D5307E6)))
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2 and s["library"]["conflicts"] == 1)
+        setup = self.json("GET", "/api/setup")
+        self.assertEqual([setup[k] for k in ("folders", "foldersFound", "games", "iso", "god", "extracted", "conflicts")],
+                         [1, 1, 2, 2, 0, 0, 1])
+        self.assertEqual([setup[k] for k in ("skipInstalled", "auroraScripts", "followAddress", "keepAwake")], [True] * 4)
+        # Only Windows has network categories to fix.
+        self.assertEqual([setup[k] for k in ("networks", "publicNetwork", "canFix")], [[], False, False])
+        self.assertEqual(self.call("POST", "/api/network/private", {})[0], 400)
+        warning = [w for w in setup["warnings"] if "more than once" in w]
+        self.assertEqual(len(warning), 1)
+        self.assertIn("Halo 3 x.x.x.x", warning[0])
+        self.assertNotIn("10.1.2.3", json.dumps(setup))
 
     def test_reports_each_console(self):
         # What each console was sent, second by second, and its disc.
@@ -1158,6 +1458,29 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("GET", "/api/state", headers={"Sec-Fetch-Site": "same-origin"})[0], 200)
         # A line break would start another FTP command.
         self.assertEqual(self.call("POST", "/api/settings", {"aurora": "/Hdd1/Apps/Aurora\r\nRMD /Hdd1"})[0], 400)
+
+    def test_keeps_the_console_extras(self):
+        self.start()
+        self.assertEqual(self.call("POST", "/api/settings", {"installedFolders": "Games"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"auroraWebPort": 0})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"auroraWebUser": ""})[0], 400)
+        self.json("POST", "/api/settings", {"skipInstalled": False, "installedFolders": " /Hdd1/Games/ ;/Usb0/Games\n/hdd1/games",
+                                             "auroraWebPassword": "w3b pass", "auroraWebPort": 8080, "restartAurora": False,
+                                             "keepAwake": False, "followAddress": False, "auroraScripts": False})
+        for _ in range(2):  # As changed, and as saved.
+            settings = self.json("GET", "/api/state")["settings"]
+            self.assertEqual([settings[k] for k in ("skipInstalled", "installedFolders", "auroraWebUser", "auroraWebPasswordSet", "auroraWebPort",
+                                                    "restartAurora", "keepAwake", "followAddress", "auroraScripts")],
+                             [False, "/Hdd1/Games;/Usb0/Games", "xboxhttp", True, 8080, False, False, False, False])
+            self.assertNotIn("w3b pass", json.dumps(settings))
+            self.restart()
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("installed_folders=/Hdd1/Games;/Usb0/Games\n", saved)
+        self.assertIn("aurora_web_port=8080\n", saved)
+        # Empty: Games on Demand only.
+        self.json("POST", "/api/settings", {"installedFolders": ""})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["installedFolders"], "")
 
     def test_settings_file_options_can_t_open_or_end_it(self):
         # A settings file (or a restored backup) can't do what only a command line should.

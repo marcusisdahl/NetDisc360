@@ -8,13 +8,17 @@
 // the settings can be changed while it runs.
 //
 //   netdisc [options] [game folder ...]      (netdisc -h lists them)
+#include "../shared/helper.h"
 #include "../shared/library.h"
 #include "app.h"
+#include "aurora.h"
 #include "backup.h"
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
 #include "ftp.h"
+#include "installed.h"
+#include "system.h"
 #include "update.h"
 #include "version.h"
 #include "web.h"
@@ -22,6 +26,7 @@
 #include <atomic>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <stdarg.h>
@@ -42,6 +47,7 @@ typedef int AddressLength;
 #include <dirent.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <signal.h>
 typedef socklen_t AddressLength;
 #endif
 
@@ -90,10 +96,27 @@ struct Options {
     // themselves (NetDisc360.exe), and count test versions (pre-releases) too.
     bool updateCheck, updateAuto, updatePrerelease;
     std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
+    // Games installed on a console get no tile (see installed.h); they're
+    // looked for in these FTP folders (semicolons between) and their drives'
+    // Games on Demand.
+    bool skipInstalled;
+    std::string installedFolders;
+    // Aurora's scripts (see aurora.h): the cleanup script and the filter that
+    // hides the PC games while the server is off, with its marker file; and
+    // Aurora restarted (only while it's on screen) when that filter shows the
+    // other state than the server is in.
+    bool auroraScripts, restartAurora;
+    // Aurora's web server (Aurora's settings, HTTP server), to start games and restart Aurora.
+    std::string auroraWebUser, auroraWebPassword;
+    int auroraWebPort;
+    bool followAddress;  // NetISO.xex.txt names this computer again when its address changed (FollowAddress).
+    bool keepAwake;      // Windows doesn't sleep while a console plays (AwakeLoop).
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
-                backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false) {}
+                backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
+                skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
+                auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -183,6 +206,11 @@ void Event(int kind, const char* format, ...) {
     if(Events.size()>EventKeep) Events.pop_front();
 }
 
+std::string Lower(std::string text) {
+    for(size_t i=0;i<text.size();++i) text[i]=char(tolower((unsigned char)text[i]));
+    return text;
+}
+
 std::string WithoutIso(const std::string& name) {
     return name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso") ? name.substr(0,name.size()-4) : name;
 }
@@ -270,6 +298,7 @@ std::string Location(const IsoFile& disc) {
 }
 
 std::string Count(int n, const char* one, const char* many);
+std::string Number(long long n);
 
 // Brings Conflicts up to date with what Isos() found, under DuplicatesLock,
 // and tells about conflicts that are newly open.
@@ -479,9 +508,16 @@ struct Console {
     std::atomic<long long> answeredAt, offlineAt, pingAt;  // In Now() milliseconds.
     std::atomic<long long> suspectAt;  // When its connections got a quick keepalive; 0: they didn't.
     std::set<SOCKET> sockets;          // Its NetISO connections, under ConsoleLock.
+    // From its latest push, under ConsoleLock: its game folders by the
+    // listed name of their disc (lower case), and the games installed on it.
+    std::map<std::string,std::string> tiles;
+    std::vector<InstalledGame> installed;
+    // NetDisc360's marker for Aurora's "Hide PC games while NetDisc360 is
+    // off" filter is on it (see aurora.h), so quitting deletes it.
+    std::atomic<bool> marked;
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
                                  inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
-                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0) {
+                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), marked(false) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
     }
@@ -520,6 +556,11 @@ std::vector<Console*> AllConsoles() {
 // dashboard knows it after a restart.
 struct KnownConsole { std::string address; long long seen; };
 std::vector<KnownConsole> Known;  // Under SettingsLock.
+// This computer's addresses as far back as the settings file remembers
+// (own_addresses), newest last, so a NetISO.xex.txt naming an address it had
+// is told from one naming another server (see FollowAddress). Under SettingsLock.
+std::vector<std::string> OwnAddresses;
+const size_t OwnAddressesKept = 16;
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -720,6 +761,40 @@ void RateLoop() {
         Sleep(1000);
     }
 }
+
+// Keeps Windows awake (see system.h) while a console plays a game from this
+// server, and for AwakeSeconds after the last read: a game whose disc goes
+// with the computer sleeping crashes. Then Windows may sleep again.
+#ifdef _WIN32
+const double AwakeSeconds = 600;
+void AwakeLoop() {
+    bool awake=false;
+    U64 counted=0;
+    double readAt=-AwakeSeconds;
+    for(;;) {
+        U64 sent=0;
+        bool playing=false;
+        std::vector<Console*> consoles=AllConsoles();
+        {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            for(size_t i=0;i<consoles.size();++i) {
+                const Console& c=*consoles[i];
+                sent+=c.sent;
+                playing=playing || (c.connections>0 && !c.mounted.empty() && !c.inAurora && !c.offline);
+            }
+        }
+        if(sent!=counted) { counted=sent; readAt=Now(); }
+        bool want=Current().keepAwake && (playing || Now()-readAt<AwakeSeconds);
+        if(want!=awake) {
+            KeepAwake(want);
+            awake=want;
+            if(want) Log("Keeping this computer awake while a console plays.");
+            else Log("This computer may sleep again: no console has played for %.0f minutes.",AwakeSeconds/60);
+        }
+        Sleep(5000);
+    }
+}
+#endif
 
 // One client connection, speaking the protocol as tuxuser/netiso-srv does
 // (src/main.rs), except that every request and reply is read and sent whole,
@@ -1216,7 +1291,23 @@ void RoleFor(const char* iso, DiscRoleInfo& info) {
     }
 }
 
-bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o) {
+// The games installed on the console being pushed to, by Title ID and disc,
+// and its game folders as Sync tells them (both under SyncLock).
+std::set<std::pair<DWORD,int> > PushInstalled;
+std::map<std::string,std::string> PushTiles;
+
+// Whether the console gets a game folder for a disc: not when the same game
+// (Title ID and disc) is installed on it.
+bool WantedFor(const char* iso) {
+    if(PushInstalled.empty()) return true;
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    for(size_t i=0;i<GamesList.size();++i)
+        if(!_stricmp(GamesList[i].name.c_str(),iso)) return !GamesList[i].titleId || !PushInstalled.count(std::make_pair(GamesList[i].titleId,GamesList[i].disc));
+    return true;
+}
+void PlacedAt(const char* iso, const char* folder) { PushTiles[Lower(iso)]=folder; }
+
+bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o, const std::vector<InstalledGame>& installed) {
     std::vector<FtpEntry> entries;
     ftp.MakeFolder(o.xboxFolder.c_str());
     if(!ftp.List(o.xboxFolder.c_str(),entries)) {
@@ -1229,15 +1320,23 @@ bool Push(const Console& console, FtpClient& ftp, SyncResult& result, bool remov
     if(!client.Connect(htonl(0x7F000001),o.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
     bool ok;
+    std::map<std::string,std::string> tiles;
     {
         std::lock_guard<std::mutex> hold(SyncLock);
         Pushing=&console;
+        PushInstalled.clear();
+        for(size_t i=0;i<installed.size();++i) PushInstalled.insert(std::make_pair(installed[i].titleId,installed[i].disc));
+        PushTiles.clear();
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor);
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt);
+        tiles.swap(PushTiles);
     }
+    if(ok) { std::lock_guard<std::mutex> hold(ConsoleLock); console.tiles.swap(tiles); }
     if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
                                     result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
     else if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
+    if(ok && result.installed) XboxLog(console,"%s installed on it get%s no game folder: Aurora lists the installed copy.",
+                                       Count(result.installed,"game","games").c_str(),result.installed==1 ? "s" : "");
     if(ok && result.held && FoldersMissing) XboxLog(console,"%d game folder(s) have no game here; they stay until every game folder can be read again.",result.held);
     else if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
@@ -1279,9 +1378,93 @@ struct PushState {
     bool attempted, reachable, toldDown, toldWaiting;
     std::atomic<bool> everPushed;
     std::atomic<bool> finished;  // --push-once: done with this console.
+    InstalledGames installed;    // What was read of its installed games.
+    std::string installedSeen;   // Their Title IDs and discs, as last logged.
+    bool toldInstalled;          // Looking for them failed, and the log said so.
+    bool restarted;              // Aurora was restarted for its filter once (see RefreshAuroraScripts).
+    std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
     PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
-                  attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false) {}
+                  attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
+                  toldInstalled(false), restarted(false) {}
 };
+
+// The games installed on the console, for its push and the dashboard (see installed.h).
+void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options& o, std::vector<InstalledGame>& found) {
+    std::string error;
+    bool ok=s.installed.Find(ftp,InstalledFolders(o.installedFolders),o.xboxFolder,found,error);
+    if(!ok && !s.toldInstalled)
+        XboxLog(console,"couldn't look for the games installed on it (%s); %s.",error.c_str(),
+                found.empty() ? "until it can, its installed games get game folders too" : "going by what it found before");
+    s.toldInstalled=!ok;
+    std::string seen;
+    for(size_t i=0;i<found.size();++i) seen+=Number(found[i].titleId)+"-"+Number(found[i].disc)+",";
+    if(ok && seen!=s.installedSeen) {
+        s.installedSeen=seen;
+        XboxLog(console,"%s installed on it (in %s, or as Games on Demand).",Count(int(found.size()),"game is","games are").c_str(),o.installedFolders.c_str());
+    }
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    console.installed=found;
+}
+
+// Makes folder unless it's there (a failed MKD costs FtpDll's connection).
+void EnsureFolder(FtpClient& ftp, const std::string& folder) {
+    if(!ftp.Enters(folder.c_str()) && ftp.Code()/100==5) ftp.MakeFolder(folder.c_str());
+}
+
+// Restarts Aurora on the console through its web server, if Aurora is what it shows.
+bool RestartAurora(const Console& console, const Options& o, const char* why) {
+    AuroraWeb aurora(console.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,5);
+    if(!aurora.RestartAurora()) { XboxLog(console,"didn't restart Aurora %s: %s.",why,aurora.Error().c_str()); return false; }
+    XboxLog(console,"restarted Aurora %s.",why);
+    return true;
+}
+
+// Aurora's cleanup script and "Hide PC games while NetDisc360 is off" filter
+// (see aurora.h), and the marker the filter looks for, after a push. When the
+// filter hides the PC games though this server runs (Aurora started while it
+// didn't), Aurora is restarted, once, if it's on screen and restartAurora allows.
+void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
+    std::vector<FtpEntry> entries;
+    if(!ftp.List(o.xboxFolder.c_str(),entries)) return;
+    std::vector<std::string> folders;
+    for(size_t i=0;i<entries.size();++i) if(entries[i].folder) folders.push_back(entries[i].name);
+    std::string cleanup=CleanupScript(o.xboxFolder,folders), online=OnlineScript(o.xboxFolder);
+    if(cleanup.empty() || online.empty()) return;  // Game folders at a drive's top: no script could tell them apart.
+    std::string cleanupPath=o.aurora+CleanupScriptPath, onlinePath=o.aurora+OnlineScriptPath;
+    if(!ftp.Enters(o.aurora.c_str())) return;  // GuardFilter tells about that.
+    // The folders the scripts go in, from Aurora's own down.
+    const char* const paths[]={CleanupScriptPath,OnlineScriptPath};
+    for(int k=0;k<2;++k)
+        for(size_t at=1;(at=std::string(paths[k]).find('/',at))!=std::string::npos;++at)
+            EnsureFolder(ftp,o.aurora+std::string(paths[k]).substr(0,at));
+    int written=RefreshRemote(ftp,cleanupPath,std::vector<unsigned char>(cleanup.begin(),cleanup.end()));
+    if(written<0) XboxLog(console,"couldn't write %s: %s",cleanupPath.c_str(),ftp.Error());
+    written=RefreshRemote(ftp,onlinePath,std::vector<unsigned char>(online.begin(),online.end()));
+    if(written>0) XboxLog(console,"wrote Aurora's \"Hide PC games while NetDisc360 is off\" filter (%s). Restart Aurora, then pick it under Filters, User.",onlinePath.c_str());
+    else if(written<0) XboxLog(console,"couldn't write %s: %s",onlinePath.c_str(),ftp.Error());
+    std::string helper=o.xboxFolder+"/"+HelperFolder;
+    EnsureFolder(ftp,helper);
+    std::vector<FtpEntry> files;
+    if(!ftp.List(helper.c_str(),files)) return;
+    // By the listing: a read of a file that isn't there can stall FtpDll's next one.
+    bool marker=false, shown=false;
+    for(size_t i=0;i<files.size();++i) {
+        if(!files[i].folder && !_stricmp(files[i].name.c_str(),OnlineMarker)) marker=true;
+        if(!files[i].folder && !_stricmp(files[i].name.c_str(),ShownMarker)) shown=true;
+    }
+    if(!marker) {
+        static const char text[]="NetDisc360 runs on the PC; it deletes this file when it quits.\r\n";
+        if(!ftp.Store((helper+"/"+OnlineMarker).c_str(),text,sizeof(text)-1)) { XboxLog(console,"couldn't write %s/%s: %s",helper.c_str(),OnlineMarker,ftp.Error()); return; }
+    }
+    console.marked=true;
+    std::vector<unsigned char> state;
+    if(!shown || s.restarted || !o.restartAurora || !ftp.Retrieve((helper+"/"+ShownMarker).c_str(),state,64)) return;
+    if(std::string(state.begin(),state.end()).compare(0,7,"offline")) return;
+    s.restarted=true;
+    if(RestartAurora(console,o,"so its filter shows the PC games again")) XboxEvent(console,EventInfo,"Aurora restarted to show the PC games");
+}
+
+void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o);
 
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
@@ -1330,10 +1513,16 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         s.attempted=true; s.toldWaiting=false;
         double holdFrom=std::max(startedAt,FoldersChangedAt.load()/1000.0);
         bool missing=FoldersMissing;
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o)) {
+        // Before the push's own connections to this server count as the console's.
+        if(o.followAddress) FollowAddress(console,s,ftp,o);
+        std::vector<InstalledGame> installed;
+        if(o.skipInstalled) LookInstalled(console,s,ftp,o,installed);
+        else { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
+        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
             if(o.filter) RefreshInstallFilter(console,ftp,o);
+            if(o.auroraScripts) RefreshAuroraScripts(console,s,ftp,o);
             // Folders held while a game folder is missing wait for it to come
             // back, which changes the state (see WatchLoop).
             s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held && !missing ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
@@ -1370,6 +1559,7 @@ void ConsoleLoop(Console* console, PushState* s, double startedAt) {
 }
 
 bool Save();
+void NoteOwnAddresses();
 
 // Notes games that came or went, for the dashboard's activity.
 void NoteChanges(const std::set<std::string>& before, const std::set<std::string>& now) {
@@ -1459,6 +1649,7 @@ void WatchLoop() {
         char generation[16]; _snprintf_s(generation,sizeof(generation),_TRUNCATE,"#%d%s",PushGeneration.load(),FoldersMissing ? "!" : "");
         { std::lock_guard<std::mutex> hold(GamesLock); GamesState=state+generation; GamesSettled=Now()-changedAt>=SettleSeconds && !o.folders.empty(); }
         if(tick%10==0) RememberConsoles();
+        if(tick%60==0) NoteOwnAddresses();
         if(o.push) {
             std::vector<Console*> consoles=AllConsoles();
             bool finished=true,failed=false;
@@ -1470,11 +1661,12 @@ void WatchLoop() {
                 finished=finished && s.finished;
                 failed=failed || !s.everPushed;
             }
-            // --push-once (the tests): ends when every console given is done.
+            // --push-once (the tests): ends when every console given is done,
+            // as a server that quits (its marker for Aurora's filter goes).
             // _Exit, as exit's destructors would pull the settings and lists
             // from under the threads that still run (AuroraLoop crashed in
             // Current() on CI).
-            if(o.pushOnce && !states.empty() && finished) { fflush(NULL); _Exit(failed ? 1 : 0); }
+            if(o.pushOnce && !states.empty() && finished) { ServerStopping(); fflush(NULL); _Exit(failed ? 1 : 0); }
         }
         Sleep(1000);
     }
@@ -1640,8 +1832,20 @@ bool Save() {
     f.Set("update_check",o.updateCheck ? "1" : "0");
     f.Set("update_auto",o.updateAuto ? "1" : "0");
     f.Set("update_prerelease",o.updatePrerelease ? "1" : "0");
+    f.Set("skip_installed",o.skipInstalled ? "1" : "0");
+    f.Set("installed_folders",o.installedFolders);
+    f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
+    f.Set("restart_aurora",o.restartAurora ? "1" : "0");
+    f.Set("aurora_web_user",o.auroraWebUser);
+    f.Set("aurora_web_password",config::Protect(o.auroraWebPassword));
+    f.Set("aurora_web_port",Number(o.auroraWebPort));
+    f.Set("follow_address",o.followAddress ? "1" : "0");
+    f.Set("keep_awake",o.keepAwake ? "1" : "0");
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
+        std::string own;
+        for(size_t i=0;i<OwnAddresses.size();++i) own+=(i ? "," : "")+OwnAddresses[i];
+        f.Set("own_addresses",own);
         if(UpdatedFrom.empty()) f.Remove("updated_from");
         else f.Set("updated_from",UpdatedFrom);
         if(UpdateTo.empty()) f.Remove("update_to");
@@ -1734,8 +1938,26 @@ bool LoadConfig(Options& o) {
     o.updateCheck=Flag(f,"update_check",o.updateCheck);
     o.updateAuto=Flag(f,"update_auto",o.updateAuto);
     o.updatePrerelease=Flag(f,"update_prerelease",o.updatePrerelease);
+    o.skipInstalled=Flag(f,"skip_installed",o.skipInstalled);
+    if(f.Has("installed_folders")) o.installedFolders=f.Get("installed_folders");
+    o.auroraScripts=Flag(f,"aurora_scripts",o.auroraScripts);
+    o.restartAurora=Flag(f,"restart_aurora",o.restartAurora);
+    if(!f.Get("aurora_web_user").empty()) o.auroraWebUser=f.Get("aurora_web_user");
+    if(f.Has("aurora_web_password") && config::Unprotect(f.Get("aurora_web_password"),password)) o.auroraWebPassword=password;
+    if(f.Has("aurora_web_port")) o.auroraWebPort=std::max(1,std::min(65535,int(f.Number("aurora_web_port",o.auroraWebPort))));
+    o.followAddress=Flag(f,"follow_address",o.followAddress);
+    o.keepAwake=Flag(f,"keep_awake",o.keepAwake);
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
+        OwnAddresses.clear();
+        std::string own=f.Get("own_addresses");
+        for(size_t at=0;at<own.size();) {
+            size_t comma=own.find(',',at);
+            if(comma==std::string::npos) comma=own.size();
+            std::string one=own.substr(at,comma-at);
+            if(inet_addr(one.c_str())!=INADDR_NONE && OwnAddresses.size()<OwnAddressesKept) OwnAddresses.push_back(one);
+            at=comma+1;
+        }
         UpdatedFrom=f.Get("updated_from");
         UpdateTo=f.Get("update_to");
         UpdateSkip=f.Get("update_skip");
@@ -1913,6 +2135,9 @@ void State(web::Reply& out) {
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
     j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
+    j.Set("skipInstalled",o.skipInstalled).Set("installedFolders",o.installedFolders).Set("auroraScripts",o.auroraScripts);
+    j.Set("restartAurora",o.restartAurora).Set("auroraWebUser",o.auroraWebUser).Set("auroraWebPasswordSet",!o.auroraWebPassword.empty());
+    j.Set("auroraWebPort",o.auroraWebPort).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake);
 #ifdef _WIN32
     if(InTray) j.Set("startWithWindows",StartsWithWindows());
 #endif
@@ -2018,12 +2243,40 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
 
 void Games(web::Reply& out) {
     std::vector<std::string> folders=Current().folders;
+    // The consoles with a tile for each game (by its listed name, in lower
+    // case), and with it installed (by Title ID and disc), from their latest push.
+    std::map<std::string,std::vector<std::string> > tiles;
+    std::map<std::pair<DWORD,int>,std::vector<std::string> > installed;
+    std::vector<Console*> consoles=AllConsoles();
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(size_t i=0;i<consoles.size();++i) {
+            const Console& c=*consoles[i];
+            for(std::map<std::string,std::string>::const_iterator t=c.tiles.begin();t!=c.tiles.end();++t) tiles[t->first].push_back(c.text);
+            for(size_t k=0;k<c.installed.size();++k) {
+                std::vector<std::string>& on=installed[std::make_pair(c.installed[k].titleId,c.installed[k].disc)];
+                if(std::find(on.begin(),on.end(),std::string(c.text))==on.end()) on.push_back(c.text);
+            }
+        }
+    }
     web::Json j;
     j.Open('{');
     {
         std::lock_guard<std::mutex> hold(GamesListLock);
         j.Set("version",GamesVersion).Key("games").Open('[');
-        for(size_t i=0;i<GamesList.size();++i) { j.Open('{'); GameJson(j,GamesList[i],folders); j.Close('}'); }
+        for(size_t i=0;i<GamesList.size();++i) {
+            const IsoFile& g=GamesList[i];
+            j.Open('{');
+            GameJson(j,g,folders);
+            std::map<std::string,std::vector<std::string> >::const_iterator t=tiles.find(Lower(g.name));
+            j.Key("tiles").Open('[');
+            for(size_t k=0;t!=tiles.end() && k<t->second.size();++k) j.String(t->second[k]);
+            j.Close(']');
+            std::map<std::pair<DWORD,int>,std::vector<std::string> >::const_iterator n=g.titleId ? installed.find(std::make_pair(g.titleId,g.disc)) : installed.end();
+            j.Key("installedOn").Open('[');
+            for(size_t k=0;n!=installed.end() && k<n->second.size();++k) j.String(n->second[k]);
+            j.Close(']').Close('}');
+        }
         j.Close(']');
     }
     // Each game that is there more than once, with every copy, the served one first.
@@ -2362,6 +2615,128 @@ std::string Trim(const std::string& text) {
     return a==std::string::npos ? std::string() : text.substr(a,b-a+1);
 }
 
+// DashLaunch's launch.ini on the console: the first one DashLaunch reads
+// (USB before the hard drive), its default dashboard and its plugins by slot.
+struct LaunchIni { std::string path, defaultPath; std::vector<std::pair<int,std::string> > plugins; };
+// listFirst: each drive's listing tells where launch.ini is before it's read
+// (a read of a file that isn't there can stall FtpDll's next one); without
+// it, each place is tried in turn, as the setup wizard does.
+bool ReadLaunchIni(FtpClient& ftp, LaunchIni& ini, bool listFirst) {
+    static const char* const drives[]={"/Usb0","/Usb1","/Usb2","/Hdd1"};
+    std::vector<unsigned char> data;
+    ini=LaunchIni();
+    for(size_t i=0;i<sizeof(drives)/sizeof(drives[0]) && ini.path.empty();++i) {
+        std::string place=std::string(drives[i])+"/launch.ini";
+        if(listFirst) {
+            std::vector<FtpEntry> entries;
+            bool there=false;
+            if(!ftp.Enters(drives[i])) { if(ftp.Code()/100==5) continue; return false; }
+            if(!ftp.List(drives[i],entries)) return false;
+            for(size_t k=0;k<entries.size() && !there;++k) there=!entries[k].folder && !_stricmp(entries[k].name.c_str(),"launch.ini");
+            if(!there) continue;
+            if(!ftp.Retrieve(place.c_str(),data,256<<10)) return false;
+            ini.path=place;
+        }
+        else if(ftp.Retrieve(place.c_str(),data,256<<10)) ini.path=place;
+        else if(!ftp.Missing()) ftp.Close();  // Not there is fine; anything else starts over.
+    }
+    if(ini.path.empty()) return true;
+    std::string file(data.begin(),data.end()), section;
+    for(size_t at=0;at<file.size();) {
+        size_t end=file.find('\n',at);
+        if(end==std::string::npos) end=file.size();
+        std::string line=Trim(file.substr(at,end-at));
+        at=end+1;
+        size_t comment=line.find(';');
+        if(comment!=std::string::npos) line=Trim(line.substr(0,comment));
+        if(line.empty() || line[0]=='#') continue;
+        if(line[0]=='[') { section=Lower(line); continue; }
+        size_t equals=line.find('=');
+        if(equals==std::string::npos) continue;
+        std::string key=Lower(Trim(line.substr(0,equals))), value=Trim(line.substr(equals+1));
+        if(section=="[paths]" && key=="default") ini.defaultPath=value;
+        if(section=="[plugins]" && key.size()==7 && !key.compare(0,6,"plugin") && key[6]>='1' && key[6]<='9' && !value.empty())
+            ini.plugins.push_back(std::make_pair(key[6]-'0',value));
+    }
+    return true;
+}
+
+// What a plugin in launch.ini is, by its file name: tiles (NetIsoTiles),
+// netiso, usbnet (a USB network adapter's driver: NetUsb360, or UsbNet360 and
+// CUsbEnet before it) or other.
+const char* PluginKind(const std::string& name) {
+    std::string lower=Lower(name);
+    return lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
+         : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
+}
+
+// Adds this computer's addresses now to OwnAddresses.
+void NoteOwnAddresses() {
+    std::vector<std::string> now=PcAddresses();
+    bool changed=false;
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        for(size_t i=0;i<now.size();++i) {
+            if(std::find(OwnAddresses.begin(),OwnAddresses.end(),now[i])!=OwnAddresses.end()) continue;
+            OwnAddresses.push_back(now[i]);
+            changed=true;
+        }
+        while(OwnAddresses.size()>OwnAddressesKept) OwnAddresses.erase(OwnAddresses.begin());
+    }
+    if(changed) Save();
+}
+
+// A router can give this computer a new address (after a restart, say), and
+// NetISO.xex.txt on the console still names the old one: NetISO finds no
+// server. Before a push the file is made to name this computer again when
+// the console has no NetISO connection here and sent nothing for a while,
+// the file names an address this computer had before but not now, no NetISO
+// server answers there, and this computer reaches the console from an
+// address on the console's own network (not Docker's). NetISO reads the file
+// as the console starts, so it needs a restart then.
+const double FollowQuietSeconds = 600;
+void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
+    long long seen=console.seenAt;
+    if(console.connections>0 || (seen>=0 && Now()*1000-seen<FollowQuietSeconds*1000)) return;
+    DWORD here=ftp.LocalAddress();
+    if(!here || (ntohl(here)^ntohl(console.address))>>8) return;
+    LaunchIni ini;
+    if(!ReadLaunchIni(ftp,ini,true)) return;
+    char now[16]; AddressText(here,now,sizeof(now));
+    std::vector<std::string> current=PcAddresses();
+    for(size_t i=0;i<ini.plugins.size();++i) {
+        std::string plugin=FtpPath(ini.plugins[i].second);
+        if(plugin.empty() || strcmp(PluginKind(plugin.substr(plugin.rfind('/')+1)),"netiso")) continue;
+        std::string path=plugin+".txt", folder=path.substr(0,path.rfind('/')), name=path.substr(path.rfind('/')+1);
+        std::vector<FtpEntry> entries;
+        bool there=false;
+        if(!ftp.List(folder.empty() ? "/" : folder.c_str(),entries)) return;
+        for(size_t k=0;k<entries.size() && !there;++k) there=!entries[k].folder && !_stricmp(entries[k].name.c_str(),name.c_str());
+        std::vector<unsigned char> data;
+        if(!there || !ftp.Retrieve(path.c_str(),data,4096)) return;
+        std::string text(data.begin(),data.end()), old=Trim(text);
+        DWORD before=inet_addr(old.c_str());
+        bool had;
+        { std::lock_guard<std::mutex> hold(SettingsLock); had=std::find(OwnAddresses.begin(),OwnAddresses.end(),old)!=OwnAddresses.end(); }
+        if(old==now || before==INADDR_NONE || !before || !had || std::find(current.begin(),current.end(),old)!=current.end()) return;
+        IsvrClient probe(3);
+        if(probe.Connect(before,o.port,3) && probe.Ping()) {
+            if(s.followed!=old) XboxLog(console,"its NetISO.xex.txt names %s, an address this computer had, where a NetISO server answers now; it's left as it is.",old.c_str());
+            s.followed=old;
+            return;
+        }
+        size_t at=text.find(old);
+        std::string fixed=text.substr(0,at)+now+text.substr(at+old.size());
+        if(!StoreChecked(ftp,path,fixed)) { XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error()); return; }
+        XboxLog(console,"its NetISO.xex.txt (%s) named %s, this computer's address before; it names %s now. Restart the Xbox so NetISO reads it.",path.c_str(),old.c_str(),now);
+        XboxEvent(console,EventWarning,std::string("Restart the Xbox: NetISO looks for this PC at its new address, ")+now);
+#ifdef _WIN32
+        if(InTray) Notify("Restart your Xbox",std::string("This PC's address changed to ")+now+". NetISO on "+console.text+" was told; restart the Xbox so it finds the games again.","#consoles");
+#endif
+        return;
+    }
+}
+
 // What the console has: Aurora's FTP login works, Aurora and the game folder
 // are where the settings say, and DashLaunch's launch.ini loads NetISO.xex
 // (with NetISO.xex.txt naming this computer) and NetIsoTiles.xex, each
@@ -2391,44 +2766,16 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
         return;
     }
     j.Set("login",true).Set("aurora",ftp.Exists(o.aurora.c_str())).Set("gameFolder",ftp.Exists(o.xboxFolder.c_str()));
-    // DashLaunch reads the first launch.ini it finds, USB before the hard drive.
-    static const char* const places[]={"/Usb0/launch.ini","/Usb1/launch.ini","/Usb2/launch.ini","/Hdd1/launch.ini"};
+    LaunchIni ini;
+    ReadLaunchIni(ftp,ini,false);
+    j.Set("launchIni",ini.path).Set("default",ini.defaultPath);
+    const std::vector<std::pair<int,std::string> >& plugins=ini.plugins;
     std::vector<unsigned char> data;
-    std::string ini;
-    for(size_t i=0;i<sizeof(places)/sizeof(places[0]) && ini.empty();++i)
-        if(ftp.Retrieve(places[i],data,256<<10)) ini=places[i];
-        else if(!ftp.Missing()) ftp.Close();  // Not there is fine; anything else starts over.
-    j.Set("launchIni",ini);
-    std::string defaultPath;
-    std::vector<std::pair<int,std::string> > plugins;
-    if(!ini.empty()) {
-        std::string file(data.begin(),data.end()), section;
-        for(size_t at=0;at<file.size();) {
-            size_t end=file.find('\n',at);
-            if(end==std::string::npos) end=file.size();
-            std::string line=Trim(file.substr(at,end-at));
-            at=end+1;
-            size_t comment=line.find(';');
-            if(comment!=std::string::npos) line=Trim(line.substr(0,comment));
-            if(line.empty() || line[0]=='#') continue;
-            if(line[0]=='[') { section=line; for(size_t i=0;i<section.size();++i) section[i]=char(tolower((unsigned char)section[i])); continue; }
-            size_t equals=line.find('=');
-            if(equals==std::string::npos) continue;
-            std::string key=Trim(line.substr(0,equals)), value=Trim(line.substr(equals+1));
-            for(size_t i=0;i<key.size();++i) key[i]=char(tolower((unsigned char)key[i]));
-            if(section=="[paths]" && key=="default") defaultPath=value;
-            if(section=="[plugins]" && key.size()==7 && !key.compare(0,6,"plugin") && key[6]>='1' && key[6]<='9' && !value.empty())
-                plugins.push_back(std::make_pair(key[6]-'0',value));
-        }
-    }
-    j.Set("default",defaultPath);
     j.Key("plugins").Open('[');
     std::vector<std::string> addresses=PcAddresses();
     for(size_t i=0;i<plugins.size();++i) {
-        std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1), lower=name;
-        for(size_t k=0;k<lower.size();++k) lower[k]=char(tolower((unsigned char)lower[k]));
-        const char* kind=lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
-                       : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
+        std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1);
+        const char* kind=PluginKind(name);
         j.Open('{').Set("slot",plugins[i].first).Set("path",plugins[i].second).Set("name",name).Set("kind",kind);
         bool found=!path.empty() && ftp.Retrieve(path.c_str(),data,16<<20);
         if(!found && !ftp.Missing()) ftp.Close();
@@ -2502,9 +2849,9 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         if(!ReadAddresses(text,xboxes,bad)) { error="\""+bad+"\" isn't an IPv4 address like 192.168.1.20."; return false; }
         next.xboxes=xboxes;
     }
-    // Each goes into an FTP command, which a line break would end early.
-    const char* ftpFields[]={"ftpUser","ftpPassword","xboxFolder","aurora"};
-    for(int i=0;i<4;++i)
+    // Each goes into an FTP command (or Aurora's web login), which a line break would end early.
+    const char* ftpFields[]={"ftpUser","ftpPassword","xboxFolder","aurora","auroraWebUser","auroraWebPassword"};
+    for(int i=0;i<6;++i)
         if(Text(v,ftpFields[i],text) && std::find_if(text.begin(),text.end(),[](char c) { return (unsigned char)c<' '; })!=text.end()) {
             error="That can't have a line break or tab in it."; return false;
         }
@@ -2528,7 +2875,25 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Bool(v,"wizardDone",next.wizardDone);
     Whole(v,"backupEvery",0,365,next.backupEvery,error);
     Whole(v,"backupKeep",1,100,next.backupKeep,error);
+    Whole(v,"auroraWebPort",1,65535,next.auroraWebPort,error);
     if(!error.empty()) return false;
+    Bool(v,"skipInstalled",next.skipInstalled);
+    if(Text(v,"installedFolders",text)) {
+        std::vector<std::string> folders=InstalledFolders(text);
+        std::string list;
+        for(size_t i=0;i<folders.size();++i) list+=(i ? ";" : "")+folders[i];
+        if(!text.empty() && folders.empty()) { error="The folders with installed games are FTP paths like /Hdd1/Games, with semicolons between."; return false; }
+        next.installedFolders=list;
+    }
+    Bool(v,"auroraScripts",next.auroraScripts);
+    Bool(v,"restartAurora",next.restartAurora);
+    if(Text(v,"auroraWebUser",text)) {
+        if(text.empty()) { error="Aurora's web server user name can't be empty."; return false; }
+        next.auroraWebUser=text;
+    }
+    Text(v,"auroraWebPassword",next.auroraWebPassword);
+    Bool(v,"followAddress",next.followAddress);
+    Bool(v,"keepAwake",next.keepAwake);
     Bool(v,"updateCheck",next.updateCheck);
     if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
         error=InDocker ? "The Docker image is updated by pulling the new one, not by itself." : "Only NetDisc360.exe in the notification area installs updates by itself.";
@@ -2565,6 +2930,13 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.updateCheck!=was.updateCheck) changed.push_back(next.updateCheck ? "looking for updates" : "not looking for updates");
     if(next.updateAuto!=was.updateAuto) changed.push_back(next.updateAuto ? "updates install by themselves" : "updates install when you say");
     if(next.updatePrerelease!=was.updatePrerelease) changed.push_back(next.updatePrerelease ? "test versions count as updates" : "only full releases count as updates");
+    if(next.skipInstalled!=was.skipInstalled) changed.push_back(next.skipInstalled ? "games installed on a console get no tile" : "installed games get a tile too");
+    if(next.installedFolders!=was.installedFolders) changed.push_back("installed games looked for in "+(next.installedFolders.empty() ? std::string("Games on Demand only") : next.installedFolders));
+    if(next.auroraScripts!=was.auroraScripts) changed.push_back(next.auroraScripts ? "Aurora scripts on" : "Aurora scripts off");
+    if(next.restartAurora!=was.restartAurora) changed.push_back(next.restartAurora ? "Aurora restarted when the PC games appear or go" : "Aurora never restarted");
+    if(next.auroraWebUser!=was.auroraWebUser || next.auroraWebPassword!=was.auroraWebPassword || next.auroraWebPort!=was.auroraWebPort) changed.push_back("Aurora's web server login");
+    if(next.followAddress!=was.followAddress) changed.push_back(next.followAddress ? "NetISO follows this PC's address" : "NetISO.xex.txt left alone");
+    if(next.keepAwake!=was.keepAwake) changed.push_back(next.keepAwake ? "PC kept awake while a console plays" : "PC may sleep while a console plays");
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings.folders=next.folders; Settings.xboxes=next.xboxes; Settings.ftpUser=next.ftpUser; Settings.ftpPassword=next.ftpPassword;
@@ -2572,13 +2944,17 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.wizardDone=next.wizardDone; Settings.webLan=next.webLan;
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
+        Settings.skipInstalled=next.skipInstalled; Settings.installedFolders=next.installedFolders; Settings.auroraScripts=next.auroraScripts;
+        Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
+        Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
     }
     // Pre-releases in or out changes which release is the newest.
     if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
     if(next.xboxes!=was.xboxes) UpdateConsoles(next.xboxes);
     // Anything the push depends on writes every console's folders again (only what differs).
     if(next.xboxes!=was.xboxes || login || next.xboxFolder!=was.xboxFolder || next.aurora!=was.aurora ||
-       (next.push && !was.push) || (next.filter && !was.filter)) ++PushGeneration;
+       (next.push && !was.push) || (next.filter && !was.filter) || next.skipInstalled!=was.skipInstalled ||
+       next.installedFolders!=was.installedFolders || (next.auroraScripts && !was.auroraScripts)) ++PushGeneration;
     if(next.webLan!=was.webLan) StartWeb(Current(),true);
     if(!changed.empty()) {
         std::string what;
@@ -2703,6 +3079,9 @@ void Reload(std::vector<std::string>& notes) {
         Settings.setupDone=o.setupDone; Settings.wizardDone=o.wizardDone; Settings.toldTray=o.toldTray; Settings.webLan=o.webLan;
         Settings.backupEvery=o.backupEvery; Settings.backupKeep=o.backupKeep;
         Settings.updateCheck=o.updateCheck; Settings.updateAuto=o.updateAuto && !strcmp(UpdateHow(),"app"); Settings.updatePrerelease=o.updatePrerelease;
+        Settings.skipInstalled=o.skipInstalled; Settings.installedFolders=o.installedFolders; Settings.auroraScripts=o.auroraScripts;
+        Settings.restartAurora=o.restartAurora; Settings.auroraWebUser=o.auroraWebUser; Settings.auroraWebPassword=o.auroraWebPassword;
+        Settings.auroraWebPort=o.auroraWebPort; Settings.followAddress=o.followAddress; Settings.keepAwake=o.keepAwake;
     }
     UpdateConsoles(o.xboxes);
     FoldersChangedAt=(long long)(Now()*1000);
@@ -2735,6 +3114,8 @@ bool Restore(const std::string& data, std::vector<std::string>& notes, std::stri
         notes.push_back("Aurora's FTP password in the backup can only be read by the Windows user that made it, so the password you use now was kept.");
         f.Set("ftp_password",config::Protect(now.ftpPassword));
     }
+    if(f.Has("aurora_web_password") && (!here || !config::Unprotect(f.Get("aurora_web_password"),password)))
+        f.Set("aurora_web_password",config::Protect(now.auroraWebPassword));
     f.Remove("updated_from");
     f.Remove("update_to");
     f.Remove("update_backup");
@@ -2966,6 +3347,122 @@ void UpdateInfo(web::Reply& out) {
     out.body=j.Text();
 }
 
+// Starting a game from the dashboard -------------------------------------------
+
+// Starts a game on a console through Aurora's web server: its game folder
+// there, or its copy installed on the hard drive. The console leaves what it
+// runs, a game too (the page asks first).
+bool Play(const web::Value& v, std::string& error) {
+    std::string name, address;
+    if(!Text(v,"game",name) || !Text(v,"console",address)) { error="Send the game and the console."; return false; }
+    DWORD at=inet_addr(address.c_str());
+    Console* c=at==INADDR_NONE || !at ? NULL : ConsoleIfKnown(at);
+    if(!c) { error="That console hasn't used NetDisc360 since it started."; return false; }
+    IsoFile game;
+    bool found=false;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size() && !found;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) { game=GamesList[i]; found=true; }
+    }
+    if(!found) { error="That game isn't in your folders any more."; return false; }
+    Options o=Current();
+    std::string folder;
+    bool god=false;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        std::map<std::string,std::string>::const_iterator tile=c->tiles.find(Lower(game.name));
+        if(tile!=c->tiles.end()) folder=o.xboxFolder+"/"+tile->second;
+        for(size_t i=0;i<c->installed.size() && folder.empty();++i) {
+            const InstalledGame& g=c->installed[i];
+            if(g.titleId!=game.titleId || g.disc!=game.disc) continue;
+            if(g.god) god=true;
+            else folder=g.path.substr(0,g.path.rfind('/'));
+        }
+    }
+    if(folder.empty()) {
+        error=god ? "It's installed on that console as Games on Demand; start it in Aurora."
+                  : "That console has no tile for it yet: its game folders are written while it's in Aurora.";
+        return false;
+    }
+    std::string device=DevicePath(folder);
+    if(device.empty()) { error="Aurora starts games from the dashboard on the hard drive only, and this one is in "+folder+"."; return false; }
+    AuroraWeb aurora(c->address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
+    if(!aurora.Launch(device,"default.xex")) { error=aurora.Error()+"."; return false; }
+    XboxLog(*c,"started %s from the dashboard (%s).",WithoutIso(game.name).c_str(),folder.c_str());
+    XboxEvent(*c,EventPlay,WithoutIso(game.name)+" started from the dashboard");
+    return true;
+}
+
+// "Check my setup" -------------------------------------------------------------
+
+// Text to share without the addresses and Windows user names in it.
+std::string Scrubbed(const std::string& text) {
+    std::string out;
+    for(size_t i=0;i<text.size();) {
+        // a.b.c.d
+        size_t at=i;
+        int parts=0;
+        while(parts<4) {
+            size_t digits=at;
+            while(digits<text.size() && digits-at<3 && isdigit((unsigned char)text[digits])) ++digits;
+            if(digits==at) break;
+            ++parts;
+            at=digits;
+            if(parts<4) { if(at<text.size() && text[at]=='.') ++at; else break; }
+        }
+        bool before=i>0 && (isdigit((unsigned char)text[i-1]) || text[i-1]=='.');
+        if(parts==4 && !before && (at>=text.size() || !isdigit((unsigned char)text[at]))) { out+="x.x.x.x"; i=at; continue; }
+        // \Users\<name>\ or /home/<name>/
+        if(!_strnicmp(text.c_str()+i,"\\Users\\",7) || !strncmp(text.c_str()+i,"/home/",6)) {
+            char slash=text[i];
+            size_t name=i+(slash=='/' ? 6 : 7), end=text.find(slash,name);
+            out+=text.substr(i,name-i)+"(user)";
+            i=end==std::string::npos ? text.size() : end;
+            continue;
+        }
+        out+=text[i++];
+    }
+    return out;
+}
+
+// What the server can tell about its own setup. The page adds each console's
+// checks (CheckConsole), and makes the report from both, scrubbed too.
+void SetupCheck(web::Reply& out) {
+    Options o=Current();
+    std::vector<IsoFile> games;
+    bool scanned;
+    { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; scanned=GamesScanned; }
+    int kinds[3]={0,0,0}, found=0, open=0;
+    for(size_t i=0;i<games.size();++i) ++kinds[games[i].kind];
+    for(size_t i=0;i<o.folders.size();++i) if(config::IsFolder(o.folders[i])) ++found;
+    { std::lock_guard<std::mutex> hold(DuplicatesLock); for(size_t i=0;i<Conflicts.size();++i) open+=Conflicts[i].open; }
+    std::vector<std::string> networks=NetworkCategories();
+    bool publicNetwork=std::find(networks.begin(),networks.end(),"public")!=networks.end();
+    web::Json j;
+    j.Open('{').Set("version",NETDISC_VERSION).Set("runs",UpdateHow()).Set("scanned",scanned);
+    j.Set("folders",int(o.folders.size())).Set("foldersFound",found).Set("games",int(games.size()));
+    j.Set("iso",kinds[DiscIso]).Set("god",kinds[DiscGod]).Set("extracted",kinds[DiscFolder]).Set("conflicts",open);
+    j.Set("canPush",CanPush).Set("push",o.push).Set("category",o.filter).Set("scan",o.scan).Set("skipInstalled",o.skipInstalled);
+    j.Set("auroraScripts",o.auroraScripts).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake).Set("webLan",o.webLan);
+    j.Key("networks").Open('[');
+    for(size_t i=0;i<networks.size();++i) j.String(networks[i]);
+    j.Close(']');
+#ifdef _WIN32
+    j.Set("canFix",publicNetwork && InTray);
+#else
+    j.Set("canFix",false);
+#endif
+    j.Set("publicNetwork",publicNetwork);
+    j.Key("warnings").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(EventLock);
+        int n=0;
+        for(size_t i=Events.size();i-->0 && n<10;) if(Events[i].kind==EventWarning) { j.String(Scrubbed(config::ToUtf8(Events[i].text))); ++n; }
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
 void Api(const web::Request& r, web::Reply& out) {
     web::Value body;
     if(r.method=="POST" && !web::Parse(r.body,body)) { out.Error(400,"That isn't JSON."); return; }
@@ -2976,6 +3473,28 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
     else if(r.method=="POST" && r.path=="/api/consoles/find") FindConsoles(body,out);
     else if(r.method=="POST" && r.path=="/api/consoles/check") CheckConsole(body,out);
+    else if(r.method=="GET" && r.path=="/api/setup") SetupCheck(out);
+    else if(r.method=="POST" && r.path=="/api/play") {
+        if(Play(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="POST" && r.path=="/api/network/private") {
+#ifdef _WIN32
+        if(!InTray) out.Error(400,"Only NetDisc360.exe in the notification area can change the network.");
+        else {
+            // Windows' prompt waits for an answer on this computer.
+            std::thread([]() {
+                std::string why;
+                if(MakeNetworksPrivate(why)) Log("Windows was asked to make the Public network(s) Private (the administrator prompt was answered).");
+                else Log("The network wasn't changed: %s",why.c_str());
+            }).detach();
+            Log("Asking Windows to make the network Private; answer its prompt on this computer.");
+            out.body="{\"ok\":true}";
+        }
+#else
+        out.Error(400,"Only Windows has network categories.");
+#endif
+    }
     else if(r.method=="POST" && r.path=="/api/consoles/add") {
         if(AddConsole(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
@@ -3143,6 +3662,12 @@ void Usage() {
         "  --no-push               only serve games; leave the Xbox alone\n"
         "  --no-category           leave Aurora's Xbox 360 category alone\n"
         "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
+        "  --installed <folders>   where games installed on the Xbox are, as FTP paths with\n"
+        "                          semicolons between (/Hdd1/Games); those and Games on Demand\n"
+        "                          get no game folder\n"
+        "  --no-installed          give games installed on the Xbox a game folder too\n"
+        "  --no-aurora-scripts     no cleanup script or \"PC is off\" filter in Aurora\n"
+        "  --aurora-web-port <n>   Aurora's web server, to start games and restart Aurora (9999)\n"
         "  --online-wait <s>       after the Xbox's FTP comes back, the longest wait for the Xbox\n"
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
@@ -3173,6 +3698,8 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(a=="--no-push") o.push=false;
         else if(a=="--no-category") o.filter=false;
         else if(a=="--no-scan") o.scan=false;
+        else if(a=="--no-installed") o.skipInstalled=false;
+        else if(a=="--no-aurora-scripts") o.auroraScripts=false;
         else if(a=="--push-once") o.pushOnce=true;  // For the tests.
         else if(hasValue && a=="--xbox") {
             DWORD xbox=inet_addr(args[++i].c_str());
@@ -3183,6 +3710,8 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--ftp-password") o.ftpPassword=args[++i];
         else if(hasValue && a=="--xbox-folder") o.xboxFolder=args[++i];
         else if(hasValue && a=="--aurora") o.aurora=args[++i];
+        else if(hasValue && a=="--installed") o.installedFolders=args[++i];
+        else if(hasValue && a=="--aurora-web-port") o.auroraWebPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--port") o.port=atoi(args[++i].c_str());
         else if(hasValue && a=="--ftp-port") o.ftpPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--launcher") o.launcherPath=args[++i];
@@ -3201,7 +3730,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else { fprintf(stderr,"Unknown option %s (-h lists them).\n",a.c_str()); return false; }
     }
     o.xboxFolder=FtpFolder(o.xboxFolder);
-    return o.port>0 && o.port<65536 && o.ftpPort>0 && o.ftpPort<65536 && o.webPort>=0 && o.webPort<65536;
+    return o.port>0 && o.port<65536 && o.ftpPort>0 && o.ftpPort<65536 && o.webPort>=0 && o.webPort<65536 && o.auroraWebPort>0 && o.auroraWebPort<65536;
 }
 }  // namespace
 
@@ -3216,6 +3745,14 @@ std::string SessionSecret(const Options& o) {
     if(!config::WriteFile(path,secret,true)) Log("Couldn't write %s; logins last until NetDisc360 restarts.",config::FromUtf8(path).c_str());
     return secret;
 }
+
+#ifdef _WIN32
+// Ctrl+C or the window closed: ServerStopping first, then Windows ends it.
+BOOL WINAPI ConsoleClosing(DWORD) {
+    ServerStopping();
+    return FALSE;
+}
+#endif
 
 // Runs the server; returns only when it can't (see app.h).
 int RunServer(const std::vector<std::string>& args, const std::string& configPath, bool tray) {
@@ -3309,6 +3846,24 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
     (void)on;
     Log("Listening on port %d.",o.port);
+#ifdef _WIN32
+    if(!InTray) SetConsoleCtrlHandler(ConsoleClosing,TRUE);
+#else
+    {   // docker stop, Ctrl+C: ServerStopping first. Blocked here, before
+        // the threads start, so only the waiting thread gets them.
+        sigset_t stops;
+        sigemptyset(&stops); sigaddset(&stops,SIGTERM); sigaddset(&stops,SIGINT);
+        pthread_sigmask(SIG_BLOCK,&stops,NULL);
+        std::thread([stops]() {
+            int got=0;
+            sigwait(&stops,&got);
+            Log("Stopping.");
+            ServerStopping();
+            fflush(NULL);
+            _Exit(0);
+        }).detach();
+    }
+#endif
     StartWeb(o,false);
     for(size_t i=0;i<o.xboxes.size();++i) {
         Console* console=ConsoleAt(o.xboxes[i]);
@@ -3320,10 +3875,39 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(AuroraLoop).detach();
     std::thread(PingLoop).detach();
     std::thread(SizeLoop).detach();
+#ifdef _WIN32
+    std::thread(AwakeLoop).detach();
+#endif
     std::thread(BackupLoop).detach();
     std::thread(UpdateLoop).detach();
     Serve(listener);
     return 0;
+}
+
+void ServerStopping() {
+    Options o=Current();
+    std::vector<Console*> consoles=AllConsoles();
+    std::shared_ptr<std::atomic<int> > left(new std::atomic<int>(0));
+    for(size_t i=0;i<consoles.size();++i) {
+        Console* c=consoles[i];
+        if(!c->marked.exchange(false)) continue;
+        ++*left;
+        std::thread([c,o,left]() {
+            FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),3);
+            std::string helper=o.xboxFolder+"/"+HelperFolder;
+            std::vector<FtpEntry> files;
+            bool shown=false;
+            ftp.Delete((helper+"/"+OnlineMarker).c_str());
+            if(o.restartAurora && ftp.List(helper.c_str(),files))
+                for(size_t k=0;k<files.size();++k) if(!files[k].folder && !_stricmp(files[k].name.c_str(),ShownMarker)) shown=true;
+            std::vector<unsigned char> state;
+            if(shown && ftp.Retrieve((helper+"/"+ShownMarker).c_str(),state,64) && !std::string(state.begin(),state.end()).compare(0,6,"online"))
+                RestartAurora(*c,o,"so its filter hides the PC games while NetDisc360 is off");
+            ftp.Close();
+            --*left;
+        }).detach();
+    }
+    for(double until=Now()+5;*left>0 && Now()<until;) Sleep(100);
 }
 
 std::string ServerSummary() {
