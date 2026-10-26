@@ -47,6 +47,7 @@ public:
     bool Has(DWORD titleId) const { return games_.count(titleId)!=0; }
 private:
     std::string path_, text_;
+    long long size_=-2, time_=0;  // The file as last read (config::Stamp; -1 none).
     std::map<DWORD,MapGame> games_;
 };
 

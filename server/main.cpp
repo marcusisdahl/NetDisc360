@@ -426,7 +426,9 @@ std::string Fingerprint(const std::vector<IsoFile>& isos) {
     std::string text;
     for(size_t i=0;i<isos.size();++i) {
         char line[64]; _snprintf_s(line,sizeof(line),_TRUNCATE,"|%llu|%lld\n",(unsigned long long)isos[i].size,isos[i].modified);
-        text+=isos[i].path+line;
+        // And what the disc map says, so an edit to discs.ini reaches the
+        // dashboard and the tiles without a restart.
+        text+=isos[i].path+"|"+isos[i].role+"|"+isos[i].roleLabel+"|"+isos[i].installDisc+line;
     }
     return text;
 }
@@ -730,7 +732,8 @@ class Connection {
 public:
     Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(NULL), pastEnd_(false) {
         AddressText(address,peer_,sizeof(peer_));
-        quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
+        verbose_=Current().verbose;
+        quiet_=Loopback(address) && !verbose_;  // The push's own connection.
     }
     ~Connection() {
         if(console_) {
@@ -750,7 +753,7 @@ public:
             DWORD index=DWORD((request[6]<<8)|request[7]);
             U64 offset=(U64(Read32(request+8))<<32)|Read32(request+12);
             DWORD length=Read32(request+16);
-            if(Settings.verbose) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
+            if(verbose_) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
             if(console_) console_->seenAt=(long long)(Now()*1000);
             if(!Handle(command,index,offset,length)) break;
         }
@@ -898,7 +901,7 @@ private:
     DWORD address_;
     Console* console_;
     char peer_[16];
-    bool quiet_;
+    bool quiet_, verbose_;  // verbose_: -v, copied once (Settings changes under its lock).
     std::vector<IsoFile> listing_;
     IsoReader iso_;
     std::string mounted_;

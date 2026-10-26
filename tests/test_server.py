@@ -1019,6 +1019,22 @@ class Dashboard(ServerTest):
         with open(os.path.join(self.tmp.name, "discs.ini")) as f:
             self.assertIn("[4D530910]\n", f.read())
 
+    def test_a_disc_map_edit_is_read_while_running(self):
+        for n in (1, 2):
+            write_iso(os.path.join(self.isos, "Saga - Disc %d.iso" % n), {"default.xex": xex(execution_info(0x100 + n, 0x12340001, n, 2))})
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        path = os.path.join(self.tmp.name, "discs.ini")
+        roles = lambda: [(g["name"], g["role"], g["roleLabel"]) for g in self.json("GET", "/api/games")["games"]]
+        self.state_when(lambda s: os.path.exists(path))
+        self.assertEqual(roles(), [("Saga - Disc 1", "next", ""), ("Saga - Disc 2", "next", "")])
+        with open(path, newline="") as f:
+            text = f.read()
+        with open(path, "w", newline="") as f:
+            f.write(text.replace("disc2=next", "disc2=own Bonus disc"))
+        self.state_when(lambda s: roles()[1] == ("Saga - Disc 2", "own", "Bonus disc"))
+        self.assertEqual(roles()[1], ("Saga - Disc 2", "own", "Bonus disc"))
+
     def test_a_game_there_twice_waits_for_a_choice(self):
         iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         folder = os.path.join(self.isos, "Halo 3 extracted")
