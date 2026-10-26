@@ -54,7 +54,7 @@ Keep your games on your PC or NAS and play them on your Xbox 360 just like insta
   <img src="docs/images/how-it-fits.svg" alt="NetDisc360 on your PC or NAS gives Aurora a tile for each game over Aurora's FTP, and streams the game disc to the Xbox over NetISO as you play" width="800">
 </p>
 
-**Best with [UsbNet360](https://github.com/marcusisdahl/UsbNet360).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [More Xbox 360 homebrew](#more-xbox-360-homebrew).
+**Best with [NetUsb360](https://github.com/marcusisdahl/NetUsb360).** It makes a gigabit USB network adapter work on the Xbox, whose own network port is 100 Mbit/s, at most about 12 MB/s. See [Speed](#speed) and [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
 ## Contents
 
@@ -109,7 +109,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 - **`NetDisc360.exe`** from the [Releases](../../releases) page, for Windows 10 or 11, or the [Docker image](#docker) for Linux or a NAS. It replaces NetISO's own server, so you don't need `server.exe` or `netiso-srv`.
 - **Your games:** ISOs, extracted game folders (with `default.xex` at the top) or Games on Demand packages.
 
-**Optional:** [UsbNet360](https://github.com/marcusisdahl/UsbNet360) with a gigabit USB network adapter for faster loading, and [FastFTP360](https://github.com/marcusisdahl/FastFTP360) for copying files to the console; see [More Xbox 360 homebrew](#more-xbox-360-homebrew).
+**Optional:** [NetUsb360](https://github.com/marcusisdahl/NetUsb360) with a gigabit USB network adapter for faster loading, and [FastFTP360](https://github.com/marcusisdahl/FastFTP360) for copying files to the console; see [More Xbox 360 homebrew](#more-xbox-360-homebrew).
 
 ## Install
 
@@ -124,7 +124,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
      NetISO.xex.txt      <- you make this one in step 2
      NetIsoTiles.xex
      NetIsoTiles.ini     <- optional, see Speed
-     UsbNet360.xex       <- optional, see More Xbox 360 homebrew
+     NetUsb360.xex       <- optional, see More Xbox 360 homebrew
    ```
 
 2. **Tell NetISO where your PC is.** Make a text file `NetISO.xex.txt` next to `NetISO.xex` with one line: your PC's IP address, for example `192.168.1.20`. The server's dashboard shows this address. Give your PC a fixed address in your router, so it doesn't change.
@@ -136,12 +136,12 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
    Default = Hdd:\Apps\Aurora\Aurora.xex
 
    [Plugins]
-   plugin1 = Usb:\UsbNet360.xex
+   plugin1 = Usb:\NetUsb360.xex
    plugin2 = Usb:\NetISO.xex
    plugin3 = Usb:\NetIsoTiles.xex
    ```
 
-   `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `UsbNet360.xex` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
+   `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `NetUsb360.xex` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
 
 4. **Turn on Aurora's FTP server and add the game folder.** Reboot the console into Aurora. In Aurora's settings, make sure the FTP server is on, and under Content, Scan paths, add `Hdd1:\NetISO` with depth 1 (the folder can be empty; the PC fills it).
 
@@ -151,19 +151,19 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 
 **On Windows:** put `NetDisc360.exe` anywhere, for example in the folder with your games, and double-click it. It opens its dashboard in your web browser (`http://127.0.0.1:8360`) and keeps running behind its icon in the notification area, by the clock.
 
-- **The first time, a setup wizard walks you through it:** a password for the dashboard, your game folders, finding your Xbox on the network (with a ready-made `NetISO.xex.txt` to download), and Aurora's FTP login. It then checks the console over FTP: that DashLaunch's `launch.ini` loads NetISO, that `NetISO.xex.txt` points to this PC, and that `NetIsoTiles.xex` and UsbNet360 are the newest releases. Skip any step, or run it again from **Settings > About**.
+- **The first time, a setup wizard walks you through it:** a password for the dashboard, your game folders, finding your Xbox on the network (with a ready-made `NetISO.xex.txt` to download), and Aurora's FTP login. It then checks the console over FTP: that DashLaunch's `launch.ini` loads NetISO, that `NetISO.xex.txt` points to this PC, and that `NetIsoTiles.xex` and NetUsb360 are the newest releases. Skip any step, or run it again from **Settings > About**.
 - If the folder `NetDisc360.exe` is in has games, it starts out as a game folder. Add more with **Add a folder**. Subfolders count too. The **Game folders** page lists them; removing one there only stops serving it.
 - The **Dashboard** shows how many games it serves, which consoles are connected, how fast each one's game streams (a chart of the last two minutes), and what happened lately.
 - The **Games** page shows every game it serves as covers or a list, with its format, Title ID and size, and which console is playing it. Click a game for its details. A game that is in your folders more than once shows at the top, where you choose which copy to play.
 - The **Consoles** page lists every console that has used the server: whether it's on (the server pings each console every 30 seconds, so one that's switched off shows as Offline), what it plays, what it was sent, whether its Aurora answers, when its game folders were updated, and its last five events (a game started, games added, launchers updated to a new version). Choose there which consoles get your games in Aurora (every console that connects, or only the ones you name).
 - **Settings > Xbox & Aurora** has **Aurora's FTP login** (enter it if you changed it in Aurora), and **Settings > Windows** has **Start with Windows**, to have the server start, hidden, every time you sign in. **Settings** also has [updates and backups](#updating).
-- **Latest releases**, at the bottom of the sidebar, links to the newest NetDisc360, [FastFTP360](https://github.com/marcusisdahl/FastFTP360) and [UsbNet360](https://github.com/marcusisdahl/UsbNet360) downloads.
+- **Latest releases**, at the bottom of the sidebar, links to the newest NetDisc360, [FastFTP360](https://github.com/marcusisdahl/FastFTP360) and [NetUsb360](https://github.com/marcusisdahl/NetUsb360) downloads.
 - **Close the browser tab and forget about it.** The server keeps running. Click its icon to open the dashboard again (starting `NetDisc360.exe` again does the same); right-click it and pick **Quit NetDisc360** to stop the server.
 - When Windows Firewall asks, allow it on **private networks**.
 - **From your phone or another computer:** under **Settings > Dashboard**, set a password and turn on **Other devices can open it**. Then open `http://<your PC's address>:8360` there.
 
 <p align="center">
-  <img src="docs/images/setup-wizard.png" alt="The setup wizard's Aurora step: the console check shows the FTP login works, NetISO 1.0 is loaded with NetISO.xex.txt pointing to this PC, and NetIsoTiles.xex and UsbNet360.xex are the newest releases" width="49%">
+  <img src="docs/images/setup-wizard.png" alt="The setup wizard's Aurora step: the console check shows the FTP login works, NetISO 1.0 is loaded with NetISO.xex.txt pointing to this PC, and NetIsoTiles.xex and NetUsb360.xex are the newest releases" width="49%">
   <img src="docs/images/games.jpg" alt="The Games page: games as covers, each marked ISO, Extracted or GOD, two of them showing the console playing them" width="49%">
   <br>
   <sub>The first run walks you through setup (left). The Games page shows every game, its format, and which console is playing it (right).</sub>
@@ -378,7 +378,7 @@ read_kb=256
 rcv_kb=64
 ```
 
-Installing GTA V from its install disc over NetISO, on a console with a TP-Link UE306 USB adapter and UsbNet360:
+Installing GTA V from its install disc over NetISO, on a console with a TP-Link UE306 USB adapter and NetUsb360:
 
 | | Speed |
 |---|---|
@@ -416,11 +416,11 @@ The console's own system keeps part of every drive, which is why a 20 GB drive h
 
 Two companion projects from the same GitHub account make NetDisc360 faster and the console easier to manage. The dashboard's **Latest releases** links to the newest version of all three.
 
-### [UsbNet360](https://github.com/marcusisdahl/UsbNet360): a faster network for your Xbox
+### [NetUsb360](https://github.com/marcusisdahl/NetUsb360): a faster network for your Xbox
 
-The Xbox 360's own network port is 100 Mbit/s. UsbNet360 is a DashLaunch plugin that lets the console use a gigabit USB Ethernet adapter instead (ASIX AX88179 or Realtek based, such as the TP-Link UE306), so games over NetISO load at about 26 MB/s and FTP to the console reaches about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
+The Xbox 360's own network port is 100 Mbit/s. NetUsb360 is a DashLaunch plugin that lets the console use a gigabit USB Ethernet adapter instead (ASIX AX88179 or Realtek based, such as the TP-Link UE306), so games over NetISO load at about 26 MB/s and FTP to the console reaches about 29 MiB/s. It is `plugin1` in the `launch.ini` above; plug the adapter in instead of the network cable.
 
-UsbNet360 is our faster fork of [CUsbEnet](https://github.com/proferabg/CUsbEnet) by proferabg, which brought the USB Ethernet driver from early Xbox 360 development kits to homebrew consoles. The fork adds bigger and batched receive transfers, an ACK-batching build and TP-Link UE300 support. Coming from CUsbEnet? Put `UsbNet360.xex` in its place in `launch.ini`, and don't load both.
+NetUsb360 is our faster fork of [CUsbEnet](https://github.com/proferabg/CUsbEnet) by proferabg, which brought the USB Ethernet driver from early Xbox 360 development kits to homebrew consoles. The fork adds bigger and batched receive transfers, an ACK-batching build and TP-Link UE300 support. Coming from CUsbEnet? Put `NetUsb360.xex` in its place in `launch.ini`, and don't load both. NetUsb360 used to be called UsbNet360; an old `UsbNet360.xex` keeps working, and NetDisc360 still recognises it.
 
 ### [FastFTP360](https://github.com/marcusisdahl/FastFTP360): copy files to and from your Xbox, fast
 
@@ -524,7 +524,7 @@ Some games come on two discs, one of which only installs content: GTA V's second
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc360.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
 - **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and it only takes requests from its own page. The login cookie is signed with a random key kept next to the settings file (`session.key`), not with anything a backup holds. Don't forward port 8360 from the internet either.
-- **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc360, FastFTP360 and UsbNet360 only when you open it. Apart from the update check below, the server itself never goes online.
+- **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc360, FastFTP360 and NetUsb360 only when you open it. Apart from the update check below, the server itself never goes online.
 - **Backups hold Aurora's FTP login and the dashboard password's hash**, like the settings file (the FTP password is encrypted on Windows, so a backup restored on another PC or in Docker keeps the FTP password already set there). Keep downloaded backups where only you can read them.
 - **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc360.exe` over HTTPS and installs it only if it comes from this project's releases and its size and SHA-256 match what GitHub lists for the release. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder` and, unless `--no-category`, the one Aurora script above.
