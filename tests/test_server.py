@@ -692,6 +692,42 @@ class Push(ServerTest):
             result = subprocess.run([LUA, check], capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
 
+    def test_fills_in_aurora_s_empty_art_for_netdisc360_and_fastftp360(self):
+        # Aurora's placeholders (2048 bytes) get the art from the aurora
+        # folder beside the launcher; art that is there already stays.
+        art = os.path.join(self.tmp.name, "aurora")
+        for app, title in (("netdisc360", "FFFF4E49"), ("fastftp360", "FFFF4646")):
+            os.makedirs(os.path.join(art, app))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(art, app, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(("%s %s ART" % (app, kind)).encode() * 1000)
+        game_data = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Data", "GameData")
+        placeholder = b"RXEA" + b"\0" * 2044
+        folders = {"FFFF4E49_00000048": "FFFF4E49", "FFFF4646_0000005B": "FFFF4646", "4D5307E6_00000006": "4D5307E6"}
+        for folder, title in folders.items():
+            os.makedirs(os.path.join(game_data, folder))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(game_data, folder, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(placeholder)
+        own = os.path.join(game_data, "FFFF4646_0000005B", "GCFFFF4646.asset")
+        with open(own, "wb") as f:
+            f.write(b"SOMEONE'S OWN COVER" * 200)
+        self.add_iso("a.iso", 1, 0x11111111)
+        out = self.push()
+        self.assertIn("wrote NetDisc360's cover art to Aurora", out)
+        self.assertIn("wrote FastFTP360's cover art to Aurora", out)
+
+        def read(folder, name):
+            with open(os.path.join(game_data, folder, name), "rb") as f:
+                return f.read()
+        self.assertEqual(read("FFFF4E49_00000048", "GCFFFF4E49.asset"), b"netdisc360 GC ART" * 1000)
+        self.assertEqual(read("FFFF4E49_00000048", "GLFFFF4E49.asset"), b"netdisc360 GL ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "BKFFFF4646.asset"), b"fastftp360 BK ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "GCFFFF4646.asset"), b"SOMEONE'S OWN COVER" * 200)
+        self.assertEqual(read("4D5307E6_00000006", "GC4D5307E6.asset"), placeholder)  # Other titles: Aurora's.
+        out = self.push()
+        self.assertNotIn("cover art to Aurora", out)
+
     def test_hides_install_discs_in_aurora(self):
         filters = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters")
         os.makedirs(filters)
