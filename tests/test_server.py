@@ -127,7 +127,9 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
     """Aurora's web server as NetISO-Manager uses it (port 9999): a login
     (xboxhttp/xboxhttp) for a token, what runs, and starting a title. With
     basic (Aurora's "HTTP security"), every request needs HTTP's own login,
-    /authenticate too."""
+    /authenticate too. With old, it's the NetISO kit's older Nova: no
+    /authenticate or /title, the same as /getGameInfo and /postLaunchGame,
+    and a session cookie."""
 
     def log_message(self, *args):
         pass
@@ -137,6 +139,8 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
             status, body = 401, {}
         data = json.dumps(body).encode()
         self.send_response(status)
+        if self.server.old:
+            self.send_header("Set-Cookie", "fsplugin_http_session=s1; path=/")
         if status == 401 and self.server.basic:
             self.send_header("WWW-Authenticate", 'Basic realm="Freestyle Plugin"')
         self.send_header("Content-Type", "application/json")
@@ -153,19 +157,26 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         form = self.form()
-        if self.path == "/authenticate":
+        routes = ("/postLaunchGame", "/getGameInfo") if self.server.old else ("/title/launch", "/title")
+        if self.path in ("/title/launch", "/postLaunchGame") and self.path != routes[0] or self.server.old and self.path == "/authenticate":
+            self.answer(404, {})
+        elif self.path == "/authenticate":
             if form.get("username") == "xboxhttp" and form.get("password") == "xboxhttp":
                 self.answer(200, {"token": "t0ken"})
             else:
                 self.answer(401, {})
-        elif self.path == "/title/launch" and self.allowed():
+        elif self.path == routes[0] and self.allowed():
             self.server.launched.append((form.get("path"), form.get("exec"), form.get("type")))
+            self.server.cookies.append(self.headers.get("Cookie"))
             self.answer(200, {})
         else:
             self.answer(401, {})
 
     def do_GET(self):
-        if self.path == "/title" and self.allowed():
+        routes = ("/postLaunchGame", "/getGameInfo") if self.server.old else ("/title/launch", "/title")
+        if self.path in ("/title", "/getGameInfo") and self.path != routes[1]:
+            self.answer(404, {})
+        elif self.path == routes[1] and self.allowed():
             self.answer(200, {"path": self.server.running, "titleid": "0xFFFE07D1"})
         else:
             self.answer(401, {})
@@ -174,10 +185,12 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
 class AuroraWeb(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, running=AURORA_XEX, basic=False):
+    def __init__(self, running=AURORA_XEX, basic=False, old=False):
         super().__init__(("127.0.0.1", 0), AuroraWebHandler)
         self.running = running
         self.basic = basic
+        self.old = old
+        self.cookies = []
         self.launched = []
         self.port = self.server_address[1]
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -1184,6 +1197,16 @@ print('lua ok')
             self.assertEqual(aurora.launched, [])
         finally:
             aurora.close()
+        # The NetISO kit's older Nova, with Aurora's HTTP security on.
+        with open(os.path.join(helper, "shown.txt"), "w") as f:
+            f.write("offline")
+        aurora = AuroraWeb(basic=True, old=True)
+        try:
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter shows the PC games again", out)
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+        finally:
+            aurora.close()
 
     def test_follows_this_computer_s_new_address(self):
         # NetISO.xex.txt names 127.0.0.9, an address this computer had: once
@@ -1248,6 +1271,13 @@ print('lua ok')
             self.assertEqual(status, 400)
             self.assertIn(b"refused the login", data)
             self.assertTrue(self.wait_for(lambda: "couldn't start Halo 3 from the dashboard: Aurora's web server refused the login" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
+            # The NetISO kit's older Nova starts it at /postLaunchGame.
+            self.json("POST", "/api/settings", {"auroraWebPassword": "xboxhttp"})
+            aurora.launched.clear()
+            aurora.old = True
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+            self.assertEqual(aurora.cookies[-1], "fsplugin_http_session=s1")
             # Aurora's web server off.
             aurora.close()
             status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})

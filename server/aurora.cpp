@@ -75,8 +75,9 @@ std::string Lower(std::string text) {
 }
 
 // The status and body of a response; a chunked body is put together. basic:
-// whether it asks for a login of the HTTP kind (Aurora's "HTTP security").
-bool ReadResponse(const std::string& response, int& status, std::string& body, bool& basic) {
+// whether it asks for a login of the HTTP kind (Aurora's "HTTP security");
+// cookie: the name=value of a cookie it sets, if any.
+bool ReadResponse(const std::string& response, int& status, std::string& body, bool& basic, std::string& cookie) {
     int major=0,minor=0;
     if(sscanf(response.c_str(),"HTTP/%d.%d %d",&major,&minor,&status)!=3) return false;
     size_t end=response.find("\r\n\r\n");
@@ -84,6 +85,12 @@ bool ReadResponse(const std::string& response, int& status, std::string& body, b
     std::string headers=Lower(response.substr(0,end));
     body=response.substr(end+4);
     basic=headers.find("\nwww-authenticate: basic")!=std::string::npos;
+    size_t set=headers.find("\nset-cookie:");
+    if(set!=std::string::npos) {
+        size_t from=response.find_first_not_of(' ',set+12);
+        size_t to=response.find_first_of(";\r",from);
+        cookie=response.substr(from,to-from);
+    }
     if(headers.find("\ntransfer-encoding: chunked")==std::string::npos) return true;
     std::string whole;
     for(size_t at=0;at<body.size();) {
@@ -156,6 +163,7 @@ bool AuroraWeb::Send(const char* method, const char* path, const std::string& fo
     std::string request=std::string(method)+" "+path+" HTTP/1.1\r\nHost: "+host+":"+std::to_string(port_)+"\r\nConnection: close\r\n";
     if(basic_) request+="Authorization: Basic "+Base64(user_+":"+password_)+"\r\n";
     else if(!token_.empty()) request+="Authorization: Bearer "+token_+"\r\n";
+    if(!cookie_.empty()) request+="Cookie: "+cookie_+"\r\n";
     if(!strcmp(method,"POST")) request+="Content-Type: application/x-www-form-urlencoded\r\nContent-Length: "+std::to_string(form.size())+"\r\n";
     request+="\r\n"+form;
     std::string response;
@@ -163,7 +171,7 @@ bool AuroraWeb::Send(const char* method, const char* path, const std::string& fo
         error_="Aurora's web server doesn't answer on port "+std::to_string(port_)+" (Aurora's settings, HTTP server: is it on?)";
         return false;
     }
-    if(!ReadResponse(response,status,body,challenged_)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
+    if(!ReadResponse(response,status,body,challenged_,cookie_)) { error_="Aurora's web server sent an answer this doesn't understand"; return false; }
     return true;
 }
 
@@ -193,8 +201,20 @@ bool AuroraWeb::Login() {
     return true;
 }
 
+// Aurora 0.7b.2's own Nova (its web server module) serves /title and
+// /title/launch; the older Nova of the NetISO kit has neither and serves the
+// same as oldPath (/getGameInfo, /postLaunchGame), with the same fields.
+bool AuroraWeb::Call(const char* method, const char* path, const char* oldPath, const std::string& form, std::string& body) {
+    if(oldNova_) return Call(method,oldPath,form,body);
+    if(Call(method,path,form,body)) return true;
+    if(status_!=404) return false;
+    oldNova_=true;
+    return Call(method,oldPath,form,body);
+}
+
 bool AuroraWeb::Call(const char* method, const char* path, const std::string& form, std::string& body) {
-    int status=0;
+    int& status=status_;
+    status=0;
     if(!loggedIn_ && !Login()) return false;
     if(!Send(method,path,form,status,body)) return false;
     if(status==401 && !basic_) {
@@ -211,7 +231,7 @@ bool AuroraWeb::Title(std::string& path) {
     std::string body;
     web::Value v;
     const web::Value* p;
-    if(!Call("GET","/title","",body)) return false;
+    if(!Call("GET","/title","/getGameInfo","",body)) return false;
     if(!web::Parse(body,v) || !(p=v.Get("path")) || p->type!=web::Value::String) { error_="Aurora's web server didn't say what runs"; return false; }
     path=p->text;
     return true;
@@ -226,7 +246,7 @@ bool AuroraWeb::InAurora() {
 
 bool AuroraWeb::Launch(const std::string& folder, const std::string& exec) {
     std::string body;
-    return Call("POST","/title/launch","path="+FormValue(folder)+"&exec="+FormValue(exec)+"&type=0",body);
+    return Call("POST","/title/launch","/postLaunchGame","path="+FormValue(folder)+"&exec="+FormValue(exec)+"&type=0",body);
 }
 
 bool AuroraWeb::RestartAurora() {

@@ -27,14 +27,17 @@ public:
 private:
     bool Login();
     bool Call(const char* method, const char* path, const std::string& form, std::string& body);
+    bool Call(const char* method, const char* path, const char* oldPath, const std::string& form, std::string& body);
     bool Send(const char* method, const char* path, const std::string& form, int& status, std::string& body);
     DWORD address_;
     int port_;
-    std::string user_, password_, token_, error_;
+    std::string user_, password_, token_, cookie_, error_;
     double timeout_;
     bool basic_=false;       // The login goes on each request (HTTP Basic).
     bool challenged_=false;  // The last answer asked for that.
     bool loggedIn_=false;
+    bool oldNova_=false;     // The NetISO kit's Nova: /getGameInfo, /postLaunchGame.
+    int status_=0;           // The last call's HTTP status.
 };
 
 // An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path
