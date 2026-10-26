@@ -361,6 +361,18 @@ Pick the game's tile. The NetDisc360 logo plays for three seconds while the game
 
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
+**Start a game from the dashboard.** On the **Games** page, press a game's play button (or open it and pick **Start on** and the console): Aurora starts it as if you had picked its tile, from your phone or the couch. It uses Aurora's own web server (Aurora's settings, HTTP server, on port 9999), with the login under **Settings > Xbox & Aurora** (`xboxhttp` / `xboxhttp` unless you changed it in Aurora). Both Aurora 0.7b.2's own web server and the older one of the NetISO kit's `Nova.xex` work, with Aurora's HTTP login on or off. A game installed on that console starts from where it's installed.
+
+**What you played.** NetDisc360 counts how often and how long each game is played (from the moment the game reads its disc until the console is back in Aurora), kept next to the settings in `plays.ini`. The **Games** page sorts by **Recently played** or **Most played**, and a game's details say when you last played it.
+
+**Your console from the dashboard.** The **Consoles** page shows each console's temperatures (processor, graphics, memory), the profile signed in and what's running, as Aurora's web server tells it. From there:
+
+- **Screenshots** lists the screenshots Aurora keeps on the console: look at them, save one to the PC as a PNG, delete one, or take one of what's on screen now.
+- **Restart Aurora** starts Aurora again, from a game too.
+- **Turn off** turns the console off as with its power button. It goes through the console's debug monitor, so it works where `xbdm.xex` is loaded as a DashLaunch plugin. **Settings > Xbox & Aurora** can also turn a console off by itself 15 minutes to 2 hours after its last game.
+
+A game's details have **netiso.log**: the log of its tile on the console (each step of the loading screen and why it stopped), read over Aurora's FTP server while Aurora is on screen.
+
 **Play together.** Several consoles can play the same game from the same copy at the same time, system link included. Here two consoles play Call of Duty: Modern Warfare 2 against each other over system link, each streaming the game from NetDisc360:
 
 <p align="center">
@@ -430,8 +442,10 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Troubleshooting
 
+**Check my setup** on the **Consoles** page checks the server and each console in one go: your game folders and what's in them, Aurora's FTP login, the game folder on the console, DashLaunch's `launch.ini` and its plugins, and the address in `NetISO.xex.txt`. On Windows it also says when the network is set to **Public**, where Windows Firewall keeps the consoles out, and offers to make it Private (Windows asks for an administrator's OK). **Copy report** copies the results without your addresses and Windows user name, to paste into an issue.
+
 - **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1), that Aurora's FTP server is on, and that the FTP login under the dashboard's **Settings > Xbox & Aurora** matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
-- **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the dashboard shows, and that Windows Firewall allows `NetDisc360.exe` on private networks. Right after a reboot the console needs a minute or two before it can reach the server.
+- **"The server doesn't answer" on the loading screen, or NetISO lists only "No Server!".** Check the address in `NetISO.xex.txt` against the one the dashboard shows (NetDisc360 fixes it by itself when the PC's address changed; restart the console after), and that Windows Firewall allows `NetDisc360.exe` on private networks and your network isn't set to Public (**Check my setup** tells). Right after a reboot the console needs a minute or two before it can reach the server.
 - **A game has no cover art.** Rename its folder in `Hdd1:\NetISO` (for example over FTP); at the next scan Aurora looks it up again. See [Cover art](#cover-art).
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
 - **"Choose which copy to play" on the Games page.** The same game is in your folders more than once. Pick the copy to play there; NetDisc360 remembers it. To free up space, delete the copies you don't play.
@@ -468,8 +482,14 @@ What `NetDisc360.exe` does, all from one file:
 - **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
-- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is a conflict: the dashboard shows a notice and a badge on **Games**, the activity list says so, and on Windows the icon shows a notification. The **Games** page lists every copy with its path; **Play this one** picks the copy to serve, and the choice is kept in the settings file. Until you choose, an ISO is served before a GOD package before a folder. A copy that turns up later, or the chosen copy going, asks again.
+- **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is a conflict: the dashboard shows a notice and a badge on **Games**, the activity list says so, and on Windows the icon shows a notification. The **Games** page lists every copy with its path; **Play this one** picks the copy to serve, and **Keep the copies that play now** settles all of them at once. The choice is kept in the settings file. Until you choose, an ISO is served before a GOD package before a folder. A copy that turns up later, or the chosen copy going, asks again.
+- **Tells an incomplete ISO.** An ISO shorter than the files on it say (a download or copy that stopped) is marked **Incomplete** on the **Games** page and the dashboard, since the game would crash where it reads the missing part. Copy it again.
+- **Keeps the games of a folder that's away.** A game folder that can't be read, or that had games and suddenly has none (a NAS share that isn't mounted shows as the empty folder under it), holds back every removal until its games are back, so they don't drop out of Aurora. The **Game folders** page shows it. If you emptied a folder on purpose, remove it from the list (or restart NetDisc360) and its games go.
 - **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
+- **Leaves out games installed on the console.** A game that is installed on the console's hard drive (in `Hdd1:\Games`, or as Games on Demand in `Content`) gets no tile, so Aurora doesn't list it twice; the installed copy plays as before. The **Games** page says where each game is installed. Turn it off, or name other folders, under **Settings > Xbox & Aurora**.
+- **Takes old games off Aurora's list and hides the PC games while the PC is off**, with two scripts in Aurora (see [Aurora's scripts](#auroras-scripts)).
+- **Finds the PC again after its address changes.** A router can give the PC a new address after a restart, and NetISO on the console then looks for the server at the old one. When a console is in Aurora and the address in its `NetISO.xex.txt` is one this PC had before (and nothing answers there now), NetDisc360 writes the new one in, and says to restart the console. Turn it off under **Settings > Xbox & Aurora**.
+- **Keeps Windows awake while a console plays**, and for 10 minutes after, so a game doesn't lose its disc to the PC going to sleep. Turn it off under **Settings > Windows**.
 
 <p align="center">
   <img src="docs/images/conflicts.png" alt="Choose which copy to play: Halo Reach is in the folders twice, as E:\Games\Halo Reach (backup).iso (playing now) and D:\Xbox 360\Halo Reach.iso, each with a button to play it" width="800">
@@ -490,6 +510,11 @@ What `NetDisc360.exe` does, all from one file:
 | `--no-push` | | Only serve games; leave the console alone. |
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
+| `--installed <folders>` | `/Hdd1/Games` | Where games installed on the console are, as FTP paths with semicolons between. Those, and Games on Demand, get no tile. |
+| `--no-installed` | | Give installed games a tile too. |
+| `--no-aurora-scripts` | | Don't write the cleanup script and the "Hide PC games while NetDisc360 is off" filter. |
+| `--aurora-web-port <n>` | 9999 | Aurora's web server, for starting games from the dashboard, the console's status and screenshots, and restarting Aurora. |
+| `--xbdm-port <n>` | 730 | The consoles' debug monitor (`xbdm.xex`), which turns them off. |
 | `--online-wait <s>` | 120 | After Aurora's FTP comes back, the longest wait for the console to come online before writing game folders (see below). |
 | `--ping <s>` | 30 | How often each console is pinged (a connection attempt to its FTP port; the Xbox answers no ordinary ping) to see that it's still on; `0`: never. A console that answered before and stops (and whose connection ends) shows as Offline. |
 | `--remove-wait <s>` | 60 | How long after the server starts (or its game folders change on the dashboard) a game folder whose game is gone stays on the console, so a games folder or drive that isn't there yet (or isn't added on the dashboard yet) doesn't drop its games from Aurora. |
@@ -505,6 +530,15 @@ Aurora looks a game up online (name and art) only once, when its scan first find
 ### Aurora's Xbox 360 category
 
 Aurora files the launchers under Unsigned, because they aren't retail-signed, so its Xbox 360 category doesn't show them. The server edits `Media\Scripts\Content\FilterFunctions.lua` in Aurora's folder once, so that the category also lists games in the NetISO folder, and keeps the original next to it as `FilterFunctions.lua.before-netiso`. If an Aurora update puts the original back, the server makes the same edit again. A filter it doesn't recognise is left alone, and `--no-category` turns this off.
+
+### Aurora's scripts
+
+NetDisc360 keeps two Lua scripts up to date in Aurora's `User\Scripts` folder:
+
+- **NetDisc360 Cleanup** (Aurora's **Utilities**). Aurora keeps a game on its list after its folder is gone, so a game you removed from your PC can stay in Aurora as a tile that starts nothing. The script finds the games listed from `Hdd1:\NetISO` whose folder isn't there any more, asks, and takes them off Aurora's list, along with their place in recent games, favourites and hidden games. It deletes no file. (Don't delete such a game from Aurora's own menu: that deletes files on the console's drive.)
+- **Hide PC games while NetDisc360 is off** (Aurora's filters, under **User**). With this filter on, Aurora lists the PC games only while NetDisc360 runs, and the console's own games always. NetDisc360 keeps a file named `online.txt` in `Hdd1:\NetISO\NetDisc360` while it runs and deletes it when it quits; the filter looks for it as Aurora starts. When Aurora is on screen and the list no longer matches (Aurora started before the PC did, or NetDisc360 quits), NetDisc360 restarts Aurora so the list follows. It never restarts Aurora during a game. **Restart Aurora when the PC games come or go** under **Settings > Xbox & Aurora** turns that off.
+
+`--no-aurora-scripts` (or **Aurora extras** on the dashboard) stops writing them; scripts already there stay until you delete them.
 
 ### Extracted games and Games on Demand
 
@@ -522,6 +556,8 @@ Some games come on two discs, one of which only installs content: GTA V's second
 ## Security
 
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
+- **Change Aurora's web server login too**, if you use it (Aurora's settings, HTTP server; `xboxhttp` / `xboxhttp` by default): it can start any program on the console. Enter yours under **Settings > Xbox & Aurora > Aurora's web server**. It is kept like the FTP password. NetDisc360 never asks it for the console's system information, which holds the console's CPU and DVD keys.
+- **The console's debug monitor (`xbdm.xex`) has no login at all**: anything on your network can reach port 730 on a console that loads it, and NetDisc360's **Turn off** uses that. Load it only on a network you trust.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc360.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
 - **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and it only takes requests from its own page. The login cookie is signed with a random key kept next to the settings file (`session.key`), not with anything a backup holds. Don't forward port 8360 from the internet either.
 - **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc360, FastFTP360 and NetUsb360 only when you open it. Apart from the update check below, the server itself never goes online.

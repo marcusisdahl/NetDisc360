@@ -265,6 +265,29 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .cover .tag { position: absolute; left: 8px; top: 8px; z-index: 1; }
 .cover .now { position: absolute; left: 8px; bottom: 8px; right: 8px; z-index: 1; }
 .cover .now .pill { background: var(--play); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 100%; overflow: hidden; }
+.cover .start {
+  position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 38px; height: 38px; border-radius: 50%; border: 0; padding: 0;
+  display: grid; place-items: center; background: var(--accent); color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+  cursor: pointer; opacity: 0; transform: scale(.9); transition: opacity .15s, transform .15s;
+}
+.game:hover .cover .start, .game:focus-within .cover .start { opacity: 1; transform: none; }
+.cover .start:focus-visible { opacity: 1; outline: 2px solid #fff; outline-offset: 2px; }
+@media (hover: none) { .cover .start { opacity: 1; transform: none; } }
+.cover .now ~ .start { bottom: 40px; }
+.cover .tag { display: flex; gap: 4px; flex-wrap: wrap; }
+.kind.warn { background: var(--warn); color: var(--panel); }
+.console-live { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.console-live .stat { display: inline-flex; align-items: center; gap: 6px; }
+.console-live .stat b { color: var(--text); font-weight: 600; }
+.console-live .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.shot { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--hover); cursor: pointer; padding: 0; text-align: left; color: inherit; font: inherit; }
+.shot:hover { border-color: var(--accent); }
+.shot .pic { aspect-ratio: 16 / 9; display: grid; place-items: center; color: var(--faint); }
+.shot .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shot .cap { padding: 6px 8px; font-size: 12px; color: var(--muted); background: var(--panel); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shot-big img { width: 100%; border-radius: 8px; display: block; background: var(--hover); }
+.logtext { margin: 0; max-height: 60vh; overflow: auto; background: var(--hover); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .game:hover .cover { border-color: var(--accent); }
 .game .name { font-weight: 600; margin-top: 8px; font-size: 13.5px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .game .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
@@ -984,7 +1007,9 @@ Pages.dashboard = root => {
       else news.replaceChildren();
       // A game in the folders more than once, with no copy chosen yet.
       const n = S.library.conflicts;
+      const cut = G.games.filter(g => g.incomplete);
       if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
+      else if (cut.length) fill(copies, h('div.notice', ic('triangle-alert'), h('span', (cut.length === 1 ? cut[0].name + ' is' : plural(cut.length, 'ISO') + ' are') + ' incomplete: a download or copy that stopped. A game crashes where it reads the missing part, so copy ' + (cut.length === 1 ? 'it' : 'them') + ' again.'), h('a.btn.small', { href: '#games' }, 'See which')));
       else copies.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
@@ -998,7 +1023,7 @@ Pages.dashboard = root => {
         h('div', h('button.btn' + (all ? '.primary' : '.ghost') + '.small', { onclick: () => save({ setupDone: true }, 'Setup steps hidden') }, all ? 'Done' : 'Hide')),
         h('div.steps', steps.map((s, i) => h('div.step' + (s.done ? '.done' : ''), h('div.n', s.done ? ic('check', 'sm') : String(i + 1)), h('div.t', s.t), h('div.d', s.d), s.done ? null : s.a)))));
       const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.playing);
-      const missing = S.folders.filter(f => !f.found).length;
+      const missing = S.folders.filter(f => !f.found || f.emptied).length;
       fill(tiles,
         tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
         tile('monitor', 'Consoles connected', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
@@ -1026,7 +1051,7 @@ Pages.games = root => {
   const kinds = h('div.segmented', ['all', 'iso', 'folder', 'god'].map(k => h('button', { 'data-kind': k, class: k === kind ? 'on' : '', onclick: () => { kind = k; draw(); } }, k === 'all' ? 'All' : KindNames[k])));
   const views = h('div.segmented', [['covers', 'layout-grid'], ['list', 'list']].map(([m, icon]) => h('button', { 'data-mode': m, title: m === 'covers' ? 'Covers' : 'List', class: m === mode ? 'on' : '', onclick: () => { mode = m; store('games.view', m); draw(); } }, ic(icon, 'sm'))));
   const sorts = h('select.input', { style: { width: 'auto' }, onchange: e => { sort = e.target.value; store('games.sort', sort); draw(); } },
-    [['name', 'Name'], ['size', 'Size'], ['kind', 'Format'], ['folder', 'Folder']].map(([v, l]) => h('option', { value: v, selected: v === sort }, 'Sort by ' + l.toLowerCase())));
+    [['name', 'Name'], ['size', 'Size'], ['kind', 'Format'], ['folder', 'Folder'], ['recent', 'Recently played'], ['played', 'Most played']].map(([v, l]) => h('option', { value: v, selected: v === sort }, 'Sort by ' + l.toLowerCase())));
   root.append(header('Games', h('span', count), h('button.btn', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')),
     open, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, sorts, views), list, dupes);
   let drawn = '';
@@ -1036,8 +1061,16 @@ Pages.games = root => {
     const now = playing();
     let games = G.games.filter(g => (kind === 'all' || g.kind === kind) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
     const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    games.sort(sort === 'size' ? (a, b) => b.size - a.size || byName(a, b) : sort === 'kind' ? (a, b) => a.kind.localeCompare(b.kind) || byName(a, b) : sort === 'folder' ? (a, b) => a.folder - b.folder || byName(a, b) : byName);
-    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers')]);
+    const sorts = {
+      size: (a, b) => b.size - a.size || byName(a, b),
+      kind: (a, b) => a.kind.localeCompare(b.kind) || byName(a, b),
+      folder: (a, b) => a.folder - b.folder || byName(a, b),
+      recent: (a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0) || byName(a, b),
+      played: (a, b) => (b.played || 0) - (a.played || 0) || (b.plays || 0) - (a.plays || 0) || byName(a, b),
+    };
+    games.sort(sorts[sort] || byName);
+    const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers'),
+      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join()), S ? S.consoles.map(c => c.address + (c.playing ? '+' : '')) : []]);
     if (key === drawn) return;
     drawn = key;
     const total = G.games.reduce((n, g) => n + g.size, 0);
@@ -1051,10 +1084,12 @@ Pages.games = root => {
       fill(list, h('div.covers', games.map(g => {
         const on = now[(g.name).toLowerCase()];
         const c = cover(g);
-        c.append(h('div.tag', h('span.kind', KindNames[g.kind])));
+        c.append(h('div.tag', h('span.kind', KindNames[g.kind]), g.incomplete ? h('span.kind.warn', { title: 'Cut off: a download or copy that stopped' }, 'Incomplete') : null));
         if (on) c.append(h('div.now', { title: 'Playing on ' + on.join(', ') }, h('span.pill', ic('play', 'sm'), on.length > 1 ? plural(on.length, 'console') : on[0])));
+        const start = startButton(g, 'button.start');
+        if (start) c.append(start);
         return h('div.game', { tabindex: 0, onclick: () => details(g), onkeydown: e => { if (e.key === 'Enter') details(g); } }, c, h('div.name', { title: g.name }, g.name),
-          h('div.meta', g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : ''));
+          h('div.meta', (sort === 'recent' || sort === 'played') ? playedText(g, true) : [g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : '']));
       })));
     } else {
       fill(list, h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
@@ -1062,7 +1097,8 @@ Pages.games = root => {
         h('tbody', games.map(g => {
           const on = now[g.name.toLowerCase()];
           return h('tr.click', { onclick: () => details(g) },
-            h('td', h('div.cell-name', cover(g, true), h('div', g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null))),
+            h('td', h('div.cell-name', cover(g, true), h('div', { style: { flex: 1 } }, g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null,
+              g.incomplete ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Incomplete')) : null), startButton(g, 'button.btn.small'))),
             h('td', h('span.kind-text', KindNames[g.kind])),
             h('td.hide-narrow.mono', g.titleId || '\u2014'),
             h('td.num', g.sizeKnown ? bytes(g.size) : '\u2026'),
@@ -1074,7 +1110,8 @@ Pages.games = root => {
     if (waiting.length) fill(open, h('div.card.conflicts', { style: { marginBottom: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Choose which copy to play'), h('span.sub', waiting.length === 1 ? 'this game is in your folders more than once' : 'these games are in your folders more than once')),
       h('div.card-body', waiting.map(conflict)),
-      h('div.card-foot.muted', 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.')));
+      h('div.card-foot', { style: { display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' } }, h('span.muted', { style: { flex: 1, minWidth: '220px' } }, 'Until you choose, an ISO plays first, then a Games on Demand copy, then an extracted one. NetDisc360 remembers your choice, and asks again if another copy turns up.'),
+        waiting.length > 1 ? h('button.btn.small', { onclick: e => keepAll(waiting, e.currentTarget) }, ic('check', 'sm'), 'Keep the copies that play now') : null)));
     else open.replaceChildren();
     if (settled.length) fill(dupes, h('div.card.conflicts', { style: { marginTop: '20px' } },
       h('div.card-head', ic('copy', 'sm'), h('h2', 'Games with more than one copy'), h('span.sub', 'the copy you chose plays')),
@@ -1084,6 +1121,25 @@ Pages.games = root => {
   }
   return { update: draw, games: draw };
 };
+
+// Chooses the copy that plays now for each of these games.
+async function keepAll(list, button) {
+  button.disabled = true;
+  let done = 0;
+  for (const c of list) {
+    try { await api('conflict', { key: c.key, path: c.served }); done++; }
+    catch (e) { toast(c.name + ': ' + e.message, true); }
+  }
+  toast(plural(done, 'game') + ' keep the copy that plays now');
+  await refresh();
+}
+
+// How often and how long a game was played; short: for under its cover.
+function playedText(g, short) {
+  if (!g.plays) return short ? 'Not played yet' : 'Not yet';
+  const time = g.played >= 60 ? duration(g.played) : 'under a minute';
+  return short ? plural(g.plays, 'time') + ' \u00b7 ' + time : plural(g.plays, 'time') + ', ' + time + ' in all \u00b7 last ' + ago(g.lastPlayed);
+}
 
 const choosePhrase = n => n === 1 ? '1 game to choose a copy of' : n + ' games to choose a copy of';
 
@@ -1113,9 +1169,37 @@ async function choose(c, g, button) {
   } catch (e) { toast(e.message, true); button.disabled = false; }
 }
 
+// The consoles a game can be started on from here: those with its tile, or
+// with it installed.
+function playable(g) {
+  return S ? S.consoles.filter(c => (g.tiles || []).includes(c.address) || (g.installedOn || []).includes(c.address)) : [];
+}
+
+// A Start button for a game a console has: one console starts it there,
+// several open its details to pick one.
+function startButton(g, tag) {
+  const consoles = playable(g);
+  if (!consoles.length) return null;
+  const title = consoles.length === 1 ? 'Start on ' + consoles[0].address : 'Start on a console';
+  const round = tag.includes('.start');
+  return h(tag, { title, 'aria-label': title + ': ' + g.name, onclick: e => {
+    e.stopPropagation();
+    if (consoles.length === 1) playOn(g, consoles[0], e.currentTarget); else details(g);
+  }, onkeydown: e => e.stopPropagation() }, ic('play', 'sm'), round ? null : 'Start');
+}
+
+async function playOn(g, c, button) {
+  if (c.playing && !(await confirmBox('Start ' + g.name + '?', [h('p', { style: { margin: 0 } }, c.address + ' is playing ', h('b', c.mounted), '. Starting ', h('b', g.name), ' quits it.')], 'Start ' + g.name))) return;
+  button.disabled = true;
+  try { await api('play', { game: g.name, console: c.address }); toast(g.name + ' is starting on ' + c.address); }
+  catch (e) { toast(e.message, true); }
+  button.disabled = false;
+}
+
 function details(g) {
   const on = playing()[g.name.toLowerCase()];
   const folder = S && S.folders[g.folder];
+  const consoles = playable(g);
   modal(g.name, close => [
     h('div.modal-body', h('div.detail',
       h('div.detail-cover', cover(g)),
@@ -1125,12 +1209,177 @@ function details(g) {
         h('div.k', 'Title ID'), h('div.v.mono', g.titleId || 'Not known'),
         g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
         h('div.k', 'Playing'), h('div.v', on ? on.join(', ') : 'Not now'),
+        h('div.k', 'Played'), h('div.v', playedText(g)),
+        g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
+        g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.join(', ') + ' (no tile there: Aurora lists the installed copy)')] : null,
         h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
-        h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path)))),
-    h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
+        h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path),
+        consoles.length ? [h('div.k', 'Start on'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          consoles.map(c => h('button.btn.small', { onclick: e => playOn(g, c, e.currentTarget) }, ic('play', 'sm'), c.address)))] : null,
+        g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + a, onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? a : 'netiso.log')))] : null))),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
+        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
   ]);
+}
+
+// A game's netiso.log from its folder on the console: what the launcher and
+// the plugin did, each step and why it stopped.
+function gameLog(g, address) {
+  const box = h('pre.logtext', 'Reading netiso.log\u2026'), where = h('span.note', ic('info', 'sm'), 'From the console, over Aurora\u2019s FTP server (only while Aurora is on screen).');
+  let text = '';
+  async function load() {
+    fill(box, 'Reading netiso.log\u2026');
+    try {
+      const r = await api('console/gamelog?address=' + encodeURIComponent(address) + '&game=' + encodeURIComponent(g.name));
+      text = r.text;
+      fill(where, ic('folder', 'sm'), r.folder.split('/').join('\\').replace(/^\\/, '').replace(/^([^\\]+)/, '$1:'));
+      fill(box, r.missing ? 'There\u2019s no netiso.log yet: the game wasn\u2019t started from this tile since it was made.' : text || '(empty)');
+      box.scrollTop = box.scrollHeight;
+    } catch (e) { text = ''; fill(box, e.message); }
+  }
+  modal(g.name + ': netiso.log', close => [
+    h('div.modal-body', box),
+    h('div.modal-foot', where,
+      navigator.clipboard ? h('button.btn', { onclick: () => text && navigator.clipboard.writeText(text).then(() => toast('Log copied')) }, ic('copy', 'sm'), 'Copy') : null,
+      h('button.btn', { onclick: load }, ic('refresh-cw', 'sm'), 'Read again'),
+      h('button.btn.primary', { onclick: close }, 'Close')),
+  ]);
+  load();
+}
+
+// What each console's Aurora says (temperatures, profiles, what runs), by
+// address: asked while the Consoles page shows it, every 30 s.
+const Live = {};
+function liveStatus(c, redraw) {
+  const l = Live[c.address] || (Live[c.address] = { at: 0, busy: false, data: null, error: '' });
+  const on = !c.offline && (c.answers || c.connections > 0);
+  if (on && !l.busy && Date.now() - l.at > 30000) {
+    l.busy = true;
+    api('console/status?address=' + encodeURIComponent(c.address))
+      .then(d => { l.data = d; l.error = ''; }).catch(e => { l.error = e.message; })
+      .finally(() => { l.busy = false; l.at = Date.now(); redraw(); });
+  }
+  return on ? l : null;
+}
+function gameName(titleId) {
+  const id = String(titleId || '').replace(/^0x/i, '').toUpperCase();
+  const g = id && G.games.find(x => x.titleId === id);
+  return g ? g.name : '';
+}
+function liveBlock(c, l) {
+  const d = l.data, stats = [];
+  if (d && d.temperature) {
+    const t = d.temperature, unit = t.celsius === false ? '\u00b0F' : '\u00b0C';
+    const deg = v => typeof v === 'number' ? Math.round(v) + unit : '\u2014';
+    stats.push(h('span.stat', { title: 'Temperatures: processor, graphics, memory' }, ic('thermometer', 'sm'), 'CPU ', h('b', deg(t.cpu)), ' GPU ', h('b', deg(t.gpu)), ' RAM ', h('b', deg(t.memory))));
+  }
+  if (d && Array.isArray(d.profiles)) {
+    const signed = d.profiles.filter(p => p.signedin);
+    stats.push(h('span.stat', ic('user', 'sm'), signed.length ? h('b', signed.map(p => p.gamertag).join(', ')) : 'No profile signed in'));
+  }
+  if (d && d.title && d.title.path) {
+    const path = d.title.path, aurora = /\\aurora\.xex$/i.test(path);
+    const name = aurora ? 'Aurora' : gameName(d.title.titleid) || path.split('\\').slice(-2, -1)[0] || path;
+    stats.push(h('span.stat', ic(aurora ? 'layout-grid' : 'gamepad-2', 'sm'), aurora ? 'In ' : 'Running ', h('b', name)));
+  }
+  if (!d && l.error) stats.push(h('span.stat', { title: l.error }, ic('info', 'sm'), 'Aurora\u2019s web server doesn\u2019t answer'));
+  else if (!d) stats.push(h('span.stat', ic('loader-circle', 'sm spin'), 'Asking Aurora\u2026'));
+  return h('div.console-live', stats, h('div.actions',
+    h('button.btn.small', { onclick: () => screenshots(c) }, ic('camera', 'sm'), 'Screenshots'),
+    h('button.btn.small', { onclick: e => power(c, 'aurora', e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Restart Aurora'),
+    h('button.btn.small', { onclick: e => power(c, 'off', e.currentTarget) }, ic('power', 'sm'), 'Turn off')));
+}
+async function power(c, action, button) {
+  if (action === 'off' && !(await confirmBox('Turn off ' + c.address + '?', c.playing ? 'It\u2019s playing ' + c.mounted + '; the game ends.' : 'It turns off as with its power button.', 'Turn off', true))) return;
+  if (action === 'aurora' && c.playing && !(await confirmBox('Restart Aurora on ' + c.address + '?', 'It\u2019s playing ' + c.mounted + '; the game ends.', 'Restart Aurora', true))) return;
+  button.disabled = true;
+  try { await api('console/power', { address: c.address, action }); toast(action === 'off' ? c.address + ' is turning off' : 'Aurora is starting again on ' + c.address); Live[c.address] = null; }
+  catch (e) { toast(e.message, true); }
+  button.disabled = false;
+}
+
+// The console's screenshots (Aurora keeps them), each loaded when shown, one
+// at a time: Aurora gives them as BMP, about 3.7 MB at 720p.
+async function fetchImage(path) {
+  const r = await fetch('/api/' + path, { headers: { 'X-NetDisc': '1' } });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Something went wrong (' + r.status + ').'); }
+  return URL.createObjectURL(await r.blob());
+}
+function shotTime(s) {
+  const digits = String(s.timestamp || s.id).replace(/\D/g, '').replace(/^0{8}(?=\d{14})/, '');
+  const m = digits.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+}
+function screenshots(c) {
+  const grid = h('div.shots'), status = h('span.note', ic('info', 'sm'), 'Loading the list\u2026');
+  const urls = [];
+  let shots = [], queue = [], loading = false, closeIt;
+  const base = 'console/screenshot?address=' + encodeURIComponent(c.address) + '&id=';
+  function next() {
+    if (loading || !queue.length || !grid.isConnected) return;
+    const { s, pic } = queue.shift();
+    loading = true;
+    fetchImage(base + encodeURIComponent(s.id)).then(url => { urls.push(url); s.url = url; fill(pic, h('img', { src: url, alt: '' })); })
+      .catch(() => fill(pic, ic('image', 'sm'))).finally(() => { loading = false; next(); });
+  }
+  async function load() {
+    try {
+      const list = await api('console/screenshots?address=' + encodeURIComponent(c.address));
+      shots = list.map(x => ({ id: x.filename || x.uuid || x.name || '', title: x.titleid || x.tid || '', timestamp: x.timestamp })).filter(x => x.id);
+      shots.forEach(x => x.time = shotTime(x));
+      shots.sort((a, b) => (b.time || 0) - (a.time || 0));
+      fill(status, ic('image', 'sm'), shots.length ? plural(shots.length, 'screenshot') : 'No screenshots yet: take one here, or with Aurora\u2019s own button.');
+      queue = [];
+      fill(grid, shots.map(x => {
+        const pic = h('div.pic', ic('loader-circle', 'sm spin'));
+        queue.push({ s: x, pic });
+        return h('button.shot', { onclick: () => view(x) }, pic, h('div.cap', (gameName(x.title) || (/^0x?FFFE07D1$/i.test(x.title) ? 'Aurora' : 'Screenshot')) + (x.time ? ' \u00b7 ' + x.time.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')));
+      }));
+      next();
+    } catch (e) { fill(status, ic('circle-alert', 'sm'), e.message); }
+  }
+  function view(x) {
+    const img = h('img', { alt: '' });
+    const show = url => { img.src = url; };
+    if (x.url) show(x.url); else fetchImage(base + encodeURIComponent(x.id)).then(url => { urls.push(url); x.url = url; show(url); }).catch(e => toast(e.message, true));
+    modal(gameName(x.title) || 'Screenshot', close => [
+      h('div.modal-body.shot-big', img),
+      h('div.modal-foot', h('span.note', x.time ? x.time.toLocaleString() : x.id),
+        h('button.btn', { onclick: () => savePng(img, x) }, ic('download', 'sm'), 'Save as PNG'),
+        h('button.btn.danger', { onclick: async e => {
+          if (!(await confirmBox('Delete this screenshot?', 'It\u2019s deleted on the console.', 'Delete', true))) return;
+          e.currentTarget.disabled = true;
+          try { await api('console/screenshot/delete', { address: c.address, id: x.id }); toast('Screenshot deleted'); close(); load(); }
+          catch (err) { toast(err.message, true); }
+        } }, ic('trash-2', 'sm'), 'Delete'),
+        h('button.btn.primary', { onclick: close }, 'Close')),
+    ]);
+  }
+  closeIt = modal('Screenshots on ' + c.address, close => [
+    h('div.modal-body', grid),
+    h('div.modal-foot', status,
+      h('button.btn', { onclick: async e => {
+        e.currentTarget.disabled = true;
+        try { await api('console/screenshot/take', { address: c.address }); toast('Screenshot taken'); await load(); } catch (err) { toast(err.message, true); }
+        e.currentTarget.disabled = false;
+      } }, ic('camera', 'sm'), 'Take one now'),
+      h('button.btn.primary', { onclick: close }, 'Close')),
+  ], false, () => { for (const u of urls) URL.revokeObjectURL(u); });
+  load();
+  return closeIt;
+}
+function savePng(img, x) {
+  if (!img.complete || !img.naturalWidth) { toast('It\u2019s still loading', true); return; }
+  const canvas = h('canvas', { width: img.naturalWidth, height: img.naturalHeight });
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  canvas.toBlob(blob => {
+    const a = h('a', { href: URL.createObjectURL(blob), download: ((gameName(x.title) || 'Xbox') + ' ' + x.id).replace(/[\\/:*?"<>|]/g, '') + '.png' });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, 'image/png');
 }
 
 function modal(title, build, narrow, closed) {
@@ -1174,7 +1423,7 @@ function releases() {
 Pages.consoles = root => {
   const list = h('div.consoles');
   const which = h('div');
-  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.'), h('div.stack', list, which));
+  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.', h('button.btn', { onclick: setupCheck }, ic('scan', 'sm'), 'Check my setup')), h('div.stack', list, which));
   let mounted = false, only;
   function form() {
     const st = S.settings;
@@ -1193,6 +1442,8 @@ Pages.consoles = root => {
       const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c));
       fill(list, sorted.length ? sorted.map(x => {
         const card = consoleCard(x.c, x.i, true);
+        const l = liveStatus(x.c, () => { if (page === 'consoles' && view && view.update) view.update(); });
+        if (l) card.insertBefore(liveBlock(x.c, l), $('.console-events', card));
         if (x.c.connections === 0) $('.console-facts', card).appendChild(h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' } },
           h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget')));
         return card;
@@ -1201,6 +1452,69 @@ Pages.consoles = root => {
     },
   };
 };
+
+// Check my setup: this computer, then each console, and a report of it all
+// that leaves out addresses, names and passwords, to share when asking for help.
+const NewIssue = 'https://github.com/marcusisdahl/NetDisc360/issues/new';
+function scrub(text) {
+  let out = text.replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, 'x.x.x.x').replace(/([A-Za-z]:\\Users\\)[^\\\s]+/gi, '$1(user)').replace(/(\/home\/)[^/\s]+/g, '$1(user)');
+  for (const secret of [S.settings.ftpUser, S.settings.auroraWebUser]) if (secret && secret.length > 2) out = out.split(secret).join('(user)');
+  return out;
+}
+function serverChecks(r) {
+  const out = [];
+  const kinds = [r.iso && plural(r.iso, 'ISO'), r.god && plural(r.god, 'Games on Demand package'), r.extracted && plural(r.extracted, 'extracted game')].filter(Boolean).join(', ');
+  if (!r.folders) out.push(wzCheck('bad', 'No game folder yet', 'Add the folder with your games on the Game folders page.'));
+  else if (r.foldersFound < r.folders) out.push(wzCheck('warn', plural(r.folders - r.foldersFound, 'game folder') + ' can\u2019t be opened', 'A drive or share that isn\u2019t connected? Until it\u2019s back, no game is removed from the consoles.'));
+  else out.push(wzCheck(r.games ? 'good' : 'warn', plural(r.games, 'game') + ' in ' + plural(r.folders, 'folder'), kinds || 'Put ISOs, extracted games or Games on Demand packages there.'));
+  if (r.conflicts) out.push(wzCheck('warn', plural(r.conflicts, 'game is', 'games are') + ' in your folders more than once', 'Choose which copy to play on the Games page.'));
+  if (r.publicNetwork) {
+    const fix = r.canFix ? h('button.btn.small', { style: { marginTop: '6px' }, onclick: async e => {
+      e.currentTarget.disabled = true;
+      try { await api('network/private', {}); toast('Answer Windows\u2019 prompt on this PC, then check again'); } catch (x) { toast(x.message, true); }
+    } }, ic('shield-alert', 'sm'), 'Make it Private') : null;
+    out.push(wzCheck('bad', 'Windows treats this network as Public', [h('div', 'Its firewall keeps the consoles out. Make it Private if it\u2019s your home network (Windows Settings, Network, your connection, Network profile type).'), fix]));
+  } else if (r.networks.length) out.push(wzCheck('good', 'Windows treats this network as ' + (r.networks.includes('domain') ? 'a domain network' : 'Private')));
+  if (!r.canPush) out.push(wzCheck('info', 'This build has no launcher built in', 'It serves games, but doesn\u2019t add them to Aurora.'));
+  else if (!r.push) out.push(wzCheck('info', 'Adding games to Aurora is off', 'Turn it on under Settings, Xbox & Aurora.'));
+  for (const w of r.warnings) out.push(wzCheck('warn', 'Lately: ' + w));
+  return out;
+}
+async function setupCheck() {
+  const here = h('ul.wz-checks', wzCheck('info', 'Checking this computer\u2026')), consoles = h('div');
+  let result = null;
+  const copy = h('button.btn', { disabled: true, onclick: () => navigator.clipboard.writeText(report()).then(() => toast('Report copied')).catch(() => toast('Couldn\u2019t copy it here', true)) }, ic('copy', 'sm'), 'Copy report');
+  const issue = h('a.btn', { href: NewIssue, target: '_blank', rel: 'noopener noreferrer', onclick: e => { e.currentTarget.href = NewIssue + '?body=' + encodeURIComponent('<!-- What happened? -->\n\n\n```\n' + report() + '\n```\n'); } }, 'Report a problem', ic('external-link', 'sm'));
+  modal('Check my setup', close => [
+    h('div.modal-body',
+      h('p.muted', { style: { marginTop: 0 } }, 'NetDisc360 looks at this computer and each console. Its report leaves out addresses, user names and passwords, so you can share it when you ask for help.'),
+      h('h3', { style: { margin: '14px 0 4px' } }, 'This computer'), here, consoles),
+    h('div.modal-foot', h('span.note'), navigator.clipboard ? copy : null, issue, h('button.btn.primary', { onclick: close }, 'Close')),
+  ]);
+  function lines(list) {
+    return [...list.querySelectorAll('li.wz-check')].map(li => {
+      const tone = ['good', 'warn', 'bad', 'info'].find(t => li.classList.contains(t)) || 'info';
+      const d = li.querySelector('.d');
+      return '- [' + { good: 'ok', warn: 'warning', bad: 'problem', info: 'note' }[tone] + '] ' + li.querySelector('.t').textContent + (d && d.textContent ? ': ' + d.textContent : '');
+    });
+  }
+  function report() {
+    const r = result || {}, st = S.settings, on = v => v ? 'on' : 'off';
+    const text = ['NetDisc360 ' + S.version + ' (' + (r.runs === 'app' ? 'Windows, notification area' : r.runs === 'docker' ? 'Docker' : S.platform) + ')', '', 'This computer:', ...lines(here)];
+    [...consoles.querySelectorAll('.setup-console')].forEach((box, i) => text.push('', 'Console ' + (i + 1) + ':', ...lines(box)));
+    text.push('', 'Settings: add games ' + on(st.push) + ', Xbox 360 category ' + on(st.category) + ', scan ' + on(st.scan) + ', leave out installed games ' + on(st.skipInstalled) +
+      ', Aurora scripts ' + on(st.auroraScripts) + ', follow address ' + on(st.followAddress) + ', keep awake ' + on(st.keepAwake) + ', dashboard open to the network ' + on(st.webLan));
+    return scrub(text.join('\n'));
+  }
+  try { result = await api('setup'); fill(here, serverChecks(result)); }
+  catch (e) { fill(here, wzCheck('bad', 'The check didn\u2019t work', e.message)); }
+  fill(consoles, S.consoles.map(c => {
+    const list = h('ul.wz-checks.setup-console', wzCheck('info', 'Checking\u2026'));
+    api('consoles/check', { address: c.address }).then(r => fill(list, consoleChecks(r))).catch(e => fill(list, wzCheck('bad', 'The check didn\u2019t work', e.message)));
+    return [h('h3', { style: { margin: '18px 0 4px' } }, 'Xbox ' + c.address), list];
+  }));
+  copy.disabled = false;
+}
 
 // Game folders ------------------------------------------------------------------------
 
@@ -1214,9 +1528,10 @@ Pages.folders = root => {
       const key = JSON.stringify(S.folders);
       if (key === drawn) return;
       drawn = key;
-      fill(list, S.folders.length ? S.folders.map(f => h('div.folder-row' + (f.found ? '' : '.missing'),
-        h('div.icon', ic(f.found ? 'folder' : 'folder-x')),
-        h('div.grow', h('div.path', f.path), h('div.sub', f.found ? plural(f.games, 'game') : 'This folder can\u2019t be opened right now (a drive that isn\u2019t connected?)')),
+      fill(list, S.folders.length ? S.folders.map(f => h('div.folder-row' + (f.found && !f.emptied ? '' : '.missing'),
+        h('div.icon', ic(f.found && !f.emptied ? 'folder' : 'folder-x')),
+        h('div.grow', h('div.path', f.path), h('div.sub', !f.found ? 'This folder can\u2019t be opened right now (a drive that isn\u2019t connected?)'
+          : f.emptied ? 'It had games, and has none now (a NAS or drive that isn\u2019t there?). Until they\u2019re back, no game is removed from the consoles.' : plural(f.games, 'game'))),
         h('button.btn.small.danger', { onclick: () => removeFolder(f.path) }, ic('trash-2', 'sm'), 'Remove'))) :
         h('div.empty', ic('folder-open'), h('h3', 'No game folders yet'), h('p', 'Add the folder with your ISOs, extracted games or Games on Demand packages.'),
           h('button.btn.primary', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder')));
@@ -1478,6 +1793,10 @@ Pages.settings = root => {
     const password = h('input.input', { type: 'password', placeholder: st.ftpPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
     const xboxFolder = h('input.input.mono', { value: st.xboxFolder });
     const aurora = h('input.input.mono', { value: st.aurora });
+    const installedFolders = h('input.input.mono', { value: st.installedFolders, placeholder: '/Hdd1/Games' });
+    const webUser = h('input.input', { value: st.auroraWebUser, autocomplete: 'off' });
+    const webPassword = h('input.input', { type: 'password', placeholder: st.auroraWebPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
+    const webPort = h('input.input', { type: 'number', min: 1, max: 65535, value: st.auroraWebPort });
     fill(body,
       head('Xbox & Aurora', 'How your games get into Aurora\u2019s game list on each console.'),
       card('gamepad-2', 'Your games in Aurora', null,
@@ -1485,6 +1804,30 @@ Pages.settings = root => {
         row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
         row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i))),
         row('Consoles to update', st.xboxes.length ? st.xboxes.join(', ') : 'Every console that connects.', h('a.btn', { href: '#consoles' }, 'Change', ic('chevron-right', 'sm')))),
+      card('hard-drive', 'Games installed on the console', null,
+        row('Leave out installed games', 'A game that is installed on the console already, extracted or as Games on Demand, gets no tile, so Aurora doesn\u2019t list it twice.', toggle(st.skipInstalled, (v, i) => flip('skipInstalled', v, i))),
+        h('div.form', { style: { marginTop: '12px' } },
+          h('label.field', h('span', 'Folders with installed games'), installedFolders, h('span.help', 'FTP paths with semicolons between, like /Hdd1/Games. A game one folder further down counts too (Halo 3\\Disc 1), and Games on Demand on those drives are found by themselves.')),
+          h('div.form-actions', h('button.btn', { onclick: () => save({ installedFolders: installedFolders.value }, 'Folders saved') }, 'Save folders')))),
+      card('scroll-text', 'Aurora extras', null,
+        row('Aurora scripts', ['Puts ', h('b', 'NetDisc360 Cleanup'), ' under Aurora\u2019s Utilities, which takes games whose tile is gone off Aurora\u2019s list, and the filter ', h('b', 'Hide PC games while NetDisc360 is off'), ' under Filters, User.'], toggle(st.auroraScripts, (v, i) => flip('auroraScripts', v, i))),
+        row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i))),
+        row('Follow this PC\u2019s address', 'When your router gives this PC a new address, NetISO.xex.txt on the console is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
+        row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; the Consoles page turns a console off by hand too.',
+          h('select.input', { style: { width: 'auto' }, onchange: e => save({ autoOffMinutes: Number(e.target.value) }, Number(e.target.value) ? 'Consoles turn off after their last game' : 'Consoles stay on') },
+            [[0, 'Never'], [15, 'After 15 minutes'], [30, 'After 30 minutes'], [60, 'After 1 hour'], [120, 'After 2 hours']].concat([0, 15, 30, 60, 120].includes(st.autoOffMinutes) ? [] : [[st.autoOffMinutes, 'After ' + plural(st.autoOffMinutes, 'minute')]])
+              .map(([v, l]) => h('option', { value: v, selected: v === st.autoOffMinutes }, l))))),
+      card('play', 'Aurora\u2019s web server', 'used to start games from this dashboard and to restart Aurora',
+        h('div.form.cols',
+          h('label.field', h('span', 'User name'), webUser),
+          h('label.field', h('span', 'Password'), webPassword),
+          h('label.field', h('span', 'Port'), webPort),
+          h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The login in Aurora\u2019s settings under HTTP server (Aurora\u2019s default is xboxhttp / xboxhttp, port 9999).')),
+          h('div.form-actions', h('button.btn.primary', { onclick: async () => {
+            const c = { auroraWebUser: webUser.value, auroraWebPort: Number(webPort.value) };
+            if (webPassword.value) c.auroraWebPassword = webPassword.value;
+            if (await save(c, 'Web server login saved')) webPassword.value = '';
+          } }, 'Save login')))),
       card('plug', 'Aurora\u2019s FTP login', 'used to add your games to each console\u2019s Aurora',
         h('div.form.cols',
           h('label.field', h('span', 'User name'), user),
@@ -1726,6 +2069,7 @@ Pages.settings = root => {
       head('Windows', 'NetDisc360 on this PC.'),
       card('power', 'Starting', null,
         row('Start with Windows', 'Starts NetDisc360 behind its icon in the notification area when you sign in.', toggle(st.startWithWindows, (v, i) => flip('startWithWindows', v, i, v ? 'Starts with Windows' : 'Doesn\u2019t start with Windows'))),
+        row('Keep this PC awake while a console plays', 'A game loses its disc when the PC sleeps. Windows may sleep again 10 minutes after the last game ends.', toggle(st.keepAwake, (v, i) => flip('keepAwake', v, i, v ? 'This PC stays awake while a console plays' : 'This PC may sleep while a console plays'))),
         row('Restart NetDisc360', 'Consoles playing a game lose their disc for a few seconds.', h('button.btn', { onclick: async () => {
           if (S.consoles.some(c => c.playing) && !(await confirmBox('Restart while a game is running?', 'A console is playing a game from NetDisc360. It loses its disc while NetDisc360 restarts.', 'Restart'))) return;
           try { await api('restart', {}); toast('Restarting\u2026'); awaitRestart('NetDisc360 restarted'); } catch (e) { toast(e.message, true); }

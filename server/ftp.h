@@ -15,7 +15,9 @@
 namespace nia {
 class Link;
 
-struct FtpEntry { std::string name; bool folder; };
+// size and stamp (the listing's date and time, as it gives them) tell a
+// file that changed since it was last read.
+struct FtpEntry { std::string name; bool folder; U64 size; std::string stamp; FtpEntry() : folder(false), size(0) {} };
 
 class FtpClient {
 public:
@@ -30,15 +32,25 @@ public:
     bool List(const char* folder, std::vector<FtpEntry>& entries);
     // Whole file into data; false if missing (Missing() is then true) or over limit bytes.
     bool Retrieve(const char* path, std::vector<unsigned char>& data, size_t limit);
+    // The first bytes of a file (all of it if it's shorter), without
+    // downloading the rest: the transfer is cut off there.
+    bool RetrieveHead(const char* path, std::vector<unsigned char>& data, size_t bytes);
     bool Store(const char* path, const void* data, size_t size);
     bool MakeFolder(const char* path);
     bool Exists(const char* folder);
+    // Whether folder is there, going into it. Unlike Exists, a folder that
+    // isn't there keeps the connection (FtpDll stays where it was), so
+    // looking for many costs no new logins.
+    bool Enters(const char* folder);
     bool Delete(const char* path);
     bool RemoveFolder(const char* path);
     // A SITE command (FtpDll's own, such as INITIATESCAN); reply is its last
     // line. True for a 2xx reply.
     bool Site(const char* command, std::string& reply);
     void Close();
+    // This computer's address on the connection to the Xbox (network byte
+    // order), the one the Xbox reaches it at; 0 when not connected.
+    DWORD LocalAddress() const;
     bool Missing() const { return missing_; }
     // Last reply code, or 0 for a connection problem.
     int Code() const { return code_; }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "ftp.h"
+#include <algorithm>
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -62,6 +63,16 @@ public:
         }
         return true;
     }
+    DWORD Local() const {
+        sockaddr_in at; memset(&at,0,sizeof(at));
+#ifdef _WIN32
+        int length=sizeof(at);
+#else
+        socklen_t length=sizeof(at);
+#endif
+        if(socket_==INVALID_SOCKET || getsockname(socket_,reinterpret_cast<sockaddr*>(&at),&length)) return 0;
+        return at.sin_addr.s_addr;
+    }
     // Bytes received, 0 when the other side closed, -1 on an error or timeout.
     int Receive(void* data, int capacity, double seconds) {
         const double deadline=Now()+seconds;
@@ -84,6 +95,7 @@ void FtpClient::Close() {
     if(control_->Open()) { control_->SendAll("QUIT\r\n",6,1); control_->Close(); }
     buffer_.clear(); folder_.clear();
 }
+DWORD FtpClient::LocalAddress() const { return control_->Local(); }
 bool FtpClient::Fail(const char* format, ...) {
     va_list a; va_start(a,format); _vsnprintf_s(error_,sizeof(error_),_TRUNCATE,format,a); va_end(a);
     // FtpDll's replies can fall behind after a failure; start over next time.
@@ -248,6 +260,43 @@ bool FtpClient::Retrieve(const char* path, std::vector<unsigned char>& out, size
     return true;
 }
 
+bool FtpClient::RetrieveHead(const char* path, std::vector<unsigned char>& out, size_t bytes) {
+    out.clear();
+    std::string folder,name; SplitPath(path,folder,name);
+    if(!Open()) return false;
+    if(!Enter(folder)) { missing_=code_==550; return false; }
+    Link data;
+    if(!Passive(data) || !Send("RETR %s",name.c_str()) || !Reply()) return false;
+    if(code_/100!=1 && code_/100!=2) {
+        missing_=code_==550;
+        return Fail("RETR %s: %s",path,text_.c_str());
+    }
+    bool done=code_/100==2;
+    unsigned char part[65536];
+    while(out.size()<bytes) {
+        int got=data.Receive(part,int(std::min(sizeof(part),bytes-out.size())),timeout_);
+        if(got<0) { code_=0; return Fail("The FTP data connection stalled"); }
+        if(got==0) {  // The whole file: its transfer ends as usual.
+            data.Close();
+            if(!done && !Reply()) return false;
+            if(code_/100!=2) return Fail("RETR %s: %s",path,text_.c_str());
+            return true;
+        }
+        out.insert(out.end(),part,part+got);
+    }
+    // Cut off: FtpDll answers that with a reply of its own, which keeps the
+    // connection in step. Without one within a few seconds the connection
+    // goes, and the next command logs in again.
+    data.Close();
+    if(!done) {
+        double wait=timeout_;
+        timeout_=3;
+        Reply();
+        timeout_=wait;
+    }
+    return true;
+}
+
 bool FtpClient::Store(const char* path, const void* bytes, size_t size) {
     std::string folder,name; SplitPath(path,folder,name);
     if(!Open() || !Enter(folder)) return false;
@@ -264,6 +313,17 @@ bool FtpClient::Store(const char* path, const void* bytes, size_t size) {
 bool FtpClient::Exists(const char* folder) {
     if(!Open()) return false;
     if(Enter(folder)) return true;
+    return false;
+}
+
+bool FtpClient::Enters(const char* folder) {
+    if(!Open()) return false;
+    if(folder_==folder) return true;
+    if(!Send("CWD %s",folder) || !Reply()) return false;
+    if(code_/100==2) { folder_=folder; return true; }
+    folder_.clear();
+    missing_=code_==550;
+    if(code_/100!=5) return Fail("CWD %s: %s",folder,text_.c_str());
     return false;
 }
 
@@ -303,10 +363,13 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
     // name is what follows the eighth field.
     if(line.size()<10 || (line[0]!='d' && line[0]!='-')) return false;
     size_t at=0;
+    std::string fields[8];
     for(int field=0;field<8;++field) {
         while(at<line.size() && line[at]==' ') ++at;
         if(at==line.size()) return false;
+        size_t start=at;
         while(at<line.size() && line[at]!=' ') ++at;
+        fields[field]=line.substr(start,at-start);
     }
     if(at==line.size()) return false;
     ++at;  // The one space before the name; the name may start with spaces.
@@ -314,6 +377,8 @@ bool ParseListLine(const std::string& line, FtpEntry& entry) {
     while(!name.empty() && (name[name.size()-1]=='\r' || name[name.size()-1]=='\n')) name.erase(name.size()-1);
     if(name.empty() || name=="." || name=="..") return false;
     entry.name=name; entry.folder=line[0]=='d';
+    entry.size=strtoull(fields[4].c_str(),NULL,10);
+    entry.stamp=fields[5]+" "+fields[6]+" "+fields[7];
     return true;
 }
 
