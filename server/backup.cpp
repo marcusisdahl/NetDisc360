@@ -102,7 +102,7 @@ std::string Zip(const std::map<std::string,std::string>& files, long long when) 
     return out;
 }
 
-bool Unzip(const std::string& data, std::map<std::string,std::string>& files, std::string& error) {
+bool Unpack(const std::string& data, std::map<std::string,std::string>& files, std::string& error, size_t maxFile) {
     files.clear();
     // The end record is the last 22 bytes, unless the zip has a comment.
     size_t end=std::string::npos;
@@ -128,11 +128,23 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
         }
         if(size_t(local)+30>data.size() || Get32(data,local)!=0x04034B50) { error="The zip file is damaged."; return false; }
         size_t start=size_t(local)+30+Get16(data,local+26)+Get16(data,local+28);
-        if(packed!=unpacked || unpacked>MaxFile || start+unpacked>data.size()) { error="The zip file is damaged, or holds more than settings."; return false; }
+        if(packed!=unpacked || unpacked>maxFile || start+unpacked>data.size()) {
+            error=maxFile==MaxFile ? "The zip file is damaged, or holds more than settings." : "The zip file is damaged.";
+            return false;
+        }
         std::string content=data.substr(start,unpacked);
         if(Crc32(content)!=crc) { error="The zip file is damaged (a file's checksum is wrong)."; return false; }
-        size_t slash=name.find_last_of("/\\");
-        files[Lower(slash==std::string::npos ? name : name.substr(slash+1))]=content;
+        files[name]=content;
+    }
+    return true;
+}
+
+bool Unzip(const std::string& data, std::map<std::string,std::string>& files, std::string& error) {
+    std::map<std::string,std::string> named;
+    if(!Unpack(data,named,error,MaxFile)) return false;
+    for(std::map<std::string,std::string>::const_iterator f=named.begin();f!=named.end();++f) {
+        size_t slash=f->first.find_last_of("/\\");
+        files[Lower(slash==std::string::npos ? f->first : f->first.substr(slash+1))]=f->second;
     }
     return true;
 }

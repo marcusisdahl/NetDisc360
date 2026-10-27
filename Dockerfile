@@ -16,7 +16,7 @@ COPY shared/ shared/
 COPY tests/posix_compat.h tests/
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
-        server/backup.cpp server/update.cpp \
+        server/backup.cpp server/update.cpp server/saves.cpp server/wake.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip

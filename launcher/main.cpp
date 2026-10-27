@@ -420,6 +420,9 @@ static bool ListMountFolder(const char* folder) {
 
 static bool FindServer(const char* ini,DWORD& address,int& port);
 static bool StartNetwork(int addressWaitMs);
+struct WakeInfo { unsigned char mac[6]; DWORD address,broadcast; char text[18]; };
+static bool ReadWake(WakeInfo& wake);
+static void SendWake(const WakeInfo& wake);
 static char ServerSource[48]="";
 
 // A failed start, as the screen tells it: the step, a title and up to three
@@ -446,6 +449,9 @@ static bool Pause(int ms) {
 // two (seen on the console), so until it has been up this long the launcher
 // keeps trying instead of failing.
 static const DWORD BootSeconds=240,RetrySeconds=10;
+// A PC that NetDisc360 said can be woken (wake.ini) gets a wake packet when it
+// doesn't answer, again every WakeEverySeconds, and this long to wake up.
+static const DWORD WakeSeconds=90,WakeEverySeconds=10;
 static Result WaitForServer(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     if(!FindServer(ini,address,port))
@@ -457,25 +463,45 @@ static Result WaitForServer(const char* ini) {
     if(!StartNetwork(0)) return Fail(nia::StepServer,true,"The Xbox's network didn't start","XNetStartup or WSAStartup failed.","Reboot the Xbox and try again.");
     const DWORD start=GetTickCount();
     char error[160]="";
+    static WakeInfo wake;
+    bool wakeRead=false,canWake=false;
+    DWORD wokeAt=0,sentAt=0;
     for(;;) {
         if(CancelAsked) return Cancelled;
         XNADDR own;
-        if(XNetGetTitleXnAddr(&own)==XNET_GET_XNADDR_PENDING) strcpy_s(error,"The Xbox has no network address yet");
+        bool addressed=XNetGetTitleXnAddr(&own)!=XNET_GET_XNADDR_PENDING;
+        if(!addressed) strcpy_s(error,"The Xbox has no network address yet");
         else {
             nia::IsvrClient client(5);
-            if(client.Connect(address,port,3) && client.Ping()) { Note("The server answers."); return Mounted; }
+            if(client.Connect(address,port,3) && client.Ping()) {
+                if(wokeAt) Note("The server answers, %lu s after the first wake packet.",(GetTickCount()-wokeAt)/1000);
+                else Note("The server answers.");
+                return Mounted;
+            }
             strcpy_s(error,client.Error());
+            // Asleep, maybe: wake it, if NetDisc360 said how.
+            if(!wakeRead) { wakeRead=true; canWake=ReadWake(wake); }
+            if(canWake && (!sentAt || GetTickCount()-sentAt>=WakeEverySeconds*1000)) {
+                SendWake(wake);
+                sentAt=GetTickCount();
+                if(!wokeAt) wokeAt=sentAt;
+            }
         }
-        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
+        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000,waking=wokeAt ? (GetTickCount()-wokeAt)/1000 : 0;
         bool booting=up<BootSeconds;
-        if(!booting && waited>=RetrySeconds) break;
-        if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
+        if(!booting && waited>=RetrySeconds && (!wokeAt || waking>=WakeSeconds)) break;
+        if(wokeAt) ShowStep(nia::StepServer,0.05,"Waking the PC at %s... %lu s",where,waking);
+        else if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
         else ShowStep(nia::StepServer,0.05,"Waiting for the NetISO server at %s... %lu s",where,waited);
         if(!Pause(1000)) return Cancelled;
     }
     Note("Can't reach the NetISO server: %s",error);
     char line0[128],line2[128];
     _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
+    if(wokeAt) {
+        _snprintf_s(line2,sizeof(line2),_TRUNCATE,"Wake-on-LAN must be on in its BIOS and network adapter. The address is in %s.",ServerSource);
+        return Fail(nia::StepServer,true,"The PC didn't wake up",line0,"The Xbox sent it wake packets for 90 s. If it's off or asleep,",line2);
+    }
     _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
     return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc360 on the PC, and check that the PC and the Xbox",line2);
 }
@@ -996,6 +1022,59 @@ static bool StartNetwork(int addressWaitMs) {
     return true;
 }
 
+// Wake-on-LAN ----
+// wake.ini, which NetDisc360 keeps in the helper's folder next to the game
+// folders (Hdd1:\NetISO\NetDisc360; see server/wake.h): the PC's MAC address,
+// its address and its network's broadcast address.
+static const char WakeLink[]="\\??\\NIsoW:",WakeIni[]="NIsoW:\\wake.ini";
+static char TileFolder[nia::BootFolderMax]="";  // The game folder as a device path, when started as the helper.
+static bool ReadWake(WakeInfo& wake) {
+    memset(&wake,0,sizeof(wake));
+    char text[512]="";
+    bool found=false;
+    // Next to this game's folder, wherever it is; else in Hdd1:\NetISO.
+    char* slash=strrchr(TileFolder,'\\');
+    if(slash && slash>TileFolder) {
+        char helper[nia::BootFolderMax];
+        _snprintf_s(helper,sizeof(helper),_TRUNCATE,"%.*s\\%s",int(slash-TileFolder),TileFolder,nia::HelperFolder);
+        if(LinkDrive(WakeLink,helper)>=0) { found=ReadText(WakeIni,text,sizeof(text)); UnlinkDrive(WakeLink); }
+    }
+    char path[nia::PathMax];
+    if(!found && MapPath("Hdd1:\\NetISO\\NetDisc360\\wake.ini",path,sizeof(path))) found=ReadText(path,text,sizeof(text));
+    if(!found) { Note("No wake.ini, so the launcher can't wake the PC."); return false; }
+    char mac[32],address[32],broadcast[32];
+    if(!nia::IniValue(text,"mac",mac,sizeof(mac))) mac[0]=0;
+    unsigned v[6];
+    if(sscanf_s(mac,"%2x:%2x:%2x:%2x:%2x:%2x",v,v+1,v+2,v+3,v+4,v+5)!=6) { Note("wake.ini has no MAC address."); return false; }
+    for(int i=0;i<6;++i) wake.mac[i]=(unsigned char)v[i];
+    strcpy_s(wake.text,mac);
+    wake.address=nia::IniValue(text,"address",address,sizeof(address)) ? inet_addr(address) : INADDR_NONE;
+    wake.broadcast=nia::IniValue(text,"broadcast",broadcast,sizeof(broadcast)) ? inet_addr(broadcast) : INADDR_NONE;
+    return true;
+}
+// The magic packet (six FF bytes, then the MAC address 16 times) to UDP port
+// 9 of the PC's network, of every network, and of the PC itself.
+static void SendWake(const WakeInfo& wake) {
+    unsigned char packet[102];
+    memset(packet,0xFF,6);
+    for(int i=0;i<16;++i) memcpy(packet+6+i*6,wake.mac,6);
+    SOCKET s=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(s==INVALID_SOCKET) { Note("No socket for the wake packet (%d).",WSAGetLastError()); return; }
+    BOOL on=TRUE;
+    setsockopt(s,SOL_SOCKET,SO_BROADCAST,(const char*)&on,sizeof(on));
+    DWORD targets[3]={wake.broadcast,0xFFFFFFFF,wake.address};
+    int sent=0;
+    for(int i=0;i<3;++i) {
+        if(targets[i]==INADDR_NONE && i!=1) continue;
+        sockaddr_in to; memset(&to,0,sizeof(to));
+        to.sin_family=AF_INET; to.sin_port=htons(9); to.sin_addr.s_addr=targets[i];
+        if(sendto(s,(const char*)packet,sizeof(packet),0,(sockaddr*)&to,sizeof(to))==sizeof(packet)) ++sent;
+        else Note("Sending the wake packet to %08X failed (%d).",ntohl(targets[i]),WSAGetLastError());
+    }
+    closesocket(s);
+    Note("Sent a wake packet for %s (%d of 3 addresses).",wake.text,sent);
+}
+
 static unsigned char Launcher[4<<20],Boot[4<<20];
 static void Sync(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
@@ -1084,6 +1163,7 @@ void __cdecl main() {
     static char folder[nia::BootFolderMax];
     bool helper=StartedAsHelper(Started,folder,sizeof(folder));
     bool linked=folder[0] && UseTileFolder(folder);
+    if(folder[0]) strcpy_s(TileFolder,folder);
     OpenLog(true);
     NoteRun();
     if(linked) Note("Started as the helper for %s.",folder);

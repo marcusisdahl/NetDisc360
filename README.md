@@ -359,6 +359,9 @@ Pick the game's tile. The NetDisc360 logo plays for three seconds while the game
 - **Games with an install disc** (GTA V, Forza Motorsport 4) check for the install first. If the install disc's content isn't on the console's hard drive or USB storage, the screen asks: **A** starts the install disc so you can install it, **X** plays anyway, **B** goes back to Aurora. Without its install, GTA V freezes at "Loading story mode".
 - **Games on more than one disc** get a tile for each disc. When the game asks for another disc (GTA V's install disc asks for the play disc once it has installed), NetDisc360 puts that disc in over the network and the game carries on, as if you had swapped it. A notification says when the game is ready to swap and when the other disc goes in. Every disc of the game has to be in your game folders.
 
+- **Your PC can sleep.** When the server doesn't answer, the launcher wakes the PC with Wake-on-LAN and waits up to 90 seconds for it. Turn on Wake-on-LAN in the PC's BIOS and in its network adapter's settings (Device Manager > the adapter > Power Management: "Allow this device to wake the computer"). NetDisc360 tells each console the PC's MAC address; turn it off, or give another MAC address, under **Settings > Xbox & Aurora**.
+- **Your saves are backed up.** When a console is back in Aurora after a game, NetDisc360 copies that game's saves from every profile on the console's hard drive to the PC, and keeps the newest 10 of each game. **Settings > Backups > Game saves** lists them, downloads them, puts them back on a console, or backs up every game's saves at once.
+
 There is no unmount step: the plugin keeps the last game mounted until another one is mounted.
 
 **Play together.** Several consoles can play the same game from the same copy at the same time, system link included. Here two consoles play Call of Duty: Modern Warfare 2 against each other over system link, each streaming the game from NetDisc360:

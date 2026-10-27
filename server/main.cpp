@@ -8,6 +8,7 @@
 // the settings can be changed while it runs.
 //
 //   netdisc [options] [game folder ...]      (netdisc -h lists them)
+#include "../shared/helper.h"
 #include "../shared/library.h"
 #include "app.h"
 #include "backup.h"
@@ -15,8 +16,10 @@
 #include "discmap.h"
 #include "discs.h"
 #include "ftp.h"
+#include "saves.h"
 #include "update.h"
 #include "version.h"
+#include "wake.h"
 #include "web.h"
 #include <algorithm>
 #include <atomic>
@@ -90,10 +93,21 @@ struct Options {
     // themselves (NetDisc360.exe), and count test versions (pre-releases) too.
     bool updateCheck, updateAuto, updatePrerelease;
     std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
+    // Wake-on-LAN (RefreshWake): whether each console gets wake.ini, so its
+    // launcher can wake this computer, and the MAC address to wake instead
+    // of the adapter's own ("" for that).
+    bool wake;
+    std::string wakeMac;
+    // Game saves (SaveLoop): backed up after each game, keeping the newest
+    // so many of each game; saveDelay: seconds after the console is back in Aurora.
+    bool saveBackup;
+    int saveKeep;
+    double saveDelay;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
-                backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false) {}
+                backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
+                wake(true), saveBackup(true), saveKeep(10), saveDelay(10) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -516,6 +530,19 @@ std::vector<Console*> AllConsoles() {
     return Consoles;
 }
 
+// Held while talking to a console's Aurora FTP server, so a save backup and
+// its push thread don't use it at once.
+std::mutex& FtpLockFor(DWORD address) {
+    static std::mutex lock;
+    static std::map<DWORD,std::mutex*> locks;
+    std::lock_guard<std::mutex> hold(lock);
+    std::mutex*& m=locks[address];
+    if(!m) m=new std::mutex;
+    return *m;
+}
+void QueueSaves(DWORD address, const std::string& game);
+void RefreshWake(const Console& console, FtpClient& ftp, const Options& o);
+
 // A console that has used the server, kept in the settings file so the
 // dashboard knows it after a restart.
 struct KnownConsole { std::string address; long long seen; };
@@ -561,6 +588,8 @@ void AuroraLoop() {
             c.ftp=2;
             XboxLog(c,"back in Aurora after %s (its FTP server answers).",game.c_str());
             XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
+            { std::lock_guard<std::mutex> hold(ConsoleLock); game=c.mounted; }
+            QueueSaves(c.address,game);
         }
         Sleep(1000);
     }
@@ -1299,6 +1328,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     bool idle=o.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
     if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
     s.probedAt=Now();
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(console.address));
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
         if(s.reachable || !s.toldDown) {
@@ -1333,6 +1363,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
+            RefreshWake(console,ftp,o);
             if(o.filter) RefreshInstallFilter(console,ftp,o);
             // Folders held while a game folder is missing wait for it to come
             // back, which changes the state (see WatchLoop).
@@ -1640,6 +1671,10 @@ bool Save() {
     f.Set("update_check",o.updateCheck ? "1" : "0");
     f.Set("update_auto",o.updateAuto ? "1" : "0");
     f.Set("update_prerelease",o.updatePrerelease ? "1" : "0");
+    f.Set("wake",o.wake ? "1" : "0");
+    f.Set("wake_mac",o.wakeMac);
+    f.Set("save_backup",o.saveBackup ? "1" : "0");
+    f.Set("save_keep",Number(o.saveKeep));
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         if(UpdatedFrom.empty()) f.Remove("updated_from");
@@ -1734,6 +1769,11 @@ bool LoadConfig(Options& o) {
     o.updateCheck=Flag(f,"update_check",o.updateCheck);
     o.updateAuto=Flag(f,"update_auto",o.updateAuto);
     o.updatePrerelease=Flag(f,"update_prerelease",o.updatePrerelease);
+    o.wake=Flag(f,"wake",o.wake);
+    if(f.Has("wake_mac")) o.wakeMac=wake::CleanMac(f.Get("wake_mac"));
+    o.saveBackup=Flag(f,"save_backup",o.saveBackup);
+    if(f.Has("save_keep")) o.saveKeep=std::max(1,std::min(100,int(f.Number("save_keep",o.saveKeep))));
+    if(f.Has("save_delay")) o.saveDelay=double(std::max(0,std::min(600,int(f.Number("save_delay",10)))));  // Only for the tests.
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         UpdatedFrom=f.Get("updated_from");
@@ -1773,6 +1813,249 @@ bool LoadConfig(Options& o) {
     }
     std::lock_guard<std::mutex> hold(SettingsLock);
     Known.swap(known);
+    return true;
+}
+
+// Wake-on-LAN and game saves ----------------------------------------------------
+
+bool Text(const web::Value& v, const char* key, std::string& out);
+
+// This computer's adapter toward the consoles, for the dashboard: its MAC
+// address and IPv4 address (looked up once a minute).
+void WakeAdapter(const Options& o, std::string& mac, std::string& address) {
+    static std::mutex lock;
+    static double at=-1000;
+    static std::string lastMac, lastAddress;
+    std::lock_guard<std::mutex> hold(lock);
+    if(Now()-at>=60) {
+        at=Now();
+        DWORD toward=o.xboxes.empty() ? 0 : o.xboxes[0];
+        if(!toward) { std::vector<Console*> consoles=AllConsoles(); if(!consoles.empty()) toward=consoles.back()->address; }
+        if(!toward) toward=inet_addr("192.168.1.1");
+        DWORD own=0, all=0;
+        lastMac.clear(); lastAddress.clear();
+        if(wake::Adapter(toward,lastMac,own,all)) { char text[16]; AddressText(own,text,sizeof(text)); lastAddress=text; }
+    }
+    mac=lastMac; address=lastAddress;
+}
+
+// What each console's wake.ini says, as last written or found (under WakeLock).
+std::mutex WakeLock;
+std::map<DWORD,std::string> WakeWritten;
+
+// Keeps wake.ini in the helper's folder on a console (Hdd1:\NetISO\NetDisc360)
+// naming the adapter this computer reaches it with, so its launcher can
+// wake this computer (see wake.h); takes it away when waking is off.
+void RefreshWake(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string text;
+    if(o.wake) {
+        std::string mac; DWORD own=0, all=0;
+        bool found=wake::Adapter(console.address,mac,own,all);
+        if(!o.wakeMac.empty()) {
+            mac=o.wakeMac;
+            if(!found && own) all=htonl(ntohl(own)|0xFF);
+        }
+        if(!mac.empty() && own) text=wake::Ini(mac,own,all);
+    }
+    std::string path=o.xboxFolder+"/"+HelperFolder+"/wake.ini";
+    {
+        std::lock_guard<std::mutex> hold(WakeLock);
+        std::map<DWORD,std::string>::const_iterator known=WakeWritten.find(console.address);
+        if(known!=WakeWritten.end() && known->second==text) return;
+    }
+    std::vector<unsigned char> there;
+    bool has=ftp.Retrieve(path.c_str(),there,4096);
+    if(has && std::string(there.begin(),there.end())==text) { std::lock_guard<std::mutex> hold(WakeLock); WakeWritten[console.address]=text; return; }
+    if(text.empty()) {
+        if(has && !ftp.Delete(path.c_str())) { XboxLog(console,"couldn't delete %s: %s",path.c_str(),ftp.Error()); return; }
+        if(has) XboxLog(console,"deleted %s: the Xbox doesn't wake this computer.",path.c_str());
+        else if(o.wake) XboxLog(console,"no network adapter with a MAC address reaches it, so its launcher can't wake this computer.");
+    } else {
+        ftp.MakeFolder((o.xboxFolder+"/"+HelperFolder).c_str());
+        if(!ftp.Store(path.c_str(),text.data(),text.size())) { XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error()); return; }
+        XboxLog(console,"wrote %s, so its launcher can wake this computer (%s).",path.c_str(),text.substr(4,17).c_str());
+    }
+    std::lock_guard<std::mutex> hold(WakeLock);
+    WakeWritten[console.address]=text;
+}
+
+std::string SavesFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Saves"; }
+std::string SavePath(const Options& o, const std::string& name) {
+#ifdef _WIN32
+    return SavesFolder(o)+"\\"+name;
+#else
+    return SavesFolder(o)+"/"+name;
+#endif
+}
+
+// The game a Title ID is among the served games, or "".
+std::string GameOf(DWORD titleId) {
+    std::vector<IsoFile> games=LatestGames();
+    for(size_t i=0;i<games.size();++i) if(games[i].titleId==titleId) return WithoutIso(games[i].name);
+    return std::string();
+}
+
+// One game's saves from a console into the Saves folder; false if the console
+// couldn't be read. Logs what happened.
+bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::string& game, const Options& o, saves::Result& r, std::string& error) {
+    if(!saves::Take(ftp,SavesFolder(o),titleId,config::ToUtf8(game),o.saveKeep,r,error)) {
+        XboxLog(console,"couldn't back up the saves of %s: %s",game.c_str(),config::FromUtf8(error).c_str());
+        return false;
+    }
+    if(!r.files) XboxLog(console,"%s has no saves on it to back up.",game.c_str());
+    else if(r.same) XboxLog(console,"the saves of %s are as in their newest backup (%s).",game.c_str(),r.name.c_str());
+    else {
+        XboxLog(console,"backed up the saves of %s: %d file(s) of %d profile(s), %s.",game.c_str(),r.files,r.profiles,r.name.c_str());
+        XboxEvent(console,EventGood,"Saves of "+game+" backed up",std::string("Saves of ")+game+" backed up from "+console.text);
+    }
+    return true;
+}
+
+// Saves to back up: a console that got back to Aurora after a game, from when.
+struct SaveJob { DWORD address; std::string game; double at; };
+std::mutex SaveJobLock;
+std::deque<SaveJob> SaveJobs;
+
+void QueueSaves(DWORD address, const std::string& game) {
+    Options o=Current();
+    if(!o.saveBackup || o.configPath.empty() || game.empty()) return;
+    SaveJob job={address,game,Now()+o.saveDelay};
+    std::lock_guard<std::mutex> hold(SaveJobLock);
+    for(size_t i=0;i<SaveJobs.size();++i) if(SaveJobs[i].address==address) { SaveJobs[i]=job; return; }
+    SaveJobs.push_back(job);
+}
+
+// Backs up the saves of the game each console played, a little after it is
+// back in Aurora (Aurora's FTP server is up then, and the game has written
+// its saves). One try more a minute later if the console couldn't be read.
+void SaveLoop() {
+    for(;;) {
+        Sleep(1000);
+        SaveJob job;
+        {
+            std::lock_guard<std::mutex> hold(SaveJobLock);
+            std::deque<SaveJob>::iterator due=SaveJobs.begin();
+            while(due!=SaveJobs.end() && due->at>Now()) ++due;
+            if(due==SaveJobs.end()) continue;
+            job=*due;
+            SaveJobs.erase(due);
+        }
+        Console* console=ConsoleIfKnown(job.address);
+        Options o=Current();
+        if(!console || !o.saveBackup || o.configPath.empty()) continue;
+        DWORD titleId=0;
+        std::vector<IsoFile> games=LatestGames();
+        for(size_t i=0;i<games.size() && !titleId;++i) if(games[i].name==job.game) titleId=games[i].titleId;
+        if(!titleId) continue;
+        bool ok;
+        {
+            std::lock_guard<std::mutex> ftpHold(FtpLockFor(job.address));
+            FtpClient ftp(job.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+            saves::Result r; std::string error;
+            ok=SaveGame(*console,ftp,titleId,WithoutIso(job.game),o,r,error);
+            ftp.Close();
+        }
+        if(!ok && job.at>0) {
+            job.at=-(Now()+60);  // Negative: tried once already.
+            std::lock_guard<std::mutex> hold(SaveJobLock);
+            SaveJobs.push_back(job);
+        }
+    }
+}
+
+// The save backups, by game, for the dashboard.
+void SaveList(web::Reply& out) {
+    Options o=Current();
+    std::string folder=SavesFolder(o);
+    std::vector<saves::Backup> list;
+    if(!folder.empty()) list=saves::List(folder);
+    std::map<DWORD,std::string> names;
+    std::vector<IsoFile> games=LatestGames();
+    for(size_t i=0;i<games.size();++i) if(!names.count(games[i].titleId)) names[games[i].titleId]=WithoutIso(games[i].name);
+    web::Json j;
+    j.Open('{').Set("available",!folder.empty()).Set("on",o.saveBackup).Set("folder",folder).Key("saves").Open('[');
+    for(size_t i=0;i<list.size();++i) {
+        const saves::Backup& b=list[i];
+        char id[9]; snprintf(id,sizeof(id),"%08X",b.titleId);
+        std::string game=names.count(b.titleId) ? config::ToUtf8(names[b.titleId]) : std::string(), data;
+        std::vector<std::string> profiles;
+        if(config::ReadFile(SavePath(o,b.name),data,300<<20)) {
+            std::string named;
+            saves::Describe(data,named,profiles);
+            if(game.empty()) game=named;
+        }
+        j.Open('{').Set("name",b.name).Set("titleId",std::string(id)).Set("game",game).Set("time",b.time).Set("size",b.size).Key("profiles").Open('[');
+        for(size_t p=0;p<profiles.size();++p) j.String(profiles[p]);
+        j.Close(']').Close('}');
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
+// A console the dashboard names, which has to be in Aurora (its FTP server up).
+Console* SaveConsole(const web::Value& v, std::string& error) {
+    std::string address;
+    Text(v,"address",address);
+    DWORD at=inet_addr(address.c_str());
+    Console* console=address.empty() || at==INADDR_NONE ? NULL : ConsoleIfKnown(at);
+    if(!console) { error="Choose a console that has used NetDisc360."; return NULL; }
+    bool playing;
+    { std::lock_guard<std::mutex> hold(ConsoleLock); playing=console->connections>0 && !console->mounted.empty() && !console->inAurora; }
+    if(playing) { error=std::string(console->text)+" is playing a game. Go back to Aurora first."; return NULL; }
+    return console;
+}
+
+// Backs up the saves of every game of this server that has saves on a console, now.
+bool SaveAll(const web::Value& v, web::Reply& out, std::string& error) {
+    Options o=Current();
+    if(o.configPath.empty()) { error="The settings aren't kept in a file (start NetDisc360 with --config), so there's nowhere to keep saves."; return false; }
+    Console* console=SaveConsole(v,error);
+    if(!console) return false;
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(console->address));
+    FtpClient ftp(console->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { error=std::string("Can't reach Aurora's FTP server on ")+console->text+": "+ftp.Error(); return false; }
+    std::set<DWORD> titles;
+    if(!saves::Titles(ftp,titles,error)) { error="Can't read the saves on "+std::string(console->text)+": "+error; return false; }
+    int made=0, same=0;
+    for(std::set<DWORD>::const_iterator t=titles.begin();t!=titles.end();++t) {
+        std::string game=GameOf(*t);
+        if(game.empty()) continue;  // Not one of this server's games.
+        saves::Result r;
+        if(!SaveGame(*console,ftp,*t,game,o,r,error)) return false;
+        if(r.files && r.same) ++same;
+        else if(r.files) ++made;
+    }
+    ftp.Close();
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("made",made).Set("same",same).Close('}');
+    out.body=j.Text();
+    return true;
+}
+
+// Puts a save backup back on a console; the saves there now are backed up first.
+bool RestoreSaves(const web::Value& v, std::string& error) {
+    Options o=Current();
+    std::string name, data;
+    Text(v,"name",name);
+    if(SavesFolder(o).empty() || !saves::Named(name) || !config::ReadFile(SavePath(o,name),data,300<<20)) { error="That save backup isn't there any more."; return false; }
+    Console* console=SaveConsole(v,error);
+    if(!console) return false;
+    DWORD titleId=DWORD(strtoul(name.substr(0,8).c_str(),NULL,16));
+    std::string game=GameOf(titleId);
+    if(game.empty()) game=name.substr(0,8);
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(console->address));
+    FtpClient ftp(console->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { error=std::string("Can't reach Aurora's FTP server on ")+console->text+": "+ftp.Error(); return false; }
+    saves::Result before;
+    if(!SaveGame(*console,ftp,titleId,game,o,before,error)) { error="The saves there now couldn't be backed up first, so nothing was changed: "+error; return false; }
+    int files=0;
+    if(!saves::Put(ftp,data,files,error)) {
+        XboxLog(*console,"restoring the saves of %s from %s stopped: %s",game.c_str(),name.c_str(),error.c_str());
+        return false;
+    }
+    ftp.Close();
+    XboxLog(*console,"restored the saves of %s from %s (%d file(s)).",game.c_str(),name.c_str(),files);
+    XboxEvent(*console,EventInfo,"Saves of "+game+" restored",std::string("Saves of ")+game+" restored on "+console->text);
     return true;
 }
 
@@ -1913,6 +2196,12 @@ void State(web::Reply& out) {
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
     j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
+    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep);
+    {
+        std::string mac,address;
+        WakeAdapter(o,mac,address);
+        j.Key("wakeAdapter").Open('{').Set("mac",mac).Set("address",address).Close('}');
+    }
 #ifdef _WIN32
     if(InTray) j.Set("startWithWindows",StartsWithWindows());
 #endif
@@ -2528,7 +2817,14 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Bool(v,"wizardDone",next.wizardDone);
     Whole(v,"backupEvery",0,365,next.backupEvery,error);
     Whole(v,"backupKeep",1,100,next.backupKeep,error);
+    Whole(v,"saveKeep",1,100,next.saveKeep,error);
     if(!error.empty()) return false;
+    Bool(v,"wake",next.wake);
+    Bool(v,"saveBackup",next.saveBackup);
+    if(Text(v,"wakeMac",text)) {
+        next.wakeMac=wake::CleanMac(text);
+        if(next.wakeMac.empty() && !Trim(text).empty()) { error="\""+text+"\" isn't a MAC address like AA:BB:CC:DD:EE:FF."; return false; }
+    }
     Bool(v,"updateCheck",next.updateCheck);
     if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
         error=InDocker ? "The Docker image is updated by pulling the new one, not by itself." : "Only NetDisc360.exe in the notification area installs updates by itself.";
@@ -2565,6 +2861,10 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.updateCheck!=was.updateCheck) changed.push_back(next.updateCheck ? "looking for updates" : "not looking for updates");
     if(next.updateAuto!=was.updateAuto) changed.push_back(next.updateAuto ? "updates install by themselves" : "updates install when you say");
     if(next.updatePrerelease!=was.updatePrerelease) changed.push_back(next.updatePrerelease ? "test versions count as updates" : "only full releases count as updates");
+    if(next.wake!=was.wake) changed.push_back(next.wake ? "the Xbox can wake this computer" : "the Xbox doesn't wake this computer");
+    if(next.wakeMac!=was.wakeMac) changed.push_back(next.wakeMac.empty() ? "waking this computer's own network adapter" : "waking "+next.wakeMac);
+    if(next.saveBackup!=was.saveBackup) changed.push_back(next.saveBackup ? "game saves backed up after each game" : "game saves not backed up");
+    if(next.saveKeep!=was.saveKeep) changed.push_back("keeping the newest "+Count(next.saveKeep,"save backup","save backups")+" of each game");
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         Settings.folders=next.folders; Settings.xboxes=next.xboxes; Settings.ftpUser=next.ftpUser; Settings.ftpPassword=next.ftpPassword;
@@ -2572,13 +2872,14 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.wizardDone=next.wizardDone; Settings.webLan=next.webLan;
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
+        Settings.wake=next.wake; Settings.wakeMac=next.wakeMac; Settings.saveBackup=next.saveBackup; Settings.saveKeep=next.saveKeep;
     }
     // Pre-releases in or out changes which release is the newest.
     if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
     if(next.xboxes!=was.xboxes) UpdateConsoles(next.xboxes);
     // Anything the push depends on writes every console's folders again (only what differs).
     if(next.xboxes!=was.xboxes || login || next.xboxFolder!=was.xboxFolder || next.aurora!=was.aurora ||
-       (next.push && !was.push) || (next.filter && !was.filter)) ++PushGeneration;
+       (next.push && !was.push) || (next.filter && !was.filter) || next.wake!=was.wake || next.wakeMac!=was.wakeMac) ++PushGeneration;
     if(next.webLan!=was.webLan) StartWeb(Current(),true);
     if(!changed.empty()) {
         std::string what;
@@ -3033,6 +3334,23 @@ void Api(const web::Request& r, web::Reply& out) {
             j.Close(']').Close('}');
             out.body=j.Text();
         } else out.Error(400,error);
+    } else if(r.method=="GET" && r.path=="/api/saves") SaveList(out);
+    else if(r.method=="GET" && r.path=="/api/save") {
+        std::string name=r.Param("name");
+        Options o=Current();
+        if(SavesFolder(o).empty() || !saves::Named(name) || !config::ReadFile(SavePath(o,name),out.body,300<<20)) out.Error(404,"That save backup isn't there any more.");
+        else { out.type="application/zip"; out.download=name; }
+    } else if(r.method=="POST" && r.path=="/api/saves/backup") {
+        if(!SaveAll(body,out,error)) out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/saves/restore") {
+        if(RestoreSaves(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/saves/delete") {
+        std::string name;
+        Text(body,"name",name);
+        Options o=Current();
+        if(SavesFolder(o).empty() || !saves::Named(name) || !config::RemoveFile(SavePath(o,name))) out.Error(404,"That save backup isn't there any more.");
+        else { Log("Deleted the save backup %s.",name.c_str()); out.body="{\"ok\":true}"; }
     } else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
     else if(r.method=="POST" && r.path=="/api/update/check") {
         if(!ChecksUpdates(Current())) out.Error(400,"The dashboard checks for updates itself here.");
@@ -3322,6 +3640,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(PingLoop).detach();
     std::thread(SizeLoop).detach();
     std::thread(BackupLoop).detach();
+    std::thread(SaveLoop).detach();
     std::thread(UpdateLoop).detach();
     Serve(listener);
     return 0;

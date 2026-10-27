@@ -1126,11 +1126,22 @@ function details(g) {
         g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
         h('div.k', 'Playing'), h('div.v', on ? on.join(', ') : 'Not now'),
         h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
+        g.titleId ? [h('div.k', 'Save backups'), saveCount(g.titleId)] : null,
         h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path)))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
   ]);
+}
+
+// How many save backups a game has, filled in when the server answers.
+function saveCount(titleId) {
+  const v = h('div.v', '\u2026');
+  api('saves').then(r => {
+    const mine = r.saves.filter(b => b.titleId === titleId.toUpperCase());
+    fill(v, mine.length ? [plural(mine.length, 'backup') + ', newest ' + ago(mine[0].time) + ' ', h('a', { href: '#settings/backups', onclick: () => document.querySelectorAll('.modal-back').forEach(m => m.remove()) }, 'Restore\u2026')] : r.on ? 'None yet' : 'Off');
+  }).catch(() => fill(v, '\u2014'));
+  return v;
 }
 
 function modal(title, build, narrow, closed) {
@@ -1495,8 +1506,22 @@ Pages.settings = root => {
         h('div.form.cols',
           h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path. Add it to Aurora\u2019s scan paths (depth 1).')),
           h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
-          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders')))));
+          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders')))),
+      wakeCard());
   };
+  // Wake-on-LAN: each console gets this PC's MAC address, and its launcher
+  // wakes the PC when a game starts while the PC sleeps.
+  function wakeCard() {
+    const st = S.settings, found = st.wakeAdapter || {};
+    const mac = h('input.input.mono', { value: st.wakeMac, placeholder: found.mac || 'AA:BB:CC:DD:EE:FF', style: { width: '190px' } });
+    return card('power', 'Wake this PC from the Xbox', null,
+      row('Wake it when a game starts', 'When this PC sleeps, the game\u2019s launcher wakes it and waits up to 90 seconds for it. Wake-on-LAN has to be on in the PC\u2019s BIOS and its network adapter\u2019s settings.',
+        toggle(st.wake, (v, i) => flip('wake', v, i, v ? 'The Xbox can wake this PC' : 'The Xbox doesn\u2019t wake this PC'))),
+      row('MAC address to wake', found.mac ? ['This PC\u2019s network adapter ', h('b.mono', found.mac), found.address ? ' (' + found.address + ')' : '', '. Give another one only when NetDisc360 runs somewhere else than the PC to wake, such as a VM.']
+        : 'NetDisc360 found no network adapter with a MAC address toward your consoles. Give the MAC address of the PC to wake.',
+        h('div', { style: { display: 'flex', gap: '8px' } }, mac,
+          h('button.btn', { onclick: () => save({ wakeMac: mac.value }, mac.value ? 'MAC address saved' : 'Waking this PC\u2019s own adapter') }, 'Save'))));
+  }
 
   Parts.dashboard = () => {
     const st = S.settings;
@@ -1671,7 +1696,8 @@ Pages.settings = root => {
       card('calendar-clock', 'Automatic backups', null,
         row('Back up by itself', 'Your settings now and then, in case.', every),
         row('Keep the newest', 'Automatic backups and the ones made before an update or a restore. Older ones are deleted; yours never are.', keep)),
-      h('div.card', h('div.card-head', ic('history'), h('h2', 'Your backups')), list, foot));
+      h('div.card', h('div.card-head', ic('history'), h('h2', 'Your backups')), list, foot),
+      savesCard());
     async function load() {
       try {
         const r = await api('backups');
@@ -1719,6 +1745,61 @@ Pages.settings = root => {
     }
     load();
   };
+
+  // Game saves: backed up from the console after each game, kept here by game.
+  function savesCard() {
+    const st = S.settings;
+    const list = h('div'), foot = h('div.card-foot.muted');
+    const consoles = S.consoles.map(c => c.address);
+    const which = h('select.input', { style: { width: 'auto' } }, consoles.map(a => h('option', { value: a }, a)));
+    const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ saveKeep: +e.target.value }, 'Keeping ' + e.target.value + ' of each game') },
+      [...new Set([3, 5, 10, 20, 50, st.saveKeep])].sort((a, b) => a - b).map(n => h('option', { value: String(n), selected: n === st.saveKeep }, String(n))));
+    const now = h('button.btn', { disabled: !consoles.length, onclick: backupNow }, ic('archive', 'sm'), 'Back up now');
+    async function load() {
+      try {
+        const r = await api('saves');
+        if (!r.available) { fill(list, h('div.empty', ic('archive'), h('p', 'The settings aren\u2019t kept in a file (start NetDisc360 with --config), so there\u2019s nowhere to keep saves.'))); return; }
+        fill(foot, 'Kept in ', h('code', r.folder));
+        fill(list, r.saves.length ? r.saves.map(b => h('div.backup-row', h('div.kindmark.k-play', ic('gamepad-2')),
+          h('div.grow', h('div.when', (b.game || 'Title ' + b.titleId) + ' \u00b7 ' + fullDate(b.time)),
+            h('div.sub', (b.profiles.length ? b.profiles.join(', ') + ' \u00b7 ' : '') + bytes(b.size))),
+          h('div.actions',
+            h('a.btn.small', { href: '/api/save?name=' + encodeURIComponent(b.name), download: b.name, title: 'Save this backup on this device' }, ic('download', 'sm'), 'Download'),
+            h('button.btn.small', { disabled: !consoles.length, onclick: () => restore(b) }, ic('rotate-ccw', 'sm'), 'Restore'),
+            h('button.btn.small.icon.ghost', { title: 'Delete', onclick: () => remove(b) }, ic('trash-2', 'sm'))))) :
+          h('div.empty', ic('gamepad-2'), h('h3', 'No saves backed up yet'), h('p', st.saveBackup ? 'A game\u2019s saves are backed up when its console is back in Aurora. Or back up every game\u2019s saves now.' : 'Turn on backing up after each game, or back up now.')));
+      } catch (e) { fill(list, h('div.empty', ic('circle-alert'), h('p', e.message))); }
+    }
+    async function backupNow() {
+      now.disabled = true;
+      try {
+        const r = await api('saves/backup', { address: which.value });
+        toast(r.made ? 'Backed up the saves of ' + plural(r.made, 'game') : r.same ? 'The saves are as in their newest backups' : 'No saves of your NetDisc360 games on ' + which.value);
+        load();
+      } catch (e) { toast(e.message, true); }
+      now.disabled = false;
+    }
+    async function restore(b) {
+      const name = b.game || 'Title ' + b.titleId;
+      if (!(await confirmBox('Restore these saves?', ['The saves of ', h('b', name), ' from ', h('b', fullDate(b.time)), ' go back on ', h('b', which.value),
+        ', in place of the ones there now. Those are backed up first, so you can go back. Stay in Aurora while it runs.'], 'Restore'))) return;
+      try { await api('saves/restore', { name: b.name, address: which.value }); toast('Saves of ' + name + ' restored'); } catch (e) { toast(e.message, true); }
+      load();
+    }
+    async function remove(b) {
+      if (!(await confirmBox('Delete this save backup?', 'The saves of ' + (b.game || 'Title ' + b.titleId) + ' from ' + fullDate(b.time) + ' are deleted for good.', 'Delete', true))) return;
+      try { await api('saves/delete', { name: b.name }); toast('Save backup deleted'); load(); } catch (e) { toast(e.message, true); }
+    }
+    load();
+    return h('div.card', h('div.card-head', ic('gamepad-2'), h('h2', 'Game saves'), h('span.sub', 'from the console\u2019s hard drive')),
+      h('div.card-body',
+        row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it.',
+          toggle(st.saveBackup, (v, i) => flip('saveBackup', v, i, v ? 'Saves backed up after each game' : 'Saves not backed up'))),
+        row('Keep the newest', 'Of each game. A backup the same as the one before isn\u2019t kept twice.', keep),
+        row('Back up every game\u2019s saves now', consoles.length ? 'From the console you choose, while it\u2019s in Aurora. Restore puts saves back on that console too.' : 'Once a console has used NetDisc360.',
+          h('div', { style: { display: 'flex', gap: '8px' } }, consoles.length > 1 ? which : null, now))),
+      list, foot);
+  }
 
   Parts.windows = () => {
     const st = S.settings;
