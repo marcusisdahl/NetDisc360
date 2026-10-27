@@ -178,19 +178,25 @@ std::string CleanName(const std::string& raw) {
 
 // ISO files ------------------------------------------------------------------
 
-// A full image of an original Xbox disc (redump's format) is served as just
-// its game partition, at the XGD2 offset an extracted Xbox game has, with
-// zeros before it. The console doesn't find the game partition at the XGD1
-// offset; from a folder in that layout Halo and Burnout 3 play.
+bool ImageTitle(DiscImage& image, DWORD& titleId, DWORD& mediaId, int& disc, bool& xbeGame);
+
+// An original Xbox game's image is served as just its game partition, at the
+// XGD2 offset an extracted Xbox game has, with zeros before it: a full image
+// of the disc (redump's format, the game partition at the XGD1 offset after
+// the video partition) and an xiso (extract-xiso's, the game partition at
+// 0). From a folder in that layout Halo and Burnout 3 play.
 class IsoImage : public DiscImage {
 public:
     bool Open(const std::string& path, std::string& error) {
         if(!file_.Open(path) || !file_.Size(fileSize_)) { error="it can't be opened"; return false; }
         size_=fileSize_; from_=to_=0;
-        if(!HasMagic(Xgd2Partition) && !HasMagic(Xgd3Partition) && !HasMagic(0) && HasMagic(Xgd1Partition)) {
-            from_=Xgd1Partition; to_=Xgd2Partition;
-            size_=ImageSize(Xgd2Partition,to_+(fileSize_-from_));
-        }
+        if(HasMagic(Xgd2Partition) || HasMagic(Xgd3Partition)) return true;
+        DWORD titleId,mediaId; int disc; bool xbe=false;
+        if(HasMagic(0)) { if(!ImageTitle(*this,titleId,mediaId,disc,xbe) || !xbe) return true; }
+        else if(!HasMagic(Xgd1Partition)) return true;
+        else from_=Xgd1Partition;
+        to_=Xgd2Partition;
+        size_=ImageSize(Xgd2Partition,to_+(fileSize_-from_));
         return true;
     }
     U64 Size() const { return size_; }
@@ -202,7 +208,9 @@ public:
         U64 a=offset<to_ ? to_ : offset, b=end>top ? top : end;
         return file_.Read(a-to_+from_,data+(a-offset),DWORD(b-a))==(long long)(b-a);
     }
-    std::string Description() const { return from_==to_ ? "ISO" : "ISO, original Xbox full disc image"; }
+    std::string Description() const {
+        return from_==to_ ? "ISO" : from_ ? "ISO, original Xbox full disc image" : "ISO, original Xbox xiso";
+    }
 private:
     // The volume descriptor of a game partition starting at partition.
     bool HasMagic(U64 partition) {
