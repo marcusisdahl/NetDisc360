@@ -24,8 +24,10 @@
 // mounts from inside Aurora.
 //
 // A game started from a tile that asks for another of its discs gets that
-// disc's ISO mounted (see Disc swaps below), and NetISO's read size and
-// receive buffer are raised at start-up (see NetIsoTiles.ini below).
+// disc's ISO mounted (see Disc swaps below), an original Xbox game finds
+// System Link games with Aurora's LiNK off (see Original Xbox System Link
+// below), and NetISO's read size and receive buffer are raised at start-up
+// (see NetIsoTiles.ini below).
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
@@ -1407,6 +1409,68 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
     SwapNote("Launch %s%s%s (flags %X): %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",flags,what);
 }
 
+// ---- Original Xbox System Link ----
+//
+// The emulator sends and receives the game's LAN frames through xam's
+// NetDll_XnpEthernetInterceptSetCallbacks (109) and
+// NetDll_XnpEthernetInterceptXmit (110), as slot 1. Aurora's Nova.xex puts
+// its own function for each in xam's export table, for LiNK. For slot 1 the
+// first keeps the game's callbacks to itself instead of passing them on, and
+// Nova hands them frames only while LiNK runs, so with LiNK off an original
+// Xbox game hears nothing: each console sends, and neither finds the other's
+// System Link game (read from Nova.xex 0.7b.2; seen on two consoles with
+// Halo and Halo 2, whatever the emulator files; 360 games don't go this way).
+// Both functions start by comparing the slot with 1 (cmpwi cr6,r3,1; bne
+// cr6) and otherwise go on to xam's own. Before the emulator starts, this
+// makes that compare look for a slot that doesn't exist, so the emulator's
+// frames go to xam as they do without Nova; the rest of Nova (its HUD, disc
+// swaps) stays as it is. xbox_link=nova in NetIsoTiles.ini leaves Nova's
+// functions alone, for LiNK.
+static const DWORD SetCallbacksOrdinal=109,XmitOrdinal=110;
+static const DWORD SlotOneCompare=0x2F030001,NoSlotCompare=0x2F037FFF; // cmpwi cr6,r3,1 / 0x7FFF
+// Where Nova's function for ordinal compares the slot; NULL if xam's own
+// function is in its export table (at says where) or the function isn't
+// shaped like Nova's.
+static DWORD* NovaSlotCompare(DWORD ordinal,DWORD& at) {
+    HANDLE xam=NULL; void* address=NULL;
+    at=0;
+    if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,ordinal,&address)<0 || !address) return NULL;
+    at=DWORD(address);
+    DWORD* code=(DWORD*)address;
+    // xam's own code is at 0x81..., plugins like Nova at 0x91....
+    if(at<0x90000000 || !MmIsAddressValid(code) || !MmIsAddressValid(code+15) || code[0]!=0x7D8802A6) return NULL; // mflr r12
+    for(int i=1;i<14;++i)
+        if(code[i]==SlotOneCompare || code[i]==NoSlotCompare) return (code[i+1]>>16)==0x409A ? &code[i] : NULL; // bne cr6
+    return NULL;
+}
+// On every emulator start: Nova may have been loaded again since.
+static void PassEmulatorSlot() {
+    char value[16];
+    const char* from=TuningValue("xbox_link",value,sizeof(value));
+    if(from && !_stricmp(value,"nova")) { SwapNote("System Link: left to Nova (xbox_link=nova in %s).",from); return; }
+    static const DWORD ordinals[2]={SetCallbacksOrdinal,XmitOrdinal};
+    for(int i=0;i<2;++i) {
+        DWORD at=0;
+        DWORD* compare=NovaSlotCompare(ordinals[i],at);
+        if(!compare) {
+            if(at && at<0x90000000) SwapNote("System Link: xam's export %u is xam's own (%08X); nothing to change.",ordinals[i],at);
+            else SwapNote("System Link: xam's export %u (%08X) isn't Nova's function as known; left as it is.",ordinals[i],at);
+            continue;
+        }
+        if(*compare==NoSlotCompare) continue;
+        *compare=NoSlotCompare;
+        FlushCode(compare,4);
+        SwapNote("System Link: Nova's function for xam's export %u (%08X) passes the emulator on to xam now.",ordinals[i],at);
+    }
+}
+// Whether path from mountPath is the console starting the emulator for an
+// original Xbox disc.
+static bool EmulatorStart(const char* path,const char* mountPath) {
+    if(!path || !mountPath || _stricmp(mountPath,DiscDevice)) return false;
+    const char* name=strrchr(path,'\\');
+    return name && !_strnicmp(name+1,"xefu",4) && _strnicmp(name+1,"xefutitle",9);
+}
+
 // ---- Tiles ----
 
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
@@ -1558,6 +1622,7 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     bool disc=handling==NotTile && DiscStart(path,mountPath);
     NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
+    if(handling==NotTile && !disc && EmulatorStart(path,mountPath)) PassEmulatorSlot();
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;
