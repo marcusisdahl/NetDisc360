@@ -1465,36 +1465,58 @@ static bool EmulatorFolder(const char* folder,const char* name,char* device,size
     }
     return false;
 }
-// The whole of a small file; its size, or -1.
-static int ReadSmall(const char* device,BYTE* data,DWORD capacity) {
-    HANDLE file;
-    if(OpenPath(device,false,file)<0) return -1;
-    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
-    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,data,capacity,&offset);
-    NtClose(file);
-    return read>=0 && status.information<capacity ? int(status.information) : -1;
+// Up to TitleChunk bytes of file from at: how many (0 at the end), or -1.
+// Small buffers keep the plugin's image at the size DashLaunch loads: with
+// two 64 KB ones here it grew by 128 KB and didn't load at all.
+static const DWORD TitleChunk=0x1000;
+static BYTE TitleFrom[TitleChunk],TitleNow[TitleChunk];
+static int ReadChunk(HANDLE file,BYTE* data,DWORD at) {
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=at;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,data,TitleChunk,&offset);
+    if(read==LONG(0xC0000011)) return 0; // STATUS_END_OF_FILE
+    return read>=0 && status.information<=TitleChunk ? int(status.information) : -1;
+}
+// Whether the files at two device paths hold the same bytes.
+static bool SameFile(const char* first,const char* second) {
+    HANDLE one,two;
+    if(OpenPath(first,false,one)<0) return false;
+    if(OpenPath(second,false,two)<0) { NtClose(one); return false; }
+    bool same=false;
+    for(DWORD at=0;;) {
+        int a=ReadChunk(one,TitleFrom,at),b=ReadChunk(two,TitleNow,at);
+        if(a<0 || a!=b || memcmp(TitleFrom,TitleNow,size_t(a))) break;
+        if(!a) { same=true; break; }
+        at+=DWORD(a);
+    }
+    NtClose(one); NtClose(two);
+    return same;
 }
 // Makes xefutitle.xex in the emulator's folder (a device path) a copy of
 // from there, unless it is one already.
-static const DWORD TitleFileMax=0x10000;
-static BYTE TitleFrom[TitleFileMax],TitleNow[TitleFileMax];
 static bool PutTitleFile(const char* folder,const char* from) {
     char source[MAX_PATH],target[MAX_PATH];
     if(sprintf_s(source,"%s%s",folder,from)<0 || sprintf_s(target,"%sxefutitle.xex",folder)<0) return false;
-    int size=ReadSmall(source,TitleFrom,TitleFileMax);
-    if(size<=0) { SwapNote("Can't read %s.",source); return false; }
-    if(ReadSmall(target,TitleNow,TitleFileMax)==size && !memcmp(TitleFrom,TitleNow,size_t(size))) return true;
+    HANDLE in;
+    if(OpenPath(source,false,in)<0) { SwapNote("Can't read %s.",source); return false; }
+    if(SameFile(source,target)) { NtClose(in); return true; }
     KernelString name={USHORT(strlen(target)),USHORT(sizeof(target)),target};
     ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
     IoStatusBlock io={0,0}; HANDLE file=NULL;
     // GENERIC_WRITE with SYNCHRONIZE, FILE_OVERWRITE_IF, a synchronous file.
     LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,0,5,0x60);
     if(status>=0) {
-        LARGE_INTEGER at; at.QuadPart=0;
-        status=NtWriteFile(file,NULL,NULL,NULL,&io,TitleFrom,DWORD(size),&at);
-        if(status>=0 && io.information!=DWORD(size)) status=-1;
+        for(DWORD done=0;;) {
+            int size=ReadChunk(in,TitleFrom,done);
+            if(size<=0) { if(size<0 || !done) status=-1; break; }
+            LARGE_INTEGER at; at.QuadPart=done;
+            status=NtWriteFile(file,NULL,NULL,NULL,&io,TitleFrom,DWORD(size),&at);
+            if(status>=0 && io.information!=DWORD(size)) status=-1;
+            if(status<0) break;
+            done+=DWORD(size);
+        }
         NtClose(file);
     }
+    NtClose(in);
     if(status<0) { SwapNote("Can't write %s (status %08X).",target,status); return false; }
     SwapNote("Copied %s to %s, which %s loads.",from,target,LastTile.xefu);
     return true;
