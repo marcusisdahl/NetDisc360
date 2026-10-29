@@ -1284,8 +1284,19 @@ struct PushState {
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false) {}
 };
 
+// Aurora's FTP server takes one upload at a time: two at once leave files
+// the console can't read (TinyXbox360BackupManager found this). So a
+// console's game folders wait while a game or its content is copied there,
+// and a copy waits for a push that has started (see WaitForPush).
+struct PushMark {
+    DWORD address; bool marked;
+    explicit PushMark(DWORD at);
+    ~PushMark();
+};
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
+    PushMark mark(console.address);
+    if(!mark.marked) return;
     Options o=Current();
     bool pushDue=settled && (!s.everPushed || state!=s.pushed || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
@@ -3003,6 +3014,7 @@ struct ContentCopy {
 };
 std::mutex CopyLock;  // Guards the fields of each ContentCopy that change while it runs.
 std::vector<std::shared_ptr<ContentCopy> > Copies;  // The latest for each console, newest last.
+void WaitForPush(DWORD address);
 
 std::string SizeText(U64 n) {
     char text[32];
@@ -3040,6 +3052,7 @@ void CopyContent(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     ContentCopy& c=*job;
     Options o=Current();
     const Console* console=ConsoleIfKnown(c.address);
+    WaitForPush(c.address);
     FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
     if(!ftp.Open()) { EndCopy(c,console,"failed",std::string(ftp.Error())+". Start Aurora on the console and try again."); return; }
     IsoReader reader;
@@ -3218,6 +3231,7 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     }
     Log("Xbox %s: sending %s as Games on Demand: %d Data file(s) and a header, %s, to %s.",c.console.c_str(),c.game.c_str(),god.Parts(),
         SizeText(c.total).c_str(),header.c_str());
+    WaitForPush(c.address);
     FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
     if(!ftp.Open()) { EndCopy(c,console,"failed",std::string(ftp.Error())+". Start Aurora on the console and try again."); return; }
     // Content\0000000000000000\<Title ID>\00007000\<Media ID>.data, a folder at a time.
@@ -3311,6 +3325,28 @@ bool StartGameCopy(const web::Value& body, std::string& error) {
     if(Console* console=ConsoleIfKnown(at)) XboxEvent(*console,EventInfo,"Copying "+name+" to the hard drive");
     std::thread(CopyGame,job,disc).detach();
     return true;
+}
+
+std::set<DWORD> Writing;  // Consoles whose push thread writes now (CopyLock).
+
+PushMark::PushMark(DWORD at) : address(at), marked(false) {
+    std::lock_guard<std::mutex> hold(CopyLock);
+    for(size_t i=0;i<Copies.size();++i) if(Copies[i]->address==address && Copies[i]->state=="copying") return;
+    Writing.insert(address); marked=true;
+}
+
+PushMark::~PushMark() {
+    if(!marked) return;
+    std::lock_guard<std::mutex> hold(CopyLock);
+    Writing.erase(address);
+}
+
+// Before a copy's first write: lets a push that started before it finish.
+void WaitForPush(DWORD address) {
+    for(int i=0;i<1200;++i) {
+        { std::lock_guard<std::mutex> hold(CopyLock); if(!Writing.count(address)) return; }
+        Sleep(100);
+    }
 }
 
 bool StopCopy(const web::Value& body, std::string& error) {
