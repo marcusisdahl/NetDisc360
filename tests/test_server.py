@@ -61,7 +61,8 @@ def build_server():
 
 def write_tree_iso(path, tree, start=0x2080000):
     """An XDVDFS image (XGD3 layout) of a tree {name: bytes or {name: ...}}:
-    each directory's entries one after another, as the server reads them."""
+    each directory's entries one after another, as the server reads them.
+    A number for a file is that many zero bytes, left sparse."""
     SECTOR = 2048
     blocks = {}  # sector: data
     next_sector = [33]
@@ -78,6 +79,9 @@ def write_tree_iso(path, tree, start=0x2080000):
             if isinstance(value, dict):
                 table = directory(value)
                 sector, size, attributes = place(table), len(table), 0x10
+            elif isinstance(value, int):
+                sector, size, attributes = next_sector[0], value, 0x80
+                next_sector[0] += max(1, (value + SECTOR - 1) // SECTOR)
             else:
                 sector, size, attributes = place(value), len(value), 0x80
             raw = name.encode("latin-1")
@@ -1299,6 +1303,106 @@ class Dashboard(ServerTest):
         finally:
             ftp.shutdown()
             ftp.server_close()
+
+    def test_copies_a_whole_game_to_the_console_as_games_on_demand(self):
+        # Big enough for two Data files (0xA1C4 blocks, 166 MB, each): a sparse gap, then a file.
+        big = os.urandom(1 << 20)
+        iso = os.path.join(self.isos, "Halo 3 (USA).iso")
+        write_tree_iso(iso, {
+            "default.xex": xex(execution_info(0x1A2B3C4D, 0x4D5307E6, 1, 1)),
+            "media": {"start.map": big, "gap.bin": 0xA1C4 * 4096, "end.map": b"tail" * 1000}})
+        os.makedirs(os.path.join(self.isos, "Forza 4"))
+        with open(os.path.join(self.isos, "Forza 4", "default.xex"), "wb") as f:
+            f.write(xex(execution_info(0x11112222, 0x4D530910, 1, 1)))
+        with open(os.path.join(self.isos, "Forza 4", "cars.bin"), "wb") as f:
+            f.write(b"car" * 3000)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            self.state_when(lambda s: s["library"]["games"] >= 2)
+
+            def copy(game, address="127.0.0.2"):
+                self.json("POST", "/api/copy", {"game": game, "address": address})
+                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] != "copying", 60)
+                return state["installs"][-1]
+
+            job = copy("Halo 3 (USA)")
+            self.assertEqual([job[k] for k in ("state", "kind", "folder", "files", "skipped")],
+                             ["done", "game", "/Hdd1/Content/0000000000000000/4D5307E6/00007000", 3, 0], job.get("error"))
+            self.assertEqual(job["done"], job["total"])
+            folder = os.path.join(content, "4D5307E6", "00007000")
+            with open(iso, "rb") as f:
+                image = f.read()
+            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3 (USA)")
+            self.assertEqual(ftp.scans[-1], "/Hdd1/Content/0000000000000000")
+            self.assertIn("Halo 3 (USA) is on the hard drive", json.dumps(self.json("GET", "/api/state")["events"]))
+            # Again: it's there. Without its header, a Data file cut short is sent again and the rest kept.
+            self.assertEqual(copy("Halo 3 (USA)")["skipped"], 3)
+            os.remove(os.path.join(folder, "1A2B3C4D"))
+            with open(os.path.join(folder, "1A2B3C4D.data", "Data0001"), "r+b") as f:
+                f.truncate(1000)
+            ftp.stored.clear()
+            self.assertEqual(copy("Halo 3 (USA)")["skipped"], 1)
+            self.assertEqual(len(ftp.stored), 2)
+            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3 (USA)")
+            # An extracted folder, as the disc the server serves of it.
+            self.assertEqual(copy("Forza 4")["state"], "done")
+            self.assertTrue(os.path.isfile(os.path.join(content, "4D530910", "00007000", "11112222")))
+            # Only Xbox 360 games, only to known consoles.
+            self.assertEqual(self.call("POST", "/api/copy", {"game": "Forza 4", "address": "10.9.8.7"})[0], 400)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def check_god(self, header_path, image, start, title_id, media_id, title):
+        """Reads a GOD package back as the console does, checking each hash
+        on the way: its data is the image's game partition, from start."""
+        import hashlib
+        sha = lambda b: hashlib.sha1(b).digest()
+        with open(header_path, "rb") as f:
+            h = f.read()
+        self.assertEqual(len(h), 0xB000)
+        self.assertEqual(h[:4], b"LIVE")
+        be = lambda at, n=4: int.from_bytes(h[at:at + n], "big")
+        self.assertEqual((be(0x344), be(0x354), be(0x360)), (0x7000, media_id, title_id))
+        self.assertEqual(h[0x411:0x411 + 2 * len(title)].decode("utf-16-be"), title)
+        self.assertEqual(h[0x32C:0x340], sha(h[0x344:0x344 + 0xACBC]))
+        blocks = be(0x392, 3)
+        parts = int.from_bytes(h[0x3A0:0x3A4], "little")
+        self.assertEqual(parts, (blocks + 0xA1C3) // 0xA1C4)
+        data = bytearray()
+        expected_master = h[0x37D:0x37D + 20]
+        total = 0
+        for p in range(parts):
+            with open(os.path.join(header_path + ".data", "Data%04d" % p), "rb") as f:
+                part = f.read()
+            total += len(part)
+            master = part[:4096]
+            self.assertEqual(sha(master), expected_master, "Data%04d's master block" % p)
+            in_part = min(0xA1C4, blocks - p * 0xA1C4)
+            groups = (in_part + 0xCB) // 0xCC
+            self.assertEqual(len(part), 4096 * (1 + groups + in_part))
+            at = 4096
+            for g in range(groups):
+                hashes = part[at:at + 4096]
+                self.assertEqual(master[g * 20:g * 20 + 20], sha(hashes))
+                n = min(0xCC, in_part - g * 0xCC)
+                for b in range(n):
+                    block = part[at + 4096 * (1 + b):at + 4096 * (2 + b)]
+                    self.assertEqual(hashes[b * 20:b * 20 + 20], sha(block))
+                    data += block
+                at += 4096 * (1 + n)
+            expected_master = master[groups * 20:groups * 20 + 20]
+        self.assertEqual(be(0x3A4) * 0x100, total)
+        self.assertEqual(len(data), blocks * 4096)
+        partition = image[start:start + len(data)]
+        self.assertEqual(bytes(data[:len(partition)]), partition)
+        self.assertEqual(bytes(data[len(partition):]), bytes(len(data) - len(partition)))
 
     def test_tells_when_aurora_isn_t_there_to_install_to(self):
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)

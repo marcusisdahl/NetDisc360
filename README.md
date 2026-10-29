@@ -521,6 +521,8 @@ Some games come on two discs, one of which only installs content: GTA V's second
 
 The dashboard can put the packages there itself: **Install on Xbox** on the game's page (or on the install disc's) sends each package from the install disc to `Hdd1:\Content\0000000000000000\<Title ID>\<type>\` over Aurora's FTP (`POST /api/install`, progress in `/api/state` under `installs`). A package already there at its full size is skipped, and one cut short by a stop or a lost connection is deleted, so the launcher never takes it for installed. The console has to be in Aurora while it copies.
 
+**Copy to Xbox** on a game's page puts the whole game on the console's hard drive, so it plays without the server or the network. Like [TinyXbox360BackupManager](https://github.com/jeanmatthieud/TinyXbox360BackupManager), it makes the game a Games on Demand package and sends it to `Hdd1:\Content\0000000000000000\<Title ID>\00007000\` over Aurora's FTP, where Aurora finds GOD games by itself. ISOs, extracted folders and GOD packages all work. The server builds the package while it sends it, so nothing is written on the PC or NAS: it reads the game once for the hashes ("Getting it ready"), then sends the Data files and the header last (`POST /api/copy`, progress in `/api/state` under `installs`). Data files already there at full size are skipped, so a stopped copy goes on where it was. The package is made as [iso2god-rs](https://github.com/iliazeus/iso2god-rs) makes one (MIT, `third_party/iso2god`). Original Xbox games can't be copied yet.
+
 ## Security
 
 - **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
@@ -576,6 +578,7 @@ Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc36
 - [netiso-srv](https://github.com/tuxuser/netiso-srv) by tuxuser, whose protocol behaviour the server follows.
 - [Aurora](https://phoenix.xboxunity.net/) by Phoenix.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT, `third_party/imgui/LICENSE.txt`) and the Roboto font (Apache 2.0, `third_party/fonts/LICENSE-Roboto.txt`) for the loading screen.
+- [iso2god-rs](https://github.com/iliazeus/iso2god-rs) (MIT, `third_party/iso2god/LICENSE`): the Games on Demand layout and header template for Copy to Xbox.
 - [Lucide](https://lucide.dev) icons (ISC, `third_party/lucide/LICENSE`) for the dashboard. Its covers come from [XboxUnity](https://xboxunity.net), through the [XboxUnity-Scraper](https://github.com/UncreativeXenon/XboxUnity-Scraper) archive.
 
 Xbox and Xbox 360 are trademarks of Microsoft. This project is not affiliated with Microsoft, cOz or Team Phoenix. Use it only with games you own.
