@@ -72,11 +72,13 @@ typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 // What a disc is in its game's set, from the server's disc map (see
 // server/discmap.h). Sync writes it into the game folder's netiso.ini as
 // disc_role and disc_label, where the NetIsoTiles plugin reads it for its
-// disc swap notices.
+// disc swap notices. local is the same game installed on the console, which
+// Sync writes as local_copy, so the launcher can offer to play that copy.
 struct DiscRoleInfo {
     bool known;      // false: netiso.ini is left as it is.
     char role[16];   // install, play, content, next or own; empty for a game on one disc.
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
+    char local[PathMax];  // "Hdd1:\Games\Halo 3\default.xex" or a Games on Demand package; empty: none.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
 

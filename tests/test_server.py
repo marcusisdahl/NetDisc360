@@ -1318,10 +1318,24 @@ class Push(ServerTest):
         self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "NetDisc360"])
         # Only the package's header is read, and only its first bytes.
         self.assertNotIn("RETR 0123456789ABCDEF0123.data", self.ftp.log)
-        # Without it, they're back.
-        out = self.push(extra=["--no-installed"])
+        # Without it, they're back, and their launchers offer the installed copy.
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
         self.assertIn("2 added", out)
         self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "Halo 3", "NetDisc360", "Skate 3"])
+        def local_copy(game):
+            with open(os.path.join(self.games, game, "netiso.ini"), encoding="latin-1") as f:
+                return [line[len("local_copy="):] for line in f.read().splitlines() if line.startswith("local_copy=")]
+        self.assertEqual(local_copy("Halo 3"), ["Hdd1:\\Games\\Shooters\\Halo 3\\default.xex"])
+        self.assertEqual(local_copy("Skate 3"), ["Hdd1:\\Content\\0000000000000000\\454108E6\\00007000\\0123456789ABCDEF0123"])
+        self.assertEqual(local_copy("Gears"), [])
+        # An installed copy that goes is taken out again, the rest of the file kept.
+        shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games"))
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("Halo 3 is no longer installed on the console; took local_copy out of its netiso.ini.", out)
+        self.assertEqual(local_copy("Halo 3"), [])
+        with open(os.path.join(self.games, "Halo 3", "netiso.ini"), encoding="latin-1") as f:
+            self.assertIn("iso=Halo 3.iso", f.read())
+        self.assertEqual(len(local_copy("Skate 3")), 1)
 
     def test_writes_aurora_s_cleanup_script_and_online_filter(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

@@ -811,6 +811,60 @@ static InstallChoice AskToInstall(const char* game,const Install& install) {
     return InstallBack;
 }
 
+// ---- A copy installed on this Xbox ----
+
+// local_copy in netiso.ini, which NetDisc360 writes when the same game (Title
+// ID and disc) is installed on the console too: extracted
+// ("Hdd1:\Games\Halo 3\default.xex") or as Games on Demand (the package's
+// header file under Content). Aurora lists that copy as a tile of its own,
+// with the same name, so this tile asks which copy to play. Asked before
+// anything goes over the network, so the local copy plays with the PC off.
+static bool MapPath(const char* path,char* out,size_t capacity);
+static void DevicePath(const char* path,char* out,size_t capacity);
+static void UnlinkDrives();
+static bool LocalCopy(const char* ini,char* local,size_t capacity) {
+    if(!nia::IniValue(ini,"local_copy",local,capacity) || !local[0]) return false;
+    char path[MAX_PATH];
+    bool there=MapPath(local,path,sizeof(path)) && GetFileAttributes(path)!=INVALID_FILE_ATTRIBUTES;
+    UnlinkDrives();
+    Note(there ? "It's installed on this Xbox too: %s" : "local_copy=%s isn't there; playing from the server.",local);
+    return there;
+}
+enum LocalChoice { LocalBack, LocalPlay, LocalNetwork };
+static LocalChoice AskLocalCopy(const char* game,const char* local) {
+    Problem.step=nia::StepServer; Problem.retry=true;
+    char where[MAX_PATH]; strcpy_s(where,local);
+    char* name=strrchr(where,'\\');
+    if(strstr(where,"\\Content\\")) { char* colon=strchr(where,':'); if(colon) colon[1]=0; }
+    else if(name && !_stricmp(name+1,"default.xex")) *name=0;
+    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"%s is installed on this Xbox too",game);
+    if(strstr(local,"\\Content\\")) _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's on %s as Games on Demand, with its own tile in Aurora.",where);
+    else _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's in %s, with its own tile in Aurora.",where);
+    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A plays that copy: it loads faster and doesn't need the PC.");
+    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X plays it from the PC over the network.");
+    Note("Asking: %s",Problem.title);
+    WORD button=ShowCard(true,"Play from this Xbox","Play from the PC");
+    if(button==XINPUT_GAMEPAD_A) { Note("A pressed: starting the copy on this Xbox."); return LocalPlay; }
+    if(button==XINPUT_GAMEPAD_X) { Note("X pressed: playing from the server."); return LocalNetwork; }
+    Note("Back to Aurora.");
+    return LocalBack;
+}
+// Starts the installed copy as Aurora starts it from its own tile. True to
+// play from the server instead, when that didn't start and the player
+// pressed X.
+static bool StartLocal(const char* local) {
+    char device[MAX_PATH]; DevicePath(local,device,sizeof(device));
+    ClearLaunchData();
+    ScreenStop();
+    Note("Starting %s",device);
+    Launch(device);
+    char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting %s failed (error %lu).",local,GetLastError());
+    Fail(nia::StepStart,true,"The copy on this Xbox didn't start",line,"Start it from its own tile in Aurora, or play it from the PC.");
+    bool network=ShowCard(false,"Back to Aurora","Play from the PC")==XINPUT_GAMEPAD_X;
+    Note(network ? "X pressed: playing from the server." : "Back to Aurora.");
+    return network;
+}
+
 // Mounts the game and starts it, showing what goes wrong until the player
 // goes back to Aurora. mount_only=1 in netiso.ini mounts and goes back to
 // Aurora without starting the game, to tell whether the mount or the start
@@ -825,6 +879,12 @@ static void LaunchGame(const char* ini) {
     EnterCriticalSection(&ShownLock);
     strcpy_s(Shown.iso,settings.iso); nia::GameName(settings.iso,Shown.game,sizeof(Shown.game)); Shown.titleId=settings.titleId;
     LeaveCriticalSection(&ShownLock);
+    static char local[MAX_PATH];
+    if(LocalCopy(ini,local,sizeof(local))) {
+        LocalChoice choice=AskLocalCopy(Shown.game,local);
+        if(choice==LocalBack) return;
+        if(choice==LocalPlay && !StartLocal(local)) return;
+    }
     // A game whose install disc is on the server checks for the install first,
     // and can start the install disc instead.
     static Install install;

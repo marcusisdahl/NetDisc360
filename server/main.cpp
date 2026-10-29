@@ -100,7 +100,8 @@ struct Options {
     std::string releasesFile;  // --releases: GitHub's list of releases from this file instead (for the tests).
     // Games installed on a console get no tile (see installed.h); they're
     // looked for in these FTP folders (semicolons between) and their drives'
-    // Games on Demand.
+    // Games on Demand. With skipInstalled off they get one, whose launcher
+    // asks which copy to play (local_copy in its netiso.ini).
     bool skipInstalled;
     std::string installedFolders;
     // Aurora's scripts (see aurora.h): the cleanup script and the filter that
@@ -1456,6 +1457,13 @@ void InstallFor(const char* iso, InstallNeed& need) {
     memcpy(need.packages,lines.c_str(),lines.size()+1);
 }
 
+// The games installed on the console being pushed to, by Title ID and disc,
+// with the console's path to each, and its game folders as Sync tells them
+// (all under SyncLock). PushSkip: installed games get no game folder.
+std::map<std::pair<DWORD,int>,std::string> PushInstalled;
+std::map<std::string,std::string> PushTiles;
+bool PushSkip=true;
+
 // What the disc map says a disc is, for its game folder's netiso.ini.
 void RoleFor(const char* iso, DiscRoleInfo& info) {
     std::lock_guard<std::mutex> hold(GamesListLock);
@@ -1465,19 +1473,25 @@ void RoleFor(const char* iso, DiscRoleInfo& info) {
         info.known=true;
         _snprintf_s(info.role,sizeof(info.role),_TRUNCATE,"%s",g.role.c_str());
         _snprintf_s(info.label,sizeof(info.label),_TRUNCATE,"%s",g.roleLabel.c_str());
+        std::map<std::pair<DWORD,int>,std::string>::const_iterator local=g.titleId ? PushInstalled.find(std::make_pair(g.titleId,g.disc)) : PushInstalled.end();
+        if(local!=PushInstalled.end()) _snprintf_s(info.local,sizeof(info.local),_TRUNCATE,"%s",local->second.c_str());
         return;
     }
 }
 
-// The games installed on the console being pushed to, by Title ID and disc,
-// and its game folders as Sync tells them (both under SyncLock).
-std::set<std::pair<DWORD,int> > PushInstalled;
-std::map<std::string,std::string> PushTiles;
+// "/Hdd1/Games/Halo 3/default.xex" -> "Hdd1:\Games\Halo 3\default.xex", as the launcher takes it.
+std::string ConsolePath(const std::string& ftpPath) {
+    size_t slash=ftpPath.find('/',1);
+    if(ftpPath.empty() || ftpPath[0]!='/' || slash==std::string::npos) return std::string();
+    std::string out=ftpPath.substr(1,slash-1)+":"+ftpPath.substr(slash);
+    for(size_t i=0;i<out.size();++i) if(out[i]=='/') out[i]='\\';
+    return out;
+}
 
 // Whether the console gets a game folder for a disc: not when the same game
-// (Title ID and disc) is installed on it.
+// (Title ID and disc) is installed on it, unless installed games keep theirs.
 bool WantedFor(const char* iso) {
-    if(PushInstalled.empty()) return true;
+    if(PushInstalled.empty() || !PushSkip) return true;
     std::lock_guard<std::mutex> hold(GamesListLock);
     for(size_t i=0;i<GamesList.size();++i)
         if(!_stricmp(GamesList[i].name.c_str(),iso)) return !GamesList[i].titleId || !PushInstalled.count(std::make_pair(GamesList[i].titleId,GamesList[i].disc));
@@ -1503,7 +1517,11 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
         std::lock_guard<std::mutex> hold(SyncLock);
         Pushing=&console;
         PushInstalled.clear();
-        for(size_t i=0;i<installed.size();++i) PushInstalled.insert(std::make_pair(installed[i].titleId,installed[i].disc));
+        PushSkip=o.skipInstalled;
+        for(size_t i=0;i<installed.size();++i) {
+            std::string path=ConsolePath(installed[i].path);
+            if(!path.empty()) PushInstalled.insert(std::make_pair(std::make_pair(installed[i].titleId,installed[i].disc),path));
+        }
         PushTiles.clear();
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt);
@@ -1694,8 +1712,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         // Before the push's own connections to this server count as the console's.
         if(o.followAddress) FollowAddress(console,s,ftp,o);
         std::vector<InstalledGame> installed;
-        if(o.skipInstalled) LookInstalled(console,s,ftp,o,installed);
-        else { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
+        LookInstalled(console,s,ftp,o,installed);
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);

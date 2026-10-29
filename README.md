@@ -486,7 +486,7 @@ What `NetDisc360.exe` does, all from one file:
 - **Tells an incomplete ISO.** An ISO shorter than the files on it say (a download or copy that stopped) is marked **Incomplete** on the **Games** page and the dashboard, since the game would crash where it reads the missing part. Copy it again.
 - **Keeps the games of a folder that's away.** A game folder that can't be read, or that had games and suddenly has none (a NAS share that isn't mounted shows as the empty folder under it), holds back every removal until its games are back, so they don't drop out of Aurora. The **Game folders** page shows it. If you emptied a folder on purpose, remove it from the list (or restart NetDisc360) and its games go.
 - **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
-- **Leaves out games installed on the console.** A game that is installed on the console's hard drive (in `Hdd1:\Games`, or as Games on Demand in `Content`) gets no tile, so Aurora doesn't list it twice; the installed copy plays as before. The **Games** page says where each game is installed. Turn it off, or name other folders, under **Settings > Xbox & Aurora**.
+- **Leaves out games installed on the console.** A game that is installed on the console's hard drive (in `Hdd1:\Games`, or as Games on Demand in `Content`) gets no tile, so Aurora doesn't list it twice; the installed copy plays as before. The **Games** page says where each game is installed. Turn it off, or name other folders, under **Settings > Xbox & Aurora**. With it off, the game keeps its NetISO tile too, and that tile asks which copy to play: **A** starts the copy on the Xbox (it loads faster and works with the PC off), **X** plays it from the PC.
 - **Takes old games off Aurora's list and hides the PC games while the PC is off**, with two scripts in Aurora (see [Aurora's scripts](#auroras-scripts)).
 - **Finds the PC again after its address changes.** A router can give the PC a new address after a restart, and NetISO on the console then looks for the server at the old one. When a console is in Aurora and the address in its `NetISO.xex.txt` is one this PC had before (and nothing answers there now), NetDisc360 writes the new one in, and says to restart the console. Turn it off under **Settings > Xbox & Aurora**.
 - **Keeps Windows awake while a console plays**, and for 10 minutes after, so a game doesn't lose its disc to the PC going to sleep. Turn it off under **Settings > Windows**.
@@ -511,7 +511,7 @@ What `NetDisc360.exe` does, all from one file:
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--installed <folders>` | `/Hdd1/Games` | Where games installed on the console are, as FTP paths with semicolons between. Those, and Games on Demand, get no tile. |
-| `--no-installed` | | Give installed games a tile too. |
+| `--no-installed` | | Give installed games a tile too, which asks which copy to play. |
 | `--no-aurora-scripts` | | Don't write the cleanup script and the "Hide PC games while NetDisc360 is off" filter. |
 | `--aurora-web-port <n>` | 9999 | Aurora's web server, for starting games from the dashboard, the console's status and screenshots, and restarting Aurora. |
 | `--xbdm-port <n>` | 730 | The consoles' debug monitor (`xbdm.xex`), which turns them off. |
