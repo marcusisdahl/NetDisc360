@@ -1420,27 +1420,40 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
 // Xbox game hears nothing: each console sends, and neither finds the other's
 // System Link game (read from Nova.xex 0.7b.2; seen on two consoles with
 // Halo and Halo 2, whatever the emulator files; 360 games don't go this way).
-// Both functions start by comparing the slot with 1 (cmpwi cr6,r3,1; bne
-// cr6) and otherwise go on to xam's own. Before the emulator starts, this
-// makes that compare look for a slot that doesn't exist, so the emulator's
-// frames go to xam as they do without Nova; the rest of Nova (its HUD, disc
-// swaps) stays as it is. xbox_link=nova in NetIsoTiles.ini leaves Nova's
-// functions alone, for LiNK.
-static const DWORD SetCallbacksOrdinal=109,XmitOrdinal=110;
-static const DWORD SlotOneCompare=0x2F030001,NoSlotCompare=0x2F037FFF; // cmpwi cr6,r3,1 / 0x7FFF
-// Where Nova's function for ordinal compares the slot; NULL if xam's own
+// Nova's Xmit already sends slot 1's frames on to xam after its own work,
+// so the emulator's frames go out; only its SetCallbacks keeps them: for
+// slot 1 it saves the callbacks (cmpwi cr6,r3,1; bne cr6; ...; bl save;
+// b out) and returns without calling xam's. Taking slot 1 away from Nova
+// altogether crashed the game (Nova still uses what it saved), so before the
+// emulator starts this turns that "b out" into li r3,1: after saving them,
+// Nova goes on to give xam the same callbacks for slot 1, as its Xmit does,
+// and the game hears the other console's frames through xam. The rest of
+// Nova stays as it is. xbox_link=nova in NetIsoTiles.ini leaves Nova's
+// function alone, for LiNK.
+static const DWORD SetCallbacksOrdinal=109;
+static const DWORD SlotOneCompare=0x2F030001,PassSlotOne=0x38600001; // cmpwi cr6,r3,1 / li r3,1
+// Nova's "b out" after it saves slot 1's callbacks, or NULL if xam's own
 // function is in its export table (at says where) or the function isn't
 // shaped like Nova's.
-static DWORD* NovaSlotCompare(DWORD ordinal,DWORD& at) {
+static DWORD* NovaSlotOneReturn(DWORD& at) {
     HANDLE xam=NULL; void* address=NULL;
     at=0;
-    if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,ordinal,&address)<0 || !address) return NULL;
+    if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,SetCallbacksOrdinal,&address)<0 || !address) return NULL;
     at=DWORD(address);
     DWORD* code=(DWORD*)address;
     // xam's own code is at 0x81..., plugins like Nova at 0x91....
-    if(at<0x90000000 || !MmIsAddressValid(code) || !MmIsAddressValid(code+15) || code[0]!=0x7D8802A6) return NULL; // mflr r12
-    for(int i=1;i<14;++i)
-        if(code[i]==SlotOneCompare || code[i]==NoSlotCompare) return (code[i+1]>>16)==0x409A ? &code[i] : NULL; // bne cr6
+    if(at<0x90000000 || !MmIsAddressValid(code) || !MmIsAddressValid(code+31) || code[0]!=0x7D8802A6) return NULL; // mflr r12
+    for(int i=1;i<14;++i) {
+        if(code[i]!=SlotOneCompare) continue;
+        DWORD bne=code[i+1];
+        if((bne&0xFFFF0003)!=0x409A0000) return NULL; // bne cr6,target
+        int target=i+1+int(short(bne&0xFFFC))/4;
+        // The word before the target: "b out" (0x48..., not linking), or li r3,1 already.
+        if(target<=i+2 || target>=31) return NULL;
+        DWORD last=code[target-1];
+        if(last==PassSlotOne || ((last&0xFC000003)==0x48000000)) return &code[target-1];
+        return NULL;
+    }
     return NULL;
 }
 // On every emulator start: Nova may have been loaded again since.
@@ -1448,20 +1461,18 @@ static void PassEmulatorSlot() {
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
     if(from && !_stricmp(value,"nova")) { SwapNote("System Link: left to Nova (xbox_link=nova in %s).",from); return; }
-    static const DWORD ordinals[2]={SetCallbacksOrdinal,XmitOrdinal};
-    for(int i=0;i<2;++i) {
-        DWORD at=0;
-        DWORD* compare=NovaSlotCompare(ordinals[i],at);
-        if(!compare) {
-            if(at && at<0x90000000) SwapNote("System Link: xam's export %u is xam's own (%08X); nothing to change.",ordinals[i],at);
-            else SwapNote("System Link: xam's export %u (%08X) isn't Nova's function as known; left as it is.",ordinals[i],at);
-            continue;
-        }
-        if(*compare==NoSlotCompare) continue;
-        *compare=NoSlotCompare;
-        FlushCode(compare,4);
-        SwapNote("System Link: Nova's function for xam's export %u (%08X) passes the emulator on to xam now.",ordinals[i],at);
+    DWORD at=0;
+    DWORD* jump=NovaSlotOneReturn(at);
+    if(!jump) {
+        if(at && at<0x90000000) SwapNote("System Link: xam's export 109 is xam's own (%X); nothing to change.",at);
+        else SwapNote("System Link: xam's export 109 (%X) isn't Nova's function as known; left as it is.",at);
+        return;
     }
+    if(*jump==PassSlotOne) { SwapNote("System Link: Nova's function for xam's export 109 (%X) already gives xam the emulator's callbacks.",at); return; }
+    SwapNote("System Link: Nova's function for xam's export 109 (%X): %X at %X becomes li r3,1.",at,*jump,DWORD(jump));
+    *jump=PassSlotOne;
+    FlushCode(jump,4);
+    SwapNote("System Link: Nova now gives xam the emulator's callbacks too.");
 }
 // Whether path from mountPath is the console starting the emulator for an
 // original Xbox disc.
