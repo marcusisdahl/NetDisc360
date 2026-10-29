@@ -303,7 +303,7 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
 }
 
 struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId, mediaId; bool game, keep;
-                char role[16], label[64]; };  // disc_role and disc_label in its netiso.ini.
+                char role[16], label[64], local[PathMax]; };  // disc_role, disc_label and local_copy in its netiso.ini.
 
 // Rewrites a game folder's default.xex when it was made from an older
 // launcher, keeping its game's execution info, or putting in info if given.
@@ -346,16 +346,17 @@ static int RefreshFile(Storage& storage, const char* folder, const char* name, c
     return storage.WriteFile(path,data,size) ? 1 : -1;
 }
 
-// Puts a disc's role as findRole gives it (see library.h) into its game
-// folder's netiso.ini, keeping the other lines; a disc without one has the
-// lines taken out. The file is read and written only when they change.
+// Puts a disc's role and the game's local copy as findRole gives them (see
+// library.h) into its game folder's netiso.ini, keeping the other lines; a
+// disc without one has the lines taken out. The file is read and written only
+// when they change.
 static void RefreshRole(Storage& storage, const char* root, const Folder& game, FindRole findRole, Note note, SyncResult& result) {
     static DiscRoleInfo info;
     memset(&info,0,sizeof(info));
     findRole(game.iso,info);
     if(!info.known) return;
     if(!info.role[0]) info.label[0]=0;
-    if(!strcmp(info.role,game.role) && !strcmp(info.label,game.label)) return;
+    if(!strcmp(info.role,game.role) && !strcmp(info.label,game.label) && !strcmp(info.local,game.local)) return;
     char folder[PathMax],path[PathMax]; Join(folder,root,game.name); Join(path,folder,GameIni);
     static char old[IniMax+1],text[IniMax+1];
     DWORD size=0;
@@ -368,7 +369,7 @@ static void RefreshRole(Storage& storage, const char* root, const Folder& game, 
     for(const char* line=old;*line;) {
         const char* end=line+strcspn(line,"\r\n");
         size_t length=size_t(end-line);
-        if(length && _strnicmp(line,"disc_role=",10) && _strnicmp(line,"disc_label=",11) && at+length+2<sizeof(text)) {
+        if(length && _strnicmp(line,"disc_role=",10) && _strnicmp(line,"disc_label=",11) && _strnicmp(line,"local_copy=",11) && at+length+2<sizeof(text)) {
             memcpy(text+at,line,length); at+=length;
             text[at++]='\r'; text[at++]='\n';
         }
@@ -378,9 +379,18 @@ static void RefreshRole(Storage& storage, const char* root, const Folder& game, 
         int n=_snprintf_s(text+at,sizeof(text)-at,_TRUNCATE,info.label[0] ? "disc_role=%s\r\ndisc_label=%s\r\n" : "disc_role=%s\r\n",info.role,info.label);
         if(n>0) at+=size_t(n);
     }
+    if(info.local[0]) {
+        int n=_snprintf_s(text+at,sizeof(text)-at,_TRUNCATE,"local_copy=%s\r\n",info.local);
+        if(n>0) at+=size_t(n);
+    }
     int written=RefreshFile(storage,folder,GameIni,reinterpret_cast<const unsigned char*>(text),DWORD(at));
-    if(written<0) { Say(note,"Couldn't write %s (error %lu).",path,storage.LastError()); ++result.failed; }
-    else if(written>0 && info.role[0]) Say(note,"%s is the %s disc%s%s%s; its netiso.ini says so.",game.name,info.role,
+    if(written<0) { Say(note,"Couldn't write %s (error %lu).",path,storage.LastError()); ++result.failed; return; }
+    if(written>0 && strcmp(info.local,game.local)) {
+        if(info.local[0]) Say(note,"%s is installed on the console too (%s); its tile offers that copy.",game.name,info.local);
+        else Say(note,"%s is no longer installed on the console; took local_copy out of its netiso.ini.",game.name);
+        if(!strcmp(info.role,game.role) && !strcmp(info.label,game.label)) return;
+    }
+    if(written>0 && info.role[0]) Say(note,"%s is the %s disc%s%s%s; its netiso.ini says so.",game.name,info.role,
                                             info.label[0] ? " (" : "",info.label,info.label[0] ? ")" : "");
     else if(written>0) Say(note,"%s is no longer part of a set; took the disc role out of its netiso.ini.",game.name);
 }
@@ -419,7 +429,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall,
-          FindRole findRole) {
+          FindRole findRole, Wanted wanted, Placed placed) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -432,6 +442,8 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!isos[isoCount][0]) break;
     }
     Say(note,"The server has %d ISO(s).",isoCount);
+    static bool unwanted[IsvrMaxIsos];
+    for(int i=0;i<isoCount;++i) unwanted[i]=wanted && !wanted(isos[i]);
 
     // What is already here. A folder is a game folder when its netiso.ini names an ISO.
     storage.MakeFolder(root);
@@ -466,6 +478,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(IniValue(ini,"media_id",id,sizeof(id))) f.mediaId=DWORD(strtoul(id,NULL,16));
             if(!IniValue(ini,"disc_role",f.role,sizeof(f.role))) f.role[0]=0;
             if(!IniValue(ini,"disc_label",f.label,sizeof(f.label))) f.label[0]=0;
+            if(!IniValue(ini,"local_copy",f.local,sizeof(f.local))) f.local[0]=0;
         } else if(!storage.Missing()) {
             // Its game would get a second folder; better to try again later.
             Say(note,"Couldn't read %s (error %lu).",path,storage.LastError());
@@ -474,6 +487,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     }
 
     for(int i=0;i<isoCount;++i) {
+        if(unwanted[i]) { ++result.installed; continue; }
         bool have=false;
         for(int k=0;k<folderCount;++k) if(folders[k].game && !_stricmp(folders[k].iso,isos[i])) { folders[k].keep=true; have=true; }
         if(have) {
@@ -527,7 +541,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!copy) { Say(note,"Out of memory."); return false; }
         memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info,ExecutionInfoSize);
         FixHeaderDigest(copy,launcherSize);
-        char text[IsvrNameBytes+260];
+        char text[IsvrNameBytes+PathMax+260];
         int length=_snprintf_s(text,sizeof(text),_TRUNCATE,"; Written by NetISO Sync. iso is the file name the NetISO server lists.\r\niso=%s\r\ntitle_id=%08X\r\nmedia_id=%08X\r\n",
             isos[i],Read32(info+12),Read32(info));
         // An original Xbox game: the launcher starts default.xbe, which the
@@ -540,6 +554,11 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(role.known && role.role[0]) {
                 _snprintf_s(text+length,sizeof(text)-length,_TRUNCATE,role.label[0] ? "disc_role=%s\r\ndisc_label=%s\r\n" : "disc_role=%s\r\n",role.role,role.label);
                 strcpy_s(f.role,role.role); strcpy_s(f.label,role.label);
+            }
+            if(role.known && role.local[0]) {
+                size_t at=strlen(text);
+                _snprintf_s(text+at,sizeof(text)-at,_TRUNCATE,"local_copy=%s\r\n",role.local);
+                strcpy_s(f.local,role.local);
             }
         }
         Join(path,folder,GameXex);
@@ -568,11 +587,17 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     // so nothing is removed then.
     for(int k=0;k<folderCount && isoCount;++k) {
         if(!folders[k].game || folders[k].keep) continue;
-        if(!removeGone) { ++result.held; continue; }
+        bool installed=false;
+        for(int i=0;i<isoCount && !installed;++i) installed=unwanted[i] && !_stricmp(folders[k].iso,isos[i]);
+        if(!removeGone && !installed) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
-        if(storage.RemoveGame(folder)) { Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso); ++result.removed; }
-        else { Say(note,"Couldn't remove %s.",folder); ++result.failed; }
+        if(!storage.RemoveGame(folder)) { Say(note,"Couldn't remove %s.",folder); ++result.failed; continue; }
+        if(installed) Say(note,"Removed %s: the game on %s is installed on this console.",folders[k].name,folders[k].iso);
+        else Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso);
+        folders[k].game=false;
+        ++result.removed;
     }
+    if(placed) for(int k=0;k<folderCount;++k) if(folders[k].game && folders[k].keep) placed(folders[k].iso,folders[k].name);
     return true;
 }
 }
