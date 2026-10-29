@@ -13,6 +13,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
+COPY third_party/iso2god/ third_party/iso2god/
 COPY tests/posix_compat.h tests/
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
