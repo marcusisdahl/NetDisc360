@@ -913,4 +913,257 @@ bool IsoReader::Open(const IsoFile& disc) {
     note_=image->Description();
     return true;
 }
+
+bool IsoReader::Locate(const std::string& path, U64& at, U64& size) {
+    Volume volume;
+    if(!image_.get() || !ImageVolume(*image_,volume)) return false;
+    std::vector<ImageEntry> table;
+    DWORD sector=volume.rootSector,bytes=volume.rootSize;
+    for(size_t from=0;;) {
+        size_t end=path.find_first_of("/\\",from);
+        std::string step=path.substr(from,end==std::string::npos ? std::string::npos : end-from);
+        bool last=end==std::string::npos;
+        if(!ReadTable(*image_,volume,sector,bytes,table)) return false;
+        size_t k=0;
+        while(k<table.size() && (table[k].folder==last || _stricmp(table[k].name.c_str(),step.c_str()))) ++k;
+        if(k==table.size()) return false;
+        if(last) {
+            at=volume.start+U64(table[k].sector)*Sector; size=table[k].size;
+            return at+size<=image_->Size();
+        }
+        sector=table[k].sector; bytes=table[k].size; from=end+1;
+    }
+}
+
+bool IsoReader::Files(std::vector<DiscFile>& out) {
+    out.clear();
+    Volume volume;
+    if(!image_.get() || !ImageVolume(*image_,volume)) return false;
+    struct Table { std::string path; DWORD sector, size; };
+    std::vector<Table> todo(1,Table{std::string(),volume.rootSector,volume.rootSize});
+    std::vector<ImageEntry> table;
+    while(!todo.empty()) {
+        Table t=todo.back(); todo.pop_back();
+        if(!ReadTable(*image_,volume,t.sector,t.size,table)) return false;
+        // A broken disc can't send this round in circles: depth is bounded by the path.
+        if(t.path.size()>1024) return false;
+        for(size_t k=0;k<table.size();++k) {
+            const ImageEntry& e=table[k];
+            if(e.folder) {
+                out.push_back(DiscFile{t.path+e.name+"\\",0,0});
+                todo.push_back(Table{t.path+e.name+"\\",e.sector,e.size});
+                continue;
+            }
+            DiscFile f{t.path+e.name,volume.start+U64(e.sector)*Sector,e.size};
+            if(f.at+f.size>image_->Size()) return false;
+            out.push_back(f);
+        }
+    }
+    return true;
+}
+
+// Games on Demand packages ----------------------------------------------------
+
+namespace {
+#include "../third_party/iso2god/empty_live.h"
+
+// SHA-1 of whole 4 KB blocks, a word at a time.
+void Sha1Block(const unsigned char* data, size_t size, unsigned char* digest) {
+    DWORD h[5]={0x67452301,0xEFCDAB89,0x98BADCFE,0x10325476,0xC3D2E1F0};
+    auto rotate=[](DWORD v, int n) { return (v<<n)|(v>>(32-n)); };
+    auto compress=[&](const unsigned char* block) {
+        DWORD w[80];
+        for(int i=0;i<16;++i) w[i]=Big32(block+i*4);
+        for(int i=16;i<80;++i) w[i]=rotate(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+        DWORD a=h[0],b=h[1],c=h[2],d=h[3],e=h[4];
+        for(int i=0;i<80;++i) {
+            DWORD f,k;
+            if(i<20) { f=(b&c)|(~b&d); k=0x5A827999; }
+            else if(i<40) { f=b^c^d; k=0x6ED9EBA1; }
+            else if(i<60) { f=(b&c)|(b&d)|(c&d); k=0x8F1BBCDC; }
+            else { f=b^c^d; k=0xCA62C1D6; }
+            DWORD t=rotate(a,5)+f+e+k+w[i];
+            e=d; d=c; c=rotate(b,30); b=a; a=t;
+        }
+        h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d; h[4]+=e;
+    };
+    size_t whole=size/64*64;
+    for(size_t at=0;at<whole;at+=64) compress(data+at);
+    unsigned char tail[128]={0};
+    size_t rest=size-whole;
+    memcpy(tail,data+whole,rest);
+    tail[rest]=0x80;
+    size_t end=rest<56 ? 64 : 128;
+    U64 bits=U64(size)*8;
+    for(int i=0;i<8;++i) tail[end-1-i]=BYTE(bits>>(i*8));
+    compress(tail);
+    if(end==128) compress(tail+64);
+    for(int i=0;i<5;++i) { digest[i*4]=BYTE(h[i]>>24); digest[i*4+1]=BYTE(h[i]>>16); digest[i*4+2]=BYTE(h[i]>>8); digest[i*4+3]=BYTE(h[i]); }
+}
+void PutBig16(unsigned char* p, DWORD v) { p[0]=BYTE(v>>8); p[1]=BYTE(v); }
+void PutBig24(unsigned char* p, DWORD v) { p[0]=BYTE(v>>16); p[1]=BYTE(v>>8); p[2]=BYTE(v); }
+void PutBig32(unsigned char* p, DWORD v) { p[0]=BYTE(v>>24); p[1]=BYTE(v>>16); p[2]=BYTE(v>>8); p[3]=BYTE(v); }
+const U64 GodGroupBytes = U64(GodGroupData)*GodBlock;
+const DWORD GodGroups = (GodPartData+GodGroupData-1)/GodGroupData;  // 0xCB.
+}
+
+DWORD GodPackage::PartBlocks(int part) const {
+    U64 left=blocks_-U64(part)*GodPartData;
+    return left<GodPartData ? DWORD(left) : DWORD(GodPartData);
+}
+
+U64 GodPackage::PartSize(int part) const {
+    DWORD blocks=PartBlocks(part);
+    return U64(GodBlock)*(1+(blocks+GodGroupData-1)/GodGroupData+blocks);
+}
+
+U64 GodPackage::Bytes() const {
+    U64 total=header_.size();
+    for(int i=0;i<Parts();++i) total+=PartSize(i);
+    return total;
+}
+
+std::string GodPackage::Folder() const {
+    char text[32]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X\\%08X",titleId_,GodContentType);
+    return text;
+}
+
+std::string GodPackage::Name() const {
+    char text[16]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",mediaId_);
+    return text;
+}
+
+// The hash block of a group: the SHA-1 of each of its blocks (the last one
+// filled out with zeros), the rest of it zeros.
+bool GodPackage::Group(int part, U64 group, unsigned char* hashes) {
+    memset(hashes,0,GodBlock);
+    U64 first=U64(part)*GodPartData+group*GodGroupData;
+    U64 count=blocks_-first<GodGroupData ? blocks_-first : GodGroupData;
+    std::vector<unsigned char> data(size_t(count*GodBlock),0);
+    U64 at=start_+first*GodBlock;
+    U64 bytes=count*GodBlock;
+    if(at+bytes>reader_->Size()) bytes=reader_->Size()>at ? reader_->Size()-at : 0;
+    if(bytes && !reader_->Read(at,&data[0],DWORD(bytes))) return false;
+    for(U64 b=0;b<count;++b) Sha1Block(&data[size_t(b*GodBlock)],GodBlock,hashes+b*20);
+    return true;
+}
+
+bool GodPackage::Make(IsoReader& reader, const std::string& title, const std::function<bool(U64, U64)>& progress, std::string& error) {
+    reader_=&reader; groupAt_=-1;
+    masters_.clear(); header_.clear();
+    Volume volume;
+    std::vector<DiscFile> files;
+    if(!reader.image_.get() || !ImageVolume(*reader.image_,volume) || !reader.Files(files)) { error="it holds no Xbox 360 disc"; return false; }
+    // From the partition's start to the end of its last file or table, as iso2god's trim.
+    U64 end=0x21*U64(Sector);
+    if(U64(volume.rootSector)*Sector+volume.rootSize>end) end=U64(volume.rootSector)*Sector+volume.rootSize;
+    const DiscFile* xex=NULL;
+    std::vector<ImageEntry> table;
+    for(size_t i=0;i<files.size();++i) {
+        const DiscFile& f=files[i];
+        if(!_stricmp(f.path.c_str(),"default.xex")) xex=&f;
+        if(f.size && f.at+f.size-volume.start>end) end=f.at+f.size-volume.start;
+    }
+    // A folder's own table ends where its entry says; Files gives folders no place, so read them again.
+    std::vector<std::pair<DWORD,DWORD> > tables(1,std::make_pair(volume.rootSector,volume.rootSize));
+    while(!tables.empty()) {
+        std::pair<DWORD,DWORD> t=tables.back(); tables.pop_back();
+        if(!ReadTable(*reader.image_,volume,t.first,t.second,table)) { error="its file tables can't be read"; return false; }
+        for(size_t k=0;k<table.size();++k) {
+            U64 tail=U64(table[k].sector)*Sector+table[k].size;
+            if(tail>end) end=tail;
+            if(table[k].folder && tables.size()<100000) tables.push_back(std::make_pair(table[k].sector,table[k].size));
+        }
+    }
+    if(!xex) { error="it has no default.xex: only Xbox 360 games can be Games on Demand here"; return false; }
+    unsigned char start[24];
+    if(xex->size<24 || !reader.Read(xex->at,start,24)) { error="its default.xex can't be read"; return false; }
+    DWORD headerSize=Big32(start+8);
+    if(headerSize>xex->size) headerSize=xex->size;
+    if(headerSize<24 || headerSize>XexHeaderMax) { error="its default.xex is broken"; return false; }
+    std::vector<unsigned char> xexHeader(headerSize);
+    if(!reader.Read(xex->at,&xexHeader[0],headerSize)) { error="its default.xex can't be read"; return false; }
+    const unsigned char* info=NULL;
+    DWORD count=Big32(&xexHeader[20]);
+    for(DWORD i=0;i<count && 24+i*8+8<=headerSize && !info;++i) {
+        if(Big32(&xexHeader[24+i*8])!=ExecutionInfoKey) continue;
+        DWORD at=Big32(&xexHeader[28+i*8]);
+        if(at>=24 && at<=headerSize && headerSize-at>=ExecutionInfoBytes) info=&xexHeader[at];
+    }
+    if(!info || !Big32(info+12)) { error="its default.xex has no Title ID"; return false; }
+    titleId_=Big32(info+12); mediaId_=Big32(info);
+    start_=volume.start;
+    blocks_=(end+GodBlock-1)/GodBlock;
+    if(start_+blocks_*GodBlock>reader.Size()+GodBlock) { error="it is cut short"; return false; }
+    int parts=int((blocks_+GodPartData-1)/GodPartData);
+    // Each file's master block: its groups' hashes, then (below) the next one's.
+    masters_.assign(parts,std::vector<unsigned char>(GodBlock,0));
+    std::vector<unsigned char> hashes(GodBlock);
+    U64 done=0;
+    for(int p=0;p<parts;++p) {
+        U64 groups=(PartBlocks(p)+GodGroupData-1)/GodGroupData;
+        for(U64 g=0;g<groups;++g) {
+            if(!Group(p,g,&hashes[0])) { error="it can't be read here"; return false; }
+            Sha1Block(&hashes[0],GodBlock,&masters_[p][size_t(g*20)]);
+            done+=(PartBlocks(p)-g*GodGroupData<GodGroupData ? PartBlocks(p)-g*GodGroupData : GodGroupData)*GodBlock;
+            if(!progress(done,blocks_*GodBlock)) { error.clear(); return false; }
+        }
+    }
+    for(int p=parts-2;p>=0;--p) {
+        U64 groups=(PartBlocks(p)+GodGroupData-1)/GodGroupData;
+        Sha1Block(&masters_[p+1][0],GodBlock,&masters_[p][size_t(groups*20)]);
+    }
+    // The header, as iso2god's ConHeaderBuilder fills it in.
+    header_.assign(EmptyLive,EmptyLive+sizeof(EmptyLive));
+    unsigned char* h=&header_[0];
+    PutBig24(h+0x392,DWORD(blocks_)); PutBig16(h+0x395,0);
+    PutBig32(h+0x344,GodContentType);
+    PutLittle32(h+0x3A0,DWORD(parts));  // Little-endian, as iso2god has it.
+    PutBig32(h+0x3A4,DWORD((PartSize(parts-1)+U64(parts-1)*GodBlock*0xA290)/0x100));
+    PutBig32(h+0x354,mediaId_); PutBig32(h+0x360,titleId_);
+    h[0x364]=info[16]; h[0x365]=info[17]; h[0x366]=info[18]; h[0x367]=info[19];
+    Sha1Block(&masters_[0][0],GodBlock,h+0x37D);
+    // The game's name, in UTF-16BE where Aurora and the dashboard show it (ASCII; others as _).
+    for(size_t i=0;i<title.size() && i<0x7F;++i) {
+        DWORD c=(unsigned char)title[i]<0x80 ? (unsigned char)title[i] : '_';
+        PutBig16(h+0x411+i*2,c); PutBig16(h+0x1691+i*2,c);
+    }
+    h[0x35B]=0; h[0x35F]=0; h[0x391]=0;
+    Sha1Block(h+0x344,0xACBC,h+0x32C);
+    return true;
+}
+
+bool GodPackage::Part(int part, U64 offset, unsigned char* data, DWORD length) {
+    while(length) {
+        DWORD n;
+        if(offset<GodBlock) {
+            n=DWORD(GodBlock-offset)<length ? DWORD(GodBlock-offset) : length;
+            memcpy(data,&masters_[part][size_t(offset)],n);
+        } else {
+            U64 inside=offset-GodBlock, group=inside/((GodGroupData+1)*U64(GodBlock)), within=inside%((GodGroupData+1)*U64(GodBlock));
+            if(within<GodBlock) {
+                long long key=(long long)part*0x10000+(long long)group;
+                if(groupAt_!=key) {
+                    group_.resize(GodBlock);
+                    if(!Group(part,group,&group_[0])) return false;
+                    groupAt_=key;
+                }
+                n=DWORD(GodBlock-within)<length ? DWORD(GodBlock-within) : length;
+                memcpy(data,&group_[size_t(within)],n);
+            } else {
+                U64 block=U64(part)*GodPartData+group*GodGroupData, at=start_+block*GodBlock+within-GodBlock;
+                U64 groupEnd=start_+(block+GodGroupData)*GodBlock;
+                U64 run=groupEnd-at;
+                n=run<length ? DWORD(run) : length;
+                // Past the disc's end (the last block filled out): zeros.
+                memset(data,0,n);
+                U64 have=reader_->Size()>at ? reader_->Size()-at : 0;
+                DWORD read=have<n ? DWORD(have) : n;
+                if(read && !reader_->Read(at,data,read)) return false;
+            }
+        }
+        offset+=n; data+=n; length-=n;
+    }
+    return true;
+}
 }

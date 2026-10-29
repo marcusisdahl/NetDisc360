@@ -331,6 +331,14 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 13.5px; align-content: start; }
 .facts .k { color: var(--muted); }
 .facts .v { overflow-wrap: anywhere; }
+.install-box { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; font-size: 13.5px; display: grid; gap: 8px; }
+.install-box p { margin: 0; }
+.install-head { display: flex; align-items: center; gap: 8px; }
+.install-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
+.install-line.good { color: var(--good); justify-content: flex-start; } .install-line.bad { color: var(--bad); justify-content: flex-start; } .install-line.muted { justify-content: flex-start; }
+.install-box .progress { margin-top: 0; }
+.install-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.install-actions .muted { margin-right: auto; font-size: 12.5px; }
 
 /* Settings */
 .settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
@@ -719,6 +727,7 @@ async function refresh() {
       if (!$('.side')) frame();
       updateFrame();
       if (view && view.update) view.update();
+      for (const f of live) f();
     }
   } catch (e) {
     if ($('.login')) return;
@@ -1113,11 +1122,102 @@ async function choose(c, g, button) {
   } catch (e) { toast(e.message, true); button.disabled = false; }
 }
 
+// Things open on top of a page (a game's install progress) that follow each refresh.
+const live = new Set();
+
+// A box on a game's page that copies something to a console's hard drive
+// over Aurora's FTP and follows it: o.kind is the job kind in S.installs,
+// o.call the API to start it, o.what the text above it, o.note the line
+// beside its button, o.button the button's text, o.verb and o.unit what
+// the progress line says ("Installing", "package"), o.done the line once done.
+function transferBox(g, o) {
+  const box = h('div.install-box');
+  let chosen = null, starting = false, drawn = '';
+  const pick = () => {
+    const list = S.consoles.filter(c => !c.offline);
+    if (chosen && list.some(c => c.address === chosen)) return chosen;
+    const best = list.slice().sort((a, b) => (b.connections > 0) - (a.connections > 0) || (b.inAurora - a.inAurora) || lastSeen(b) - lastSeen(a))[0];
+    return best ? best.address : null;
+  };
+  async function start(button) {
+    starting = true; button.disabled = true;
+    try { await api(o.call, { game: g.name, address: chosen }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+    starting = false; draw();
+  }
+  async function stop(button) {
+    button.disabled = true;
+    try { await api('install/stop', { address: chosen }); }
+    catch (e) { toast(e.message, true); button.disabled = false; }
+  }
+  function draw() {
+    chosen = pick();
+    const job = (S.installs || []).find(j => j.address === chosen && (j.kind || 'content') === o.kind && o.match(j));
+    // Drawn again only when something shows a change, so the console list stays open.
+    const key = JSON.stringify([job, S.consoles.map(c => c.address), chosen, starting]);
+    if (key === drawn) return;
+    drawn = key;
+    const picker = S.consoles.length > 1 ? h('select.input', { style: { width: 'auto', height: '28px', padding: '0 8px' }, 'aria-label': 'Console', onchange: e => { chosen = e.target.value; draw(); } },
+      S.consoles.map(c => h('option', { value: c.address, selected: c.address === chosen }, c.address))) : null;
+    let body;
+    if (job && job.state === 'copying') {
+      const left = job.rate > 0 ? (job.total - job.done) / job.rate : 0;
+      body = [h('div.install-line', h('span', job.phase === 'prepare' ? 'Getting it ready: reading the game for its Games on Demand files' : o.verb + ' on ' + job.address + ': ' + o.unit + ' ' + job.file + ' of ' + job.files),
+          h('span.muted', bytes(job.done, 1) + ' of ' + bytes(job.total, 1) + (job.rate > 0 ? ' · ' + rate(job.rate) + ' · about ' + duration(left) + ' left' : ''))),
+        h('div.progress', h('i', { style: { width: (job.total ? Math.floor(100 * job.done / job.total) : 0) + '%' } })),
+        h('div.install-actions', h('span.muted', 'Leave the console in Aurora until it’s done. You can close this.'), h('button.btn.small', { onclick: e => stop(e.target) }, ic('x', 'sm'), 'Stop'))];
+    } else {
+      const done = job && job.state === 'done', ready = !!chosen;
+      body = [job ? h('div.install-line.' + (done ? 'good' : job.state === 'stopped' ? 'muted' : 'bad'), ic(done ? 'circle-check' : job.state === 'stopped' ? 'info' : 'circle-alert', 'sm'),
+          h('span', done ? o.done(job) : job.state === 'stopped' ? 'Stopped. Whole ' + o.unit + 's stay on the console; the rest is copied next time.' : job.error || 'It stopped.')) : null,
+        h('div.install-actions', h('span.muted', ready ? o.note : 'No console yet.'),
+          picker, done ? null : h('button.btn.small.primary', { disabled: !ready || starting, onclick: e => start(e.target) }, ic('download', 'sm'), job ? 'Try again' : o.button))];
+    }
+    fill(box, h('div.install-head', ic('hard-drive', 'sm'), h('b', o.title)), o.what, body);
+  }
+  draw();
+  return [box, draw];
+}
+
+// A game's install content: the packages its install disc carries (GTA V's
+// 8 GB), copied to the console's hard drive over Aurora's FTP.
+function installBox(g) {
+  const carrier = g.packages ? g : G.games.find(x => x.name === g.installDisc && x.packages);
+  if (!carrier) return [null, null];
+  const game = g.packages ? null : g.name;
+  return transferBox(g, {
+    kind: 'content', call: 'install', title: 'Install content', button: 'Install on Xbox', verb: 'Installing', unit: 'package',
+    match: j => j.game === g.name || j.disc === carrier.name,
+    what: h('p', game
+      ? [game + ' needs its content on the console’s hard drive before it plays: ', h('b', plural(carrier.packages, 'package') + ', ' + bytes(carrier.contentSize, 1)), ' from ' + carrier.name + '.']
+      : ['This disc carries ', h('b', plural(carrier.packages, 'package') + ', ' + bytes(carrier.contentSize, 1)), ' of content that its game needs on the console’s hard drive.']),
+    note: 'Copied over Aurora’s FTP to Hdd1:\\Content, where the console installs it too. Packages already there are skipped.',
+    done: job => 'Installed on ' + job.address + (job.skipped === job.files ? ' (it was there already)' : '') + '.',
+  });
+}
+
+// The whole game copied to the console's hard drive as Games on Demand, so
+// it plays there without the network. Not for an install disc; the server
+// says why for a game it can't copy (an original Xbox game).
+function copyBox(g) {
+  if (g.role === 'install') return [null, null];
+  return transferBox(g, {
+    kind: 'game', call: 'copy', title: 'Copy to the Xbox', button: 'Copy to Xbox', verb: 'Copying', unit: 'file',
+    match: j => j.game === g.name,
+    what: h('p', ['Puts the whole game on the console’s hard drive as Games on Demand, ', g.sizeKnown ? h('b', 'up to ' + bytes(g.size, 1)) : 'its full size', ', so it plays without this server or the network. Aurora lists it by itself.']),
+    note: 'Made into Games on Demand files while it’s sent over Aurora’s FTP, to Hdd1:\\Content. Nothing is written on this computer. A stopped copy goes on where it was.',
+    done: job => 'On ' + job.address + '’s hard drive' + (job.skipped === job.files ? ' (it was there already)' : '') + '. Aurora lists it once it has scanned.',
+  });
+}
+
 function details(g) {
   const on = playing()[g.name.toLowerCase()];
   const folder = S && S.folders[g.folder];
+  const [install, follow] = installBox(g);
+  const [copy, followCopy] = copyBox(g);
+  for (const f of [follow, followCopy]) if (f) live.add(f);
   modal(g.name, close => [
-    h('div.modal-body', h('div.detail',
+    h('div.modal-body', install, copy, h('div.detail',
       h('div.detail-cover', cover(g)),
       h('div.facts',
         h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', god: 'Games on Demand package' }[g.kind] || g.kind),
@@ -1130,7 +1230,7 @@ function details(g) {
     h('div.modal-foot', h('span.note', ic('info', 'sm'), 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
-  ]);
+  ], false, () => { live.delete(follow); live.delete(followCopy); });
 }
 
 function modal(title, build, narrow, closed) {
