@@ -1302,10 +1302,12 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // notices from the game's own threads did. ArmSwap shows "ready" instead.
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
+static void LinkWatch();
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
+        LinkWatch();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -1554,33 +1556,30 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // NetDll_XnpEthernetInterceptSetCallbacks (109) and
 // NetDll_XnpEthernetInterceptXmit (110), as slot 1 (the title). Aurora's
 // Nova.xex puts its own function for each in xam's export table, for LiNK.
-// It keeps the game's callbacks to itself instead of passing them on to xam
-// (passed on, the game crashes: "Fatal Crash Intercepted", seen on two
-// consoles), and has its own callbacks registered with xam as slot 2 (the
-// system). Its callback for LAN frames hands the game each one from 0.0.0.1
-// (original Xbox System Link) only while LiNK runs; with LiNK off it drops
-// them, so an original Xbox game hears nothing: each console sends, and
-// neither finds the other's System Link game (read from Nova.xex 0.7b.2;
-// seen with Halo and Halo 2; 360 games don't go this way). So when the
-// emulator starts, this takes out that one check in Nova's callback, and
-// counts the frames both ways for the log. xbox_link_send=system in
-// NetIsoTiles.ini sends the game's frames as slot 2 too, past Nova;
-// xbox_link=nova leaves it all to Nova.
+// It keeps the game's callbacks to itself instead of passing them on to
+// xam, and has its own registered with xam as slot 2 (the system); its
+// callback for LAN frames hands the game each one from 0.0.0.1 (original
+// Xbox System Link) only while LiNK runs. With LiNK off it drops them, so
+// an original Xbox game hears nothing: each console sends, and neither finds
+// the other's System Link game (read from Nova.xex 0.7b.2; seen with Halo
+// and Halo 2; 360 games don't go this way).
+// Changing Nova's code when the emulator starts crashed the game every time
+// ("Fatal Crash Intercepted" before it sent a frame, whatever was changed),
+// so this only reads Nova. Once the game has given Nova its callbacks, the
+// watcher thread registers NetIsoTiles' own as slot 2 in Nova's place, and
+// hands the game each System Link frame as Nova does with LiNK on; Nova
+// unregisters them itself when the game ends. xbox_link=xam in
+// NetIsoTiles.ini registers the game's own callbacks with xam as slot 1
+// instead, as the console does without Nova; xbox_link=nova (or off) leaves
+// it all to Nova. The log counts the frames.
 static const DWORD SetCallbacksOrdinal=109,XmitOrdinal=110;
-static const DWORD SlotOneCompare=0x2F030001,NoSlotCompare=0x2F037FFF; // cmpwi cr6,r3,1 / 0x7FFF
-static const DWORD Nop=0x60000000;
-typedef LONG (*Xmit)(DWORD slot,BYTE* frame,DWORD length);
+static const DWORD SlotOneCompare=0x2F030001;
+typedef LONG (*SetCallbacks)(DWORD slot,void* frames,void* other,void* context,DWORD more);
 typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length);
 typedef BYTE* (*NovaInstance)();
-// Nova's CSystemLink: the game's callbacks as SetCallbacks got them.
-static const DWORD NovaHasTitle=0x14C,NovaTitleFrames=0x154,NovaTitleContext=0x15C;
-// Nova's callback for LAN frames (0x91A4D420 in 0.7b.2), by its words:
-// offset, word. The beq at 0x14 skips it all while LiNK is off; the bctrl
-// at 0xA4 calls the game's callback.
-static const DWORD NovaFramesCode[][2]={
-    {0x00,0x7D8802A6},{0x08,0x9421FFA0},{0x0C,0x816300C0},{0x10,0x2F0B0000},{0x14,0x419A00A0},
-    {0x34,0x8163014C},{0x90,0x2B0B0001},{0x98,0x81630154},{0x9C,0x8063015C},{0xA0,0x7D6903A6},{0xA4,0x4E800421}};
-static const DWORD NovaLinkCheck=0x14,NovaGameCall=0xA4;
+// Nova's CSystemLink: the game's callbacks as SetCallbacks got them, and
+// whether Nova's own are registered.
+static const DWORD NovaHasTitle=0x14C,NovaTitleFrames=0x154,NovaTitleOther=0x158,NovaTitleContext=0x15C,NovaTitleMore=0x160,NovaRegistered=0xD0;
 
 // Where a bl at at goes, or 0.
 static DWORD CallTarget(const DWORD* at) {
@@ -1590,130 +1589,120 @@ static DWORD CallTarget(const DWORD* at) {
     if(offset&0x02000000) offset|=0xFC000000;
     return DWORD(at)+offset;
 }
-static bool CallTo(DWORD* at,DWORD target) {
-    LONG distance=LONG(target-DWORD(at));
-    if(distance<-0x2000000 || distance>=0x2000000) return false;
-    *at=0x48000001|(DWORD(distance)&0x03FFFFFC);
-    FlushCode(at,4);
-    return true;
-}
 // Nova's function for an ordinal: where it compares the slot, the call it
 // makes for slot 1 first (Nova's instance), and its call to xam's own for
 // other slots.
-struct NovaFunction { DWORD* compare; DWORD* instance; DWORD* xam; };
+struct NovaFunction { const DWORD* compare; const DWORD* instance; const DWORD* xam; };
 static bool FindNovaFunction(DWORD ordinal,NovaFunction& function,DWORD& at) {
     HANDLE xam=NULL; void* address=NULL;
     at=0;
     if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,ordinal,&address)<0 || !address) return false;
     at=DWORD(address);
-    DWORD* code=(DWORD*)address;
+    const DWORD* code=(const DWORD*)address;
     // xam's own code is at 0x81..., plugins like Nova at 0x91....
-    if(at<0x90000000 || !MmIsAddressValid(code) || !MmIsAddressValid(code+40) || code[0]!=0x7D8802A6) return false; // mflr r12
+    if(at<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+40)) || code[0]!=0x7D8802A6) return false; // mflr r12
     for(int i=1;i<14;++i) {
-        if(code[i]!=SlotOneCompare && code[i]!=NoSlotCompare) continue;
+        if(code[i]!=SlotOneCompare) continue;
         if((code[i+1]&0xFFFF8003)!=0x409A0000) return false; // bne cr6, forward
-        DWORD* other=code+i+1+((code[i+1]&0xFFFC)>>2);
+        const DWORD* other=code+i+1+((code[i+1]&0xFFFC)>>2);
         if(other>code+32 || !CallTarget(code+i+2)) return false;
         function.compare=code+i; function.instance=code+i+2; function.xam=NULL;
-        for(DWORD* call=other;call<other+6;++call) if(CallTarget(call)) { function.xam=call; break; }
+        for(const DWORD* call=other;call<other+6;++call) if(CallTarget(call)) { function.xam=call; break; }
         return function.xam!=NULL;
     }
     return false;
 }
-// Nova's callback for LAN frames: within 64 KB before start (its function
-// for 109), or NULL.
-static DWORD* FindNovaFrames(DWORD start) {
-    for(DWORD at=(start&~3)-4;at>=(start&~0xFFFF)-0x10000 && at>=0x90000000;at-=4) {
-        DWORD* code=(DWORD*)at;
-        if(!MmIsAddressValid(code)) { at&=~0xFFF; continue; } // on to the page below
-        if(*code!=NovaFramesCode[0][1] || !MmIsAddressValid(code+48)) continue;
-        bool same=true;
-        for(int i=0;same && i<int(sizeof(NovaFramesCode)/sizeof(NovaFramesCode[0]));++i) {
-            DWORD word=code[NovaFramesCode[i][0]/4];
-            DWORD want=NovaFramesCode[i][1];
-            if(NovaFramesCode[i][0]==NovaLinkCheck && word==Nop) continue; // taken out already
-            if(NovaFramesCode[i][0]==NovaGameCall && CallTarget(&code[NovaGameCall/4])) continue; // goes through LinkGive already
-            same=word==want;
-        }
-        if(same) return code;
-    }
-    return NULL;
-}
 
 static BYTE* volatile LinkNova=NULL;
-static volatile bool LinkActive=false;
-static Xmit RealXmit=NULL;
-static DWORD LinkSlot=1;
-static volatile DWORD LinkGiven=0,LinkTaken=0,LinkSent=0,LinkSentXbox=0,LinkRefused=0;
-static volatile LONG LinkLastRefusal=0;
+static SetCallbacks LinkSet=NULL;
+static volatile bool LinkActive=false,LinkXam=false,LinkDone=false;
+static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0;
 // An IPv4 frame from 0.0.0.1, as original Xbox consoles send System Link.
 static bool XboxFrame(const BYTE* frame,DWORD length) {
     return length>=34 && frame[12]==8 && !frame[13] && !frame[26] && !frame[27] && !frame[28] && frame[29]==1;
 }
-// Nova's callback calls the game's here (bl instead of its bctrl): counts.
-static LONG LinkGive(void* context,BYTE* frame,DWORD length) {
+// What xam calls with each LAN frame in Nova's place: hands the game the
+// System Link ones, as Nova's does with LiNK on, and says whether it took one.
+static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
+    UNREFERENCED_PARAMETER(context);
+    if(!frame || !length) return 0;
+    ++LinkSeen;
+    if(!LinkActive || !XboxFrame(frame,length)) return 0;
+    ++LinkXbox;
     BYTE* nova=LinkNova;
-    TitleFrames title=nova ? *(TitleFrames*)(nova+NovaTitleFrames) : NULL;
+    if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return 0;
+    TitleFrames title=*(TitleFrames*)(nova+NovaTitleFrames);
     if(!title) return 0;
     ++LinkGiven;
-    LONG result=title(context,frame,length);
-    if(result==1) ++LinkTaken;
-    return result;
+    if(title(*(void**)(nova+NovaTitleContext),frame,length)!=1) return 0;
+    ++LinkTaken;
+    return 1;
 }
-// Nova's call to xam's own xmit goes here: counts the game's frames.
-static LONG LinkXmit(DWORD slot,BYTE* frame,DWORD length) {
-    if(slot!=1 || !LinkActive) return RealXmit(slot,frame,length);
-    ++LinkSent;
-    if(frame && XboxFrame(frame,length)) ++LinkSentXbox;
-    LONG result=RealXmit(LinkSlot,frame,length);
-    if(result) { ++LinkRefused; LinkLastRefusal=result; }
-    return result;
+static LONG LinkOther(void* context,BYTE* frame,DWORD length) {
+    UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(frame); UNREFERENCED_PARAMETER(length);
+    return 0;
 }
 // On any launch: what the emulator's frames did since it started.
 static void StopLink() {
     if(!LinkActive) return;
     LinkActive=false;
-    SwapNote("System Link: the game sent %u frames (%u System Link; xam refused %u, last %X); Nova handed it %u System Link frames from consoles, it took %u.",
-             LinkSent,LinkSentXbox,LinkRefused,DWORD(LinkLastRefusal),LinkGiven,LinkTaken);
-    LinkGiven=LinkTaken=LinkSent=LinkSentXbox=LinkRefused=0; LinkLastRefusal=0;
+    if(LinkXam) SwapNote("System Link: %s.",LinkDone ? "the game's callbacks were with xam" : "the game never gave Nova its callbacks");
+    else SwapNote("System Link: xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u%s.",
+                  LinkSeen,LinkXbox,LinkGiven,LinkTaken,LinkDone ? "" : " (the game never gave Nova its callbacks)");
+    LinkSeen=LinkXbox=LinkGiven=LinkTaken=0;
 }
-// When the emulator starts. On every start: Nova may have been loaded again since.
+// When the emulator starts: finds Nova, reads only. On every start: Nova may
+// have been loaded again since.
 static void StartLink() {
     StopLink();
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
-    if(from && !_stricmp(value,"nova")) { SwapNote("System Link: left to Nova (xbox_link=nova in %s).",from); return; }
+    if(from && (!_stricmp(value,"nova") || !_stricmp(value,"off"))) { SwapNote("System Link: left to Nova (xbox_link=%s in %s).",value,from); return; }
     NovaFunction set,xmit; DWORD setAt=0,xmitAt=0;
     if(!FindNovaFunction(SetCallbacksOrdinal,set,setAt) || !FindNovaFunction(XmitOrdinal,xmit,xmitAt)) {
         SwapNote("System Link: xam's exports 109 and 110 (%X, %X) aren't Nova's functions as known; left as they are.",setAt,xmitAt);
         return;
     }
-    // Nova's own for slot 1 keeps the game's callbacks (an older build of
-    // this passed them on to xam, which crashed the game).
-    if(*set.compare!=SlotOneCompare) { *set.compare=SlotOneCompare; FlushCode(set.compare,4); }
     NovaInstance instance=(NovaInstance)CallTarget(set.instance);
     if(instance!=(NovaInstance)CallTarget(xmit.instance)) { SwapNote("System Link: Nova's functions %X and %X don't share an instance; left as they are.",setAt,xmitAt); return; }
+    // The function Nova's calls for slot 1 (bl 8 words after the compare)
+    // stores the callbacks where NovaTitleFrames says: checked by its words.
+    const DWORD* keep=(const DWORD*)CallTarget(set.compare+8);
+    int found=0;
+    if(keep && MmIsAddressValid((void*)keep) && MmIsAddressValid((void*)(keep+24)))
+        for(int i=0;i<24;++i)
+            if(keep[i]==0x93BF0154 || keep[i]==0x937F015C || keep[i]==0x917F014C) ++found; // stw r29,0x154(r31); stw r27,0x15C(r31); stw r11,0x14C(r31)
+    if(found<3) { SwapNote("System Link: Nova's function %X keeps the game's callbacks somewhere else than known; left as it is.",setAt); return; }
     BYTE* nova=instance();
-    if(!nova || !MmIsAddressValid(nova+NovaTitleContext)) { SwapNote("System Link: no Nova instance; left as it is."); return; }
-    DWORD* frames=FindNovaFrames(setAt);
-    if(!frames) { SwapNote("System Link: Nova's callback for LAN frames isn't where or what it's known as; left as it is."); return; }
+    if(!nova || !MmIsAddressValid(nova+NovaTitleMore)) { SwapNote("System Link: no Nova instance; left as it is."); return; }
     LinkNova=nova;
-    DWORD target=CallTarget(xmit.xam);
-    if(target!=DWORD(LinkXmit)) {
-        RealXmit=(Xmit)target;
-        if(!CallTo(xmit.xam,DWORD(LinkXmit))) { SwapNote("System Link: can't reach Nova's xmit at %X.",DWORD(xmit.xam)); return; }
-    }
-    DWORD* game=frames+NovaGameCall/4;
-    if(CallTarget(game)!=DWORD(LinkGive) && !CallTo(game,DWORD(LinkGive))) { SwapNote("System Link: can't reach Nova's callback at %X.",DWORD(frames)); return; }
-    DWORD* check=frames+NovaLinkCheck/4;
-    if(*check!=Nop) { *check=Nop; FlushCode(check,4); }
-    from=TuningValue("xbox_link_send",value,sizeof(value));
-    bool system=from && !_stricmp(value,"system");
-    LinkSlot=system ? 2 : 1;
-    DWORD compare=system ? NoSlotCompare : SlotOneCompare;
-    if(*xmit.compare!=compare) { *xmit.compare=compare; FlushCode(xmit.compare,4); }
+    LinkSet=(SetCallbacks)CallTarget(set.xam);
+    LinkXam=from && !_stricmp(value,"xam");
+    LinkDone=false;
     LinkActive=true;
-    SwapNote("System Link: Nova's callback at %X hands the game System Link frames with LiNK off now; the game's frames go out as slot %u.",DWORD(frames),LinkSlot);
+    SwapNote("System Link: waiting for the game to give Nova (%X) its callbacks, to register %s.",DWORD(nova),
+             LinkXam ? "them with xam as slot 1 (xbox_link=xam)" : "NetIsoTiles' as slot 2 in Nova's place");
+}
+// On the watcher thread, every half second at most: once the game has given
+// Nova its callbacks, registers as StartLink said.
+static void LinkWatch() {
+    if(!LinkActive || LinkDone) return;
+    BYTE* nova=LinkNova;
+    if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return;
+    LinkDone=true;
+    if(LinkXam) {
+        LONG result=LinkSet(1,*(void**)(nova+NovaTitleFrames),*(void**)(nova+NovaTitleOther),*(void**)(nova+NovaTitleContext),*(DWORD*)(nova+NovaTitleMore));
+        SwapNote("System Link: the game's callbacks registered with xam as slot 1 (xam said %X).",DWORD(result));
+        return;
+    }
+    DWORD registered=*(DWORD*)(nova+NovaRegistered);
+    LONG result=LinkSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0),retry=0;
+    if(result) {
+        LinkSet(2,NULL,NULL,NULL,0); // as Nova unregisters its own
+        retry=LinkSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0);
+    }
+    SwapNote("System Link: NetIsoTiles' callbacks registered as slot 2 in Nova's place (Nova's were %s; xam said %X%s%X).",
+             registered ? "registered" : "not registered",DWORD(result),result ? ", then after unregistering " : "",DWORD(retry));
 }
 // Whether path from mountPath is the console starting the emulator for an
 // original Xbox disc.
