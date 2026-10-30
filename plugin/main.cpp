@@ -1476,7 +1476,7 @@ static bool FindNovaFunction(DWORD ordinal,NovaFunction& function,DWORD& at) {
 
 static BYTE* volatile LinkNova=NULL;
 static SetCallbacks LinkSet=NULL;
-static volatile bool LinkActive=false,LinkXam=false,LinkDone=false;
+static volatile bool LinkActive=false,LinkXam=false,LinkDone=false,LinkXamDone=false;
 static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0;
 // The kinds of frames xam handed over, for the log: source MAC, type, and
 // for IPv4 the addresses, protocol and ports.
@@ -1559,7 +1559,7 @@ static LONG LinkOther(void* context,BYTE* frame,DWORD length) {
 static void StopLink() {
     if(!LinkActive) return;
     LinkActive=false;
-    if(LinkXam) SwapNote("System Link: %s.",LinkDone ? "the game's callbacks were with xam" : "the game never gave Nova its callbacks");
+    if(LinkXam) SwapNote("System Link: %s.",!LinkDone ? "the game never gave Nova its callbacks" : LinkXamDone ? "the game's callbacks were with xam" : "xam didn't take the game's callbacks");
     else {
         SwapNote("System Link: xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u%s.",
                  LinkSeen,LinkXbox,LinkGiven,LinkTaken,LinkDone ? "" : " (the game never gave Nova its callbacks)");
@@ -1594,7 +1594,7 @@ static void StartLink() {
     LinkNova=nova;
     LinkSet=(SetCallbacks)CallTarget(set.xam);
     LinkXam=from && !_stricmp(value,"xam");
-    LinkDone=false;
+    LinkDone=LinkXamDone=false;
     LinkActive=true;
     SwapNote("System Link: waiting for the game to give Nova (%X) its callbacks, to register %s.",DWORD(nova),
              LinkXam ? "them with xam as slot 1 (xbox_link=xam)" : "NetIsoTiles' as slot 2 in Nova's place");
@@ -1607,8 +1607,18 @@ static void LinkWatch() {
     if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return;
     LinkDone=true;
     if(LinkXam) {
-        LONG result=LinkSet(1,*(void**)(nova+NovaTitleFrames),*(void**)(nova+NovaTitleOther),*(void**)(nova+NovaTitleContext),*(DWORD*)(nova+NovaTitleMore));
-        SwapNote("System Link: the game's callbacks registered with xam as slot 1 (xam said %X).",DWORD(result));
+        void* frames=*(void**)(nova+NovaTitleFrames);
+        void* other=*(void**)(nova+NovaTitleOther);
+        void* context=*(void**)(nova+NovaTitleContext);
+        DWORD more=*(DWORD*)(nova+NovaTitleMore);
+        LONG result=LinkSet(1,frames,other,context,more),retry=0;
+        if(result) { // 0x2735 (seen): xam has slot 1 taken already
+            LinkSet(1,NULL,NULL,NULL,0);
+            retry=LinkSet(1,frames,other,context,more);
+        }
+        LinkXamDone=!result || !retry;
+        SwapNote("System Link: the game's callbacks (%X, %X, context %X) %s with xam as slot 1 (xam said %X%s%X).",DWORD(frames),DWORD(other),DWORD(context),
+                 LinkXamDone ? "registered" : "not registered",DWORD(result),result ? ", then after unregistering " : "",DWORD(retry));
         return;
     }
     DWORD registered=*(DWORD*)(nova+NovaRegistered);
