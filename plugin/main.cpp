@@ -1620,10 +1620,10 @@ static bool FindNovaFunction(DWORD ordinal,NovaFunction& function,DWORD& at) {
     }
     return false;
 }
-// Nova's callback for LAN frames: within 64 KB before near (its function
+// Nova's callback for LAN frames: within 64 KB before start (its function
 // for 109), or NULL.
-static DWORD* FindNovaFrames(DWORD near) {
-    for(DWORD at=(near&~3)-4;at>=(near&~0xFFFF)-0x10000 && at>=0x90000000;at-=4) {
+static DWORD* FindNovaFrames(DWORD start) {
+    for(DWORD at=(start&~3)-4;at>=(start&~0xFFFF)-0x10000 && at>=0x90000000;at-=4) {
         DWORD* code=(DWORD*)at;
         if(!MmIsAddressValid(code)) { at&=~0xFFF; continue; } // on to the page below
         if(*code!=NovaFramesCode[0][1] || !MmIsAddressValid(code+48)) continue;
