@@ -1565,21 +1565,26 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // and Halo 2; 360 games don't go this way).
 // Changing Nova's code when the emulator starts crashed the game every time
 // ("Fatal Crash Intercepted" before it sent a frame, whatever was changed),
-// so this only reads Nova. Once the game has given Nova its callbacks, the
+// so Nova's code stays as it is. When the emulator starts, xam's export
+// table gets NetIsoTiles' functions for 109 and 110 in Nova's place; they
+// call Nova's, and count. Once the game has given Nova its callbacks, the
 // watcher thread registers NetIsoTiles' own as slot 2 in Nova's place, and
 // hands the game each System Link frame as Nova does with LiNK on; Nova
-// unregisters them itself when the game ends. xbox_link=xam in
-// NetIsoTiles.ini registers the game's own callbacks with xam as slot 1
-// instead, as the console does without Nova; xbox_link=nova (or off) leaves
-// it all to Nova. The log counts the frames.
+// unregisters them itself when the game ends. In NetIsoTiles.ini,
+// xbox_link=xam also hands the game's callbacks to xam as slot 1, on the
+// game's own thread (xam refused them from the watcher thread),
+// xbox_link_send=system sends the game's frames as slot 2 instead of through
+// Nova, and xbox_link=nova (or off) leaves it all to Nova. The log counts the
+// frames and lists their kinds.
 static const DWORD SetCallbacksOrdinal=109,XmitOrdinal=110;
 static const DWORD SlotOneCompare=0x2F030001;
 typedef LONG (*SetCallbacks)(DWORD slot,void* frames,void* other,void* context,DWORD more);
+typedef LONG (*Xmit)(DWORD slot,BYTE* frame,DWORD length);
 typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length);
 typedef BYTE* (*NovaInstance)();
 // Nova's CSystemLink: the game's callbacks as SetCallbacks got them, and
 // whether Nova's own are registered.
-static const DWORD NovaHasTitle=0x14C,NovaTitleFrames=0x154,NovaTitleOther=0x158,NovaTitleContext=0x15C,NovaTitleMore=0x160,NovaRegistered=0xD0;
+static const DWORD NovaHasTitle=0x14C,NovaTitleFrames=0x154,NovaTitleContext=0x15C,NovaRegistered=0xD0;
 
 // Where a bl at at goes, or 0.
 static DWORD CallTarget(const DWORD* at) {
@@ -1589,18 +1594,14 @@ static DWORD CallTarget(const DWORD* at) {
     if(offset&0x02000000) offset|=0xFC000000;
     return DWORD(at)+offset;
 }
-// Nova's function for an ordinal: where it compares the slot, the call it
-// makes for slot 1 first (Nova's instance), and its call to xam's own for
-// other slots.
+// Nova's function at address: where it compares the slot, the call it makes
+// for slot 1 first (Nova's instance), and its call to xam's own for other
+// slots.
 struct NovaFunction { const DWORD* compare; const DWORD* instance; const DWORD* xam; };
-static bool FindNovaFunction(DWORD ordinal,NovaFunction& function,DWORD& at) {
-    HANDLE xam=NULL; void* address=NULL;
-    at=0;
-    if(XexGetModuleHandle("xam.xex",&xam)<0 || XexGetProcedureAddress(xam,ordinal,&address)<0 || !address) return false;
-    at=DWORD(address);
+static bool IsNovaFunction(DWORD address,NovaFunction& function) {
     const DWORD* code=(const DWORD*)address;
     // xam's own code is at 0x81..., plugins like Nova at 0x91....
-    if(at<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+40)) || code[0]!=0x7D8802A6) return false; // mflr r12
+    if(address<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+40)) || code[0]!=0x7D8802A6) return false; // mflr r12
     for(int i=1;i<14;++i) {
         if(code[i]!=SlotOneCompare) continue;
         if((code[i+1]&0xFFFF8003)!=0x409A0000) return false; // bne cr6, forward
@@ -1612,25 +1613,37 @@ static bool FindNovaFunction(DWORD ordinal,NovaFunction& function,DWORD& at) {
     }
     return false;
 }
+// The entry for ordinal in a module's export table, as Nova finds xam's: the
+// security info's export table (+0x160), whose entries are addresses less
+// the image base (its high half at +0x20); NULL if there is none.
+static DWORD* ExportEntry(HANDLE module,DWORD ordinal,DWORD& base) {
+    const BYTE* entry=(const BYTE*)module;
+    if(!entry || !MmIsAddressValid((void*)(entry+0x58))) return NULL;
+    const BYTE* header=*(const BYTE* const*)(entry+0x58);
+    if(!header || !MmIsAddressValid((void*)(header+0x10))) return NULL;
+    const BYTE* security=*(const BYTE* const*)(header+0x10);
+    if(!security || !MmIsAddressValid((void*)(security+0x160))) return NULL;
+    DWORD* table=*(DWORD* const*)(security+0x160);
+    if(!table || !MmIsAddressValid(table) || !MmIsAddressValid(table+10)) return NULL;
+    DWORD count=table[9],first=table[10];
+    if(ordinal<first || ordinal-first>=count || !MmIsAddressValid(table+11+(ordinal-first))) return NULL;
+    base=table[8]<<16;
+    return table+11+(ordinal-first);
+}
 
-static BYTE* volatile LinkNova=NULL;
-static SetCallbacks LinkSet=NULL;
-static volatile bool LinkActive=false,LinkXam=false,LinkDone=false,LinkXamDone=false;
-static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0;
-// The kinds of frames xam handed over, for the log: source MAC, type, and
-// for IPv4 the addresses, protocol and ports.
+// The kinds of frames, for the log: source MAC, type, and for IPv4 the
+// addresses, protocol and ports.
 struct FrameKind { BYTE source[6],broadcast,protocol; WORD type,fromPort,toPort; DWORD from,to,count; };
-static const int MaxKinds=24;
-static FrameKind LinkKinds[MaxKinds];
-static volatile LONG LinkKindCount=0,LinkKindLock=0;
-static volatile DWORD LinkKindsLeft=0;
-static void NoteKind(const BYTE* frame,DWORD length) {
-    if(InterlockedCompareExchange(&LinkKindLock,1,0)) return;
+static const int MaxKinds=16;
+struct FrameKinds { FrameKind kinds[MaxKinds]; volatile LONG count,lock; volatile DWORD left; };
+static FrameKinds LinkHeardKinds,LinkSentKinds;
+static void NoteKind(FrameKinds& table,const BYTE* frame,DWORD length) {
+    if(!frame || length<14 || InterlockedCompareExchange(&table.lock,1,0)) return;
     FrameKind kind; memset(&kind,0,sizeof(kind));
     memcpy(kind.source,frame+6,6);
     kind.broadcast=frame[0]==0xFF ? 1 : (frame[0]&1) ? 2 : 0;
     kind.type=WORD(frame[12]<<8|frame[13]);
-    if(kind.type==0x0800 && length>=38) {
+    if(kind.type==0x0800 && length>=34) {
         kind.protocol=frame[23];
         kind.from=DWORD(frame[26])<<24|DWORD(frame[27])<<16|DWORD(frame[28])<<8|frame[29];
         kind.to=DWORD(frame[30])<<24|DWORD(frame[31])<<16|DWORD(frame[32])<<8|frame[33];
@@ -1640,36 +1653,64 @@ static void NoteKind(const BYTE* frame,DWORD length) {
             kind.toPort=WORD(frame[16+header]<<8|frame[17+header]);
         }
     }
-    LONG count=LinkKindCount,i=0;
+    LONG count=table.count,i=0;
     for(;i<count;++i) {
-        const FrameKind& k=LinkKinds[i];
+        const FrameKind& k=table.kinds[i];
         if(!memcmp(k.source,kind.source,6) && k.broadcast==kind.broadcast && k.type==kind.type && k.protocol==kind.protocol
            && k.from==kind.from && k.to==kind.to && k.fromPort==kind.fromPort && k.toPort==kind.toPort) break;
     }
-    if(i<count) ++LinkKinds[i].count;
-    else if(count<MaxKinds) { kind.count=1; LinkKinds[count]=kind; LinkKindCount=count+1; }
-    else ++LinkKindsLeft;
-    InterlockedExchange(&LinkKindLock,0);
+    if(i<count) ++table.kinds[i].count;
+    else if(count<MaxKinds) { kind.count=1; table.kinds[count]=kind; table.count=count+1; }
+    else ++table.left;
+    InterlockedExchange(&table.lock,0);
 }
-static void NoteKinds() {
-    while(InterlockedCompareExchange(&LinkKindLock,1,0)) Sleep(1);
-    for(LONG i=0;i<LinkKindCount;++i) {
-        const FrameKind& k=LinkKinds[i];
+static void NoteKinds(FrameKinds& table,const char* what) {
+    while(InterlockedCompareExchange(&table.lock,1,0)) Sleep(1);
+    for(LONG i=0;i<table.count;++i) {
+        const FrameKind& k=table.kinds[i];
         char text[160];
         int at=sprintf_s(text,"from %02X-%02X-%02X-%02X-%02X-%02X%s, type %04X",k.source[0],k.source[1],k.source[2],k.source[3],k.source[4],k.source[5],
                          k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "",k.type);
         if(at>0 && k.type==0x0800)
             sprintf_s(text+at,sizeof(text)-at,", %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, protocol %u",
                       k.from>>24,(k.from>>16)&255,(k.from>>8)&255,k.from&255,k.fromPort,k.to>>24,(k.to>>16)&255,(k.to>>8)&255,k.to&255,k.toPort,k.protocol);
-        SwapNote("System Link:   %u frames %s.",k.count,text);
+        SwapNote("System Link:   %s %u frames %s.",what,k.count,text);
     }
-    if(LinkKindsLeft) SwapNote("System Link:   %u frames of other kinds.",LinkKindsLeft);
-    LinkKindCount=0; LinkKindsLeft=0;
-    InterlockedExchange(&LinkKindLock,0);
+    if(table.left) SwapNote("System Link:   %s %u frames of other kinds.",what,table.left);
+    table.count=0; table.left=0;
+    InterlockedExchange(&table.lock,0);
 }
+
+static BYTE* volatile LinkNova=NULL;
+static SetCallbacks NovaSet=NULL,RealSet=NULL; // Nova's function for 109; xam's own, through Nova's import
+static Xmit NovaXmit=NULL,RealXmit=NULL;
+static volatile bool LinkActive=false,LinkXam=false,LinkSystemSend=false,LinkDone=false;
+static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0,LinkSets=0,LinkSent=0,LinkSentXbox=0,LinkRefused=0;
+static volatile LONG LinkXamResult=-1,LinkLastRefusal=0,LinkSlotTwo=-1,LinkSlotTwoRetry=-1;
 // An IPv4 frame from 0.0.0.1, as original Xbox consoles send System Link.
 static bool XboxFrame(const BYTE* frame,DWORD length) {
     return length>=34 && frame[12]==8 && !frame[13] && !frame[26] && !frame[27] && !frame[28] && frame[29]==1;
+}
+// xam's export 109 while the emulator runs: Nova's keeps the game's
+// callbacks; with xbox_link=xam xam gets them too, on the game's thread.
+static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,DWORD more) {
+    LONG result=NovaSet(slot,frames,other,context,more);
+    if(slot==1 && LinkActive) {
+        ++LinkSets;
+        if(LinkXam) LinkXamResult=RealSet(1,frames,other,context,more);
+    }
+    return result;
+}
+// xam's export 110 while the emulator runs: counts the game's frames, and
+// sends them through Nova's, or as slot 2 with xbox_link_send=system.
+static LONG LinkXmit(DWORD slot,BYTE* frame,DWORD length) {
+    if(slot!=1 || !LinkActive) return NovaXmit(slot,frame,length);
+    ++LinkSent;
+    if(frame && XboxFrame(frame,length)) ++LinkSentXbox;
+    NoteKind(LinkSentKinds,frame,length);
+    LONG result=LinkSystemSend ? RealXmit(2,frame,length) : NovaXmit(1,frame,length);
+    if(result) { ++LinkRefused; LinkLastRefusal=result; }
+    return result;
 }
 // What xam calls with each LAN frame in Nova's place: hands the game the
 // System Link ones, as Nova's does with LiNK on, and says whether it took one.
@@ -1678,7 +1719,7 @@ static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
     if(!frame || length<14) return 0;
     ++LinkSeen;
     if(!LinkActive) return 0;
-    NoteKind(frame,length);
+    NoteKind(LinkHeardKinds,frame,length);
     if(!XboxFrame(frame,length)) return 0;
     ++LinkXbox;
     BYTE* nova=LinkNova;
@@ -1698,23 +1739,45 @@ static LONG LinkOther(void* context,BYTE* frame,DWORD length) {
 static void StopLink() {
     if(!LinkActive) return;
     LinkActive=false;
-    if(LinkXam) SwapNote("System Link: %s.",!LinkDone ? "the game never gave Nova its callbacks" : LinkXamDone ? "the game's callbacks were with xam" : "xam didn't take the game's callbacks");
-    else {
-        SwapNote("System Link: xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u%s.",
-                 LinkSeen,LinkXbox,LinkGiven,LinkTaken,LinkDone ? "" : " (the game never gave Nova its callbacks)");
-        NoteKinds();
-    }
-    LinkSeen=LinkXbox=LinkGiven=LinkTaken=0;
+    if(LinkXam) SwapNote("System Link: the game set its callbacks %u times, xam said %X the last time.",LinkSets,DWORD(LinkXamResult));
+    else SwapNote("System Link: the game set its callbacks %u times.",LinkSets);
+    SwapNote("System Link: the game sent %u frames, %u of them System Link; %u refused (last %X).",LinkSent,LinkSentXbox,LinkRefused,DWORD(LinkLastRefusal));
+    if(!LinkXam)
+        SwapNote("System Link: slot 2 %s (xam said %X, then %X); xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u.",
+                 LinkDone ? "registered" : "not registered",DWORD(LinkSlotTwo),DWORD(LinkSlotTwoRetry),LinkSeen,LinkXbox,LinkGiven,LinkTaken);
+    NoteKinds(LinkSentKinds,"sent");
+    NoteKinds(LinkHeardKinds,"heard");
+    LinkSeen=LinkXbox=LinkGiven=LinkTaken=LinkSets=LinkSent=LinkSentXbox=LinkRefused=0;
+    LinkXamResult=LinkSlotTwo=LinkSlotTwoRetry=-1; LinkLastRefusal=0;
 }
-// When the emulator starts: finds Nova, reads only. On every start: Nova may
-// have been loaded again since.
+// When the emulator starts, on the launching title's thread, before the
+// emulator loads: puts NetIsoTiles' functions in xam's export table. On
+// every start: Nova may have been loaded again since.
 static void StartLink() {
     StopLink();
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
     if(from && (!_stricmp(value,"nova") || !_stricmp(value,"off"))) { SwapNote("System Link: left to Nova (xbox_link=%s in %s).",value,from); return; }
-    NovaFunction set,xmit; DWORD setAt=0,xmitAt=0;
-    if(!FindNovaFunction(SetCallbacksOrdinal,set,setAt) || !FindNovaFunction(XmitOrdinal,xmit,xmitAt)) {
+    bool xam=from && !_stricmp(value,"xam");
+    from=TuningValue("xbox_link_send",value,sizeof(value));
+    bool system=from && !_stricmp(value,"system");
+    HANDLE module=NULL;
+    DWORD setBase=0,xmitBase=0;
+    DWORD* setEntry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,setBase);
+    DWORD* xmitEntry=module ? ExportEntry(module,XmitOrdinal,xmitBase) : NULL;
+    if(!setEntry || !xmitEntry) { SwapNote("System Link: xam's export table isn't where Nova's is found; left as it is."); return; }
+    // The functions in the table now: Nova's, or NetIsoTiles' from an earlier start.
+    DWORD setAt=setBase+*setEntry,xmitAt=xmitBase+*xmitEntry;
+    void* address=NULL; void* xmitAddress=NULL;
+    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || XexGetProcedureAddress(module,XmitOrdinal,&xmitAddress)<0
+       || DWORD(address)!=setAt || DWORD(xmitAddress)!=xmitAt) {
+        SwapNote("System Link: xam's export table reads %X, %X where xam says %X, %X; left as it is.",setAt,xmitAt,DWORD(address),DWORD(xmitAddress));
+        return;
+    }
+    if(setAt==DWORD(LinkSetCallbacks)) setAt=DWORD(NovaSet);
+    if(xmitAt==DWORD(LinkXmit)) xmitAt=DWORD(NovaXmit);
+    NovaFunction set,xmit;
+    if(!IsNovaFunction(setAt,set) || !IsNovaFunction(xmitAt,xmit)) {
         SwapNote("System Link: xam's exports 109 and 110 (%X, %X) aren't Nova's functions as known; left as they are.",setAt,xmitAt);
         return;
     }
@@ -1729,45 +1792,35 @@ static void StartLink() {
             if(keep[i]==0x93BF0154 || keep[i]==0x937F015C || keep[i]==0x917F014C) ++found; // stw r29,0x154(r31); stw r27,0x15C(r31); stw r11,0x14C(r31)
     if(found<3) { SwapNote("System Link: Nova's function %X keeps the game's callbacks somewhere else than known; left as it is.",setAt); return; }
     BYTE* nova=instance();
-    if(!nova || !MmIsAddressValid(nova+NovaTitleMore)) { SwapNote("System Link: no Nova instance; left as it is."); return; }
+    if(!nova || !MmIsAddressValid(nova+NovaTitleContext)) { SwapNote("System Link: no Nova instance; left as it is."); return; }
     LinkNova=nova;
-    LinkSet=(SetCallbacks)CallTarget(set.xam);
-    LinkXam=from && !_stricmp(value,"xam");
-    LinkDone=LinkXamDone=false;
+    NovaSet=(SetCallbacks)setAt; NovaXmit=(Xmit)xmitAt;
+    RealSet=(SetCallbacks)CallTarget(set.xam); RealXmit=(Xmit)CallTarget(xmit.xam);
+    LinkXam=xam; LinkSystemSend=system; LinkDone=false;
     LinkActive=true;
-    SwapNote("System Link: waiting for the game to give Nova (%X) its callbacks, to register %s.",DWORD(nova),
-             LinkXam ? "them with xam as slot 1 (xbox_link=xam)" : "NetIsoTiles' as slot 2 in Nova's place");
+    // Data, not code: the emulator's imports are bound to what's here when it loads.
+    if(setBase+*setEntry!=DWORD(LinkSetCallbacks)) { *setEntry=DWORD(LinkSetCallbacks)-setBase; FlushCode(setEntry,4); }
+    if(xmitBase+*xmitEntry!=DWORD(LinkXmit)) { *xmitEntry=DWORD(LinkXmit)-xmitBase; FlushCode(xmitEntry,4); }
+    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks))
+        SwapNote("System Link: xam's export 109 reads %X after the change, not NetIsoTiles' %X.",DWORD(address),DWORD(LinkSetCallbacks));
+    SwapNote("System Link: xam's exports 109 and 110 go through NetIsoTiles now (Nova's %X, %X); %s; the game's frames go out %s.",setAt,xmitAt,
+             xam ? "xam gets the game's callbacks too (xbox_link=xam)" : "NetIsoTiles hands the game System Link frames as slot 2",
+             system ? "as slot 2 (xbox_link_send=system)" : "through Nova");
 }
 // On the watcher thread, every half second at most: once the game has given
-// Nova its callbacks, registers as StartLink said.
+// Nova its callbacks, registers NetIsoTiles' as slot 2 in Nova's place
+// (xam answers 0x2735 while Nova's are registered).
 static void LinkWatch() {
-    if(!LinkActive || LinkDone) return;
+    if(!LinkActive || LinkDone || LinkXam) return;
     BYTE* nova=LinkNova;
     if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return;
-    LinkDone=true;
-    if(LinkXam) {
-        void* frames=*(void**)(nova+NovaTitleFrames);
-        void* other=*(void**)(nova+NovaTitleOther);
-        void* context=*(void**)(nova+NovaTitleContext);
-        DWORD more=*(DWORD*)(nova+NovaTitleMore);
-        LONG result=LinkSet(1,frames,other,context,more),retry=0;
-        if(result) { // 0x2735 (seen): xam has slot 1 taken already
-            LinkSet(1,NULL,NULL,NULL,0);
-            retry=LinkSet(1,frames,other,context,more);
-        }
-        LinkXamDone=!result || !retry;
-        SwapNote("System Link: the game's callbacks (%X, %X, context %X) %s with xam as slot 1 (xam said %X%s%X).",DWORD(frames),DWORD(other),DWORD(context),
-                 LinkXamDone ? "registered" : "not registered",DWORD(result),result ? ", then after unregistering " : "",DWORD(retry));
-        return;
-    }
-    DWORD registered=*(DWORD*)(nova+NovaRegistered);
-    LONG result=LinkSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0),retry=0;
+    LONG result=RealSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0),retry=0;
     if(result) {
-        LinkSet(2,NULL,NULL,NULL,0); // as Nova unregisters its own
-        retry=LinkSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0);
+        RealSet(2,NULL,NULL,NULL,0); // as Nova unregisters its own
+        retry=RealSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0);
     }
-    SwapNote("System Link: NetIsoTiles' callbacks registered as slot 2 in Nova's place (Nova's were %s; xam said %X%s%X).",
-             registered ? "registered" : "not registered",DWORD(result),result ? ", then after unregistering " : "",DWORD(retry));
+    LinkSlotTwo=result; LinkSlotTwoRetry=retry;
+    LinkDone=!result || !retry;
 }
 // Whether path from mountPath is the console starting the emulator for an
 // original Xbox disc.
