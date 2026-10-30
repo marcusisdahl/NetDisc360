@@ -1617,6 +1617,56 @@ static BYTE* volatile LinkNova=NULL;
 static SetCallbacks LinkSet=NULL;
 static volatile bool LinkActive=false,LinkXam=false,LinkDone=false;
 static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0;
+// The kinds of frames xam handed over, for the log: source MAC, type, and
+// for IPv4 the addresses, protocol and ports.
+struct FrameKind { BYTE source[6],broadcast,protocol; WORD type,fromPort,toPort; DWORD from,to,count; };
+static const int MaxKinds=24;
+static FrameKind LinkKinds[MaxKinds];
+static volatile LONG LinkKindCount=0,LinkKindLock=0;
+static volatile DWORD LinkKindsLeft=0;
+static void NoteKind(const BYTE* frame,DWORD length) {
+    if(InterlockedCompareExchange(&LinkKindLock,1,0)) return;
+    FrameKind kind; memset(&kind,0,sizeof(kind));
+    memcpy(kind.source,frame+6,6);
+    kind.broadcast=frame[0]==0xFF ? 1 : (frame[0]&1) ? 2 : 0;
+    kind.type=WORD(frame[12]<<8|frame[13]);
+    if(kind.type==0x0800 && length>=38) {
+        kind.protocol=frame[23];
+        kind.from=DWORD(frame[26])<<24|DWORD(frame[27])<<16|DWORD(frame[28])<<8|frame[29];
+        kind.to=DWORD(frame[30])<<24|DWORD(frame[31])<<16|DWORD(frame[32])<<8|frame[33];
+        size_t header=size_t(frame[14]&15)*4;
+        if((kind.protocol==6 || kind.protocol==17) && header>=20 && 14+header+4<=length) {
+            kind.fromPort=WORD(frame[14+header]<<8|frame[15+header]);
+            kind.toPort=WORD(frame[16+header]<<8|frame[17+header]);
+        }
+    }
+    LONG count=LinkKindCount,i=0;
+    for(;i<count;++i) {
+        const FrameKind& k=LinkKinds[i];
+        if(!memcmp(k.source,kind.source,6) && k.broadcast==kind.broadcast && k.type==kind.type && k.protocol==kind.protocol
+           && k.from==kind.from && k.to==kind.to && k.fromPort==kind.fromPort && k.toPort==kind.toPort) break;
+    }
+    if(i<count) ++LinkKinds[i].count;
+    else if(count<MaxKinds) { kind.count=1; LinkKinds[count]=kind; LinkKindCount=count+1; }
+    else ++LinkKindsLeft;
+    InterlockedExchange(&LinkKindLock,0);
+}
+static void NoteKinds() {
+    while(InterlockedCompareExchange(&LinkKindLock,1,0)) Sleep(1);
+    for(LONG i=0;i<LinkKindCount;++i) {
+        const FrameKind& k=LinkKinds[i];
+        char text[160];
+        int at=sprintf_s(text,"from %02X-%02X-%02X-%02X-%02X-%02X%s, type %04X",k.source[0],k.source[1],k.source[2],k.source[3],k.source[4],k.source[5],
+                         k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "",k.type);
+        if(at>0 && k.type==0x0800)
+            sprintf_s(text+at,sizeof(text)-at,", %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, protocol %u",
+                      k.from>>24,(k.from>>16)&255,(k.from>>8)&255,k.from&255,k.fromPort,k.to>>24,(k.to>>16)&255,(k.to>>8)&255,k.to&255,k.toPort,k.protocol);
+        SwapNote("System Link:   %u frames %s.",k.count,text);
+    }
+    if(LinkKindsLeft) SwapNote("System Link:   %u frames of other kinds.",LinkKindsLeft);
+    LinkKindCount=0; LinkKindsLeft=0;
+    InterlockedExchange(&LinkKindLock,0);
+}
 // An IPv4 frame from 0.0.0.1, as original Xbox consoles send System Link.
 static bool XboxFrame(const BYTE* frame,DWORD length) {
     return length>=34 && frame[12]==8 && !frame[13] && !frame[26] && !frame[27] && !frame[28] && frame[29]==1;
@@ -1625,9 +1675,11 @@ static bool XboxFrame(const BYTE* frame,DWORD length) {
 // System Link ones, as Nova's does with LiNK on, and says whether it took one.
 static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
     UNREFERENCED_PARAMETER(context);
-    if(!frame || !length) return 0;
+    if(!frame || length<14) return 0;
     ++LinkSeen;
-    if(!LinkActive || !XboxFrame(frame,length)) return 0;
+    if(!LinkActive) return 0;
+    NoteKind(frame,length);
+    if(!XboxFrame(frame,length)) return 0;
     ++LinkXbox;
     BYTE* nova=LinkNova;
     if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return 0;
@@ -1647,8 +1699,11 @@ static void StopLink() {
     if(!LinkActive) return;
     LinkActive=false;
     if(LinkXam) SwapNote("System Link: %s.",LinkDone ? "the game's callbacks were with xam" : "the game never gave Nova its callbacks");
-    else SwapNote("System Link: xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u%s.",
-                  LinkSeen,LinkXbox,LinkGiven,LinkTaken,LinkDone ? "" : " (the game never gave Nova its callbacks)");
+    else {
+        SwapNote("System Link: xam handed NetIsoTiles %u frames, %u of them System Link from consoles; the game got %u and took %u%s.",
+                 LinkSeen,LinkXbox,LinkGiven,LinkTaken,LinkDone ? "" : " (the game never gave Nova its callbacks)");
+        NoteKinds();
+    }
     LinkSeen=LinkXbox=LinkGiven=LinkTaken=0;
 }
 // When the emulator starts: finds Nova, reads only. On every start: Nova may
