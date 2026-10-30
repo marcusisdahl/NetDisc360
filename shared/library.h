@@ -68,13 +68,15 @@ struct InstallNeed {
 typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 
 // What a disc is in its game's set, from the server's disc map (see
-// server/discmap.h). Sync writes it into the game folder's netiso.ini as
-// disc_role and disc_label, where the NetIsoTiles plugin reads it for its
-// disc swap notices.
+// server/discmap.h), and the emulator an original Xbox game starts in (see
+// server/xefu.h). Sync writes them into the game folder's netiso.ini as
+// disc_role, disc_label and xefu, where the NetIsoTiles plugin reads them
+// for its disc swap notices and to start that emulator.
 struct DiscRoleInfo {
     bool known;      // false: netiso.ini is left as it is.
     char role[16];   // install, play, content, next or own; empty for a game on one disc.
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
+    char xefu[32];   // xefu7, config_loader_xefu7, ...; empty for the console's own pick.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
 // launcher is the tile launcher XEX (any copy; its execution info is
@@ -84,7 +86,7 @@ typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
 // got before then goes.
 // With removeGone false, folders whose ISO is gone are left and counted in held.
 // findInstall, if not NULL, is asked about each game folder's install.ini,
-// and findRole about the disc_role and disc_label in its netiso.ini.
+// and findRole about the disc_role, disc_label and xefu in its netiso.ini.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
           FindInstall findInstall=NULL, FindRole findRole=NULL);

@@ -52,7 +52,7 @@ def build_server():
     if os.environ.get("NETDISC_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
-    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
+    sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
@@ -142,6 +142,17 @@ def exact(conn, count):
             raise EOFError
         data += part
     return data
+
+
+def xbe(title_id):
+    """An original Xbox game's default.xbe with title_id in its certificate."""
+    base, cert = 0x10000, 0x10180
+    data = bytearray(0x300)
+    data[0:4] = b"XBEH"
+    struct.pack_into("<I", data, 0x104, base)
+    struct.pack_into("<I", data, 0x118, cert)
+    struct.pack_into("<I", data, cert - base + 8, title_id)
+    return bytes(data)
 
 
 class Client:
@@ -939,6 +950,69 @@ class Push(ServerTest):
         self.assertIn("disc_role=next\n", ini("Saga - Disc 3"))
         self.assertNotIn("disc_label", ini("Saga - Disc 3"))
 
+    def test_original_xbox_games_get_their_emulator(self):
+        def game(name, title_id):
+            folder = os.path.join(self.isos, name)
+            os.makedirs(folder)
+            with open(os.path.join(folder, "default.xbe"), "wb") as f:
+                f.write(xbe(title_id))
+        game("Crazy Taxi 3", 0x49470023)  # Freezes on xefu.xex: xefu7 from the list.
+        # A config in the Hacked Xefu Pack; a full disc image in redump's format.
+        write_iso(os.path.join(self.isos, "Gunvalkyrie.iso"), {"default.xbe": xbe(0x5345000B)}, partition=(0x18310000, 0x18300000))
+        game("Halo", 0x4D530004)          # The console's own pick is right.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        out = self.push(extra=("--config", config))
+        self.assertIn("4 added", out)
+
+        def ini(folder):
+            with open(os.path.join(self.games, folder, "netiso.ini")) as f:
+                return f.read()
+        self.assertIn("xbe=1\nxefu=xefu7\n", ini("Crazy Taxi 3"))
+        self.assertIn("xbe=1\nxefu=config_loader_xefu7\n", ini("Gunvalkyrie"))
+        self.assertNotIn("xefu", ini("Halo"))
+        self.assertNotIn("xefu", ini("Halo 3"))
+        # Nothing new: nothing written.
+        self.ftp.stored.clear()
+        self.push(extra=("--config", config))
+        self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
+        # discs.ini has the last word, also on a game the list leaves alone;
+        # xefu= with nothing is the console's pick.
+        path = os.path.join(self.tmp.name, "discs.ini")
+        with open(path, "w", newline="") as f:
+            f.write("[49470023]\r\nxefu=XEFU2021C\r\n[5345000B]\r\nxefu=\r\n[4D530004]\r\nname=Halo\r\nxefu=xefu7b\r\n"
+                    "[4D5307E6]\r\nxefu=xefu7\r\n[12345678]\r\nxefu=xefutitle\r\n")
+        out = self.push(extra=("--config", config))
+        self.assertIn('"xefutitle" isn\'t an emulator\'s name', out)
+        self.assertIn("Crazy Taxi 3 starts in the xefu2021c emulator; its netiso.ini says so.", out)
+        self.assertIn("Gunvalkyrie starts in the emulator the console picks; took xefu out of its netiso.ini.", out)
+        self.assertIn("xefu=xefu2021c\n", ini("Crazy Taxi 3"))
+        self.assertIn("iso=Crazy Taxi 3.iso\n", ini("Crazy Taxi 3"))
+        self.assertIn("xbe=1\n", ini("Crazy Taxi 3"))
+        self.assertNotIn("xefu", ini("Gunvalkyrie"))
+        self.assertIn("xefu=xefu7b\n", ini("Halo"))
+        self.assertNotIn("xefu", ini("Halo 3"))  # An Xbox 360 game has no emulator.
+
+    def test_the_built_in_emulator_list_is_sound(self):
+        with open(os.path.join(ROOT, "server", "xefu.cpp")) as f:
+            source = f.read()
+        table = source[source.index("static const KnownXefu Known[]={"):]
+        table = table[:table.index("\n};")]
+        rows = re.findall(r'\{0x([0-9A-F]{8}),"([a-z0-9_]+)","([^"]+)","([^"]+)"\},', table)
+        self.assertGreater(len(rows), 500)
+        self.assertEqual(len(rows), table.count("{0x"))
+        ids = [int(title_id, 16) for title_id, _, _, _ in rows]
+        self.assertEqual(ids, sorted(set(ids)), "the list is looked up by halves, so sorted, each Title ID once")
+        versions = {"xefu2", "xefu3", "xefu5", "xefu1_1", "xefu6", "xefu7", "xefu7b", "xefu2019",
+                    "xefu2021a", "xefu2021b", "xefu2021c", "config_loader_xefu7"}
+        for title_id, version, name, why in rows:
+            self.assertIn(version, versions, name)  # xefu.xex is what the console starts anyway.
+        picks = {title_id: version for title_id, version, _, _ in rows}
+        self.assertEqual(picks["49470023"], "xefu7")  # Crazy Taxi 3
+        self.assertEqual(picks["54540086"], "xefu2021c")  # GTA San Andreas
+        self.assertNotIn("4D530004", picks)  # Halo
+        self.assertNotIn("4541005B", picks)  # Burnout 3
+
     def test_the_built_in_disc_list_is_sound(self):
         with open(os.path.join(ROOT, "server", "discmap.cpp")) as f:
             source = f.read()
@@ -1018,6 +1092,19 @@ class Dashboard(ServerTest):
                           ("Halo 3", "", "", "")])
         with open(os.path.join(self.tmp.name, "discs.ini")) as f:
             self.assertIn("[4D530910]\n", f.read())
+
+    def test_an_original_xbox_game_names_its_emulator(self):
+        folder = os.path.join(self.isos, "Crazy Taxi 3")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xbe"), "wb") as f:
+            f.write(xbe(0x49470023))
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        games = self.json("GET", "/api/games")["games"]
+        self.assertEqual([(g["name"], g["xbe"], g["xefu"]) for g in games],
+                         [("Crazy Taxi 3", True, "xefu7"), ("Halo 3", False, "")])
+        self.assertEqual(games[0]["xefuWhy"], "in-game on xefu7, untested on xefu")
 
     def test_a_game_there_twice_waits_for_a_choice(self):
         iso = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

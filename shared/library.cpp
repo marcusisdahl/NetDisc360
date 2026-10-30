@@ -303,7 +303,7 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
 }
 
 struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId, mediaId; bool game, keep;
-                char role[16], label[64]; };  // disc_role and disc_label in its netiso.ini.
+                char role[16], label[64], xefu[32]; };  // disc_role, disc_label and xefu in its netiso.ini.
 
 // Rewrites a game folder's default.xex when it was made from an older
 // launcher, keeping its game's execution info, or putting in info if given.
@@ -346,16 +346,29 @@ static int RefreshFile(Storage& storage, const char* folder, const char* name, c
     return storage.WriteFile(path,data,size) ? 1 : -1;
 }
 
-// Puts a disc's role as findRole gives it (see library.h) into its game
-// folder's netiso.ini, keeping the other lines; a disc without one has the
-// lines taken out. The file is read and written only when they change.
+// The lines RefreshRole writes.
+static int RoleLines(char* text, size_t capacity, const DiscRoleInfo& info) {
+    int n=0;
+    if(info.role[0]) n=_snprintf_s(text,capacity,_TRUNCATE,info.label[0] ? "disc_role=%s\r\ndisc_label=%s\r\n" : "disc_role=%s\r\n",info.role,info.label);
+    if(n>=0 && info.xefu[0]) {
+        int more=_snprintf_s(text+n,capacity-size_t(n),_TRUNCATE,"xefu=%s\r\n",info.xefu);
+        n=more<0 ? -1 : n+more;
+    }
+    return n;
+}
+
+// Puts a disc's role and emulator as findRole gives them (see library.h)
+// into its game folder's netiso.ini, keeping the other lines; a disc without
+// them has the lines taken out. The file is read and written only when they
+// change.
 static void RefreshRole(Storage& storage, const char* root, const Folder& game, FindRole findRole, Note note, SyncResult& result) {
     static DiscRoleInfo info;
     memset(&info,0,sizeof(info));
     findRole(game.iso,info);
     if(!info.known) return;
     if(!info.role[0]) info.label[0]=0;
-    if(!strcmp(info.role,game.role) && !strcmp(info.label,game.label)) return;
+    bool roleSame=!strcmp(info.role,game.role) && !strcmp(info.label,game.label),xefuSame=!strcmp(info.xefu,game.xefu);
+    if(roleSame && xefuSame) return;
     char folder[PathMax],path[PathMax]; Join(folder,root,game.name); Join(path,folder,GameIni);
     static char old[IniMax+1],text[IniMax+1];
     DWORD size=0;
@@ -368,21 +381,22 @@ static void RefreshRole(Storage& storage, const char* root, const Folder& game, 
     for(const char* line=old;*line;) {
         const char* end=line+strcspn(line,"\r\n");
         size_t length=size_t(end-line);
-        if(length && _strnicmp(line,"disc_role=",10) && _strnicmp(line,"disc_label=",11) && at+length+2<sizeof(text)) {
+        if(length && _strnicmp(line,"disc_role=",10) && _strnicmp(line,"disc_label=",11) && _strnicmp(line,"xefu=",5) && at+length+2<sizeof(text)) {
             memcpy(text+at,line,length); at+=length;
             text[at++]='\r'; text[at++]='\n';
         }
         line=end+strspn(end,"\r\n");
     }
-    if(info.role[0]) {
-        int n=_snprintf_s(text+at,sizeof(text)-at,_TRUNCATE,info.label[0] ? "disc_role=%s\r\ndisc_label=%s\r\n" : "disc_role=%s\r\n",info.role,info.label);
-        if(n>0) at+=size_t(n);
-    }
+    int n=RoleLines(text+at,sizeof(text)-at,info);
+    if(n>0) at+=size_t(n);
     int written=RefreshFile(storage,folder,GameIni,reinterpret_cast<const unsigned char*>(text),DWORD(at));
-    if(written<0) { Say(note,"Couldn't write %s (error %lu).",path,storage.LastError()); ++result.failed; }
-    else if(written>0 && info.role[0]) Say(note,"%s is the %s disc%s%s%s; its netiso.ini says so.",game.name,info.role,
-                                            info.label[0] ? " (" : "",info.label,info.label[0] ? ")" : "");
-    else if(written>0) Say(note,"%s is no longer part of a set; took the disc role out of its netiso.ini.",game.name);
+    if(written<0) { Say(note,"Couldn't write %s (error %lu).",path,storage.LastError()); ++result.failed; return; }
+    if(!written) return;
+    if(!roleSame && info.role[0]) Say(note,"%s is the %s disc%s%s%s; its netiso.ini says so.",game.name,info.role,
+                                      info.label[0] ? " (" : "",info.label,info.label[0] ? ")" : "");
+    else if(!roleSame) Say(note,"%s is no longer part of a set; took the disc role out of its netiso.ini.",game.name);
+    if(!xefuSame && info.xefu[0]) Say(note,"%s starts in the %s emulator; its netiso.ini says so.",game.name,info.xefu);
+    else if(!xefuSame) Say(note,"%s starts in the emulator the console picks; took xefu out of its netiso.ini.",game.name);
 }
 
 // Writes, or empties, a game folder's install.ini as the caller's findInstall
@@ -466,6 +480,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(IniValue(ini,"media_id",id,sizeof(id))) f.mediaId=DWORD(strtoul(id,NULL,16));
             if(!IniValue(ini,"disc_role",f.role,sizeof(f.role))) f.role[0]=0;
             if(!IniValue(ini,"disc_label",f.label,sizeof(f.label))) f.label[0]=0;
+            if(!IniValue(ini,"xefu",f.xefu,sizeof(f.xefu))) f.xefu[0]=0;
         } else if(!storage.Missing()) {
             // Its game would get a second folder; better to try again later.
             Say(note,"Couldn't read %s (error %lu).",path,storage.LastError());
@@ -527,19 +542,20 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!copy) { Say(note,"Out of memory."); return false; }
         memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info,ExecutionInfoSize);
         FixHeaderDigest(copy,launcherSize);
-        char text[IsvrNameBytes+260];
+        char text[IsvrNameBytes+400];
         int length=_snprintf_s(text,sizeof(text),_TRUNCATE,"; Written by NetISO Sync. iso is the file name the NetISO server lists.\r\niso=%s\r\ntitle_id=%08X\r\nmedia_id=%08X\r\n",
             isos[i],Read32(info+12),Read32(info));
         // An original Xbox game: the launcher starts default.xbe, which the
         // console runs in its original Xbox emulator.
         if(xbe && length>0) { int more=_snprintf_s(text+length,sizeof(text)-length,_TRUNCATE,"xbe=1\r\n"); length=more>0 ? length+more : -1; }
-        if(findRole && length>0) {  // A disc of a set says which (see RefreshRole).
+        if(findRole && length>0) {  // A disc of a set says which, an Xbox game its emulator (see RefreshRole).
             static DiscRoleInfo role;
             memset(&role,0,sizeof(role));
             findRole(isos[i],role);
-            if(role.known && role.role[0]) {
-                _snprintf_s(text+length,sizeof(text)-length,_TRUNCATE,role.label[0] ? "disc_role=%s\r\ndisc_label=%s\r\n" : "disc_role=%s\r\n",role.role,role.label);
-                strcpy_s(f.role,role.role); strcpy_s(f.label,role.label);
+            if(role.known) {
+                if(!role.role[0]) role.label[0]=0;
+                RoleLines(text+length,sizeof(text)-length,role);
+                strcpy_s(f.role,role.role); strcpy_s(f.label,role.label); strcpy_s(f.xefu,role.xefu);
             }
         }
         Join(path,folder,GameXex);

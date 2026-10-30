@@ -401,6 +401,68 @@ class Discs(ServerTest):
         self.assertIn(folder + "\n    is the same game as " + os.path.join(self.isos, "Halo.iso"), log)
         self.assertIn("(Title ID 4D530004, disc 1)", log)
 
+    def test_a_full_original_xbox_disc_image(self):
+        # Redump's format: the video partition, then the game partition at
+        # 0x18300000. Only the game partition is served, where an extracted
+        # Xbox game's is (XGD2), so the console finds it; and the game is the
+        # same as its folder.
+        base, cert = 0x10000, 0x10180
+        xbe = bytearray(0x300)
+        xbe[0:4] = b"XBEH"
+        struct.pack_into("<I", xbe, 0x104, base)
+        struct.pack_into("<I", xbe, 0x118, cert)
+        struct.pack_into("<I", xbe, cert - base + 8, 0x4D530004)
+        iso = os.path.join(self.isos, "Halo.iso")
+        write_iso(iso, {"default.xbe": bytes(xbe), "maps.bin": b"MAP" * 5000}, partition=(0x18310000, 0x18300000))
+        with open(iso, "r+b") as f:
+            f.write(b"VIDEO PARTITION")
+        folder = os.path.join(self.isos, "Halo CE")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xbe"), "wb") as f:
+            f.write(bytes(xbe))
+        self.start("-v")  # Logs the test's own mounts too.
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Halo.iso"])
+        self.assertEqual(c.mount("Halo.iso"), 1)
+        self.assertEqual(c.size()[0] * 2048, XGD2_IMAGE)
+        self.assertEqual(c.read(0, 4096), bytes(4096))
+        self.assertEqual(c.read(XGD2 + 0x10000, 20), MAGIC)
+        self.assertEqual(c.read(XGD2 + 40 * SECTOR, len(xbe)), bytes(xbe))
+        self.assertEqual(c.read(XGD2 + 41 * SECTOR, 15000), b"MAP" * 5000)
+        end = XGD2 + os.path.getsize(iso) - 0x18300000
+        self.assertEqual(c.read(end, 4096), bytes(4096))  # Past the image's end, inside the disc.
+        c.close()
+        log = self.log()
+        self.assertIn(folder + "\n    is the same game as " + iso, log)
+        self.assertIn("mounted Halo.iso (ISO, original Xbox full disc image)", log)
+
+    def test_an_original_xbox_xiso(self):
+        # extract-xiso's format: just the game partition, from 0. It is served
+        # where an extracted Xbox game's is too; an Xbox 360 game's xiso stays
+        # as it is.
+        base, cert = 0x10000, 0x10180
+        xbe = bytearray(0x300)
+        xbe[0:4] = b"XBEH"
+        struct.pack_into("<I", xbe, 0x104, base)
+        struct.pack_into("<I", xbe, 0x118, cert)
+        struct.pack_into("<I", xbe, cert - base + 8, 0x4D530004)
+        iso = os.path.join(self.isos, "Halo.xiso.iso")
+        write_iso(iso, {"default.xbe": bytes(xbe), "maps.bin": b"MAP" * 5000})
+        write_iso(os.path.join(self.isos, "Halo 3.xiso.iso"), {"default.xex": xex(execution_info(0x1234, 0x4D5307E6))})
+        self.start("-v")
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Halo 3.xiso.iso", "Halo.xiso.iso"])
+        self.assertEqual(c.mount("Halo 3.xiso.iso"), 1)
+        self.assertEqual(c.read(0x10000, 20), MAGIC)
+        self.assertEqual(c.mount("Halo.xiso.iso"), 1)
+        self.assertEqual(c.size()[0] * 2048, XGD2_IMAGE)
+        self.assertEqual(c.read(0, 4096), bytes(4096))
+        self.assertEqual(c.read(XGD2 + 0x10000, 20), MAGIC)
+        self.assertEqual(c.read(XGD2 + 40 * SECTOR, len(xbe)), bytes(xbe))
+        self.assertEqual(c.read(XGD2 + 41 * SECTOR, 15000), b"MAP" * 5000)
+        c.close()
+        self.assertIn("mounted Halo.xiso.iso (ISO, original Xbox xiso)", self.log())
+
     def test_a_served_folder_is_not_a_game(self):
         # Game files left at the top of the ISO folder don't hide the ISOs.
         with open(os.path.join(self.isos, "default.xex"), "wb") as f:
