@@ -132,7 +132,17 @@ struct Options {
 Options Settings;
 std::mutex SettingsLock;
 Options Current() { std::lock_guard<std::mutex> hold(SettingsLock); return Settings; }
-// 8 hex digits, as Title IDs and Media IDs are written.
+// 8 hex digits, as Title IDs and Media IDs are written, and back (ok: it was).
+DWORD HexName8(const std::string& text, bool& ok) {
+    ok=text.size()==8;
+    DWORD v=0;
+    for(size_t i=0;i<text.size() && ok;++i) {
+        char c=text[i];
+        int d=c>='0' && c<='9' ? c-'0' : c>='a' && c<='f' ? c-'a'+10 : c>='A' && c<='F' ? c-'A'+10 : -1;
+        if(d<0) ok=false; else v=(v<<4)|DWORD(d);
+    }
+    return v;
+}
 std::string Hex8(DWORD v) { char text[12]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",(unsigned)v); return text; }
 
 
@@ -4758,6 +4768,126 @@ void CopiesJson(web::Json& j) {
     j.Close(']');
 }
 
+// Removing a game from a console's hard drive -----------------------------------
+//
+// Only the game's own copy: its Games on Demand package (the header file and
+// its .data folder) or its extracted folder. Never its title updates, DLC,
+// saves or other discs, which are in other folders.
+
+// Deletes folder and everything in it, a level at a time.
+bool DeleteTree(FtpClient& ftp, const std::string& folder, int depth, std::string& error) {
+    if(depth>8) { error="It goes deeper than expected: "+folder; return false; }
+    std::vector<FtpEntry> there;
+    if(!ftp.List(folder.c_str(),there)) { error=std::string("Couldn't list ")+folder+": "+ftp.Error(); return false; }
+    for(size_t i=0;i<there.size();++i) {
+        const std::string& name=there[i].name;
+        if(name=="." || name=="..") continue;
+        std::string path=folder+"/"+name;
+        if(there[i].folder) { if(!DeleteTree(ftp,path,depth+1,error)) return false; }
+        else if(!ftp.Delete(path.c_str())) { error="Couldn't delete "+path+": "+ftp.Error(); return false; }
+    }
+    if(!ftp.RemoveFolder(folder.c_str())) { error="Couldn't remove "+folder+": "+ftp.Error(); return false; }
+    return true;
+}
+
+// Whether path is a GOD package header the console has: <drive>/Content/0000000000000000/<Title ID>/00007000/<8 hex>.
+bool GodHeaderPath(const std::string& path) {
+    std::vector<std::string> parts;
+    for(size_t at=1;at<=path.size();) {
+        size_t end=path.find('/',at);
+        if(end==std::string::npos) end=path.size();
+        parts.push_back(path.substr(at,end-at));
+        at=end+1;
+    }
+    if(path.empty() || path[0]!='/' || parts.size()!=6) return false;
+    bool ok=false;
+    HexName8(parts[3],ok);
+    // The header's name: hex digits (the Media ID, or longer from other tools).
+    bool name=parts[5].size()>=8 && parts[5].size()<=42;
+    for(size_t i=0;i<parts[5].size() && name;++i) name=isxdigit((unsigned char)parts[5][i])!=0;
+    return ok && name && !_stricmp(parts[1].c_str(),"Content") && parts[2]=="0000000000000000" && parts[4]=="00007000";
+}
+
+void RemoveGame(std::shared_ptr<ContentCopy> job, InstalledGame game) {
+    ContentCopy& c=*job;
+    Options o=Current();
+    const Console* console=ConsoleIfKnown(c.address);
+    FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
+    if(!OpenFor(c,ftp,console)) return;
+    std::string error;
+    bool ok;
+    if(game.god) {
+        { std::lock_guard<std::mutex> hold(CopyLock); c.folder=game.path; }
+        // The header first: without it Aurora no longer lists a package part gone.
+        ok=ftp.Delete(game.path.c_str()) || ftp.Missing();
+        if(!ok) error="Couldn't delete "+game.path+": "+ftp.Error();
+        std::string data=game.path+".data";
+        if(ok && ftp.Enters(data.c_str())) ok=DeleteTree(ftp,data,0,error);
+        // Its 00007000 folder too, once nothing else is in it.
+        std::string parent=game.path.substr(0,game.path.find_last_of('/'));
+        std::vector<FtpEntry> left;
+        if(ok && ftp.List(parent.c_str(),left) && left.empty()) ftp.RemoveFolder(parent.c_str());
+    } else {
+        std::string folder=game.path.substr(0,game.path.find_last_of('/'));
+        { std::lock_guard<std::mutex> hold(CopyLock); c.folder=folder; }
+        ok=DeleteTree(ftp,folder,0,error);
+    }
+    ftp.Close();
+    if(!ok) { EndCopy(c,console,"failed",error); return; }
+    if(Console* known=ConsoleIfKnown(c.address)) {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        std::vector<InstalledGame>& list=known->installed;
+        for(size_t i=0;i<list.size();++i) if(list[i].path==game.path) { list.erase(list.begin()+long(i)); break; }
+    }
+    EndCopy(c,console,"done","");
+}
+
+// POST /api/console/remove {game, address}: the game's installed copy on that console.
+bool StartRemove(const web::Value& body, std::string& error) {
+    std::string name, address;
+    Text(body,"game",name); Text(body,"address",address);
+    IsoFile g;
+    bool found=false;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size() && !found;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) { g=GamesList[i]; found=true; }
+    }
+    if(!found || !g.titleId) { error="There's no game called "+name+" here."; return false; }
+    DWORD at=INADDR_NONE;
+    if(!CopyTarget(address,at,error)) return false;
+    Console* console=ConsoleIfKnown(at);
+    if(!console) { error="That console hasn't used NetDisc360 since it started."; return false; }
+    InstalledGame copy;
+    bool has=false;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(size_t i=0;i<console->installed.size() && !has;++i)
+            if(console->installed[i].titleId==g.titleId && console->installed[i].disc==g.disc) { copy=console->installed[i]; has=true; }
+    }
+    if(!has) { error=name+" isn't installed on "+address+" (as far as its last look found)."; return false; }
+    // Only what can be nothing but the game's own copy.
+    Options o=Current();
+    if(copy.god ? !GodHeaderPath(copy.path) : false) { error="Its copy isn't where a Games on Demand package goes ("+copy.path+"); remove it by hand."; return false; }
+    if(!copy.god) {
+        std::string folder=copy.path.substr(0,copy.path.find_last_of('/'));
+        std::vector<std::string> roots=InstalledFolders(o.installedFolders);
+        bool under=false;
+        for(size_t i=0;i<roots.size();++i)
+            if(folder.size()>roots[i].size()+1 && !_strnicmp(folder.c_str(),roots[i].c_str(),roots[i].size()) && folder[roots[i].size()]=='/') under=true;
+        std::string lower=ToLowerAscii(folder);
+        if(!under || lower.find(ToLowerAscii(o.aurora))==0 || lower.find(ToLowerAscii(o.xboxFolder))==0) {
+            error="Its folder ("+folder+") isn't one this removes; remove it by hand.";
+            return false;
+        }
+    }
+    std::shared_ptr<ContentCopy> job(new ContentCopy);
+    job->kind="remove"; job->game=name; job->disc=name; job->label="Remove "+name;
+    job->run=[copy](std::shared_ptr<ContentCopy> j) { RemoveGame(j,copy); };
+    if(!AddCopy(job,at,error)) return false;
+    Log("Xbox %s: removing %s from its hard drive (%s).",job->console.c_str(),name.c_str(),copy.path.c_str());
+    return true;
+}
+
 // Title updates ----------------------------------------------------------------
 //
 // The dashboard looks up a game's title updates on XboxUnity (see
@@ -5548,6 +5678,9 @@ void Api(const web::Request& r, web::Reply& out) {
     } else if(r.method=="POST" && r.path=="/api/copy") {
         if(StartGameCopy(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/console/remove") {
+        if(StartRemove(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
     } else if(r.method=="GET" && r.path=="/api/titleupdates") TitleUpdates(r.Param("game"),r.Param("refresh")=="1",out);
     else if(r.method=="GET" && r.path=="/api/titleupdates/all") AllTitleUpdates(out);
     else if(r.method=="POST" && r.path=="/api/titleupdates/install") {
@@ -5803,6 +5936,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(a=="-r" || a=="-b") {}
         else if(a=="-v") o.verbose=true;
         else if(a=="--no-push") o.push=false;
+        else if(a=="--push") o.push=true;  // After --no-push (the tests' dashboard servers).
         else if(a=="--no-category") o.filter=false;
         else if(a=="--no-scan") o.scan=false;
         else if(a=="--no-installed") o.skipInstalled=false;

@@ -2250,6 +2250,64 @@ class Dashboard(ServerTest):
             ftp.shutdown()
             ftp.server_close()
 
+    def test_removes_a_game_installed_on_the_console_and_nothing_else(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
+        package = os.path.join(content, "4D5307E6", "00007000", "1A2B3C4D")
+        os.makedirs(package + ".data")
+        with open(package, "wb") as f:
+            f.write(god_header(0x1A2B3C4D, 0x4D5307E6))
+        with open(os.path.join(package + ".data", "Data0000"), "wb") as f:
+            f.write(bytes(5000))
+        # Its title update, DLC and save stay.
+        for keep in ("000B0000/tu00000002_00000000", "00000002/Map pack", "../../E0000123456789AB/4D5307E6/00000001/save"):
+            path = os.path.normpath(os.path.join(content, "4D5307E6", keep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(b"keep")
+        forza = os.path.join(xbox, "Hdd1", "Games", "Forza 4")
+        os.makedirs(os.path.join(forza, "media"))
+        with open(os.path.join(forza, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(0x11112222, 0x4D530910)))
+        with open(os.path.join(forza, "media", "cars.bin"), "wb") as f:
+            f.write(b"cars")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        launcher, boot = os.path.join(self.tmp.name, "launcher.xex"), os.path.join(self.tmp.name, "boot.xex")
+        for path in (launcher, boot):
+            with open(path, "wb") as f:
+                f.write(xex(execution_info(0, 0)) + b"LAUNCHER CODE")
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port), "--launcher", launcher, "--boot", boot, "--push")
+            self.state_when(lambda s: s["library"]["games"] == 2)
+            for _ in range(100):
+                games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+                if games["Halo 3"]["installedOn"] and games["Forza 4"]["installedOn"]:
+                    break
+                time.sleep(0.2)
+            self.assertEqual(games["Halo 3"]["installedOn"], ["127.0.0.2"], self.json("GET", "/api/log?after=0"))
+
+            def remove(game):
+                self.json("POST", "/api/console/remove", {"game": game, "address": "127.0.0.2"})
+                return self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 30)["installs"][-1]
+            job = remove("Halo 3")
+            self.assertEqual((job["kind"], job["state"]), ("remove", "done"), job["error"])
+            self.assertEqual(sorted(os.listdir(os.path.join(content, "4D5307E6"))), ["00000002", "000B0000"])
+            self.assertTrue(os.path.isfile(os.path.join(content, "4D5307E6", "000B0000", "tu00000002_00000000")))
+            self.assertTrue(os.path.isfile(os.path.join(xbox, "Hdd1", "Content", "E0000123456789AB", "4D5307E6", "00000001", "save")))
+            self.assertEqual(remove("Forza 4")["state"], "done")
+            self.assertEqual(os.listdir(os.path.join(xbox, "Hdd1", "Games")), [])
+            # Not installed (any more): says so.
+            status, _, data = self.call("POST", "/api/console/remove", {"game": "Halo 3", "address": "127.0.0.2"})
+            self.assertEqual(status, 400)
+            self.assertIn("isn't installed", json.loads(data)["error"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
     def test_puts_title_updates_on_consoles_from_xboxunity(self):
         halo = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
