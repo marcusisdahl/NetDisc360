@@ -592,6 +592,10 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .teams.shuffling li { color: var(--muted); }
 .teams.reveal .team { animation: reveal .4s ease-out both; }
 @keyframes reveal { from { opacity: 0; transform: translateY(6px) scale(.97); } }
+.wheel-box { display: flex; justify-content: center; margin: 4px 0 14px; }
+canvas.wheel { width: min(100%, 380px); aspect-ratio: 1; display: block; }
+.wheel-pick { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px; text-align: center; }
+.wheel-pick b { font-size: 26px; color: var(--accent-text); overflow-wrap: anywhere; }
 .raffle-empty { padding: 18px; border: 1px dashed var(--line-strong); border-radius: 10px; text-align: center; color: var(--muted); }
 .party-note { margin-top: 12px; display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 13px; font-weight: 550; }
 .party-note .i { margin-top: 1px; }
@@ -687,6 +691,12 @@ body.on-screen { overflow: hidden; }
 .screen-names { display: flex; flex-wrap: wrap; gap: .45em; }
 .screen-names li { padding: .3em .8em; border-radius: 99px; background: rgba(255,255,255,.16); font-size: 1.15em; }
 .screen-consoles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, clamp(230px, 22vw, 460px)), 1fr)); gap: clamp(10px, 1.4vw, 30px); margin-top: auto; }
+.screen-spin { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: clamp(16px, 2.5vw, 56px); align-items: center; }
+.screen-wheel canvas.wheel { width: min(64vh, 48vw); }
+.screen-teams.stacked { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9em), 1fr)); }
+.screen-picked p { margin: 0; opacity: .85; }
+.screen-picked h2 { margin: .2em 0 0; font-size: 3em; line-height: 1.05; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .screen-spin { grid-template-columns: 1fr; justify-items: center; } .screen-wheel canvas.wheel { width: min(86vw, 60vh); } }
 .screen-console { background: rgba(0,0,0,.34); border-radius: clamp(10px, 1vw, 22px); padding: clamp(12px, 1.2vw, 26px); border-left: clamp(5px, .45vw, 10px) solid var(--team, rgba(255,255,255,.4)); min-width: 0; }
 .screen-console .top { display: flex; align-items: center; gap: .45em; font-size: .78em; opacity: .9; flex-wrap: wrap; }
 .screen-console .top .ip { margin-left: auto; opacity: .7; font-weight: 500; }
@@ -1071,7 +1081,9 @@ const Nav = [
 async function refresh() {
   clearTimeout(timer);
   try {
+    const asked = performance.now();
     S = await api('state');
+    noteSpin(S.party && S.party.spin, (asked + performance.now()) / 2);
     failed = 0;
     const said = store('restarted');
     if (said) { store('restarted', ''); toast(said); }
@@ -2541,6 +2553,7 @@ Pages.party = root => {
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
   const parts = [banner, form, consoles, guests, rules, raffle, seats, start, results];
   const guestCount = h('span.sub');
+  const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
   const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
   const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
   seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
@@ -2569,8 +2582,8 @@ Pages.party = root => {
   // nothing waits, the page shows the server's party again.
   let local = null, waiting = 0, queue = Promise.resolve();
   function shownParty() {
-    if (!local) return S.party;
-    const p = Object.assign({}, S.party, local);
+    if (!local) return partyShown(S.party);
+    const p = Object.assign({}, partyShown(S.party), local);
     delete p.seats;
     if (local.seats) p.drawn = Object.assign({ teams: [], note: '', kept: false }, S.party.drawn, { seats: local.seats });
     return p;
@@ -2754,7 +2767,51 @@ Pages.party = root => {
     return h('div.team.' + Teams[i][1], { style: reveal ? { animationDelay: i * 90 + 'ms' } : null }, h('h3', h('span.dot'), 'Team ' + Teams[i][0]),
       h('ul', names.map(n => h('li', n))), where && where.length ? h('div.where', ic('monitor', 'sm'), where.join(', ')) : null);
   }
+  // The wheel while it turns (and a while after): the teams fill as it
+  // stops on each guest, or the one it picked.
+  function drawSpin(p, sp) {
+    wheel.set(sp);
+    const got = spinPicked(sp, spinNow(sp)), turning = !spinDone(sp), d = S.party.drawn;
+    const where = team => !turning && d ? p.consoles.filter(ip => (d.seats[ip] || []).some(x => team.includes(x))).map(nameOf) : [];
+    let result;
+    if (sp.kind === 'teams') {
+      const teams = Array.from({ length: sp.teams }, () => []);
+      for (const g of got) teams[g.team].push(g.name);
+      result = h('div.teams', teams.map((t, i) => teamBox(i, t, where(t))));
+    } else result = h('div.wheel-pick', h('span.muted', sp.title || (turning ? 'Picking one guest…' : 'The wheel picked')), got.length ? h('b', got[0].name) : null);
+    const status = turning ? (sp.kind === 'teams' ? 'Spinning: ' + got.length + ' of ' + sp.wheel.length + ' on a team' : 'Spinning…') : sp.kind === 'teams' ? 'Round ' + (p.round + (S.party.drawn && S.party.drawn.kept ? 0 : 1)) + ': keep these, or spin again' : 'Picked';
+    return [
+      h('div.raffle-bar', h('span.muted', { 'aria-live': 'polite' }, status)),
+      h('div.wheel-box', wheel.el), result,
+      !turning && d && d.note && sp.kind === 'teams' ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
+      raffleButtons(p, turning, sp.kind === 'teams' && !turning ? d : null),
+    ];
+  }
+  function raffleButtons(p, busy, d) {
+    const here = guestsHere(p), n = p.teams;
+    const rulesSaid = p.together.length + p.apart.length ? 'Follows your ' + plural(p.together.length + p.apart.length, 'rule') + ', and doesn’t draw last round’s teams again.' : 'Doesn’t draw last round’s teams again.';
+    return h('div.raffle-actions',
+      h('button.btn.primary', { 'data-focus': 'spin', disabled: busy || here.length < n, title: 'Draws the teams on a wheel, shown here, on the big screen and on the consoles', onclick: () => spinWheel('teams') }, ic('ferris-wheel', 'sm'), 'Spin the wheel'),
+      h('button.btn', { 'data-focus': 'draw', disabled: busy || here.length < n, title: 'Draws the teams at once, without the wheel', onclick: drawTeams }, ic('dices', 'sm'), 'Quick draw'),
+      h('button.btn', { 'data-focus': 'pick', disabled: busy || here.length < 2, title: 'The wheel picks one of the guests here: who picks the game, say', onclick: () => spinWheel('pick') }, ic('target', 'sm'), 'Pick one'),
+      d ? h('button.btn', { 'data-focus': 'keep', disabled: busy || d.kept, onclick: keep }, ic('check', 'sm'), d.kept ? 'Kept' : 'Keep') : null,
+      h('span.muted', rulesSaid));
+  }
+  async function spinWheel(kind) {
+    await queue;
+    try {
+      const asked = performance.now();
+      const r = await api('party/spin', kind === 'pick' ? { kind } : { kind, teams: S.party.teams });
+      noteSpin(r.spin, (asked + performance.now()) / 2);
+      S.party.spin = r.spin;  // Turning here at once, before the next look at the server.
+      raffle.reset();
+      update();
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  }
   function drawRaffle(p) {
+    const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
+    if (sp && !shuffling) return drawSpin(p, sp);
     const here = guestsHere(p), d = p.drawn && p.drawn.teams.length ? p.drawn : null, n = p.teams;
     const where = team => d ? p.consoles.filter(ip => (d.seats[ip] || []).some(x => team.includes(x))).map(nameOf) : [];
     const status = shuffling ? 'Drawing…' : d ? (d.kept ? 'Round ' + p.round + ', kept' : 'Round ' + (p.round + 1) + ': keep these, or draw again') : plural(here.length, 'guest') + ' here';
@@ -2762,16 +2819,12 @@ Pages.party = root => {
       : d ? h('div.teams' + (reveal ? '.reveal' : ''), d.teams.map((team, i) => teamBox(i, team, where(team))))
       : h('div.raffle-empty', here.length < n ? 'Tick at least ' + n + ' guests who are here.' : 'Draw ' + n + ' teams from the ' + plural(here.length, 'guest') + ' here.');
     reveal = false;
-    const rulesSaid = p.together.length + p.apart.length ? 'Follows your ' + plural(p.together.length + p.apart.length, 'rule') + ', and doesn’t draw last round’s teams again.' : 'Doesn’t draw last round’s teams again.';
     return [
       h('div.raffle-bar', h('div.segmented', { role: 'group', 'aria-label': 'How many teams' }, [2, 3, 4].map(k => h('button', { class: k === n ? 'on' : '', 'aria-pressed': String(k === n), 'data-focus': 'teams-' + k,
         disabled: shuffling, onclick: () => { if (k !== n) edit({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
       grid,
       d && d.note && !shuffling ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
-      h('div.raffle-actions',
-        h('button.btn.primary', { 'data-focus': 'draw', disabled: shuffling || here.length < n, onclick: drawTeams }, ic('dices', 'sm'), d ? 'Draw again' : 'Draw'),
-        d ? h('button.btn', { 'data-focus': 'keep', disabled: shuffling || d.kept, onclick: keep }, ic('check', 'sm'), d.kept ? 'Kept' : 'Keep') : null,
-        h('span.muted', rulesSaid)),
+      raffleButtons(p, shuffling, d),
     ];
   }
   async function drawTeams() {
@@ -2969,7 +3022,9 @@ Pages.party = root => {
     consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses]), () => drawConsoles(p));
     guests.show(JSON.stringify(p.guests), () => drawGuests(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
-    raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling]), () => drawRaffle(p));
+    const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
+    const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn] : null;
+    raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses]), () => drawSeats(p));
     start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
@@ -2987,6 +3042,126 @@ Pages.party = root => {
   route();
   return { update, games: update, route, leave: closeScreen };
 };
+
+// The raffle wheel (see Spin in server/party.h): the server plans every
+// turn, and says how far into the spin it is (elapsed); this page, the big
+// screen and NetDiscParty.xex on each console turn their wheels from there,
+// so all show the same stop at the same time.
+const SpinClock = { id: 0, start: 0 };
+// The spin as the server sent it at local time at (performance.now()): when
+// it started here. The earliest guess is the best (the least delayed answer).
+function noteSpin(spin, at) {
+  if (!spin) return;
+  const start = at - spin.elapsed;
+  if (spin.id !== SpinClock.id) Object.assign(SpinClock, { id: spin.id, start });
+  else SpinClock.start = Math.min(SpinClock.start, start);
+}
+const spinNow = spin => spin && spin.id === SpinClock.id ? performance.now() - SpinClock.start : spin ? spin.elapsed : 0;
+// Where the wheel is ms into the spin: as SpinAngle in server/party.cpp.
+function spinAt(spin, ms) {
+  let angle = 0, t = ms - spin.leadMs, step = -1, stopped = true;
+  for (let i = 0; i < spin.steps.length; i++) {
+    if (i) t -= spin.pauseMs;
+    if (t < 0) break;
+    step = i;
+    const s = spin.steps[i];
+    if (t < s.ms) { const f = 1 - t / s.ms; angle += (s.to - angle) * (1 - f * f * f); stopped = false; break; }
+    angle = s.to;
+    t -= s.ms;
+  }
+  return { angle, step, stopped };
+}
+// The guests the wheel has stopped on so far, by step: [{name, team}].
+function spinPicked(spin, ms) {
+  const at = spinAt(spin, ms), out = [];
+  for (let i = 0; i <= at.step; i++) if (i < at.step || at.stopped) out.push({ name: spin.wheel[spin.steps[i].segment], team: spin.steps[i].team });
+  return out;
+}
+// Shown while it turns, and for a while after it stopped.
+const SpinShownAfterMs = 20000;
+const spinLive = spin => !!spin && spinNow(spin) < spin.totalMs + SpinShownAfterMs;
+const spinDone = spin => !!spin && spinNow(spin) >= spin.totalMs;
+
+// The party as shown: the teams the wheel draws stay hidden until it stops on the last guest.
+function partyShown(p) {
+  return p.spin && p.spin.kind === 'teams' && !spinDone(p.spin) ? Object.assign({}, p, { drawn: null }) : p;
+}
+
+// The wheel itself, drawn on a canvas for as long as it is on the page.
+// colours() gives the theme's ({wheel: [two], teams: [four], ink, rim});
+// onStep is called whenever another guest is stopped on.
+function raffleWheel(colours, onStep) {
+  const canvas = h('canvas.wheel', { role: 'img', 'aria-label': 'The raffle wheel' });
+  let spin = null, frame = 0, picked = -1;
+  function draw() {
+    frame = 0;
+    if (!canvas.isConnected || !spin) return;
+    const size = canvas.clientWidth, ratio = window.devicePixelRatio || 1;
+    if (size && canvas.width !== Math.round(size * ratio)) { canvas.width = canvas.height = Math.round(size * ratio); }
+    const ctx = canvas.getContext('2d'), c = colours(), ms = spinNow(spin), at = spinAt(spin, ms);
+    const done = spinPicked(spin, ms);
+    if (done.length !== picked) { picked = done.length; if (onStep) onStep(); }
+    const W = canvas.width, r = W / 2 - W * 0.04, cx = W / 2, cy = W / 2 + W * 0.02, n = spin.wheel.length, w = 2 * Math.PI / n;
+    ctx.clearRect(0, 0, W, W);
+    const rot = at.angle * Math.PI / 180;
+    // Its rim and shadow.
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = W * 0.03;
+    ctx.beginPath(); ctx.arc(cx, cy, r + W * 0.018, 0, 2 * Math.PI); ctx.fillStyle = c.rim; ctx.fill(); ctx.restore();
+    const teamOf = {};
+    for (const d of done) teamOf[d.name] = d.team;
+    const landed = at.stopped && at.step >= 0 ? spin.steps[at.step].segment : -1;
+    for (let k = 0; k < n; k++) {
+      const a0 = -Math.PI / 2 + rot + k * w, name = spin.wheel[k], t = teamOf[name];
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, a0, a0 + w); ctx.closePath();
+      // Two shades taking turns, and a third for an odd one out at the end.
+      ctx.fillStyle = t === undefined ? c.wheel[n % 2 && k === n - 1 ? 2 : k % 2] : t >= 0 ? c.teams[t] : c.pick;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = W * 0.004; ctx.stroke();
+      if (k === landed) { ctx.save(); ctx.lineWidth = W * 0.012; ctx.strokeStyle = '#fff'; ctx.stroke(); ctx.restore(); }
+      // The name along the middle of its segment, out to the rim.
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(a0 + w / 2);
+      const font = Math.min(W * 0.05, r * w * 0.55, W * 0.075);
+      ctx.font = '700 ' + font + 'px ' + getComputedStyle(canvas).fontFamily;
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = t === undefined || t === 3 ? c.ink : '#fff';  // Dark on yellow.
+      let label = name;
+      const room = r * 0.72;
+      while (label.length > 1 && ctx.measureText(label).width > room) label = label.slice(0, -2) + '…';
+      ctx.fillText(label, r - W * 0.035, 0);
+      ctx.restore();
+    }
+    // Pegs on the lines, the hub, and the pointer at the top.
+    for (let k = 0; k < n; k++) {
+      const a = -Math.PI / 2 + rot + k * w;
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * (r + W * 0.002), cy + Math.sin(a) * (r + W * 0.002), W * 0.009, 0, 2 * Math.PI); ctx.fillStyle = '#fff'; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.16, 0, 2 * Math.PI); ctx.fillStyle = c.rim; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.11, 0, 2 * Math.PI); ctx.fillStyle = '#fff'; ctx.fill();
+    const tip = cy - r + W * 0.045;
+    ctx.beginPath(); ctx.moveTo(cx, tip); ctx.lineTo(cx - W * 0.04, cy - r - W * 0.05); ctx.lineTo(cx + W * 0.04, cy - r - W * 0.05); ctx.closePath();
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.4)'; ctx.shadowBlur = W * 0.012; ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
+    ctx.strokeStyle = c.rim; ctx.lineWidth = W * 0.006; ctx.stroke();
+    if (spinLive(spin)) frame = requestAnimationFrame(draw);
+  }
+  return {
+    el: canvas,
+    set(next) {
+      if (next && spin && next.id === spin.id) { if (!frame) frame = requestAnimationFrame(draw); return; }
+      spin = next; picked = -1;
+      if (!frame) frame = requestAnimationFrame(draw);
+    },
+  };
+}
+// The theme's wheel colours, from the element its CSS variables are set on.
+function wheelColours(el, onDark) {
+  const css = getComputedStyle(el), v = name => css.getPropertyValue(name).trim();
+  const p1 = v('--p1') || '#107c10', deep = v('--deep1') || '#0b3d0b';
+  return {
+    wheel: [mix(p1, '#ffffff', onDark ? 0.82 : 0.86), mix(p1, '#ffffff', onDark ? 0.62 : 0.68), mix(p1, '#ffffff', 0.74)],
+    teams: onDark ? ['#e5483e', '#3f7fe6', '#2c9a2c', '#d9a400'] : [v('--team1') || '#d13438', v('--team2') || '#2f6fd6', v('--team3') || '#107c10', v('--team4') || '#e3b505'],
+    pick: deep, ink: '#1b1e22', rim: deep,
+  };
+}
 
 // The big screen: the party's name and theme, its teams, who sits at which
 // console and what each plays, readable across a room on a TV, and on a phone.
@@ -3013,10 +3188,11 @@ function bigScreen(parent) {
   // A TV or phone that would dim stays on (where the browser allows it).
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { lock = l; }).catch(() => {});
   const label = (p, ip) => nameOf(ip) !== ip ? nameOf(ip) : 'Console ' + (p.consoles.indexOf(ip) + 1);
+  const wheel = raffleWheel(() => wheelColours(el, true), () => self.update());
   const now = st => !st.c ? 'Not connected' : st.c.playing ? st.c.mounted : st.c.offline ? 'Offline' : st.c.connections > 0 || st.c.answers ? 'In Aurora' : 'Not connected';
-  return {
+  const self = {
     update() {
-      const p = S.party, pics = PartyPics;
+      const p = partyShown(S.party), pics = PartyPics, sp = spinLive(S.party.spin) ? S.party.spin : null;
       const style = JSON.stringify([p.theme.preset, p.theme.accent, p.theme.accent2, pics.key]);
       if (style !== look) {
         look = style;
@@ -3028,16 +3204,28 @@ function bigScreen(parent) {
         photo = 0;
       }
       fill(time, new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }), p.round || (p.drawn && p.drawn.teams.length) ? h('small', 'Round ' + (p.round + (p.drawn && p.drawn.teams.length && !p.drawn.kept ? 1 : 0))) : null);
-      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text)]);
+      const got = sp ? spinPicked(sp, spinNow(sp)) : [];
+      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp)]]);
       if (key === drawn) return;
       drawn = key;
       const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p);
       const where = team => p.consoles.filter(ip => (d.seats[ip] || []).some(n => team.includes(n))).map(ip => label(p, ip));
+      if (sp) wheel.set(sp);
+      // While the wheel turns: the wheel, and the teams as it fills them (or the one it picks).
+      const spinning = () => {
+        let side;
+        if (sp.kind === 'teams') {
+          const teams = Array.from({ length: sp.teams }, () => []);
+          for (const g of got) teams[g.team].push(g.name);
+          side = h('div.screen-teams.stacked', teams.map((team, i) => h('div.screen-team.' + Teams[i][1], h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))))));
+        } else side = h('div.screen-picked', h('p', sp.title || (spinDone(sp) ? 'The wheel picked' : 'Who will it be?')), got.length ? h('h2', got[0].name) : null);
+        return h('div.screen-spin', h('div.screen-wheel', wheel.el), side);
+      };
       fill(body,
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,
           h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), time),
         p.active ? null : h('div.screen-soon', 'The LAN party starts soon'),
-        d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + Teams[i][1],
+        sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + Teams[i][1],
           h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
           : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,
             h('p', 'The teams are drawn soon.')),
@@ -3057,6 +3245,7 @@ function bigScreen(parent) {
       el.remove();
     },
   };
+  return self;
 }
 
 // The System Link games (Wikipedia's lists, see data/README.md): players on

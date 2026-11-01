@@ -27,6 +27,9 @@
 #include "web.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <random>
 #include <deque>
 #include <map>
 #include <memory>
@@ -57,7 +60,9 @@ typedef socklen_t AddressLength;
 using namespace nia;
 
 namespace {
-enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, Header = 20,
+// PartyWait and PartySpinAsk are NetDiscParty.xex's (party/), not NetISO's:
+// see Connection::Party.
+enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, PartyWait = 0x5057, PartySpinAsk = 0x5053, Header = 20,
        MaxReadBytes = 16 << 20, MaxNameBytes = 4096, MaxDepth = 8, RateSeconds = 120, WebPort = 8360 };
 // An ISO counts as settled, and gets pushed, when nothing about it changed for this long.
 const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, RetryFailedSeconds = 60, ScanRetrySeconds = 30;
@@ -692,6 +697,24 @@ std::mutex PartyLock;
 // before any other lock.
 std::mutex PartyChangeLock;
 Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return TheParty; }
+// The party's version, one more with each change (Save), which
+// NetDiscParty.xex waits on (PartyWait) so it hears of a spin at once
+// without asking again and again.
+std::mutex PartyNewsLock;
+std::condition_variable PartyNewsCome;
+unsigned long long PartyVersion=1;
+void PartyNews() {
+    { std::lock_guard<std::mutex> hold(PartyNewsLock); ++PartyVersion; }
+    PartyNewsCome.notify_all();
+}
+// The version once it isn't seen any more, or after ms.
+unsigned long long WaitForParty(unsigned long long seen, int ms) {
+    std::unique_lock<std::mutex> hold(PartyNewsLock);
+    PartyNewsCome.wait_for(hold,std::chrono::milliseconds(ms),[seen]() { return PartyVersion!=seen; });
+    return PartyVersion;
+}
+std::string PartyText(unsigned long long version, const std::string& address);
+bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& out, std::string& note, std::string& error);
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -1161,12 +1184,18 @@ public:
         unsigned char request[Header];
         while(ReceiveAll(request,Header)) {
             if(memcmp(request,"ISVR",4)) { Log("%s sent something that isn't a NetISO request; closing.",peer_); break; }
-            if(!console_) Attach();
             int command=(request[4]<<8)|request[5];
             DWORD index=DWORD((request[6]<<8)|request[7]);
             U64 offset=(U64(Read32(request+8))<<32)|Read32(request+12);
             DWORD length=Read32(request+16);
             if(Settings.verbose) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
+            // NetDiscParty.xex's own: it isn't the console's disc drive, so
+            // its connection doesn't count as one (Attach).
+            if(command==PartyWait || command==PartySpinAsk) {
+                if(!PartyRequest(command,index,offset,length)) break;
+                continue;
+            }
+            if(!console_) Attach();
             if(console_) console_->seenAt=(long long)(Now()*1000);
             if(!Handle(command,index,offset,length)) break;
         }
@@ -1212,6 +1241,33 @@ private:
         return true;
     }
     bool Send32(DWORD value) { unsigned char reply[4]; Write32(reply,value); return SendAll(reply,4); }
+    // NetDiscParty.xex (party/main.cpp): PartyWait sends the party as text
+    // (PartyText) once its version isn't offset any more (at once for 0),
+    // or after length milliseconds (at most PartyWaitMost); PartySpinAsk
+    // spins the wheel from the Gamemaster's console: index 1 for teams
+    // (length of them; 0: the party's), 2 to pick one guest. Each reply is
+    // its length (4 bytes) and then text: the party, or "ok", or "error" and
+    // a sentence after a tab.
+    enum { PartyWaitMost = 30000 };
+    bool SendText(const std::string& text) { return Send32(DWORD(text.size())) && SendAll(reinterpret_cast<const unsigned char*>(text.data()),text.size()); }
+    bool PartyRequest(int command, DWORD index, U64 offset, DWORD length) {
+        // The guests' names go to the Xboxes only (as --xbox and the
+        // settings' xboxes list them, else anything but this computer).
+        if(!FromXbox(address_)) return SendText("error\tThis isn't one of NetDisc360's Xboxes.\n");
+        if(command==PartyWait) {
+            unsigned long long version=WaitForParty(offset,int(std::min<DWORD>(length,PartyWaitMost)));
+            return SendText(PartyText(version,peer_));
+        }
+        Party p=CurrentParty();
+        std::string error, note;
+        Spin spin;
+        if(!p.active) error="The LAN party hasn't started: start it on the dashboard's LAN party page.";
+        else if(p.gamemaster!=peer_) error="Only the Gamemaster's console spins the wheel.";
+        else if(index!=1 && index!=2) error="Ask for teams or one guest.";
+        else if(index==1 && length && (length<TeamsLeast || length>TeamsMost)) error="Draw 2, 3 or 4 teams.";
+        else if(StartSpin(index==2,int(length),std::string(),-1,spin,note,error)) Log("%s spun the raffle wheel.",peer_);
+        return SendText(error.empty() ? std::string("ok\n") : "error\t"+error+"\n");
+    }
     bool Handle(int command, DWORD index, U64 offset, DWORD length) {
         switch(command) {
         case Ping: return SendAll(reinterpret_cast<const unsigned char*>("ISVRokOK"),8);
@@ -2556,6 +2612,7 @@ bool NoteStart(const std::string& updatedFrom, const std::string& updateTo, cons
 }
 
 bool Save() {
+    PartyNews();
     // What's saved is read once it's this call's turn, so the last to write
     // the file writes the newest settings, consoles and party.
     std::lock_guard<std::mutex> saving(SaveLock);
@@ -2972,6 +3029,23 @@ void SeatsJson(web::Json& j, const Seats& seats) {
     j.Close('}');
 }
 
+// The raffle wheel's latest spin (see Spin in party.h), with how far into it
+// the server is now (elapsed, milliseconds; below 0 before the ask, never),
+// so each screen turns its wheel from where the others are. null when there
+// is none, or its draw was changed since.
+void SpinJson(web::Json& j, const Spin& s) {
+    if(!s.id || s.steps.empty()) { j.Null(); return; }
+    j.Open('{').Set("id",(long long)s.id).Set("kind",s.kind).Set("title",s.title).Set("teams",s.teams).Key("wheel");
+    NamesJson(j,s.wheel);
+    j.Key("steps").Open('[');
+    for(size_t i=0;i<s.steps.size();++i) {
+        // Three decimals, as planned (Json's numbers keep six digits only).
+        char to[32]; _snprintf_s(to,sizeof(to),_TRUNCATE,"%.3f",s.steps[i].to);
+        j.Open('{').Set("segment",s.steps[i].segment).Set("team",s.steps[i].team).Key("to").Raw(to).Set("ms",s.steps[i].ms).Close('}');
+    }
+    j.Close(']').Set("leadMs",s.leadMs).Set("pauseMs",s.pauseMs).Set("totalMs",s.TotalMs()).Set("elapsed",(long long)((Now()-s.at)*1000)).Close('}');
+}
+
 // The party as the page reads it (in /api/state).
 void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
     j.Open('{').Set("active",p.active).Set("name",p.name);
@@ -2996,6 +3070,8 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
     } else j.Null();
     j.Key("last");
     TeamsJson(j,p.last);
+    j.Key("spin");
+    SpinJson(j,p.spin);
     j.Close('}');
 }
 
@@ -5191,6 +5267,7 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
         std::lock_guard<std::mutex> hold(PartyLock);
         TheParty.teams=teams; TheParty.drawn=true; TheParty.kept=false;
         TheParty.drawnTeams=drawn; TheParty.seats=seats; TheParty.note=note;
+        TheParty.spin.steps.clear();  // Its teams aren't the ones drawn any more.
         round=TheParty.round+1;
     }
     Save();
@@ -5201,6 +5278,118 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
     SeatsJson(j,seats);
     j.Set("note",note).Close('}');
     out.body=j.Text();
+}
+
+// The raffle wheel (see Spin in party.h): teams drawn as PartyRaffle draws
+// them, or one guest picked, with every turn of the wheel planned, so the
+// dashboard, the big screen and each console's NetDiscParty.xex show the
+// same spin. From the dashboard (POST /api/party/spin) or the Gamemaster's
+// console (PartySpinAsk). seed < 0: a new draw; teams 0: the party's.
+bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& out, std::string& note, std::string& error) {
+    std::lock_guard<std::mutex> changing(PartyChangeLock);
+    Party p=CurrentParty();
+    double now=Now();
+    if(!p.spin.steps.empty() && (now-p.spin.at)*1000<p.spin.TotalMs()) { error="The wheel is still turning."; return false; }
+    if(!teams) teams=p.teams;
+    unsigned from=seed>=0 ? unsigned(seed) : unsigned(time(NULL))*2654435761u^unsigned((unsigned long long)(now*1e6))^(++Draws*40503u);
+    std::vector<std::string> here=GuestsHere(p);
+    Spin spin;
+    std::vector<Team> drawn;
+    Seats seats;
+    note.clear();
+    if(pick) {
+        if(here.size()<2) { error=here.empty() ? "No one is here yet: tick the guests who are here." : "Tick at least two guests who are here, so the wheel has a choice."; return false; }
+        PlanPickSpin(here,std::mt19937(from)()%here.size(),title,from,spin);
+    } else {
+        if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,p.consoles,seats,error)) return false;
+        PlanTeamSpin(drawn,from,spin);
+    }
+    // A new id for each spin, also after a restart (spins aren't kept).
+    spin.id=std::max(unsigned(time(NULL)),p.spin.id+1);
+    spin.at=now;
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        if(!pick) {
+            TheParty.teams=teams; TheParty.drawn=true; TheParty.kept=false;
+            TheParty.drawnTeams=drawn; TheParty.seats=seats; TheParty.note=note;
+        }
+        TheParty.spin=spin;
+    }
+    Save();
+    out=spin;
+    if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
+    else Log("The raffle wheel is drawing %d teams from %d guests.",teams,int(here.size()));
+    return true;
+}
+
+// POST /api/party/spin {kind: "teams" or "pick", teams?, title?, seed?}.
+void PartySpin(const web::Value& v, web::Reply& out) {
+    if(v.type!=web::Value::Object) { out.Error(400,"Send the spin as a JSON object."); return; }
+    std::string error, kind="teams", title, note;
+    int teams=0, seed=-1;
+    if(Text(v,"kind",kind) && kind!="teams" && kind!="pick") { out.Error(400,"kind is teams or pick."); return; }
+    if((!Whole(v,"teams",TeamsLeast,TeamsMost,teams,error) && !error.empty()) || (!Whole(v,"seed",0,0x7FFFFFFF,seed,error) && !error.empty())) { out.Error(400,error); return; }
+    std::string typed;
+    if(Text(v,"title",typed) && !CleanName(typed,0,SpinTitleMost,"The wheel's question",title,error)) { out.Error(400,error); return; }
+    Spin spin;
+    if(!StartSpin(kind=="pick",teams,title,seed,spin,note,error)) { out.Error(400,error); return; }
+    web::Json j;
+    j.Open('{').Set("ok",true).Key("spin");
+    SpinJson(j,spin);
+    j.Set("note",note).Close('}');
+    out.body=j.Text();
+}
+
+// The party as NetDiscParty.xex reads it (see party/state.h): one line for
+// each thing, its fields after a tab. Names never hold a tab or a line end
+// (CleanName). address is the console that asks: its own name and seats.
+std::string PartyText(unsigned long long version, const std::string& address) {
+    Party p=CurrentParty();
+    std::map<std::string,std::string> names;
+    {
+        std::vector<Console*> consoles=AllConsoles();
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(size_t i=0;i<consoles.size();++i) names[consoles[i]->text]=consoles[i]->name;
+    }
+    // A console with no name read is "Console 2", by its place in the party.
+    auto nameOf=[&](const std::string& ip) -> std::string {
+        std::map<std::string,std::string>::const_iterator n=names.find(ip);
+        if(n!=names.end() && !n->second.empty()) return n->second;
+        size_t at=std::find(p.consoles.begin(),p.consoles.end(),ip)-p.consoles.begin();
+        return at<p.consoles.size() ? "Console "+Number(int(at)+1) : std::string("This Xbox");
+    };
+    std::string t="netdisc-party\t1\nversion\t"+Number((long long)version)+"\n";
+    auto line=[&t](const char* key, const std::vector<std::string>& fields) {
+        t+=key;
+        for(size_t i=0;i<fields.size();++i) { t+='\t'; t+=fields[i]; }
+        t+='\n';
+    };
+    line("console",{nameOf(address),address,address==p.gamemaster ? "1" : "0"});
+    line("party",{p.active ? "1" : "0",PartyTitle(p),PartyLine(p),p.theme.preset});
+    line("colours",{p.theme.accent,p.theme.accent2});
+    if(!p.gamemaster.empty()) line("gamemaster",{nameOf(p.gamemaster),p.gamemaster});
+    line("teams",{Number(p.teams)});
+    std::vector<std::string> here=GuestsHere(p);
+    line("here",here);
+    if(!p.spin.steps.empty()) {
+        const Spin& s=p.spin;
+        line("spin",{Number((long long)s.id),s.kind,Number((long long)((Now()-s.at)*1000)),Number(s.leadMs),Number(s.pauseMs),s.title});
+        line("wheel",s.wheel);
+        for(size_t i=0;i<s.steps.size();++i) {
+            char to[32]; _snprintf_s(to,sizeof(to),_TRUNCATE,"%.3f",s.steps[i].to);
+            line("step",{Number(s.steps[i].segment),Number(s.steps[i].team),to,Number(s.steps[i].ms)});
+        }
+    }
+    if(p.drawn && !p.drawnTeams.empty()) {
+        line("round",{Number(p.round+(p.kept ? 0 : 1)),p.kept ? "1" : "0"});
+        for(size_t i=0;i<p.drawnTeams.size();++i) line("team",p.drawnTeams[i]);
+        for(size_t i=0;i<p.seats.size();++i) {
+            std::vector<std::string> fields={p.seats[i].first,nameOf(p.seats[i].first)};
+            fields.insert(fields.end(),p.seats[i].second.begin(),p.seats[i].second.end());
+            line("seat",fields);
+        }
+    }
+    return t;
 }
 
 // POST /api/party/keep: the teams drawn are this round's, and the next
@@ -5745,6 +5934,7 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party/raffle") PartyRaffle(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/spin") PartySpin(body,out);
     else if(r.method=="POST" && r.path=="/api/party/keep") {
         int round;
         if(!KeepTeams(round,error)) out.Error(400,error);
