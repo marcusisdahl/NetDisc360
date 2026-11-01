@@ -974,6 +974,10 @@ static int HookSmc() {
             if(!MmIsAddressValid((void*)slot) || *slot!=DWORD(K.HalSendSMCMessage)) continue;
             DWORD* thunk=(DWORD*)record[r+1];
             if(!MmIsAddressValid(thunk) || !MmIsAddressValid(thunk+3)) continue;
+            // Only the loader's stub (lis r11; addi or ori r11; mtctr r11; bctr):
+            // the next record is something else when xam reads the address only.
+            if((thunk[0]&0xFFFF0000)!=0x3D600000 || ((thunk[1]&0xFFFF0000)!=0x396B0000 && (thunk[1]&0xFFFF0000)!=0x616B0000)
+               || thunk[2]!=0x7D6903A6 || thunk[3]!=0x4E800420) continue;
             memcpy(SmcThunkCode[SmcThunkCount],thunk,16);
             DWORD target=DWORD(SmcHooked);
             thunk[0]=0x3D600000|(target>>16);    // lis r11,high
