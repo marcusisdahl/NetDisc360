@@ -8,6 +8,7 @@
 
 IDR_LAUNCHER RCDATA "..\\build\\NetISO Sync\\default.xex"
 IDR_BOOT RCDATA "..\\build\\NetISO Sync\\boot.xex"
+IDR_PARTY_APP RCDATA "..\\build\\NetDisc360 Party\\default.xex"
 
 // Aurora's art (cover, background, icon and banner) for NetDisc360's own tile,
 // NetDiscParty.xex and FastFTP360, which the server puts in Aurora's GameData folder.

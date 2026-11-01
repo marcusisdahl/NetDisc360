@@ -6,6 +6,15 @@
 // all of them stop on the same guest at the same moment. On the Gamemaster's
 // console, A spins for teams and X picks one guest. B goes back to Aurora.
 //
+// Once the wheel drew the teams, the screen turns to this console's players
+// (up to four, each in their team's colour) and asks them to sign in one
+// after another, as a split-screen game does: each presses A on their own
+// controller, and picks their profile in the Guide's sign-in if that
+// controller has none yet. A profile named as a guest (the party's guest
+// profiles) goes to that guest's seat. NetDisc360 is told who signed in on
+// which controller (PartySignIn). Once everyone's in, it goes back to Aurora
+// by itself after a few seconds; Y looks at the wheel again.
+//
 // It asks NetDisc360 on its NetISO port (4323) and waits there for news
 // (PartyWait, a long poll), so it hears of a spin at once without asking
 // again and again. The server is the one in party.ini next to this XEX
@@ -31,8 +40,12 @@ extern "C" LONG __stdcall XexGetModuleHandle(const char* name,HANDLE* module);
 extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,void** address);
 
 namespace {
-// The party's commands (server/main.cpp): wait for news, and spin.
-enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, WaitMs = 25000, TextMost = 48 << 10 };
+// The party's commands (server/main.cpp): wait for news, spin, and say who signed in.
+enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, SignedOut = 0x8000, WaitMs = 25000, TextMost = 48 << 10 };
+// How long the screen stays on the wheel after it stopped, before it turns to
+// the players (a pick's result is read longer), and how long it waits once
+// everyone's in before it goes back to Aurora.
+const DWORD PlayersAfterTeamsMs = 4000, PlayersAfterPickMs = 9000, LeaveMs = 10000;
 
 // What the network thread found, under Lock; the main thread draws it.
 CRITICAL_SECTION Lock;
@@ -198,6 +211,32 @@ DWORD WINAPI AskSpin(void* kind) {
     return 0;
 }
 
+// A sign-in (or a controller signed out), told to the server on a connection of its own.
+struct SignInNews { int seat, controller; bool out; ULONGLONG xuid; char gamertag[party::GamertagBytes]; };
+DWORD WINAPI TellSignIn(void* news) {
+    SignInNews* n=static_cast<SignInNews*>(news);
+    EnterCriticalSection(&Lock);
+    DWORD address=ServerAddress; int port=ServerPort;
+    LeaveCriticalSection(&Lock);
+    if(address) {
+        nia::IsvrClient client(10);
+        char said[256]; DWORD size=0;
+        DWORD length=n->out ? 0 : DWORD(strlen(n->gamertag));
+        DWORD index=DWORD(n->seat&0xFF)|(DWORD(n->controller&3)<<8)|(n->out ? DWORD(SignedOut) : 0);
+        if(client.Connect(address,port,5)) client.Text(PartySignIn,index,n->xuid,length,said,sizeof(said),size,length ? n->gamertag : NULL);
+        client.Close();
+    }
+    delete n;
+    return 0;
+}
+void Tell(int seat, int controller, bool out, ULONGLONG xuid, const char* gamertag) {
+    SignInNews* n=new SignInNews;
+    n->seat=seat; n->controller=controller; n->out=out; n->xuid=xuid;
+    strcpy_s(n->gamertag,gamertag ? gamertag : "");
+    HANDLE thread=CreateThread(NULL,0,TellSignIn,n,0,NULL);
+    if(thread) CloseHandle(thread); else delete n;
+}
+
 // ---- The screen ----
 
 IDirect3DDevice9* Screen=NULL;
@@ -216,13 +255,87 @@ bool ScreenStart() {
     if(Screen && !ImGuiXbox360Init(Screen)) { Screen->Release(); Screen=NULL; }
     return Screen!=NULL;
 }
-WORD Buttons() {
-    WORD buttons=0;
-    for(DWORD pad=0;pad<4;++pad) {
-        XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
-        if(XInputGetState(pad,&state)==ERROR_SUCCESS) buttons|=state.Gamepad.wButtons;
+WORD Buttons(DWORD pad) {
+    XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
+    return XInputGetState(pad,&state)==ERROR_SUCCESS ? state.Gamepad.wButtons : 0;
+}
+bool SignedIn(int pad) { return XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn; }
+
+// ---- Signing in, on the players screen ----
+
+party::Screen Frame;
+bool ChooserOpen=false;     // The Guide's sign-in (or any of its screens) is up.
+DWORD ChooserClosedAt=0;
+DWORD SignedBefore=0;       // The controllers signed in when the chooser opened (bits).
+bool SignedHere=false;      // Someone signed in on this screen (so everyone's in starts the countdown).
+bool Stay=false;            // Y: no going back to Aurora by itself.
+DWORD AllInAt=0;
+
+int SeatOf(int pad) {
+    for(int i=0;i<party::PerConsole;++i) if(Frame.players[i].controller==pad) return i;
+    return -1;
+}
+int Asking(const party::Seat* mine) {
+    for(int i=0;mine && i<mine->count;++i) if(Frame.players[i].controller<0) return i;
+    return -1;
+}
+// Seats the profile signed in on pad: the seat of the guest it's named for,
+// else the one asked now.
+void Take(int pad, const party::Seat* mine) {
+    if(!mine || SeatOf(pad)>=0) return;
+    char gamertag[party::GamertagBytes]="";
+    if(XUserGetName(DWORD(pad),gamertag,sizeof(gamertag))!=ERROR_SUCCESS) gamertag[0]=0;
+    XUID xuid=0;
+    if(XUserGetXUID(DWORD(pad),&xuid)!=ERROR_SUCCESS) xuid=0;
+    int seat=-1;
+    for(int i=0;i<mine->count && seat<0;++i) if(Frame.players[i].controller<0 && party::GamertagOf(gamertag,mine->names[i])) seat=i;
+    if(seat<0) seat=Asking(mine);
+    if(seat<0) return;
+    Frame.players[seat].controller=pad;
+    strcpy_s(Frame.players[seat].gamertag,gamertag);
+    SignedHere=true;
+    Tell(seat,pad,false,xuid,gamertag);
+}
+// A in the players screen, on pad: a signed-in controller joins at once;
+// one without a profile opens the Guide's sign-in for it.
+void SignInPad(int pad, const party::Seat* mine) {
+    if(SeatOf(pad)>=0 || Frame.choosing>=0 || Asking(mine)<0) return;
+    if(SignedIn(pad)) { Take(pad,mine); return; }
+    SignedBefore=0;
+    for(int p=0;p<4;++p) if(SignedIn(p)) SignedBefore|=1u<<p;
+    if(XShowSigninUI(1,XSSUI_FLAGS_LOCALSIGNINONLY)==ERROR_SUCCESS) { Frame.choosing=pad; ChooserClosedAt=0; }
+}
+// Each frame: a profile chosen in the Guide, controllers signed out, and
+// everyone's in.
+void WatchSignIns(const party::Seat* mine, DWORD now) {
+    if(Frame.choosing>=0) {
+        for(int p=0;p<4;++p)
+            if(!(SignedBefore&(1u<<p)) && SignedIn(p) && SeatOf(p)<0) { Take(p,mine); Frame.choosing=-1; break; }
+        // Closed with no one signed in (its news can come a moment after it closes).
+        if(Frame.choosing>=0 && !ChooserOpen && ChooserClosedAt && now-ChooserClosedAt>1500) Frame.choosing=-1;
     }
-    return buttons;
+    for(int i=0;i<party::PerConsole;++i) {
+        int pad=Frame.players[i].controller;
+        if(pad>=0 && !SignedIn(pad)) { Frame.players[i].controller=-1; Frame.players[i].gamertag[0]=0; Tell(i,pad,true,0,NULL); }
+    }
+    Frame.asking=Asking(mine);
+    if(Frame.asking<0 && mine && mine->count && SignedHere && !Stay) {
+        if(!AllInAt) AllInAt=now;
+        DWORD gone=now-AllInAt;
+        Frame.leaveIn=gone>=LeaveMs ? 0 : int((LeaveMs-gone+999)/1000);
+    } else { AllInAt=0; Frame.leaveIn=-1; }
+}
+// New seats here: no one signed in on them, but those the server says are
+// (this screen opened again) whose controller still has a profile.
+void NewSeats(const party::Seat* mine) {
+    for(int i=0;i<party::PerConsole;++i) { Frame.players[i].controller=-1; Frame.players[i].gamertag[0]=0; }
+    for(int k=0;k<Frame.state.signedCount;++k) {
+        const party::SignedIn& in=Frame.state.signedIn[k];
+        if(!mine || in.seat>=mine->count || !SignedIn(in.controller) || SeatOf(in.controller)>=0) continue;
+        Frame.players[in.seat].controller=in.controller;
+        strcpy_s(Frame.players[in.seat].gamertag,in.gamertag);
+    }
+    Frame.choosing=-1; SignedHere=false; Stay=false; AllInAt=0; Frame.leaveIn=-1;
 }
 }
 
@@ -234,23 +347,28 @@ void __cdecl main() {
     if(!ScreenStart()) { XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP,0); return; }
     HANDLE listener=CreateThread(NULL,0,Listen,NULL,0,NULL);
     if(listener) CloseHandle(listener);
-    static party::Screen frame;
+    party::Screen& frame=Frame;
     unsigned shownSpin=0;
     DWORD spinStart=0, started=GetTickCount(), askedAt=0;
-    WORD held=Buttons();  // The A that started this may still be down.
+    WORD held[4];  // The A that started this may still be down.
+    for(DWORD pad=0;pad<4;++pad) held[pad]=Buttons(pad);
+    char seatKey[party::PerConsole*party::NameBytes+1]="\x01";  // Whose seats these are: none read yet.
+    bool turnedToPlayers=false;
     for(;;) {
         DWORD id; ULONG_PTR param;
-        while(Notifications && XNotifyGetNext(Notifications,0,&id,&param)) {}
-        WORD buttons=Buttons(), pressed=WORD(buttons&~held);
-        held=buttons;
+        while(Notifications && XNotifyGetNext(Notifications,0,&id,&param))
+            if(id==XN_SYS_UI) { ChooserOpen=param!=0; if(!ChooserOpen) ChooserClosedAt=GetTickCount(); }
+        WORD pressed[4], any=0;
+        for(DWORD pad=0;pad<4;++pad) { WORD b=Buttons(pad); pressed[pad]=WORD(b&~held[pad]); held[pad]=b; any|=pressed[pad]; }
         DWORD now=GetTickCount();
+        bool newSpin=false;
         EnterCriticalSection(&Lock);
         if(HaveLatest) {
             frame.state=Latest;
             // When the spin started, by this console's clock: the earliest
             // guess is the best (the answer that took least long to come).
             DWORD start=LatestAt-DWORD(Latest.elapsed);
-            if(Latest.spinId!=shownSpin) { shownSpin=Latest.spinId; spinStart=start; }
+            if(Latest.spinId!=shownSpin) { shownSpin=Latest.spinId; spinStart=start; newSpin=true; }
             else if(int(start-spinStart)<0) spinStart=start;
             HaveLatest=false;
         }
@@ -261,12 +379,35 @@ void __cdecl main() {
         LeaveCriticalSection(&Lock);
         frame.spinMs=frame.state.spinId ? double(int(now-spinStart)) : 0;
         frame.time=(now-started)/1000.0;
-        if(pressed&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) break;
-        // The Gamemaster spins: A for teams, X to pick one guest; once a second at most.
-        if((pressed&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_X)) && frame.state.valid && frame.state.gamemaster && now-askedAt>1000) {
-            askedAt=now;
-            HANDLE ask=CreateThread(NULL,0,AskSpin,(void*)(ULONG_PTR)(pressed&XINPUT_GAMEPAD_A ? 1 : 2),0,NULL);
-            if(ask) CloseHandle(ask);
+        // This console's seats: new ones start the signing in again.
+        const party::Seat* mine=frame.state.valid ? party::MySeat(frame.state) : NULL;
+        char key[sizeof(seatKey)]="";
+        for(int i=0;mine && i<mine->count;++i) { strcat_s(key,mine->names[i]); strcat_s(key,"\t"); }
+        if(strcmp(key,seatKey)) { strcpy_s(seatKey,key); NewSeats(mine); turnedToPlayers=false; }
+        // A new spin is watched on the wheel; a while after it stops, the screen turns to the players.
+        if(newSpin) { frame.view=party::ViewWheel; turnedToPlayers=false; }
+        const bool spun=frame.state.spinId && frame.state.stepCount>0;
+        const double after=spun ? frame.spinMs-party::SpinMs(frame.state) : 1e9;
+        if(!turnedToPlayers && mine && mine->count && after>=(strcmp(frame.state.kind,"pick") ? PlayersAfterTeamsMs : PlayersAfterPickMs)) {
+            turnedToPlayers=true; frame.view=party::ViewPlayers;
+        }
+        WatchSignIns(mine,now);
+        if(any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) break;
+        if(frame.view==party::ViewPlayers && mine && mine->count) {
+            if(any&XINPUT_GAMEPAD_Y) { frame.view=party::ViewWheel; Stay=true; }
+            for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) {
+                if(frame.asking>=0) SignInPad(pad,mine);
+                else if(frame.leaveIn>=0) frame.leaveIn=0;
+            }
+            if(frame.leaveIn==0) break;
+        } else {
+            if((any&XINPUT_GAMEPAD_Y) && mine && mine->count && !(spun && after<0)) frame.view=party::ViewPlayers;
+            // The Gamemaster spins: A for teams, X to pick one guest; once a second at most.
+            if((any&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_X)) && frame.state.valid && frame.state.gamemaster && now-askedAt>1000) {
+                askedAt=now;
+                HANDLE ask=CreateThread(NULL,0,AskSpin,(void*)(ULONG_PTR)(any&XINPUT_GAMEPAD_A ? 1 : 2),0,NULL);
+                if(ask) CloseHandle(ask);
+            }
         }
         ImGui::GetIO().DeltaTime=1.0f/60;
         party::DrawUi(frame);

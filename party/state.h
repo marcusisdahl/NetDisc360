@@ -5,7 +5,7 @@
 // are here, the teams drawn and the raffle wheel's latest spin. Plain C++
 // with fixed sizes, shared by the Xbox build and tests/party_preview.cpp.
 namespace party {
-enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8 };
+enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32 };
 typedef char Name[NameBytes];
 
 // A turn of the wheel: from where the turn before left it to to degrees
@@ -13,6 +13,9 @@ typedef char Name[NameBytes];
 // team (-1: picked alone). See Spin in server/party.h.
 struct Step { int segment, team; double to; int ms; };
 struct Seat { char address[AddressBytes]; Name console; int count; Name names[PerConsole]; };
+// A guest of this console's seats who signed in here already (PartySignIn):
+// the seat, the controller (0-3) and the profile's gamertag.
+struct SignedIn { int seat, controller; char gamertag[GamertagBytes]; };
 
 struct State {
     bool valid;                     // A party was read.
@@ -36,6 +39,7 @@ struct State {
     int round; bool kept;
     int teamCount; int teamSize[TeamsMost]; Name team[TeamsMost][WheelMost];
     int seatCount; Seat seats[SeatsMost];
+    int signedCount; SignedIn signedIn[PerConsole];
 };
 
 // Reads the server's text into state; false (state.valid false) if it isn't one.
@@ -51,4 +55,8 @@ int Stopped(const State& s, double ms);
 // This console's seat ("" address: none), and the team its first guest is on (-1: none).
 const Seat* MySeat(const State& s);
 int TeamOf(const State& s, const char* name);
+// Whether a profile's gamertag is a guest's name, as NetDisc360 makes guest
+// profiles (GuestGamertag in server/guests.h): letters and digits compared
+// without case, spaces or accents (Ø as O, Æ as AE), a long name cut short.
+bool GamertagOf(const char* gamertag, const char* name);
 }

@@ -62,9 +62,9 @@ typedef socklen_t AddressLength;
 using namespace nia;
 
 namespace {
-// PartyWait and PartySpinAsk are NetDiscParty.xex's (party/), not NetISO's:
-// see Connection::Party.
-enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, PartyWait = 0x5057, PartySpinAsk = 0x5053, Header = 20,
+// PartyWait, PartySpinAsk and PartySignIn are NetDiscParty.xex's (party/),
+// not NetISO's: see Connection::PartyRequest.
+enum { Ping = 0, GetIsoSize = 1, HasType1File = 2, ReadData = 3, GetIsoName = 4, MountIso = 5, PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, Header = 20,
        MaxReadBytes = 16 << 20, MaxNameBytes = 4096, MaxDepth = 8, RateSeconds = 120, WebPort = 8360 };
 // An ISO counts as settled, and gets pushed, when nothing about it changed for this long.
 const double SettleSeconds = 10, ProbeDownSeconds = 15, RetrySkippedSeconds = 600, RetryFailedSeconds = 60, ScanRetrySeconds = 30;
@@ -158,6 +158,7 @@ std::mutex SettingsLock;
 Options Current() { std::lock_guard<std::mutex> hold(SettingsLock); return Settings; }
 
 std::vector<unsigned char> Launcher, Boot;
+std::vector<unsigned char> WheelApp;  // NetDiscParty.xex, built in, to put on a console that hasn't got it (OpenWheel).
 bool CanPush;         // A launcher is built in (or given), so game folders can be written.
 bool InTray;          // NetDisc360.exe behind its notification-area icon (tray.cpp).
 bool PasswordFixed;   // The dashboard's password comes from NETDISC_WEB_PASSWORD.
@@ -720,8 +721,38 @@ unsigned long long WaitForParty(unsigned long long seen, int ms) {
     PartyNewsCome.wait_for(hold,std::chrono::milliseconds(ms),[seen]() { return PartyVersion!=seen; });
     return PartyVersion;
 }
+// Who signed in on NetDiscParty.xex (PartySignIn): on each console (by its
+// address), the guest of a seat there, the controller (0-3) and the Xbox
+// profile. Only those still in a seat on that console count (SignedIn), so
+// a new draw or a swap needs no clearing. Under PartyLock.
+struct PartySignInRecord { std::string name, gamertag; int controller; unsigned long long xuid; };
+std::map<std::string,std::vector<PartySignInRecord> > SignIns;
+// What counts of it now: for each seat on the console address, its record (NULL: not signed in).
+std::vector<const PartySignInRecord*> SignedIn(const Party& p, const std::string& address) {
+    std::vector<const PartySignInRecord*> out;
+    for(size_t i=0;i<p.seats.size();++i) if(p.seats[i].first==address) {
+        const std::vector<PartySignInRecord>& had=SignIns[address];
+        for(size_t k=0;k<p.seats[i].second.size();++k) {
+            const PartySignInRecord* found=NULL;
+            for(size_t r=0;r<had.size() && !found;++r) if(SameName(had[r].name,p.seats[i].second[k])) found=&had[r];
+            out.push_back(found);
+        }
+    }
+    return out;
+}
+// The consoles whose NetDiscParty.xex waited on the server lately (PartyWait),
+// with when (Now()): those show the wheel, so don't need it opened.
+std::mutex WheelSeenLock;
+std::map<std::string,double> WheelSeen;
+const double WheelSeenSeconds = 40;
+bool ShowsWheel(const std::string& address) {
+    std::lock_guard<std::mutex> hold(WheelSeenLock);
+    std::map<std::string,double>::const_iterator at=WheelSeen.find(address);
+    return at!=WheelSeen.end() && Now()-at->second<WheelSeenSeconds;
+}
 std::string PartyText(unsigned long long version, const std::string& address);
-bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& out, std::string& note, std::string& error);
+bool StartSpin(bool pick, int teams, const std::string& title, int seed, const std::vector<std::string>* consoles, int leadMs,
+               Spin& out, std::string& note, std::string& error);
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -1198,7 +1229,7 @@ public:
             if(Settings.verbose) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
             // NetDiscParty.xex's own: it isn't the console's disc drive, so
             // its connection doesn't count as one (Attach).
-            if(command==PartyWait || command==PartySpinAsk) {
+            if(command==PartyWait || command==PartySpinAsk || command==PartySignIn) {
                 if(!PartyRequest(command,index,offset,length)) break;
                 continue;
             }
@@ -1254,16 +1285,35 @@ private:
     // spins the wheel from the Gamemaster's console: index 1 for teams
     // (length of them; 0: the party's), 2 to pick one guest. Each reply is
     // its length (4 bytes) and then text: the party, or "ok", or "error" and
-    // a sentence after a tab.
-    enum { PartyWaitMost = 30000 };
+    // a sentence after a tab. PartySignIn says a guest signed in on the
+    // console's NetDiscParty.xex: index is the seat (0-3) and the controller
+    // (0-3) times 256, with 0x8000 when the controller signed out instead;
+    // offset is the profile's XUID; length bytes of its gamertag follow the
+    // request.
+    enum { PartyWaitMost = 30000, GamertagBytesMost = 64, SignedOut = 0x8000 };
     bool SendText(const std::string& text) { return Send32(DWORD(text.size())) && SendAll(reinterpret_cast<const unsigned char*>(text.data()),text.size()); }
     bool PartyRequest(int command, DWORD index, U64 offset, DWORD length) {
         // The guests' names go to the Xboxes only (as --xbox and the
         // settings' xboxes list them, else anything but this computer).
+        std::string gamertag;
+        if(command==PartySignIn) {
+            // Read first: it's part of the request, whatever the answer.
+            if(length>GamertagBytesMost) { Log("%s sent a gamertag of %u bytes; closing.",peer_,length); return false; }
+            char text[GamertagBytesMost];
+            if(length && !ReceiveAll(reinterpret_cast<unsigned char*>(text),length)) return false;
+            gamertag.assign(text,length);
+            for(size_t i=0;i<gamertag.size();++i) if((unsigned char)gamertag[i]<32) gamertag[i]=' ';
+        }
         if(!FromXbox(address_)) return SendText("error\tThis isn't one of NetDisc360's Xboxes.\n");
         if(command==PartyWait) {
+            { std::lock_guard<std::mutex> hold(WheelSeenLock); WheelSeen[peer_]=Now(); }
             unsigned long long version=WaitForParty(offset,int(std::min<DWORD>(length,PartyWaitMost)));
+            { std::lock_guard<std::mutex> hold(WheelSeenLock); WheelSeen[peer_]=Now(); }
             return SendText(PartyText(version,peer_));
+        }
+        if(command==PartySignIn) {
+            std::string error=SignIn(int(index&0xFF),int((index>>8)&0x7F),(index&SignedOut)!=0,offset,gamertag);
+            return SendText(error.empty() ? std::string("ok\n") : "error\t"+error+"\n");
         }
         Party p=CurrentParty();
         std::string error, note;
@@ -1272,8 +1322,32 @@ private:
         else if(p.gamemaster!=peer_) error="Only the Gamemaster's console spins the wheel.";
         else if(index!=1 && index!=2) error="Ask for teams or one guest.";
         else if(index==1 && length && (length<TeamsLeast || length>TeamsMost)) error="Draw 2, 3 or 4 teams.";
-        else if(StartSpin(index==2,int(length),std::string(),-1,spin,note,error)) Log("%s spun the raffle wheel.",peer_);
+        else if(StartSpin(index==2,int(length),std::string(),-1,NULL,SpinLeadMs,spin,note,error)) Log("%s spun the raffle wheel.",peer_);
         return SendText(error.empty() ? std::string("ok\n") : "error\t"+error+"\n");
+    }
+    // A guest signed in (or a controller signed out) on this console's
+    // NetDiscParty.xex; "" or why not.
+    std::string SignIn(int seat, int controller, bool out, unsigned long long xuid, const std::string& gamertag) {
+        if(controller>3) return "There are four controllers.";
+        std::string name;
+        {
+            std::lock_guard<std::mutex> hold(PartyLock);
+            std::vector<PartySignInRecord>& had=SignIns[peer_];
+            if(out) {
+                for(size_t i=had.size();i-->0;) if(had[i].controller==controller) had.erase(had.begin()+i);
+            } else {
+                for(size_t i=0;i<TheParty.seats.size() && name.empty();++i)
+                    if(TheParty.seats[i].first==peer_ && seat>=0 && size_t(seat)<TheParty.seats[i].second.size()) name=TheParty.seats[i].second[seat];
+                if(name.empty()) return "No one sits in that seat on this console.";
+                for(size_t i=had.size();i-->0;) if(had[i].controller==controller || SameName(had[i].name,name)) had.erase(had.begin()+i);
+                PartySignInRecord r; r.name=name; r.gamertag=gamertag; r.controller=controller; r.xuid=xuid;
+                had.push_back(r);
+            }
+        }
+        if(out) Log("%s: controller %d signed out on the party screen.",peer_,controller+1);
+        else Log("%s: %s signed in on controller %d (%s).",peer_,name.c_str(),controller+1,gamertag.empty() ? "no gamertag" : gamertag.c_str());
+        PartyNews();
+        return std::string();
     }
     bool Handle(int command, DWORD index, U64 offset, DWORD length) {
         switch(command) {
@@ -1714,6 +1788,8 @@ int RefreshRemote(FtpClient& ftp, const std::string& path, const std::vector<uns
 }
 
 const char SyncFolder[]="NetISO Sync";
+// The party wheel app's folder in the Xbox folder, as build.ps1 makes it (see OpenWheel).
+const char WheelAppFolder[]="NetDisc360 Party";
 // NetISO Sync's own folder, if it's there, gets this build's launcher and
 // helper as they are (the launcher keeps its own Title ID, FFFF4E49): an
 // older Sync can't read the launchers this server writes, and would only
@@ -1951,7 +2027,7 @@ bool FindArtless(FtpClient& ftp, const Options& o, std::vector<FtpEntry>& folder
     for(size_t f=0;f<folders.size();++f) {
         const FtpEntry& folder=folders[f];
         // NetDisc360's helper has no tile, and NetISO Sync's art isn't Aurora's to find.
-        if(!folder.folder || !_stricmp(folder.name.c_str(),HelperFolder) || !_stricmp(folder.name.c_str(),SyncFolder)) continue;
+        if(!folder.folder || !_stricmp(folder.name.c_str(),HelperFolder) || !_stricmp(folder.name.c_str(),SyncFolder) || !_stricmp(folder.name.c_str(),WheelAppFolder)) continue;
         std::string directory=AuroraDirectory(o,folder.name);
         const AuroraItem* item=NULL;
         for(size_t i=0;i<items.size() && !item;++i) if(!_stricmp(items[i].directory.c_str(),directory.c_str())) item=&items[i];
@@ -3085,6 +3161,27 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
     TeamsJson(j,p.last);
     j.Key("spin");
     SpinJson(j,p.spin);
+    // Who signed in on each console's party screen: for each seat, the
+    // controller (1-4) and gamertag, or null.
+    j.Key("signedIn").Open('{');
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        for(size_t i=0;i<p.seats.size();++i) {
+            std::vector<const PartySignInRecord*> seats=SignedIn(p,p.seats[i].first);
+            j.Key(p.seats[i].first.c_str()).Open('[');
+            for(size_t k=0;k<seats.size();++k)
+                if(seats[k]) j.Open('{').Set("controller",seats[k]->controller+1).Set("gamertag",seats[k]->gamertag).Close('}');
+                else j.Null();
+            j.Close(']');
+        }
+    }
+    j.Close('}').Key("wheelOn").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(WheelSeenLock);
+        double now=Now();
+        for(std::map<std::string,double>::const_iterator i=WheelSeen.begin();i!=WheelSeen.end();++i) if(now-i->second<WheelSeenSeconds) j.String(i->first);
+    }
+    j.Close(']');
     j.Close('}');
 }
 
@@ -5298,9 +5395,19 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
 // dashboard, the big screen and each console's NetDiscParty.xex show the
 // same spin. From the dashboard (POST /api/party/spin) or the Gamemaster's
 // console (PartySpinAsk). seed < 0: a new draw; teams 0: the party's.
-bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& out, std::string& note, std::string& error) {
+// consoles: the ones it's for (NULL: the party's); any not in the party yet
+// join it, and the teams are seated on these only. leadMs: how long before
+// the wheel moves (longer while the consoles open the wheel, see OpenWheel).
+bool StartSpin(bool pick, int teams, const std::string& title, int seed, const std::vector<std::string>* consoles, int leadMs,
+               Spin& out, std::string& note, std::string& error) {
     std::lock_guard<std::mutex> changing(PartyChangeLock);
     Party p=CurrentParty();
+    std::vector<std::string> on=consoles ? *consoles : p.consoles, joining;
+    for(size_t i=0;i<on.size();++i) if(std::find(p.consoles.begin(),p.consoles.end(),on[i])==p.consoles.end()) joining.push_back(on[i]);
+    // The Gamemaster's first, as the party has them.
+    std::vector<std::string>::iterator host=std::find(on.begin(),on.end(),p.gamemaster);
+    if(host!=on.end()) std::rotate(on.begin(),host,host+1);
+    if(!pick && on.empty()) { error="Choose the consoles the wheel is for: tick the party's consoles first."; return false; }
     double now=Now();
     if(!p.spin.steps.empty() && (now-p.spin.at)*1000<p.spin.TotalMs()) { error="The wheel is still turning."; return false; }
     if(!teams) teams=p.teams;
@@ -5314,9 +5421,13 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& o
         if(here.size()<2) { error=here.empty() ? "No one is here yet: tick the guests who are here." : "Tick at least two guests who are here, so the wheel has a choice."; return false; }
         PlanPickSpin(here,std::mt19937(from)()%here.size(),title,from,spin);
     } else {
-        if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,p.consoles,seats,error)) return false;
+        if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,on,seats,error)) return false;
         PlanTeamSpin(drawn,from,spin);
+        // Every party console has an entry, empty when no one plays on it.
+        for(size_t i=0;i<p.consoles.size();++i)
+            if(std::find(on.begin(),on.end(),p.consoles[i])==on.end()) seats.push_back(std::make_pair(p.consoles[i],Team()));
     }
+    spin.leadMs=std::max<int>(leadMs,SpinLeadMs);
     // A new id for each spin, also after a restart (spins aren't kept).
     spin.id=std::max(unsigned(time(NULL)),p.spin.id+1);
     spin.at=now;
@@ -5327,15 +5438,62 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, Spin& o
             TheParty.drawnTeams=drawn; TheParty.seats=seats; TheParty.note=note;
         }
         TheParty.spin=spin;
+        TheParty.consoles.insert(TheParty.consoles.end(),joining.begin(),joining.end());
     }
     Save();
     out=spin;
+    for(size_t i=0;i<joining.size();++i) Log("%s joins the LAN party for the wheel.",joining[i].c_str());
     if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
     else Log("The raffle wheel is drawing %d teams from %d guests.",teams,int(here.size()));
     return true;
 }
 
-// POST /api/party/spin {kind: "teams" or "pick", teams?, title?, seed?}.
+std::string RunningGame(Console& c, const Options& o);
+// How long the wheel waits before it turns when it was opened on the
+// consoles first: Aurora closes, the app starts and finds the server.
+enum { OpenLeadMs = 12000 };
+
+// Opens NetDiscParty.xex on a console from Aurora (its web server, as Start
+// on all starts a game), putting this server's copy in the Xbox folder first
+// when the console's isn't the same. how: "showing" when it shows the wheel
+// already, "opened", or "copied and opened".
+bool OpenWheel(Console& c, std::string& how, std::string& error) {
+    if(ShowsWheel(c.text)) { how="showing"; return true; }
+    Options o=Current();
+    std::string folder=o.xboxFolder+"/"+WheelAppFolder;
+    bool copied=false;
+    if(!WheelApp.empty()) {
+        // Its own connection, closed before Aurora is asked to go.
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+        if(!ftp.Open()) { error="Aurora's FTP server doesn't answer, so the wheel couldn't be put on it: "+std::string(ftp.Error())+"."; return false; }
+        ftp.MakeFolder(o.xboxFolder.c_str());
+        ftp.MakeFolder(folder.c_str());
+        int wrote=RefreshRemote(ftp,folder+"/default.xex",WheelApp);
+        if(wrote<0) { error="Couldn't put the wheel on it: "+std::string(ftp.Error())+"."; return false; }
+        copied=wrote>0;
+        if(copied) XboxLog(c,"wrote the party wheel app to %s.",folder.c_str());
+    }
+    std::string device=DevicePath(folder), why;
+    if(device.empty()) { error="Aurora starts apps from the hard drive only, and the Xbox folder is "+o.xboxFolder+"."; return false; }
+    if(!SafeSoon(c,StartWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
+    if(!aurora.Launch(device,"default.xex")) {
+        error=aurora.Error()+".";
+        if(WheelApp.empty()) error+=" (This server has no copy of the wheel app to put on it: copy the \"NetDisc360 Party\" folder into "+device+" by hand.)";
+        XboxLog(c,"couldn't open the party wheel: %s",error.c_str());
+        return false;
+    }
+    XboxLog(c,"opened the party wheel.");
+    how=copied ? "copied and opened" : "opened";
+    return true;
+}
+
+// POST /api/party/spin {kind: "teams" or "pick", teams?, title?, seed?,
+// consoles?, open?, confirm?}: consoles are the ones the wheel is for (else
+// the party's; any not in the party join it); open opens the wheel on them
+// (OpenWheel), the wheel waiting OpenLeadMs for them before it turns. A
+// console in a game would leave it, so that's asked first (409 with busy),
+// unless confirm.
 void PartySpin(const web::Value& v, web::Reply& out) {
     if(v.type!=web::Value::Object) { out.Error(400,"Send the spin as a JSON object."); return; }
     std::string error, kind="teams", title, note;
@@ -5344,12 +5502,62 @@ void PartySpin(const web::Value& v, web::Reply& out) {
     if((!Whole(v,"teams",TeamsLeast,TeamsMost,teams,error) && !error.empty()) || (!Whole(v,"seed",0,0x7FFFFFFF,seed,error) && !error.empty())) { out.Error(400,error); return; }
     std::string typed;
     if(Text(v,"title",typed) && !CleanName(typed,0,SpinTitleMost,"The wheel's question",title,error)) { out.Error(400,error); return; }
+    std::vector<std::string> consoles;
+    const web::Value* given=v.Get("consoles");
+    if(given && !PartyConsoles(*given,"consoles",consoles,error)) { out.Error(400,error); return; }
+    bool open=false, confirm=false;
+    Bool(v,"open",open);
+    Bool(v,"confirm",confirm);
+    Party p=CurrentParty();
+    std::vector<std::string> opening=given ? consoles : p.consoles;
+    if(open && opening.empty()) { out.Error(400,"Choose the consoles to open the wheel on: tick the party's consoles first."); return; }
+    std::vector<Console*> found;
+    if(open) {
+        if(!p.spin.steps.empty() && (Now()-p.spin.at)*1000<p.spin.TotalMs()) { out.Error(400,"The wheel is still turning."); return; }
+        for(size_t i=0;i<opening.size();++i) found.push_back(ConsoleIfKnown(inet_addr(opening[i].c_str())));
+        if(!confirm) {
+            Options o=Current();
+            std::vector<std::string> running(found.size());
+            std::vector<std::thread> asks;
+            for(size_t i=0;i<found.size();++i)
+                if(found[i] && !ShowsWheel(opening[i])) asks.push_back(std::thread([&running,&found,&o,i]() { running[i]=RunningGame(*found[i],o); }));
+            for(size_t i=0;i<asks.size();++i) asks[i].join();
+            web::Json j;
+            j.Open('{').Key("busy").Open('[');
+            int busy=0;
+            for(size_t i=0;i<running.size();++i)
+                if(!running[i].empty()) { j.Open('{').Set("address",opening[i]).Set("title",running[i]).Close('}'); ++busy; }
+            j.Close(']');
+            if(busy) {
+                j.Set("error",busy==1 ? "A console is in a game, which it leaves to open the wheel." : "Some consoles are in a game, which they leave to open the wheel.").Close('}');
+                out.status=409;
+                out.body=j.Text();
+                return;
+            }
+        }
+    }
     Spin spin;
-    if(!StartSpin(kind=="pick",teams,title,seed,spin,note,error)) { out.Error(400,error); return; }
+    if(!StartSpin(kind=="pick",teams,title,seed,given && kind=="teams" ? &consoles : NULL,open ? int(OpenLeadMs) : int(SpinLeadMs),spin,note,error)) { out.Error(400,error); return; }
+    struct Result { bool ok; std::string how, error; };
+    std::vector<Result> results(found.size());
+    std::vector<std::thread> opens;
+    for(size_t i=0;i<found.size();++i) opens.push_back(std::thread([&results,&found,i]() {
+        Result& r=results[i];
+        r.ok=false;
+        if(!found[i]) r.error="That console hasn't used NetDisc360 since it started.";
+        else r.ok=OpenWheel(*found[i],r.how,r.error);
+    }));
+    for(size_t i=0;i<opens.size();++i) opens[i].join();
     web::Json j;
     j.Open('{').Set("ok",true).Key("spin");
     SpinJson(j,spin);
-    j.Set("note",note).Close('}');
+    j.Set("note",note);
+    if(open) {
+        j.Key("opened").Open('[');
+        for(size_t i=0;i<results.size();++i) j.Open('{').Set("address",opening[i]).Set("ok",results[i].ok).Set("how",results[i].how).Set("error",results[i].error).Close('}');
+        j.Close(']');
+    }
+    j.Close('}');
     out.body=j.Text();
 }
 
@@ -5401,6 +5609,10 @@ std::string PartyText(unsigned long long version, const std::string& address) {
             fields.insert(fields.end(),p.seats[i].second.begin(),p.seats[i].second.end());
             line("seat",fields);
         }
+        // Who signed in on this console already (PartySignIn): the seat, the controller and the gamertag.
+        std::lock_guard<std::mutex> hold(PartyLock);
+        std::vector<const PartySignInRecord*> signedIn=SignedIn(p,address);
+        for(size_t i=0;i<signedIn.size();++i) if(signedIn[i]) line("signin",{Number(int(i)),Number(signedIn[i]->controller),signedIn[i]->gamertag});
     }
     return t;
 }
@@ -6787,6 +6999,8 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         // boot.xex is optional: without it, each launcher mounts by itself.
         if(o.bootPath.empty()) BuiltIn(IDR_BOOT,Boot);
         else if(!LoadFile(o.bootPath,Boot)) { fprintf(stderr,"Can't read %s.\n",o.bootPath.c_str()); return 2; }
+        // The party wheel app (party/), for OpenWheel; in Docker, next to the art.
+        if(!BuiltIn(IDR_PARTY_APP,WheelApp)) LoadFile("/usr/local/share/netdisc/party/default.xex",WheelApp);
         if(CanPush && !ExecutionInfoOffset(Launcher.data(),DWORD(Launcher.size()))) { fprintf(stderr,"The launcher XEX has no execution info header.\n"); return 2; }
         if(!CanPush && o.push) Log("This build has no launcher built in, so it won't update the Xbox (--launcher gives one).");
     }

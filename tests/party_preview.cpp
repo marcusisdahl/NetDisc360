@@ -4,7 +4,9 @@
 // PartyText in server/main.cpp) drawn into 1280x720 BMPs, one for each
 // moment of the spin asked for. The rasterizer is tests/ui_preview.cpp's.
 //   party-preview <out-prefix> <party.txt> <from ms> [<to ms> <every ms>] [lost|looking]
-// writes <out-prefix>-0000.bmp and on, the spin that far in.
+//   party-preview <out-prefix> <party.txt> <ms> <ms> 1 players <c0,c1,c2,c3> <asking> <choosing> <leave in>
+// writes <out-prefix>-0000.bmp and on, the spin that far in; players draws
+// the players screen, each seat's controller (-1: not signed in) given.
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <string.h>
@@ -91,6 +93,18 @@ int main(int argc, char** argv) {
     const char* mode=argc>6 ? argv[6] : "";
     if(!strcmp(mode,"lost")) { s.link=party::LinkLost; s.state.valid=false; }
     if(!strcmp(mode,"looking")) { s.link=party::LinkLooking; s.state.valid=false; }
+    if(!strcmp(mode,"players") && argc>10) {
+        s.view=party::ViewPlayers;
+        const party::Seat* mine=party::MySeat(s.state);
+        const char* at=argv[7];
+        for(int i=0;i<party::PerConsole && *at;++i) {
+            s.players[i].controller=atoi(at);
+            if(s.players[i].controller>=0 && mine && i<mine->count) snprintf(s.players[i].gamertag,sizeof(s.players[i].gamertag),"%s",mine->names[i]);
+            while(*at && *at!=',') ++at;
+            if(*at) ++at;
+        }
+        s.asking=atoi(argv[8]); s.choosing=atoi(argv[9]); s.leaveIn=atoi(argv[10]);
+    }
     double from=atof(argv[3]), to=argc>4 ? atof(argv[4]) : from, every=argc>5 ? atof(argv[5]) : 1;
     if(every<=0) every=1;
     int frame=0;

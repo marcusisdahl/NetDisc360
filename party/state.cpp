@@ -75,6 +75,11 @@ bool Parse(const char* text, unsigned length, State& s) {
             for(int i=0;i<n && i<WheelMost;++i) FIELD(i,s.team[t][i]);
             s.teamSize[t]=n<WheelMost ? n : WheelMost;
         }
+        else if(!strcmp(key,"signin") && n>=3 && s.signedCount<PerConsole) {
+            SignedIn& in=s.signedIn[s.signedCount++];
+            in.seat=atoi(NUMBER(0)); in.controller=atoi(NUMBER(1)); FIELD(2,in.gamertag);
+            if(in.seat<0 || in.seat>=PerConsole || in.controller<0 || in.controller>3) --s.signedCount;
+        }
         else if(!strcmp(key,"seat") && n>=2 && s.seatCount<SeatsMost) {
             Seat& seat=s.seats[s.seatCount++];
             FIELD(0,seat.address); FIELD(1,seat.console);
@@ -136,5 +141,40 @@ int TeamOf(const State& s, const char* name) {
     for(int t=0;t<s.teamCount;++t)
         for(int i=0;i<s.teamSize[t];++i) if(!strcmp(s.team[t][i],name)) return t;
     return -1;
+}
+
+namespace {
+// name's letters and digits, lower case and plain (å as a, æ as ae, ß as ss).
+void Plain(const char* name, char* out, unsigned capacity) {
+    // Latin-1's letters from U+00C0, as plain ones; "" for ×/÷.
+    static const char* const latin[64]={"a","a","a","a","a","a","ae","c","e","e","e","e","i","i","i","i","d","n","o","o","o","o","o","","o","u","u","u","u","y","th","ss",
+                                        "a","a","a","a","a","a","ae","c","e","e","e","e","i","i","i","i","d","n","o","o","o","o","o","","o","u","u","u","u","y","th","y"};
+    unsigned at=0;
+    const unsigned char* p=reinterpret_cast<const unsigned char*>(name);
+    while(*p && at+3<capacity) {
+        if((*p>='a' && *p<='z') || (*p>='0' && *p<='9')) out[at++]=char(*p);
+        else if(*p>='A' && *p<='Z') out[at++]=char(*p-'A'+'a');
+        else if(*p==0xC3 && p[1]>=0x80 && p[1]<=0xBF) {
+            const char* plain=latin[p[1]-0x80];
+            while(*plain && at+1<capacity) out[at++]=*plain++;
+            ++p;
+        } else if(*p>=0xC0) {
+            // Another letter (Ł, Č...): left out, with the rest of its bytes.
+            while((p[1]&0xC0)==0x80) ++p;
+        }
+        ++p;
+    }
+    out[at]=0;
+}
+}
+
+bool GamertagOf(const char* gamertag, const char* name) {
+    char tag[64], plain[NameBytes*2];
+    Plain(gamertag,tag,sizeof(tag)); Plain(name,plain,sizeof(plain));
+    if(!tag[0]) return false;
+    if(!strcmp(tag,plain)) return true;
+    // A gamertag holds 15 characters: a longer name keeps its start ("Kristoffer H").
+    size_t length=strlen(tag);
+    return length>=4 && strlen(gamertag)>=12 && !strncmp(tag,plain,length);
 }
 }
