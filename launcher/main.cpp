@@ -1319,6 +1319,18 @@ static bool UseTileFolder(const char* folder) {
 
 // ---- Guest profiles ----
 
+// The account fields of the console's profiles, in the log: how the
+// dashboard made them, for the helper to make its own the same way.
+static void NoteProfiles(const nia::ProfileInfo* profiles,int count) {
+    Note("The console has %d profiles:",count);
+    for(int i=0;i<count;++i) {
+        char tag[nia::GamertagMost+1];
+        for(int k=0;k<=nia::GamertagMost;++k) tag[k]=profiles[i].gamertag[k]<0x80 ? char(profiles[i].gamertag[k]) : '?';
+        Note("  %016I64X \"%s\": device %lu, reserved %08lX, live %08lX, cached %08lX, network %08lX, online XUID %016I64X",
+             profiles[i].xuid,tag,profiles[i].device,profiles[i].reservedFlags,profiles[i].liveFlags,profiles[i].cachedUserFlags,profiles[i].networkId,profiles[i].xuidOnline);
+    }
+}
+
 // The LAN party's guest profiles (see ProfileJob in shared/helper.h): true
 // if the helper was started for that job, which is then done. The screen is
 // the loading screen's, with the profiles as its steps.
@@ -1332,11 +1344,20 @@ static bool ProfileJob() {
     if(!DeleteFile(path)) Note("Couldn't delete %s (%lu).",path,GetLastError());
     char number[32]="";
     nia::IniValue(job,"job",number,sizeof(number));
-    nia::ProfileCall call;
-    call.device=DWORD(IniNumber(job,"device",1));
+    static nia::ProfileInfo profiles[nia::ProfilesListed];
+    int listed=nia::ListProfiles(profiles,nia::ProfilesListed);
+    NoteProfiles(profiles,listed);
+    // As the console's own offline profiles are made, unless the job says otherwise.
+    nia::ProfileCall call=nia::DefaultProfileCall(profiles,listed);
     char value[32];
-    call.flags=nia::IniValue(job,"flags",value,sizeof(value)) ? strtoul(value,NULL,0) : 0;
+    if(nia::IniValue(job,"device",value,sizeof(value)) && value[0]) call.device=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"flags",value,sizeof(value)) && value[0]) call.flags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"reserved",value,sizeof(value)) && value[0]) call.reservedFlags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"cached",value,sizeof(value)) && value[0]) call.cachedUserFlags=strtoul(value,NULL,0);
     call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
+    bool ownXuid=IniNumber(job,"own_xuid",0)!=0, probe=IniNumber(job,"probe",0)!=0;
+    ULONGLONG like=0;
+    for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
     static char names[nia::ProfileJobMost][nia::GamertagMost+1];
     int count=0,slot[nia::ProfileJobMost];
     for(int i=1;i<=nia::ProfileJobMost;++i) {
@@ -1346,7 +1367,8 @@ static bool ProfileJob() {
         strncpy_s(names[count],name,_TRUNCATE);
         slot[count++]=i;
     }
-    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX%s).",number[0] ? number : "?",count,call.device,call.flags,call.zeroTokens ? ", zeroed tokens" : "");
+    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s).",number[0] ? number : "?",count,
+         call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",probe ? ", trying other ways too" : "");
     strcpy_s(Shown.game,"Guest profiles");
     ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
     ScreenStart();
@@ -1360,16 +1382,24 @@ static bool ProfileJob() {
         WCHAR gamertag[nia::GamertagMost+1];
         size_t length=strlen(names[n]);
         for(size_t k=0;k<=length;++k) gamertag[k]=WCHAR((unsigned char)names[n][k]);
+        // With probe=, each way in turn until one works: as asked, with an
+        // XUID of its own (like the console's), then both with zeroed tokens.
         ULONGLONG xuid=0;
-        char why[160];
-        if(nia::MakeProfile(gamertag,call,xuid,why,sizeof(why),Wait)) {
+        DWORD code=0;
+        char why[160]="";
+        bool ok=false;
+        for(int way=0;way<(probe ? 4 : 1) && !ok;++way) {
+            nia::ProfileCall tried=call;
+            if(ownXuid || way==1 || way==2) tried.xuid=nia::NewOfflineXuid(like,profiles,listed);
+            if(way>=2) tried.zeroTokens=true;
+            ok=nia::MakeProfile(gamertag,tried,xuid,code,why,sizeof(why),Wait);
+            Note("%s %s, way %d (XUID asked %016I64X%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",ok ? "" : why,ok ? "" : ".");
+        }
+        if(ok) {
             ++made;
             Note("Made %s: %016I64X.",names[n],xuid);
             used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",slot[n],xuid);
-        } else {
-            Note("Couldn't make %s: %s",names[n],why);
-            used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
-        }
+        } else used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
     }
     HANDLE file=CreateFile(donePath,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
     DWORD wrote=0;

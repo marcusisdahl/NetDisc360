@@ -25,11 +25,19 @@ struct AccountInfo {
 typedef char AccountInfoSize[sizeof(AccountInfo)==0x17C ? 1 : -1];
 const DWORD LanguageMask=0x3E000000, LanguageShift=25;
 
-enum { OrdinalProfileCreate=0x230, OrdinalCreationStatus=0x234, OrdinalFindAccount=0x235 };
+enum { OrdinalProfileCreate=0x230, OrdinalCreateEnumerator=0x231, OrdinalEnumerate=0x232, OrdinalCreationStatus=0x234, OrdinalFindAccount=0x235 };
 typedef DWORD (__stdcall* ProfileCreate)(DWORD flags, DWORD* device, ULONGLONG xuid, AccountInfo* account,
                                           void* payment, void* userToken, void* ownerToken, DWORD* creation);
 typedef DWORD (__stdcall* CreationStatus)(DWORD creation, ULONGLONG* offlineXuid);
 typedef DWORD (__stdcall* FindAccount)(ULONGLONG xuid, AccountInfo* account, DWORD* device);
+// PROFILEENUMRESULT (xkelib), 0x188 bytes.
+#pragma pack(push,4)
+struct EnumResult { ULONGLONG xuidOffline; AccountInfo account; DWORD device; };
+#pragma pack(pop)
+typedef char EnumResultSize[sizeof(EnumResult)==0x188 ? 1 : -1];
+typedef DWORD (__stdcall* CreateEnumerator)(DWORD device, HANDLE* handle);
+typedef DWORD (__stdcall* Enumerate)(HANDLE handle, DWORD flags, EnumResult* result, void* overlapped);
+const DWORD LiveEnabled=0x20000000;
 // Seconds a creation may take before it counts as failed (the dashboard's
 // takes a moment: it writes the profile's package to the drive).
 const DWORD CreationMostMs=60000, CreationPollMs=100;
@@ -52,8 +60,57 @@ BYTE ZeroPayment[4096], ZeroToken[2][256];
 }
 
 namespace nia {
-bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid, char* error, size_t capacity, void (*wait)(int ms)) {
+int ListProfiles(ProfileInfo* out, int capacity) {
+    CreateEnumerator start=(CreateEnumerator)Xam(OrdinalCreateEnumerator);
+    Enumerate next=(Enumerate)Xam(OrdinalEnumerate);
+    HANDLE handle=NULL;
+    if(!start || !next || start(0,&handle)!=ERROR_SUCCESS || !handle) return 0;
+    int count=0;
+    static EnumResult result;
+    for(int guard=0;count<capacity && guard<256;++guard) {
+        memset(&result,0,sizeof(result));
+        if(next(handle,0,&result,NULL)!=ERROR_SUCCESS) break;
+        ProfileInfo& p=out[count++];
+        memset(&p,0,sizeof(p));
+        p.xuid=result.xuidOffline; p.xuidOnline=result.account.xuidOnline;
+        memcpy(p.gamertag,result.account.gamertag,GamertagMost*sizeof(WCHAR));
+        p.device=result.device; p.reservedFlags=result.account.reservedFlags; p.liveFlags=result.account.liveFlags;
+        p.cachedUserFlags=result.account.cachedUserFlags; p.networkId=result.account.networkId;
+    }
+    CloseHandle(handle);
+    return count;
+}
+
+ProfileCall DefaultProfileCall(const ProfileInfo* profiles, int count) {
+    ProfileCall call;
+    memset(&call,0,sizeof(call));
+    call.device=1;
+    call.cachedUserFlags=(DWORD(XGetLanguage())<<LanguageShift)&LanguageMask;
+    // An offline one (not Live) first, else any.
+    const ProfileInfo* like=NULL;
+    for(int i=0;i<count && !like;++i) if(!(profiles[i].reservedFlags&LiveEnabled) && !profiles[i].xuidOnline) like=&profiles[i];
+    if(!like && count) like=&profiles[0];
+    if(like) {
+        call.device=like->device;
+        call.reservedFlags=like->reservedFlags&0xFF;  // Its version; no Live, no passcode.
+        call.cachedUserFlags=like->cachedUserFlags&(LanguageMask|0xFF00);  // Its language and country.
+    }
+    return call;
+}
+
+ULONGLONG NewOfflineXuid(ULONGLONG like, const ProfileInfo* profiles, int count) {
+    ULONGLONG low=like&0xFFFFFFFFull;
+    for(DWORD seed=GetTickCount();;seed=seed*1103515245+12345) {
+        ULONGLONG xuid=0xE000000000000000ull|(ULONGLONG((seed>>8)&0xFFFF)<<32)|low;
+        bool used=false;
+        for(int i=0;i<count && !used;++i) used=profiles[i].xuid==xuid;
+        if(!used && ((seed>>8)&0xFFFF)) return xuid;
+    }
+}
+
+bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid, DWORD& code, char* error, size_t capacity, void (*wait)(int ms)) {
     xuid=0;
+    code=0;
     error[0]=0;
     size_t length=gamertag ? wcslen(gamertag) : 0;
     if(!length || length>GamertagMost) { sprintf_s(error,capacity,"A gamertag has 1 to %d characters.",int(GamertagMost)); return false; }
@@ -63,18 +120,20 @@ bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid
     static AccountInfo account;
     memset(&account,0,sizeof(account));
     memcpy(account.gamertag,gamertag,length*sizeof(WCHAR));
-    // The console's language, as a profile made in its dashboard gets.
-    account.cachedUserFlags=(DWORD(XGetLanguage())<<LanguageShift)&LanguageMask;
+    account.reservedFlags=call.reservedFlags;
+    account.cachedUserFlags=call.cachedUserFlags;
     DWORD device=call.device, creation=0;
     void* payment=call.zeroTokens ? ZeroPayment : NULL;
     void* userToken=call.zeroTokens ? ZeroToken[0] : NULL;
     void* ownerToken=call.zeroTokens ? ZeroToken[1] : NULL;
-    DWORD result=create(call.flags,&device,0,&account,payment,userToken,ownerToken,&creation);
+    DWORD result=create(call.flags,&device,call.xuid,&account,payment,userToken,ownerToken,&creation);
+    code=result;
     if(result!=ERROR_SUCCESS && result!=ERROR_IO_PENDING) { sprintf_s(error,capacity,"xam didn't start it (XamProfileCreate %08lX).",result); return false; }
     if(!creation) { sprintf_s(error,capacity,"xam gave nothing to follow it by (XamProfileCreate %08lX).",result); return false; }
     for(DWORD start=GetTickCount();;) {
         ULONGLONG made=0;
         result=status(creation,&made);
+        code=result;
         if(result==ERROR_SUCCESS) { xuid=made; break; }
         if(result!=ERROR_IO_PENDING && result!=StillPending) { sprintf_s(error,capacity,"xam couldn't make it (XamProfileGetCreationStatus %08lX).",result); return false; }
         if(GetTickCount()-start>CreationMostMs) { sprintf_s(error,capacity,"xam was still at it after %lu seconds (%08lX).",CreationMostMs/1000,result); return false; }

@@ -7,30 +7,57 @@
 // copy of it (as with a profile moved on a memory unit), which is how the
 // server gives the same profile to every party console.
 //
-// The calls, as xenia (xenia-canary, xam_profile.cc and xam.h) describes them:
+// The calls, as xenia (xenia-canary, xam_profile.cc and xam.h) and xkelib
+// (_xamext.h) describe them, and as seen on the console:
 // XamProfileCreate (ordinal 0x230) starts the creation as a task and hands
 // back a creation record; XamProfileGetCreationStatus (0x234) answers
-// E_PENDING (0x8000000A) until the profile is made, then gives its offline
-// XUID (E000...) and frees the record. XamProfileFindAccount (0x235) reads a
-// profile's account (its gamertag) by XUID.
+// E_PENDING (0x8000000A) until xam is done, then gives the new profile's
+// offline XUID (E000...), or why it couldn't. XamProfileCreateEnumerator and
+// XamProfileEnumerate (0x231, 0x232) list the console's profiles with their
+// accounts and storage devices. XamProfileFindAccount (0x235) reads one
+// profile's account by XUID.
 //
 // Kept apart from the helper's own code so the LAN party's console app can
 // use it too (to sign the guests in).
 #include <xtl.h>
 
 namespace nia {
-enum { GamertagMost = 15 };
+enum { GamertagMost = 15, ProfilesListed = 32 };
 
-// How xam is called: device is the storage device to make it on (1: the hard
-// drive); flags go to xam as they are (0, as far as known, for an offline
-// profile). zeroTokens hands xam zeroed payment and Live token records
-// instead of none, in case a console's xam reads them without looking.
-struct ProfileCall { DWORD device, flags; bool zeroTokens; };
+// A profile on the console, as XamProfileEnumerate gives it (its account's
+// fields that say how it was made; no keys or passwords).
+struct ProfileInfo {
+    ULONGLONG xuid, xuidOnline;
+    WCHAR gamertag[GamertagMost + 1];
+    DWORD device, reservedFlags, liveFlags, cachedUserFlags, networkId;
+};
+// The console's profiles, at most capacity of them; how many.
+int ListProfiles(ProfileInfo* out, int capacity);
+
+// How xam is called: device is the storage device to make it on (the one the
+// console's own profiles are on; 1 is its hard drive's usual number); flags
+// go to xam as they are; xuid is the offline XUID to give it (0: xam picks
+// one); reservedFlags and cachedUserFlags go into the account (an offline
+// profile's from the same console are what the dashboard writes);
+// zeroTokens hands xam zeroed payment and Live token records instead of none.
+struct ProfileCall {
+    DWORD device, flags;
+    ULONGLONG xuid;
+    DWORD reservedFlags, cachedUserFlags;
+    bool zeroTokens;
+};
+// The call for this console: its first offline profile's device and account
+// flags (the console's language when it has none), xam's own XUID.
+ProfileCall DefaultProfileCall(const ProfileInfo* profiles, int count);
+// A new offline XUID like those the console gives (E000, 16 random bits, then
+// the low 32 bits of like: the console's own), one no profile in profiles has.
+ULONGLONG NewOfflineXuid(ULONGLONG like, const ProfileInfo* profiles, int count);
 
 // Makes an offline profile called gamertag (1 to GamertagMost characters),
 // its offline XUID in xuid. wait(ms) is called while xam works on it (to keep
-// a screen drawn); it may be NULL. False, with a plain sentence in error.
-bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid, char* error, size_t capacity, void (*wait)(int ms));
+// a screen drawn); it may be NULL. False, with a plain sentence in error;
+// code gets xam's answer (0 when it never got that far).
+bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid, DWORD& code, char* error, size_t capacity, void (*wait)(int ms));
 
 // Whether this console has the profile xuid; its gamertag in gamertag
 // (GamertagMost + 1 characters), if given.
