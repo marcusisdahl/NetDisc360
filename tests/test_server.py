@@ -60,7 +60,7 @@ def build_server():
     subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_web.py")], check=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
-                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp",
+                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/titleupdates.cpp", "server/system.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -2041,7 +2041,7 @@ class Dashboard(ServerTest):
 
             def install(game, address="127.0.0.2"):
                 self.json("POST", "/api/install", {"game": game, "address": address})
-                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] != "copying", 30)
+                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 30)
                 return state["installs"][-1]
 
             def on_xbox(path):
@@ -2098,7 +2098,7 @@ class Dashboard(ServerTest):
 
             def copy(game, address="127.0.0.2"):
                 self.json("POST", "/api/copy", {"game": game, "address": address})
-                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] != "copying", 60)
+                state = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)
                 return state["installs"][-1]
 
             job = copy("Halo 3 (USA)")
@@ -2182,7 +2182,7 @@ class Dashboard(ServerTest):
         self.start("--xbox", "127.0.0.2", "--ftp-port", str(free_port()))
         self.state_when(lambda s: s["library"]["games"] == 2)
         self.json("POST", "/api/install", {"game": "Forza 4"})
-        job = self.state_when(lambda s: s["installs"][-1]["state"] != "copying", 30)["installs"][-1]
+        job = self.state_when(lambda s: s["installs"][-1]["state"] not in ("queued", "copying"), 30)["installs"][-1]
         self.assertEqual(job["state"], "failed")
         self.assertIn("Start Aurora", job["error"])
 

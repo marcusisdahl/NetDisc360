@@ -16,7 +16,9 @@ namespace nia {
 enum DiscKind { DiscIso, DiscGod, DiscFolder };
 // A content package on an install disc: its path under Content
 // (0000000000000000\<Title ID>\<type>\<name>, as on the disc) and size.
-struct Package { std::string path; U64 size; };
+// source: its path under content on the disc when that isn't path (a bonus disc's
+// packages kept under a placeholder Title ID; see ReadPackageHeader).
+struct Package { std::string path; U64 size; std::string source; };
 // A file on a disc image: its path from the disc's top (folders split by \),
 // first byte in the image, and size.
 struct DiscFile { std::string path; U64 at, size; };

@@ -20,6 +20,7 @@
 #include "ftp.h"
 #include "installed.h"
 #include "system.h"
+#include "titleupdates.h"
 #include "update.h"
 #include "version.h"
 #include "web.h"
@@ -4144,37 +4145,45 @@ void UpdateInfo(web::Reply& out) {
     out.body=j.Text();
 }
 
-// Installing content, and copying whole games ---------------------------------
-//
-// A game with an install disc (GTA V) needs that disc's packages under
-// Content on the console's hard drive before it plays. The dashboard's
-// Install button copies them there over Aurora's FTP, straight from the
-// install disc here, to the path the launcher checks (install.ini).
+// Copying to the console: whole games, install content, title updates ----------
 //
 // Copy to Xbox puts a whole game on the console's hard drive, so it plays
-// without the network: its disc's files, extracted, in a folder of GamesRoot,
-// which Aurora runs as it does any extracted game (an ISO can't be run from
-// the drive, and a folder works for ISOs, GOD packages and folders alike).
-// One copy at a time for each console; it goes on while the dashboard is closed.
+// without the network, as a Games on Demand package (see CopyGame). A game
+// whose play disc needs an install disc's content (GTA V) gets that too,
+// copied from the install disc to Content, where the launcher and the game
+// look for it (see CopyContent); an install disc on its own copies just its
+// content.
+//
+// Everything that writes to a console goes in that console's queue and runs
+// one after another (see CopyWorker), as Aurora's FTP server takes one
+// upload at a time: two at once leave files the console can't read. A
+// queue goes on while the dashboard is closed.
 const char ContentRoot[] = "/Hdd1/Content";
-const char GamesRoot[] = "/Hdd1/Games";
 
 struct ContentCopy {
+    int id;
     DWORD address;
-    bool whole;                       // A whole game (to folder), not install content.
-    std::string console, game, disc;  // The game asked for, and the disc whose packages are copied (UTF-8, as listed).
-    std::string folder;               // whole: the FTP path of the folder its package goes in.
-    std::string phase;                // whole: prepare (reading the disc for its hashes), then send.
-    std::string state, error, current;  // state: copying, done, failed or stopped; current: the package being sent.
-    U64 total, done, copied;          // copied: sent this time (packages already there count in done only).
+    std::string kind;                 // game, content, update, package, files, remove.
+    bool whole;                       // kind game.
+    std::string console, game, disc;  // The game asked for, and the disc copied (UTF-8, as listed).
+    std::string label;                // What the queue calls it ("Title Update 5"); for an update its id is key.
+    std::string key;                  // Tells apart two jobs of a kind for the same game (an update's id).
+    std::string folder;               // game: the FTP path of the folder its package goes in.
+    std::string phase;                // game: prepare (reading the disc for its hashes), then send.
+    std::string state, error, current;  // state: queued, copying, done, failed or stopped; current: the file being sent.
+    U64 total, done, copied;          // copied: sent this time (files already there count in done only).
     int files, file, skipped;
-    long long startedAt, endedAt;     // time().
+    long long queuedAt, startedAt, endedAt;  // time().
     double began;                     // Now() when sending started, for the speed.
     std::atomic<bool> stop;
-    ContentCopy() : address(0), whole(false), total(0), done(0), copied(0), files(0), file(0), skipped(0), startedAt(0), endedAt(0), began(0), stop(false) {}
+    std::function<void(std::shared_ptr<ContentCopy>)> run;
+    ContentCopy() : id(0), address(0), whole(false), total(0), done(0), copied(0), files(0), file(0), skipped(0),
+                    queuedAt(0), startedAt(0), endedAt(0), began(0), stop(false) {}
 };
-std::mutex CopyLock;  // Guards the fields of each ContentCopy that change while it runs.
-std::vector<std::shared_ptr<ContentCopy> > Copies;  // The latest for each console, newest last.
+std::mutex CopyLock;  // Guards the fields of each ContentCopy that change while it runs, and the lists below.
+std::vector<std::shared_ptr<ContentCopy> > Copies;  // The queued, running and latest finished ones, oldest first.
+std::set<DWORD> CopyWorkers;  // Consoles whose queue runs now.
+int NextCopyId=1;
 void WaitForPush(DWORD address);
 
 std::string SizeText(U64 n) {
@@ -4188,22 +4197,85 @@ std::string SizeText(U64 n) {
 void EndCopy(ContentCopy& c, const Console* console, const char* state, const std::string& error) {
     {
         std::lock_guard<std::mutex> hold(CopyLock);
+        if(c.state!="copying" && c.state!="queued") return;  // Ended already.
         c.state=state; c.error=error; c.endedAt=(long long)time(NULL); c.current.clear();
     }
     char where[16]; AddressText(c.address,where,sizeof(where));
     std::string text;
     int kind=EventGood;
-    if(c.whole) {
-        if(!strcmp(state,"done")) text=c.game+" is on the hard drive ("+SizeText(c.total)+")";
-        else if(!strcmp(state,"stopped")) { text="Stopped copying "+c.game+" to the hard drive"; kind=EventInfo; }
+    bool done=!strcmp(state,"done"), stopped=!strcmp(state,"stopped");
+    if(c.kind=="game") {
+        if(done) text=c.game+" is on the hard drive ("+SizeText(c.total)+")";
+        else if(stopped) { text="Stopped copying "+c.game+" to the hard drive"; kind=EventInfo; }
         else { text="Copying "+c.game+" to the hard drive stopped; the log says why"; kind=EventWarning; }
+    } else if(c.kind=="update") {
+        if(done) text=c.label+" for "+c.game+" is on the console"+(c.skipped ? " (it was there already)" : "");
+        else if(stopped) { text="Stopped putting "+c.label+" for "+c.game+" on the console"; kind=EventInfo; }
+        else { text="Putting "+c.label+" for "+c.game+" on the console stopped; the log says why"; kind=EventWarning; }
+    } else if(c.kind=="package") {
+        if(done) text=c.game+" is on the console";
+        else if(stopped) { text="Stopped copying "+c.game; kind=EventInfo; }
+        else { text="Copying "+c.game+" stopped; the log says why"; kind=EventWarning; }
+    } else if(c.kind=="files") {
+        if(done) text=c.game+" is on the hard drive ("+SizeText(c.total)+")";
+        else if(stopped) { text="Stopped copying "+c.game+" to the hard drive"; kind=EventInfo; }
+        else { text="Copying "+c.game+" to the hard drive stopped; the log says why"; kind=EventWarning; }
+    } else if(c.kind=="remove") {
+        if(done) text=c.game+" is off the console's hard drive";
+        else if(stopped) { text="Didn't remove "+c.game; kind=EventInfo; }
+        else { text="Removing "+c.game+" from the console stopped; the log says why"; kind=EventWarning; }
     }
-    else if(!strcmp(state,"done")) text=WithoutIso(c.game)+"'s content is installed ("+SizeText(c.total)+")";
-    else if(!strcmp(state,"stopped")) { text="Stopped installing "+WithoutIso(c.game)+"'s content"; kind=EventInfo; }
-    else { text="Installing "+WithoutIso(c.game)+"'s content stopped; the log says why"; kind=EventWarning; }
+    else if(done) text=c.game+"'s content is installed ("+SizeText(c.total)+")";
+    else if(stopped) { text="Stopped installing "+c.game+"'s content"; kind=EventInfo; }
+    else { text="Installing "+c.game+"'s content stopped; the log says why"; kind=EventWarning; }
     Log("Xbox %s: %s%s%s",where,text.c_str(),error.empty() ? "." : ": ",error.c_str());
     if(console) XboxEvent(*console,kind,text);
     else Event(kind,"%s on %s",text.c_str(),where);
+}
+
+// Runs a console's queue, oldest first, until it's empty.
+void CopyWorker(DWORD at) {
+    for(;;) {
+        std::shared_ptr<ContentCopy> job;
+        {
+            std::lock_guard<std::mutex> hold(CopyLock);
+            for(size_t i=0;i<Copies.size() && !job;++i) if(Copies[i]->address==at && Copies[i]->state=="queued") job=Copies[i];
+            if(!job) { CopyWorkers.erase(at); return; }
+            job->state="copying"; job->startedAt=(long long)time(NULL); job->began=Now();
+        }
+        job->run(job);
+        // A job that returned without ending (it shouldn't) mustn't hold the queue.
+        EndCopy(*job,ConsoleIfKnown(at),"failed","It stopped without saying why.");
+    }
+}
+
+// Makes the folders of an FTP path (a file's), from below root, a level at a time.
+bool MakeFolders(FtpClient& ftp, const std::string& path, size_t from, std::string& error) {
+    for(size_t at=path.find('/',from+1);at!=std::string::npos;at=path.find('/',at+1)) {
+        std::string step=path.substr(0,at);
+        if(ftp.Enters(step.c_str())) continue;
+        // A failed MKD costs FtpDll's connection: only for one that isn't there.
+        if(ftp.Code()/100!=5 || !ftp.MakeFolder(step.c_str())) { error="Couldn't make "+step+" on the console: "+ftp.Error(); return false; }
+    }
+    return true;
+}
+
+// The size of a file on the console, by its folder's listing; -1 if it isn't there.
+long long RemoteSize(FtpClient& ftp, const std::string& path) {
+    size_t slash=path.find_last_of('/');
+    std::vector<FtpEntry> there;
+    if(slash==std::string::npos || !ftp.List(path.substr(0,slash).c_str(),there)) return -1;
+    for(size_t k=0;k<there.size();++k)
+        if(!there[k].folder && !_stricmp(there[k].name.c_str(),path.c_str()+slash+1)) return (long long)there[k].size;
+    return -1;
+}
+
+// Opens the console's FTP for a job, after a push that started first.
+bool OpenFor(ContentCopy& c, FtpClient& ftp, const Console* console) {
+    WaitForPush(c.address);
+    if(ftp.Open()) return true;
+    EndCopy(c,console,"failed",std::string(ftp.Error())+". Start Aurora on the console and try again.");
+    return false;
 }
 
 // Copies the install disc's packages to the console, leaving out each one
@@ -4213,41 +4285,31 @@ void CopyContent(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     ContentCopy& c=*job;
     Options o=Current();
     const Console* console=ConsoleIfKnown(c.address);
-    WaitForPush(c.address);
     FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
-    if(!ftp.Open()) { EndCopy(c,console,"failed",std::string(ftp.Error())+". Start Aurora on the console and try again."); return; }
+    if(!OpenFor(c,ftp,console)) return;
     IsoReader reader;
     if(!reader.Open(disc)) { EndCopy(c,console,"failed",WithoutIso(disc.name)+" can't be read here: "+reader.Note()); return; }
     for(size_t i=0;i<disc.packages.size();++i) {
         const Package& p=disc.packages[i];
         { std::lock_guard<std::mutex> hold(CopyLock); c.file=int(i+1); c.current=p.path.substr(p.path.find_last_of('\\')+1); }
         if(c.stop) { EndCopy(c,console,"stopped",""); return; }
-        // Content\0000000000000000\<Title ID>\<type>, made a folder at a time.
-        std::string folder=ContentRoot, remote;
-        ftp.MakeFolder(folder.c_str());
-        for(size_t from=0;;) {
-            size_t end=p.path.find('\\',from);
-            if(end==std::string::npos) { remote=folder+"/"+p.path.substr(from); break; }
-            folder+="/"+p.path.substr(from,end-from);
-            if(!ftp.MakeFolder(folder.c_str())) { EndCopy(c,console,"failed",std::string("Couldn't make ")+folder+" on the console: "+ftp.Error()); return; }
-            from=end+1;
-        }
-        std::vector<FtpEntry> there;
-        bool whole=false;
-        if(ftp.List(folder.c_str(),there))
-            for(size_t k=0;k<there.size();++k) whole|=!there[k].folder && !_stricmp(there[k].name.c_str(),remote.substr(folder.size()+1).c_str()) && there[k].size==p.size;
-        if(whole) {
+        std::string remote=std::string(ContentRoot)+"/"+p.path;
+        for(size_t k=0;k<remote.size();++k) if(remote[k]=='\\') remote[k]='/';
+        std::string error;
+        if(!MakeFolders(ftp,remote,strlen(ContentRoot)-1,error)) { EndCopy(c,console,"failed",error); return; }
+        if(RemoteSize(ftp,remote)==(long long)p.size) {
             Log("Xbox %s: %s is installed already (%llu bytes).",c.console.c_str(),remote.c_str(),(unsigned long long)p.size);
             std::lock_guard<std::mutex> hold(CopyLock);
             c.done+=p.size; ++c.skipped;
             continue;
         }
         U64 at=0,size=0;
-        if(!reader.Locate(std::string("content\\")+p.path,at,size) || size!=p.size) {
-            EndCopy(c,console,"failed","Couldn't find content\\"+p.path+" on "+WithoutIso(disc.name)+" any more");
+        std::string source=std::string("content\\")+(p.source.empty() ? p.path : p.source);
+        if(!reader.Locate(source,at,size) || size!=p.size) {
+            EndCopy(c,console,"failed","Couldn't find "+source+" on "+WithoutIso(disc.name)+" any more");
             return;
         }
-        Log("Xbox %s: copying %s (%llu bytes) to %s.",c.console.c_str(),p.path.c_str(),(unsigned long long)p.size,remote.c_str());
+        Log("Xbox %s: copying %s (%llu bytes) to %s.",c.console.c_str(),source.c_str(),(unsigned long long)p.size,remote.c_str());
         U64 before=c.done;
         bool ok=ftp.StoreFrom(remote.c_str(),p.size,
             [&](U64 offset, unsigned char* data, DWORD length) { return reader.Read(at+offset,data,length); },
@@ -4257,51 +4319,15 @@ void CopyContent(std::shared_ptr<ContentCopy> job, IsoFile disc) {
                 return !c.stop.load();
             });
         if(!ok) {
-            std::string error=ftp.Error();
+            std::string why=ftp.Error();
             if(!ftp.Delete(remote.c_str()) && !ftp.Missing()) Log("Xbox %s: couldn't delete the part of %s that was sent: %s",c.console.c_str(),remote.c_str(),ftp.Error());
             if(c.stop) EndCopy(c,console,"stopped","");
-            else EndCopy(c,console,"failed","Sending "+remote+" stopped: "+error);
+            else EndCopy(c,console,"failed","Sending "+remote+" stopped: "+why);
             return;
         }
     }
     ftp.Close();
     EndCopy(c,console,"done","");
-}
-
-bool CopyTarget(const std::string& address, DWORD& at, std::string& error);
-bool AddCopy(std::shared_ptr<ContentCopy> job, DWORD at, std::string& error);
-
-// Starts copying the content of the game listed as name (or of its install
-// disc) to the console at address; with no address, to the only console.
-bool StartCopy(const web::Value& body, std::string& error) {
-    std::string name, address;
-    Text(body,"game",name);
-    Text(body,"address",address);
-    IsoFile disc;
-    std::string game;
-    {
-        std::lock_guard<std::mutex> hold(GamesListLock);
-        const IsoFile* g=NULL;
-        for(size_t i=0;i<GamesList.size() && !g;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) g=&GamesList[i];
-        if(!g) { error="There's no game called "+name+" here."; return false; }
-        const IsoFile* carrier=g->packages.empty() ? NULL : g;
-        for(size_t i=0;i<GamesList.size() && !carrier && !g->installDisc.empty();++i) if(GamesList[i].name==g->installDisc) carrier=&GamesList[i];
-        if(!carrier) { error=name+" has no content to install."; return false; }
-        disc=*carrier; game=g->name;
-    }
-    DWORD at=INADDR_NONE;
-    if(!CopyTarget(address,at,error)) return false;
-    char text[16]; AddressText(at,text,sizeof(text));
-    std::shared_ptr<ContentCopy> job(new ContentCopy);
-    job->game=config::ToUtf8(WithoutIso(game)); job->disc=config::ToUtf8(WithoutIso(disc.name));
-    job->files=int(disc.packages.size());
-    for(size_t i=0;i<disc.packages.size();++i) job->total+=disc.packages[i].size;
-    if(!AddCopy(job,at,error)) return false;
-    Log("Xbox %s: installing %s's content: %d package(s), %s from %s, to %s.",text,job->game.c_str(),job->files,SizeText(job->total).c_str(),
-        disc.path.c_str(),ContentRoot);
-    if(Console* console=ConsoleIfKnown(at)) XboxEvent(*console,EventInfo,"Installing "+WithoutIso(game)+"'s content");
-    std::thread(CopyContent,job,disc).detach();
-    return true;
 }
 
 // The console a copy goes to: address, or with none the only console; never
@@ -4313,7 +4339,7 @@ bool CopyTarget(const std::string& address, DWORD& at, std::string& error) {
     at=INADDR_NONE;
     if(address.empty()) {
         if(consoles.empty()) { error="No console has connected yet."; return false; }
-        if(consoles.size()>1) { error="Choose the console to install it on."; return false; }
+        if(consoles.size()>1) { error="Choose the console to copy it to."; return false; }
         at=consoles[0]->address;
     } else {
         at=inet_addr(address.c_str());
@@ -4333,21 +4359,29 @@ bool CopyTarget(const std::string& address, DWORD& at, std::string& error) {
     return true;
 }
 
-// Makes job the console's latest copy and starts its clock, unless another is running there.
+// Puts job at the end of the console's queue, unless the same is in it
+// already, and starts the queue if it isn't running.
 bool AddCopy(std::shared_ptr<ContentCopy> job, DWORD at, std::string& error) {
     char text[16]; AddressText(at,text,sizeof(text));
     job->address=at; job->console=text;
-    job->state="copying"; job->startedAt=(long long)time(NULL); job->began=Now();
+    job->state="queued"; job->queuedAt=(long long)time(NULL);
+    if(job->kind.empty()) job->kind=job->whole ? "game" : "content";
     std::lock_guard<std::mutex> hold(CopyLock);
-    for(size_t i=0;i<Copies.size();++i) {
-        if(Copies[i]->address!=at) continue;
-        if(Copies[i]->state=="copying") {
-            error=(Copies[i]->whole ? "It's copying "+Copies[i]->game : "It's installing "+Copies[i]->game+"'s content")+" on "+text+" already.";
+    int ended=0;
+    for(size_t i=Copies.size();i-->0;) {
+        ContentCopy& c=*Copies[i];
+        if(c.address!=at) continue;
+        bool waiting=c.state=="queued" || c.state=="copying";
+        if(waiting && c.kind==job->kind && c.game==job->game && c.disc==job->disc && c.key==job->key) {
+            error=c.game+(c.state=="queued" ? " is in "+std::string(text)+"'s queue already." : " is being copied to "+std::string(text)+" already.");
             return false;
         }
-        Copies.erase(Copies.begin()+long(i--));
+        // The latest few finished ones stay, for the dashboard to show how they ended.
+        if(!waiting && ++ended>12) Copies.erase(Copies.begin()+long(i));
     }
+    job->id=NextCopyId++;
     Copies.push_back(job);
+    if(CopyWorkers.insert(at).second) std::thread(CopyWorker,at).detach();
     return true;
 }
 
@@ -4392,30 +4426,19 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     }
     Log("Xbox %s: sending %s as Games on Demand: %d Data file(s) and a header, %s, to %s.",c.console.c_str(),c.game.c_str(),god.Parts(),
         SizeText(c.total).c_str(),header.c_str());
-    WaitForPush(c.address);
     FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
-    if(!ftp.Open()) { EndCopy(c,console,"failed",std::string(ftp.Error())+". Start Aurora on the console and try again."); return; }
+    if(!OpenFor(c,ftp,console)) return;
     // Content\0000000000000000\<Title ID>\00007000\<Media ID>.data, a folder at a time.
-    ftp.MakeFolder(ContentRoot);
-    for(size_t at=std::string(ContentRoot).size()+1;;) {
-        size_t end=data.find('/',at);
-        std::string step=data.substr(0,end);
-        if(!ftp.MakeFolder(step.c_str())) { EndCopy(c,console,"failed","Couldn't make "+step+" on the console: "+ftp.Error()); return; }
-        if(end==std::string::npos) break;
-        at=end+1;
-    }
+    if(!MakeFolders(ftp,data+"/",strlen(ContentRoot)-1,error)) { EndCopy(c,console,"failed",error); return; }
     // A whole package there already: nothing to send.
+    if(RemoteSize(ftp,header)==(long long)god.Header().size()) {
+        Log("Xbox %s: %s is there already.",c.console.c_str(),header.c_str());
+        { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; c.skipped=c.files; c.file=c.files; }
+        ftp.Close();
+        EndCopy(c,console,"done","");
+        return;
+    }
     std::vector<FtpEntry> there;
-    std::string parent=c.folder;
-    if(ftp.List(parent.c_str(),there))
-        for(size_t k=0;k<there.size();++k)
-            if(!there[k].folder && !_stricmp(there[k].name.c_str(),god.Name().c_str()) && there[k].size==god.Header().size()) {
-                Log("Xbox %s: %s is there already.",c.console.c_str(),header.c_str());
-                { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; c.skipped=c.files; c.file=c.files; }
-                ftp.Close();
-                EndCopy(c,console,"done","");
-                return;
-            }
     std::map<std::string,U64> sizes;
     if(ftp.List(data.c_str(),there)) for(size_t k=0;k<there.size();++k) if(!there[k].folder) sizes[ToLowerAscii(there[k].name)]=there[k].size;
     for(int part=0;part<=god.Parts();++part) {
@@ -4459,32 +4482,196 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     EndCopy(c,console,"done","");
 }
 
-// Starts copying the game listed as name, whole, to the console at address
-// (with none, to the only console), as a Games on Demand package.
+// Copies an original Xbox game to the console's hard drive as an extracted
+// game, its disc's files in a folder of GamesRoot, which Aurora starts in
+// the console's emulator as any extracted original Xbox game. Files already
+// there at their full size are left out, so a stopped copy goes on.
+const char GamesRoot[] = "/Hdd1/Games";
+void CopyGameFiles(std::shared_ptr<ContentCopy> job, IsoFile disc) {
+    ContentCopy& c=*job;
+    Options o=Current();
+    const Console* console=ConsoleIfKnown(c.address);
+    IsoReader reader;
+    if(!reader.Open(disc)) { EndCopy(c,console,"failed",WithoutIso(disc.name)+" can't be read here: "+reader.Note()); return; }
+    std::vector<DiscFile> files;
+    if(!reader.Files(files)) { EndCopy(c,console,"failed","The files on "+WithoutIso(disc.name)+" can't be read: "+reader.Note()); return; }
+    U64 total=0;
+    int count=0;
+    for(size_t i=0;i<files.size();++i) {
+        const DiscFile& f=files[i];
+        if(f.path.empty() || f.path[f.path.size()-1]=='\\') continue;
+        total+=f.size; ++count;
+        // FATX takes names of up to 42 characters.
+        std::string leaf=f.path.substr(f.path.find_last_of('\\')+1);
+        if(leaf.size()>42) { EndCopy(c,console,"failed",f.path+" has a name too long for the console's hard drive (FATX takes 42 characters)"); return; }
+    }
+    std::string name=tu::FatxName(config::ToUtf8(WithoutIso(disc.name)));
+    while(!name.empty() && (name.back()==' ' || name.back()=='.')) name.pop_back();
+    if(name.empty()) name=Number(disc.titleId);
+    std::string root=std::string(GamesRoot)+"/"+name;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        c.phase="send"; c.folder=root; c.total=total; c.files=count; c.done=0; c.copied=0; c.began=Now();
+    }
+    Log("Xbox %s: copying %s's %d files (%s) to %s.",c.console.c_str(),c.game.c_str(),count,SizeText(total).c_str(),root.c_str());
+    FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
+    if(!OpenFor(c,ftp,console)) return;
+    std::string error;
+    if(!MakeFolders(ftp,root+"/",strlen("/Hdd1")-1,error)) { EndCopy(c,console,"failed",error); return; }
+    std::map<std::string,std::map<std::string,U64> > listed;  // Folder (lower case): its files' sizes.
+    int file=0;
+    for(size_t i=0;i<files.size();++i) {
+        const DiscFile& f=files[i];
+        std::string remote=root+"/"+f.path;
+        for(size_t k=0;k<remote.size();++k) if(remote[k]=='\\') remote[k]='/';
+        if(c.stop) { EndCopy(c,console,"stopped",""); return; }
+        if(remote[remote.size()-1]=='/') {
+            remote.erase(remote.size()-1);
+            if(!ftp.Enters(remote.c_str()) && (ftp.Code()/100!=5 || !ftp.MakeFolder(remote.c_str()))) {
+                EndCopy(c,console,"failed","Couldn't make "+remote+" on the console: "+ftp.Error()); return;
+            }
+            continue;
+        }
+        size_t slash=remote.find_last_of('/');
+        std::string folder=ToLowerAscii(remote.substr(0,slash)), leaf=ToLowerAscii(remote.substr(slash+1));
+        if(!listed.count(folder)) {
+            std::vector<FtpEntry> there;
+            std::map<std::string,U64>& sizes=listed[folder];
+            if(ftp.List(remote.substr(0,slash).c_str(),there)) for(size_t k=0;k<there.size();++k) if(!there[k].folder) sizes[ToLowerAscii(there[k].name)]=there[k].size;
+        }
+        { std::lock_guard<std::mutex> hold(CopyLock); c.file=++file; c.current=f.path; }
+        std::map<std::string,U64>::const_iterator old=listed[folder].find(leaf);
+        if(old!=listed[folder].end() && old->second==f.size) {
+            std::lock_guard<std::mutex> hold(CopyLock);
+            c.done+=f.size; ++c.skipped;
+            continue;
+        }
+        U64 before=c.done;
+        bool ok=ftp.StoreFrom(remote.c_str(),f.size,
+            [&](U64 offset, unsigned char* data, DWORD length) { return reader.Read(f.at+offset,data,length); },
+            [&](U64 sent) {
+                std::lock_guard<std::mutex> hold(CopyLock);
+                c.copied+=before+sent-c.done; c.done=before+sent;
+                return !c.stop.load();
+            });
+        if(!ok) {
+            std::string why=ftp.Error();
+            if(!ftp.Delete(remote.c_str()) && !ftp.Missing()) Log("Xbox %s: couldn't delete the part of %s that was sent: %s",c.console.c_str(),remote.c_str(),ftp.Error());
+            if(c.stop) EndCopy(c,console,"stopped","");
+            else EndCopy(c,console,"failed","Sending "+remote+" stopped: "+why);
+            return;
+        }
+    }
+    std::string reply;
+    if(ftp.Site((std::string("INITIATESCAN ")+GamesRoot).c_str(),reply) && reply.find("Unable")==std::string::npos)
+        Log("Xbox %s: asked Aurora to scan %s, so it lists %s.",c.console.c_str(),GamesRoot,c.game.c_str());
+    else Log("Xbox %s: Aurora didn't start a scan of %s: %s (add it under Settings, Content, Scan paths if Aurora doesn't list the game).",c.console.c_str(),GamesRoot,reply.empty() ? ftp.Error() : reply.c_str());
+    ftp.Close();
+    EndCopy(c,console,"done","");
+}
+
+
+// Queues a disc for the console: as Games on Demand, or its content for an
+// install disc (game: the game it's for, as listed), or its files for an
+// original Xbox game.
+bool QueueDisc(const IsoFile& disc, const std::string& game, DWORD at, std::string& error) {
+    std::string name=config::ToUtf8(WithoutIso(disc.name));
+    std::shared_ptr<ContentCopy> job(new ContentCopy);
+    job->game=game.empty() ? name : game; job->disc=name;
+    if(!disc.packages.empty() && (disc.role=="install" || disc.role=="content" || !disc.mediaId)) {
+        job->kind="content";
+        job->label=name+"'s content";
+        job->files=int(disc.packages.size());
+        for(size_t i=0;i<disc.packages.size();++i) job->total+=disc.packages[i].size;
+        job->run=[disc](std::shared_ptr<ContentCopy> j) { CopyContent(j,disc); };
+    } else if(disc.titleId && disc.mediaId) {
+        job->kind="game"; job->whole=true;
+        job->game=name; job->label=name;
+        job->total=disc.size; job->files=1;
+        job->run=[disc](std::shared_ptr<ContentCopy> j) { CopyGame(j,disc); };
+    } else if(disc.titleId && !disc.mediaId) {
+        job->kind="files"; job->game=name; job->label=name;
+        job->total=disc.size; job->files=1;
+        job->run=[disc](std::shared_ptr<ContentCopy> j) { CopyGameFiles(j,disc); };
+    } else {
+        error=name+" isn't a game that can be copied: it has no default.xex (or default.xbe) that says what it is.";
+        return false;
+    }
+    if(!AddCopy(job,at,error)) return false;
+    Log("Xbox %s: queued %s (%s, from %s).",job->console.c_str(),job->label.c_str(),job->kind.c_str(),disc.path.c_str());
+    return true;
+}
+
+// Copy to Xbox: the game listed as name to the console at address (with
+// none, the only console). A play disc brings its install disc's content
+// along; all: every disc of the game, in disc order.
 bool StartGameCopy(const web::Value& body, std::string& error) {
     std::string name, address;
     Text(body,"game",name);
     Text(body,"address",address);
-    IsoFile disc;
+    const web::Value* every=body.Get("all");
+    bool all=every && every->type==web::Value::Bool && every->boolean;
+    std::vector<std::pair<IsoFile,std::string> > discs;  // A disc, and the game it's for.
     {
         std::lock_guard<std::mutex> hold(GamesListLock);
         const IsoFile* g=NULL;
         for(size_t i=0;i<GamesList.size() && !g;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) g=&GamesList[i];
         if(!g) { error="There's no game called "+name+" here."; return false; }
-        if(g->role=="install") { error=name+" only installs content: use Install on Xbox on its page instead."; return false; }
-        if(!g->titleId || !g->mediaId) { error=name+" isn't an Xbox 360 game that can be copied (only those with a default.xex can)."; return false; }
-        disc=*g;
+        std::vector<const IsoFile*> chosen;
+        if(all && g->titleId) {
+            for(size_t i=0;i<GamesList.size();++i) if(GamesList[i].titleId==g->titleId) chosen.push_back(&GamesList[i]);
+            std::stable_sort(chosen.begin(),chosen.end(),[](const IsoFile* a, const IsoFile* b) {
+                // Install discs after the game, as the game's content.
+                bool ai=!a->packages.empty() && a->role=="install", bi=!b->packages.empty() && b->role=="install";
+                return ai!=bi ? bi : a->disc<b->disc;
+            });
+        } else chosen.push_back(g);
+        for(size_t i=0;i<chosen.size();++i) {
+            const IsoFile* d=chosen[i];
+            discs.push_back(std::make_pair(*d,std::string()));
+            // A play disc's install content goes along.
+            if(d->packages.empty() && !d->installDisc.empty())
+                for(size_t k=0;k<GamesList.size();++k)
+                    if(GamesList[k].name==d->installDisc && std::find(chosen.begin(),chosen.end(),&GamesList[k])==chosen.end())
+                        discs.push_back(std::make_pair(GamesList[k],config::ToUtf8(WithoutIso(d->name))));
+        }
     }
     DWORD at=INADDR_NONE;
     if(!CopyTarget(address,at,error)) return false;
-    std::shared_ptr<ContentCopy> job(new ContentCopy);
-    job->whole=true;
-    job->game=name; job->disc=name;
-    job->total=disc.size; job->files=1;
-    if(!AddCopy(job,at,error)) return false;
-    Log("Xbox %s: copying %s to its hard drive as Games on Demand, from %s.",job->console.c_str(),name.c_str(),disc.path.c_str());
-    if(Console* console=ConsoleIfKnown(at)) XboxEvent(*console,EventInfo,"Copying "+name+" to the hard drive");
-    std::thread(CopyGame,job,disc).detach();
+    int queued=0;
+    std::string why;
+    for(size_t i=0;i<discs.size();++i) {
+        std::string one;
+        if(QueueDisc(discs[i].first,discs[i].second,at,one)) ++queued;
+        else if(why.empty()) why=one;
+    }
+    if(!queued) { error=why; return false; }
+    if(Console* console=ConsoleIfKnown(at)) XboxEvent(*console,EventInfo,queued>1 ? "Copying "+std::to_string(queued)+" discs of "+name+" to the hard drive" : "Copying "+name+" to the hard drive");
+    return true;
+}
+
+// The Install content API of before: the content of name's install disc.
+bool StartCopy(const web::Value& body, std::string& error) {
+    std::string name, address;
+    Text(body,"game",name);
+    Text(body,"address",address);
+    IsoFile disc;
+    std::string game;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        const IsoFile* g=NULL;
+        for(size_t i=0;i<GamesList.size() && !g;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) g=&GamesList[i];
+        if(!g) { error="There's no game called "+name+" here."; return false; }
+        const IsoFile* carrier=g->packages.empty() ? NULL : g;
+        for(size_t i=0;i<GamesList.size() && !carrier && !g->installDisc.empty();++i) if(GamesList[i].name==g->installDisc) carrier=&GamesList[i];
+        if(!carrier) { error=name+" has no content to install."; return false; }
+        disc=*carrier; game=config::ToUtf8(WithoutIso(g->name));
+    }
+    disc.role="install";  // Its content, even of a disc that's also played.
+    DWORD at=INADDR_NONE;
+    if(!CopyTarget(address,at,error)) return false;
+    if(!QueueDisc(disc,game,at,error)) return false;
+    if(Console* console=ConsoleIfKnown(at)) XboxEvent(*console,EventInfo,"Installing "+game+"'s content");
     return true;
 }
 
@@ -4510,26 +4697,43 @@ void WaitForPush(DWORD address) {
     }
 }
 
+// Stops the job id (one waiting is taken out of the queue), or with no id
+// the one running on the console at address; all: that and its whole queue.
 bool StopCopy(const web::Value& body, std::string& error) {
     std::string address;
     Text(body,"address",address);
-    std::lock_guard<std::mutex> hold(CopyLock);
-    for(size_t i=0;i<Copies.size();++i)
-        if(Copies[i]->console==address && Copies[i]->state=="copying") { Copies[i]->stop=true; return true; }
-    error="Nothing is being installed on "+address+".";
-    return false;
+    const web::Value* id=body.Get("id");
+    const web::Value* every=body.Get("all");
+    bool all=every && every->type==web::Value::Bool && every->boolean;
+    int wanted=id && id->type==web::Value::Number ? int(id->number) : 0;
+    std::vector<std::shared_ptr<ContentCopy> > dropped;
+    bool found=false;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        for(size_t i=0;i<Copies.size();++i) {
+            ContentCopy& c=*Copies[i];
+            if(wanted ? c.id!=wanted : c.console!=address) continue;
+            if(c.state=="copying") { c.stop=true; found=true; }
+            else if(c.state=="queued" && (wanted || all)) { dropped.push_back(Copies[i]); found=true; }
+        }
+    }
+    for(size_t i=0;i<dropped.size();++i) EndCopy(*dropped[i],ConsoleIfKnown(dropped[i]->address),"stopped","");
+    if(!found) error="Nothing is being copied to "+(address.empty() ? std::string("that console") : address)+".";
+    return found;
 }
 
 void CopiesJson(web::Json& j) {
     std::lock_guard<std::mutex> hold(CopyLock);
     j.Key("installs").Open('[');
+    std::map<DWORD,int> place;  // Each console's queue, counted.
     for(size_t i=0;i<Copies.size();++i) {
         const ContentCopy& c=*Copies[i];
         double seconds=(c.endedAt ? double(c.endedAt-c.startedAt) : Now()-c.began);
-        j.Open('{').Set("kind",c.whole ? "game" : "content").Set("folder",c.folder).Set("phase",c.phase).Set("address",c.console).Set("game",c.game).Set("disc",c.disc).Set("state",c.state).Set("error",config::ToUtf8(c.error));
+        j.Open('{').Set("id",c.id).Set("kind",c.kind).Set("label",c.label).Set("key",c.key).Set("folder",c.folder).Set("phase",c.phase).Set("address",c.console).Set("game",c.game).Set("disc",c.disc).Set("state",c.state).Set("error",config::ToUtf8(c.error));
+        if(c.state=="queued") j.Set("place",++place[c.address]);
         j.Set("file",c.file).Set("files",c.files).Set("skipped",c.skipped).Set("current",c.current);
         j.Set("total",(unsigned long long)c.total).Set("done",(unsigned long long)c.done);
-        j.Set("rate",seconds>1 ? double(c.copied)/seconds : 0.0).Set("started",c.startedAt).Set("ended",c.endedAt).Close('}');
+        j.Set("rate",c.state!="queued" && seconds>1 ? double(c.copied)/seconds : 0.0).Set("queued",c.queuedAt).Set("started",c.startedAt).Set("ended",c.endedAt).Close('}');
     }
     j.Close(']');
 }
