@@ -991,7 +991,7 @@ static void UnlinkDrives();
 static bool LocalCopy(const char* ini,char* local,size_t capacity) {
     if(!nia::IniValue(ini,"local_copy",local,capacity) || !local[0]) return false;
     char path[MAX_PATH];
-    bool there=MapPath(local,path,sizeof(path)) && GetFileAttributes(path)!=INVALID_FILE_ATTRIBUTES;
+    bool there=MapPath(local,path,sizeof(path)) && GetFileAttributes(path)!=DWORD(-1);  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
     UnlinkDrives();
     Note(there ? "It's installed on this Xbox too: %s" : "local_copy=%s isn't there; playing from the server.",local);
     return there;
