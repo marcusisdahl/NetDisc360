@@ -24,6 +24,8 @@ struct Info { std::string name, kind, version, platform; long long time, size; }
 // A stored zip of files (name: content), and back.
 std::string Zip(const std::map<std::string,std::string>& files, long long time);
 bool Unzip(const std::string& data, std::map<std::string,std::string>& files, std::string& error);
+// The same for any stored zip of Zip's: its files by their paths in it, as they are.
+bool UnzipPaths(const std::string& data, std::map<std::string,std::string>& files, std::string& error);
 
 // Makes a backup of files in folder (made if need be); name gets its file name.
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,

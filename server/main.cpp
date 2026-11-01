@@ -18,6 +18,7 @@
 #include "discmap.h"
 #include "discs.h"
 #include "ftp.h"
+#include "guests.h"
 #include "installed.h"
 #include "party.h"
 #include "system.h"
@@ -692,6 +693,11 @@ std::mutex PartyLock;
 // before any other lock.
 std::mutex PartyChangeLock;
 Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return TheParty; }
+// The LAN party's guest profiles (see guests.h), kept in the settings file;
+// under GuestLock, which no other lock is taken under.
+std::vector<GuestProfile> GuestProfiles;
+std::mutex GuestLock;
+std::vector<GuestProfile> GuestProfilesNow() { std::lock_guard<std::mutex> hold(GuestLock); return GuestProfiles; }
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -2636,6 +2642,7 @@ bool Save() {
               (known[i].name.empty() ? std::string() : "|"+known[i].id+"|"+known[i].name));
     for(long long i=(long long)known.size()+1;i<=before;++i) f.Remove(("console"+Number(i)).c_str());
     SaveParty(f,party);
+    SaveGuestProfiles(f,GuestProfilesNow());
     if(f.Save(o.configPath)) return true;
     static bool told;
     if(!told) Log("Couldn't save the settings in %s; changes last until the server stops.",config::FromUtf8(o.configPath).c_str());
@@ -2768,6 +2775,9 @@ bool LoadConfig(Options& o) {
     // The LAN party: its consoles are addresses (a file made by hand could have anything).
     Party party;
     LoadParty(f,party);
+    std::vector<GuestProfile> guestProfiles;
+    LoadGuestProfiles(f,guestProfiles);
+    { std::lock_guard<std::mutex> hold(GuestLock); GuestProfiles.swap(guestProfiles); }
     party.gamemaster=CanonicalAddress(party.gamemaster);
     for(size_t i=party.consoles.size();i-->0;)
         if(CanonicalAddress(party.consoles[i]).empty()) party.consoles.erase(party.consoles.begin()+long(i));
@@ -5489,6 +5499,486 @@ void PartyAssetFile(const web::Request& r, web::Reply& out) {
     out.type=PictureType(file);
 }
 
+// The LAN party's guest profiles (see guests.h) --------------------------------
+
+// What the guest profile work is doing, for the page: one piece of work at a time.
+struct ProfileWork {
+    bool running;
+    std::string what, step, result, error;
+    long long at;  // When it started or ended (Unix seconds).
+    ProfileWork() : running(false), at(0) {}
+};
+ProfileWork Work;  // Under GuestLock.
+// The longest a file in a guest's content folder may be (a game's save can be
+// big; a profile is a few MB).
+const size_t ProfileFileMost = size_t(512)<<20;
+const int ProfileTreeDeepest = 6;
+
+std::string ProfilesFolder(const Options& o) { std::string b=BackupFolder(o); return b.empty() ? b : KitPath(b,"Profiles"); }
+
+void WorkStep(const char* format, ...) {
+    char text[512];
+    va_list a; va_start(a,format); _vsnprintf_s(text,sizeof(text),_TRUNCATE,format,a); va_end(a);
+    std::lock_guard<std::mutex> hold(GuestLock);
+    Work.step=text;
+}
+// A record changed by the work: written back by name, then saved.
+void KeepGuestProfile(const GuestProfile& p) {
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        GuestProfile* had=GuestProfileNamed(GuestProfiles,p.name);
+        if(had) *had=p; else GuestProfiles.push_back(p);
+    }
+    Save();
+}
+void SetOn(GuestProfile& p, const std::string& console, bool on) {
+    std::vector<std::string>::iterator at=std::find(p.on.begin(),p.on.end(),console);
+    if(on && at==p.on.end()) p.on.push_back(console);
+    if(!on && at!=p.on.end()) p.on.erase(at);
+}
+
+// Every file under folder on the console, by its path under it (with /).
+bool ReadTree(FtpClient& ftp, const std::string& folder, const std::string& under, std::map<std::string,std::string>& files, std::string& error, int depth = 0) {
+    std::vector<FtpEntry> entries;
+    std::string here=under.empty() ? folder : folder+"/"+under;
+    if(!ftp.List(here.c_str(),entries)) { error="Couldn't open "+DashPath(here)+": "+ftp.Error(); return false; }
+    for(size_t i=0;i<entries.size();++i) {
+        const FtpEntry& e=entries[i];
+        if(e.name.empty() || e.name=="." || e.name=="..") continue;
+        std::string path=under.empty() ? e.name : under+"/"+e.name;
+        if(e.folder) {
+            if(depth>=ProfileTreeDeepest) { error=DashPath(folder+"/"+path)+" goes deeper than a content folder does."; return false; }
+            if(!ReadTree(ftp,folder,path,files,error,depth+1)) return false;
+            continue;
+        }
+        std::vector<unsigned char> data;
+        if(!ftp.Retrieve((folder+"/"+path).c_str(),data,ProfileFileMost)) { error="Couldn't read "+DashPath(folder+"/"+path)+": "+ftp.Error(); return false; }
+        files[path].assign(data.begin(),data.end());
+    }
+    return true;
+}
+// Writes files (paths under folder, with /) to the console, making their folders.
+bool WriteTree(FtpClient& ftp, const std::string& folder, const std::map<std::string,std::string>& files, std::string& error) {
+    std::set<std::string> made;
+    for(std::map<std::string,std::string>::const_iterator f=files.begin();f!=files.end();++f) {
+        std::string path=folder+"/"+f->first;
+        for(size_t cut=std::string("/Hdd1").size();(cut=path.find('/',cut+1))!=std::string::npos;) {
+            std::string parent=path.substr(0,cut);
+            if(made.insert(parent).second) EnsureFolder(ftp,parent);
+        }
+        if(!StoreChecked(ftp,path,f->second)) { error="Couldn't write "+DashPath(path)+": "+ftp.Error(); return false; }
+    }
+    return true;
+}
+// Removes folder and everything in it from the console.
+bool DeleteTree(FtpClient& ftp, const std::string& folder, std::string& error, int depth = 0) {
+    std::vector<FtpEntry> entries;
+    if(!ftp.List(folder.c_str(),entries)) { error="Couldn't open "+DashPath(folder)+": "+ftp.Error(); return false; }
+    for(size_t i=0;i<entries.size();++i) {
+        const FtpEntry& e=entries[i];
+        if(e.name.empty() || e.name=="." || e.name=="..") continue;
+        std::string path=folder+"/"+e.name;
+        if(e.folder ? depth<ProfileTreeDeepest && DeleteTree(ftp,path,error,depth+1) : ftp.Delete(path.c_str())) continue;
+        if(!e.folder || error.empty()) error="Couldn't delete "+DashPath(path)+": "+ftp.Error();
+        return false;
+    }
+    if(!ftp.RemoveFolder(folder.c_str())) { error="Couldn't delete "+DashPath(folder)+": "+ftp.Error(); return false; }
+    return true;
+}
+
+// Whether the profile xuid is signed in on the console, as its Aurora says
+// (1 yes, 0 no, -1 it can't tell).
+int SignedIn(const Console& c, const Options& o, const std::string& xuid) {
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,5);
+    std::string body;
+    web::Value v;
+    if(!aurora.Get("/profile","/getProfileInfo",body) || !web::Parse(body,v) || v.type!=web::Value::Array) return -1;
+    for(size_t i=0;i<v.items.size();++i) {
+        const web::Value* x=v.items[i].Get("xuid");
+        if(x && x->type==web::Value::String && !_stricmp(x->text.c_str(),xuid.c_str())) {
+            const web::Value* in=v.items[i].Get("signedin");
+            return in && in->type==web::Value::Number && in->number==0 ? 0 : 1;
+        }
+    }
+    return 0;
+}
+
+// The consoles guest profiles go on: the party's, or every console NetDisc360 knows.
+std::vector<Console*> ProfileConsoles() {
+    Party party=CurrentParty();
+    std::vector<std::string> addresses=party.consoles;
+    if(addresses.empty()) {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        for(size_t i=0;i<Known.size();++i) addresses.push_back(Known[i].address);
+    }
+    std::vector<Console*> out;
+    for(size_t i=0;i<addresses.size();++i) {
+        Console* c=ConsoleIfKnown(inet_addr(addresses[i].c_str()));
+        if(c && std::find(out.begin(),out.end(),c)==out.end()) out.push_back(c);
+    }
+    return out;
+}
+std::string ConsoleWord(const Console& c) { std::string name=NameOf(c); return name.empty() ? std::string(c.text) : name; }
+
+// Makes gamertags as profiles on console c with the helper's profile job
+// (ProfileJob in shared/helper.h): the job in the helper's folder, the helper
+// started from Aurora, its answer read once Aurora is back. False, with why
+// in error, if the job didn't run; done says how each profile went.
+bool RunProfileJob(Console& c, const Options& o, const std::vector<std::string>& gamertags, ProfileJobDone& done, std::string& error) {
+    std::string folder=o.xboxFolder+"/"+HelperFolder, device=DevicePath(folder), job=Number((long long)time(NULL));
+    if(device.empty()) { error="The helper is started from the hard drive only, and the game folders are in "+o.xboxFolder+"."; return false; }
+    std::string why;
+    if(!SafeSoon(c,StartWaitMost,why)) { error="Not now: "+why+"."; return false; }
+    {
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+        if(!ftp.Open()) { error=std::string("Aurora's FTP server doesn't answer (it does while Aurora is on screen): ")+ftp.Error(); return false; }
+        if(!FtpHas(ftp,folder,HelperXex)) { error="NetDisc360's helper isn't on it yet ("+DashPath(folder+"/"+HelperXex)+"): it's written while the console is in Aurora."; return false; }
+        ftp.Delete((folder+"/"+ProfileDone).c_str());
+        if(!StoreChecked(ftp,folder+"/"+ProfileJob,ProfileJobText(job,gamertags))) { error=std::string("Couldn't write the job: ")+ftp.Error(); return false; }
+        ftp.Close();
+    }
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
+    if(!aurora.Launch(device,HelperXex)) { error="Aurora didn't start the helper: "+aurora.Error()+"."; return false; }
+    XboxLog(c,"making %s with the helper (started from Aurora).",Count(int(gamertags.size()),"guest profile","guest profiles").c_str());
+    // Aurora goes while the helper works (a few seconds a profile), then comes back.
+    Sleep(4000);
+    std::string text;
+    for(double until=Now()+40+10*double(gamertags.size());;Sleep(2000)) {
+        if(Now()>until) { error="Aurora didn't come back with the helper's answer: look at the console, and at "+DashPath(folder)+"\\netiso.log."; return false; }
+        AuroraWeb back(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
+        if(!back.InAurora()) continue;
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        std::vector<unsigned char> data;
+        if(!ftp.Open() || !ftp.Retrieve((folder+"/"+ProfileDone).c_str(),data,64*1024)) {
+            if(ftp.Missing() && FtpHas(ftp,folder,ProfileJob)) { error="The helper didn't start: the job is still there."; return false; }
+            continue;
+        }
+        text.assign(data.begin(),data.end());
+        ftp.Delete((folder+"/"+ProfileDone).c_str());
+        break;
+    }
+    if(!ReadProfileDone(text,done) || done.job!=job) { error="The helper's answer isn't this job's."; return false; }
+    return true;
+}
+
+// Keeps a copy of a guest's content folder from console c on this computer
+// (Backups/Profiles/<XUID>: the zip and its .ini). False, with why in error.
+bool KeepProfileCopy(const GuestProfile& p, const Console& c, const Options& o, const std::map<std::string,std::string>& files, ProfileCopy& copy, std::string& error) {
+    std::string root=ProfilesFolder(o);
+    if(root.empty()) { error="There's no settings folder to keep it in."; return false; }
+    std::string folder=KitPath(root,p.xuid);
+    config::MakeFolder(BackupFolder(o)); config::MakeFolder(root); config::MakeFolder(folder);
+    std::map<std::string,std::string> zipped;
+    long long size=0;
+    for(std::map<std::string,std::string>::const_iterator f=files.begin();f!=files.end();++f) { zipped["Content/"+p.xuid+"/"+f->first]=f->second; size+=(long long)f->second.size(); }
+    copy=ProfileCopy();
+    copy.time=(long long)time(NULL);
+    copy.file=ProfileCopyName(copy.time,c.text);
+    copy.name=p.name; copy.gamertag=p.gamertag; copy.xuid=p.xuid; copy.console=c.text; copy.size=size;
+    std::map<std::string,std::string>::const_iterator package=files.find("FFFE07D1/00010000/"+p.xuid);
+    ProfileStats stats;
+    if(package!=files.end() && ReadProfileStats(package->second,stats)) { copy.gamerscore=stats.gamerscore; copy.achievements=stats.achievements; }
+    std::string zip=backup::Zip(zipped,copy.time), back;
+    if(!config::WriteFile(KitPath(folder,copy.file),zip,false) || !config::ReadFile(KitPath(folder,copy.file),back,zip.size()+1) || back!=zip) {
+        error="Couldn't write "+config::FromUtf8(KitPath(folder,copy.file));
+        return false;
+    }
+    std::string ini=copy.file.substr(0,copy.file.size()-4)+".ini";
+    if(!config::WriteFile(KitPath(folder,ini),ProfileCopyIni(copy),false)) { error="Couldn't write "+config::FromUtf8(KitPath(folder,ini)); return false; }
+    return true;
+}
+// The files of a kept copy, by their path under the content folder.
+bool OpenProfileCopy(const Options& o, const ProfileCopy& copy, std::map<std::string,std::string>& files, std::string& error) {
+    std::string data;
+    std::map<std::string,std::string> zipped;
+    std::string path=KitPath(KitPath(ProfilesFolder(o),copy.xuid),copy.file);
+    if(!config::ReadFile(path,data,size_t(2048)<<20) || !backup::UnzipPaths(data,zipped,error)) { if(error.empty()) error="Couldn't read "+config::FromUtf8(path); return false; }
+    files.clear();
+    std::string prefix="Content/"+copy.xuid+"/";
+    for(std::map<std::string,std::string>::const_iterator f=zipped.begin();f!=zipped.end();++f)
+        if(!f->first.compare(0,prefix.size(),prefix) && f->first.size()>prefix.size() && f->first.find("..")==std::string::npos) files[f->first.substr(prefix.size())]=f->second;
+    if(!files.count("FFFE07D1/00010000/"+copy.xuid)) { error=copy.file+" has no profile in it."; return false; }
+    return true;
+}
+
+// Makes, puts back or copies the guests' profiles so each of the guests
+// named has one on every console (ProfileConsoles): a kept copy goes back
+// if there is one, else one console makes it; then it's copied to the
+// others. Runs on its own thread; Work tells the page how it goes.
+void MakeGuestProfiles(std::vector<std::string> names) {
+    Options o=Current();
+    std::vector<Console*> consoles=ProfileConsoles();
+    std::vector<std::string> notes, failed;
+    if(consoles.empty()) failed.push_back("No console has used NetDisc360 yet.");
+    // Who needs what: the record for each name (made if it's new).
+    std::vector<GuestProfile> todo;
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        for(size_t i=0;i<names.size();++i) {
+            GuestProfile* p=GuestProfileNamed(GuestProfiles,names[i]);
+            if(!p) {
+                std::vector<std::string> taken;
+                for(size_t k=0;k<GuestProfiles.size();++k) taken.push_back(GuestProfiles[k].gamertag);
+                GuestProfile fresh;
+                fresh.name=names[i];
+                fresh.gamertag=GuestGamertag(names[i],taken);
+                GuestProfiles.push_back(fresh);
+                p=&GuestProfiles.back();
+            }
+            todo.push_back(*p);
+        }
+    }
+    Save();
+    // Which consoles have each one now (its content folder), and which can be reached.
+    std::vector<Console*> open;
+    for(size_t k=0;k<consoles.size() && failed.empty();++k) {
+        Console& c=*consoles[k];
+        WorkStep("Looking at %s",ConsoleWord(c).c_str());
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        if(!ftp.Open()) { notes.push_back(ConsoleWord(c)+" isn't in Aurora, so its profiles come later"); continue; }
+        open.push_back(&c);
+        for(size_t i=0;i<todo.size();++i)
+            if(!todo[i].xuid.empty()) SetOn(todo[i],c.text,ftp.Enters(ContentFolderFtp(todo[i].xuid).c_str()));
+        ftp.Close();
+    }
+    if(failed.empty() && open.empty()) failed.push_back("None of the consoles is in Aurora (its FTP server answers only then).");
+    // Those that are on no console: their best kept copy, or a new one.
+    std::vector<size_t> make;
+    std::map<size_t,std::map<std::string,std::string> > sources;
+    for(size_t i=0;i<todo.size() && failed.empty();++i) {
+        GuestProfile& p=todo[i];
+        if(!p.xuid.empty() && !p.on.empty()) continue;
+        std::vector<ProfileCopy> copies=p.xuid.empty() ? std::vector<ProfileCopy>() : ProfileCopies(KitPath(ProfilesFolder(o),p.xuid));
+        const ProfileCopy* best=BestProfileCopy(copies);
+        std::string error;
+        if(best && OpenProfileCopy(o,*best,sources[i],error)) {
+            notes.push_back(p.name+" gets their profile back (from "+best->console+(best->gamerscore>=0 ? ", "+Number(best->gamerscore)+" G" : std::string())+")");
+            continue;
+        }
+        if(best) notes.push_back(p.name+"'s kept profile couldn't be read ("+error+"), so they get a new one");
+        sources.erase(i);
+        p.xuid.clear(); p.on.clear();
+        make.push_back(i);
+    }
+    // One console makes the new ones: the Gamemaster's if it's in Aurora.
+    if(!make.empty() && failed.empty()) {
+        Party party=CurrentParty();
+        Console* maker=open[0];
+        for(size_t k=0;k<open.size();++k) if(open[k]->text==party.gamemaster) maker=open[k];
+        for(size_t from=0;from<make.size();from+=ProfileJobMost) {
+            std::vector<std::string> tags;
+            for(size_t n=from;n<make.size() && n<from+ProfileJobMost;++n) tags.push_back(todo[make[n]].gamertag);
+            WorkStep("%s makes %s (Aurora is back in a moment)",ConsoleWord(*maker).c_str(),Count(int(tags.size()),"profile","profiles").c_str());
+            ProfileJobDone done;
+            std::string error;
+            if(!RunProfileJob(*maker,o,tags,done,error)) { failed.push_back(ConsoleWord(*maker)+" couldn't make them: "+error); break; }
+            for(size_t n=from;n<make.size() && n<from+ProfileJobMost;++n) {
+                GuestProfile& p=todo[make[n]];
+                int slot=int(n-from)+1;
+                if(!done.xuids.count(slot)) { failed.push_back(p.name+": "+(done.errors.count(slot) ? done.errors[slot] : std::string("the helper said nothing about it."))); continue; }
+                p.xuid=done.xuids[slot]; p.made=(long long)time(NULL); p.madeOn=maker->text; p.on.assign(1,maker->text);
+                XboxLog(*maker,"made the guest profile %s (%s) for %s.",p.gamertag.c_str(),p.xuid.c_str(),p.name.c_str());
+                KeepGuestProfile(p);
+            }
+        }
+    }
+    // Then each goes on the consoles that don't have it.
+    for(size_t i=0;i<todo.size() && failed.empty();++i) {
+        GuestProfile& p=todo[i];
+        if(p.xuid.empty()) continue;
+        std::map<std::string,std::string>& files=sources[i];
+        for(size_t k=0;k<open.size();++k) {
+            Console& c=*open[k];
+            if(std::find(p.on.begin(),p.on.end(),std::string(c.text))!=p.on.end()) continue;
+            std::string error;
+            if(files.empty()) {
+                // Read from a console that has it, the one that made it first.
+                std::vector<Console*> from;
+                for(size_t s=0;s<open.size();++s) if(std::find(p.on.begin(),p.on.end(),std::string(open[s]->text))!=p.on.end()) from.insert(open[s]->text==p.madeOn ? from.begin() : from.end(),open[s]);
+                if(from.empty()) { notes.push_back(p.name+" is on no console in Aurora now, so it's copied later"); break; }
+                WorkStep("Reading %s's profile from %s",p.name.c_str(),ConsoleWord(*from[0]).c_str());
+                Busy busy(from[0]);
+                FtpClient ftp(from[0]->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+                if(!ftp.Open() || !ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,error)) {
+                    failed.push_back("Couldn't read "+p.name+"'s profile on "+ConsoleWord(*from[0])+": "+(error.empty() ? std::string(ftp.Error()) : error));
+                    files.clear();
+                    break;
+                }
+            }
+            WorkStep("Copying %s's profile to %s",p.name.c_str(),ConsoleWord(c).c_str());
+            Busy busy(&c);
+            FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+            if(!ftp.Open() || !WriteTree(ftp,ContentFolderFtp(p.xuid),files,error)) {
+                failed.push_back("Couldn't copy "+p.name+"'s profile to "+ConsoleWord(c)+": "+(error.empty() ? std::string(ftp.Error()) : error));
+                continue;
+            }
+            SetOn(p,c.text,true);
+            XboxLog(c,"has the guest profile %s (%s) for %s now.",p.gamertag.c_str(),p.xuid.c_str(),p.name.c_str());
+        }
+        if(!p.made) p.made=(long long)time(NULL);
+        KeepGuestProfile(p);
+    }
+    int ready=0;
+    for(size_t i=0;i<todo.size();++i) if(!todo[i].xuid.empty() && todo[i].on.size()>=open.size() && !open.empty()) ++ready;
+    std::string result=Count(ready,"guest has a profile","guests have a profile")+" on "+(open.size()==consoles.size() ? "every console" : Count(int(open.size()),"console","consoles"));
+    for(size_t i=0;i<notes.size();++i) result+=". "+notes[i];
+    Log("Guest profiles: %s.%s%s",result.c_str(),failed.empty() ? "" : " ",failed.empty() ? "" : failed[0].c_str());
+    std::lock_guard<std::mutex> hold(GuestLock);
+    Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
+    Work.result=result+".";
+    Work.error.clear();
+    for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+(failed[i].empty() || failed[i][failed[i].size()-1]=='.' ? "" : ".");
+}
+
+// Keeps a copy of each named guest's content folder from every console that
+// has it, then removes it there: never one the server didn't make (its
+// package must have the record's gamertag), nor one signed in now.
+void RemoveGuestProfiles(std::vector<std::string> names) {
+    Options o=Current();
+    std::vector<Console*> consoles=ProfileConsoles();
+    std::vector<std::string> failed, notes;
+    int removed=0, kept=0;
+    for(size_t i=0;i<names.size();++i) {
+        GuestProfile p;
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            GuestProfile* had=GuestProfileNamed(GuestProfiles,names[i]);
+            if(!had || had->xuid.empty()) continue;
+            p=*had;
+        }
+        // Its consoles: the party's, and any other it was put on.
+        std::vector<Console*> where=consoles;
+        for(size_t k=0;k<p.on.size();++k) {
+            Console* c=ConsoleIfKnown(inet_addr(p.on[k].c_str()));
+            if(c && std::find(where.begin(),where.end(),c)==where.end()) where.push_back(c);
+        }
+        for(size_t k=0;k<where.size();++k) {
+            Console& c=*where[k];
+            WorkStep("Keeping %s's profile from %s",p.name.c_str(),ConsoleWord(c).c_str());
+            Busy busy(&c);
+            FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+            if(!ftp.Open()) {
+                if(std::find(p.on.begin(),p.on.end(),std::string(c.text))!=p.on.end()) notes.push_back(ConsoleWord(c)+" isn't in Aurora, so "+p.name+"'s profile stays there for now");
+                continue;
+            }
+            std::string folder=ContentFolderFtp(p.xuid), error;
+            if(!ftp.Enters(folder.c_str())) { SetOn(p,c.text,false); continue; }
+            std::map<std::string,std::string> files;
+            if(!ReadTree(ftp,folder,std::string(),files,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error); continue; }
+            std::map<std::string,std::string>::const_iterator package=files.find("FFFE07D1/00010000/"+p.xuid);
+            ProfileStats stats;
+            if(package==files.end() || !ReadProfileStats(package->second,stats) || _stricmp(stats.gamertag.c_str(),p.gamertag.c_str())) {
+                failed.push_back(p.name+" on "+ConsoleWord(c)+": "+DashPath(folder)+" isn't the profile NetDisc360 made ("+(package==files.end() ? std::string("no profile in it") : "it's called "+stats.gamertag)+"), so it's left alone");
+                continue;
+            }
+            if(SignedIn(c,o,p.xuid)==1) { failed.push_back(p.name+" is signed in on "+ConsoleWord(c)+": sign them out first"); continue; }
+            ProfileCopy copy;
+            if(!KeepProfileCopy(p,c,o,files,copy,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error+", so it's not removed"); continue; }
+            ++kept;
+            WorkStep("Removing %s's profile from %s",p.name.c_str(),ConsoleWord(c).c_str());
+            if(!DeleteTree(ftp,folder,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error+" (a copy is kept)"); continue; }
+            ++removed;
+            SetOn(p,c.text,false);
+            XboxLog(c,"guest profile %s (%s) for %s kept as %s and removed.",p.gamertag.c_str(),p.xuid.c_str(),p.name.c_str(),copy.file.c_str());
+        }
+        KeepGuestProfile(p);
+    }
+    std::string result=Count(removed,"guest profile removed","guest profiles removed")+", "+Count(kept,"copy","copies")+" kept in "+config::FromUtf8(ProfilesFolder(o));
+    for(size_t i=0;i<notes.size();++i) result+=". "+notes[i];
+    Log("Guest profiles: %s.",result.c_str());
+    if(removed) Event(EventInfo,"%s",Count(removed,"guest profile removed from the consoles","guest profiles removed from the consoles").c_str());
+    std::lock_guard<std::mutex> hold(GuestLock);
+    Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
+    Work.result=result+".";
+    Work.error.clear();
+    for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+".";
+}
+
+// GET /api/party/profiles: the guests' profiles (every guest on the list,
+// and any other the server made that is still on a console or kept), each
+// with its consoles and kept copies, and the work under way.
+void GuestProfilesJson(web::Reply& out) {
+    Options o=Current();
+    Party party=CurrentParty();
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    ProfileWork work;
+    { std::lock_guard<std::mutex> hold(GuestLock); work=Work; }
+    std::vector<std::string> taken;
+    for(size_t i=0;i<records.size();++i) taken.push_back(records[i].gamertag);
+    std::vector<GuestProfile> list;
+    for(size_t i=0;i<party.guests.size();++i) {
+        GuestProfile* had=GuestProfileNamed(records,party.guests[i].name);
+        GuestProfile p;
+        if(had) p=*had;
+        else { p.name=party.guests[i].name; p.gamertag=GuestGamertag(p.name,taken); taken.push_back(p.gamertag); }
+        list.push_back(p);
+    }
+    for(size_t i=0;i<records.size();++i) if(GuestNamed(party,records[i].name).empty() && !records[i].xuid.empty()) list.push_back(records[i]);
+    web::Json j;
+    j.Open('{').Key("work").Open('{').Set("running",work.running).Set("what",work.what).Set("step",work.step).Set("result",work.result)
+     .Set("error",work.error).Set("at",work.at).Close('}').Set("folder",config::FromUtf8(ProfilesFolder(o))).Key("profiles").Open('[');
+    for(size_t i=0;i<list.size();++i) {
+        const GuestProfile& p=list[i];
+        std::vector<ProfileCopy> copies=p.xuid.empty() ? std::vector<ProfileCopy>() : ProfileCopies(KitPath(ProfilesFolder(o),p.xuid));
+        const ProfileCopy* best=BestProfileCopy(copies);
+        j.Open('{').Set("name",p.name).Set("gamertag",p.gamertag).Set("xuid",p.xuid).Set("guest",!GuestNamed(party,p.name).empty())
+         .Set("made",p.made).Set("madeOn",p.madeOn).Key("on").Open('[');
+        for(size_t k=0;k<p.on.size();++k) j.String(p.on[k]);
+        j.Close(']').Set("copies",int(copies.size())).Key("best");
+        if(best) j.Open('{').Set("gamerscore",best->gamerscore).Set("achievements",best->achievements).Set("time",best->time).Set("console",best->console).Close('}');
+        else j.Null();
+        j.Close('}');
+    }
+    out.body=j.Close(']').Close('}').Text();
+}
+
+// POST /api/party/profiles {action, names?}: make (every guest on the list,
+// or names: a profile on every console, a kept one put back), remove (keep
+// a copy, then remove them from the consoles; every one made, or names) or
+// forget (a record of one on no console: its kept copies stay).
+void GuestProfilesChange(const web::Value& v, web::Reply& out) {
+    std::string action;
+    Text(v,"action",action);
+    std::vector<std::string> names;
+    const web::Value* list=v.Get("names");
+    if(list && !Strings(*list,names)) { out.Error(400,"names is a list of guests' names."); return; }
+    Party party=CurrentParty();
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    if(action=="forget") {
+        if(names.size()!=1) { out.Error(400,"Name the one to forget."); return; }
+        std::lock_guard<std::mutex> hold(GuestLock);
+        GuestProfile* p=GuestProfileNamed(GuestProfiles,names[0]);
+        if(!p) { out.Error(404,"There's no profile for "+names[0]+"."); return; }
+        if(!p->on.empty()) { out.Error(409,"It's still on a console: remove it first."); return; }
+        GuestProfiles.erase(GuestProfiles.begin()+(p-&GuestProfiles[0]));
+    } else if(action=="make" || action=="remove") {
+        bool make=action=="make";
+        if(!list) {
+            if(make) for(size_t i=0;i<party.guests.size();++i) names.push_back(party.guests[i].name);
+            else for(size_t i=0;i<records.size();++i) if(!records[i].xuid.empty()) names.push_back(records[i].name);
+        }
+        for(size_t i=0;i<names.size();++i) {
+            bool known=make ? !GuestNamed(party,names[i]).empty() : GuestProfileNamed(records,names[i])!=NULL;
+            if(!known) { out.Error(400,names[i]+(make ? " isn't on the guest list." : " has no guest profile.")); return; }
+        }
+        if(names.empty()) { out.Error(400,make ? "The guest list is empty." : "There are no guest profiles to remove."); return; }
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            if(Work.running) { out.Error(409,"The guest profiles are busy: "+(Work.step.empty() ? Work.what : Work.step)+"."); return; }
+            Work=ProfileWork();
+            Work.running=true; Work.what=action; Work.at=(long long)time(NULL);
+        }
+        if(make) std::thread(MakeGuestProfiles,names).detach();
+        else std::thread(RemoveGuestProfiles,names).detach();
+        Log("Guest profiles: %s for %s (asked on the dashboard).",make ? "making" : "removing",Count(int(names.size()),"guest","guests").c_str());
+    } else { out.Error(400,"Send action make, remove or forget."); return; }
+    Save();
+    GuestProfilesJson(out);
+}
+
 // The library's games by Title ID: the first one's name, and the listed name
 // of each (in lower case, as a console's tiles have them).
 void LibraryByTitle(std::map<DWORD,std::string>& names, std::map<DWORD,std::vector<std::string> >& listed) {
@@ -5762,6 +6252,8 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     }
     else if(r.method=="GET" && r.path=="/api/party/asset") PartyAssetFile(r,out);
+    else if(r.method=="GET" && r.path=="/api/party/profiles") GuestProfilesJson(out);
+    else if(r.method=="POST" && r.path=="/api/party/profiles") GuestProfilesChange(body,out);
     else if(r.method=="GET" && r.path=="/api/systemlink") SystemLinkList(out);
     else if(r.method=="GET" && r.path=="/api/titleupdates") TitleUpdatesList(out);
     else if(r.method=="POST" && r.path=="/api/network/private") {
