@@ -75,9 +75,10 @@ bool HasProfile(ULONGLONG xuid, WCHAR* gamertag);
 // XamProfileClose (0x238), which has xam sign the package again with the
 // console's keys. openFlags: XamProfileOpen's flags to try in turn until the
 // files can be written (what they mean isn't known; 3 is "open an existing
-// one" for content). thumbnail: the package's thumbnail (what the Storage
-// screen shows) gets the big picture too, with
-// XamContentSetThumbnailInternal (0x272).
+// one" for content; it worked on the console, 2026-11-01). thumbnail: the
+// package's thumbnail (what the Storage screen shows) gets the big picture
+// too, with XamContentSetThumbnailInternal (0x272); it answered 3 on the
+// console and left the thumbnail as it was, so the server doesn't ask for it.
 struct ProfilePicture {
     const void* big; DWORD bigSize;
     const void* small; DWORD smallSize;
