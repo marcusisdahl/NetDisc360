@@ -16,6 +16,8 @@ RUN apt-get update \
 WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
+COPY third_party/miniz/ third_party/miniz/
+COPY third_party/lzma/ third_party/lzma/
 COPY tests/posix_compat.h tests/
 # The dashboard page, made into server/web_page.h (it isn't kept in git).
 COPY web/ web/
@@ -24,6 +26,7 @@ RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
         server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/system.cpp \
+        server/compress.cpp server/codecs.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip

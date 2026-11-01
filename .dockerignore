@@ -6,3 +6,5 @@
 !art/aurora/*/*.asset
 !web/
 !tools/make_web.py
+!third_party/miniz/
+!third_party/lzma/
