@@ -1704,7 +1704,7 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         // With NetISO.xex loaded before this plugin in launch.ini, its unload
         // call, read size and receive buffer are patched (if it comes after,
         // the first tile patches its unload call). Without it, this plugin's
-        // own drive starts and is the disc drive a couple of seconds later.
+        // own drive starts and is the disc drive at once (as NetISO.xex did).
         FindOwnFolder(module);
         PatchUnload();
         PatchReadLimit();

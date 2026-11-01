@@ -28,8 +28,13 @@
 // requests in flight; and when the connection drops it connects again and
 // mounts the same disc before it gives the disc up.
 //
-// It stays off when NetISO.xex is loaded (or own_disc=0 in NetDisc360.ini),
-// so both can sit in launch.ini while this one is tried.
+// It all starts in DllMain, before DashLaunch starts the dashboard, in the
+// order NetISO.xex started: the worker, the tray, \Device\Cdrom0 and the
+// media ID, then \Device\NetDisc360. Done later, from the worker while the
+// dashboard was starting, it froze Aurora and the Guide on the console.
+// It stays off when NetISO.xex is loaded before it in launch.ini (or
+// own_disc=0 in NetDisc360.ini), so both can sit in launch.ini while this
+// one is tried.
 //
 // The worker is a system thread without the CRT's per-thread data, so
 // nothing it runs formats with the CRT (no sprintf): see Format.
@@ -235,11 +240,16 @@ static size_t Format(char* out,size_t at,size_t capacity,const char* format,va_l
 
 // ---- Log: Hdd1:\NetISO\NetDisc360\disc.log, this boot only ----
 
-// Written by the worker only, through the kernel's file calls. Times are
-// seconds since the console started.
+// Written through the kernel's file calls, by the plugin's start (DllMain)
+// and by the worker, one line at a time. Times are seconds since the
+// console started.
 static char LogPath[]="\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360\\disc.log";
 static bool LogStarted=false;
+static volatile LONG LogBusy=0;
+static void Delay(DWORD ms);
 static void Log(const char* format,...) {
+    // Not a spin lock: the file calls below wait, which a spin lock's IRQL forbids.
+    for(int i=0;InterlockedCompareExchange(&LogBusy,1,0)!=0;++i) { if(i>=200) return; Delay(5); }
     char line[384];
     DWORD ms=GetTickCount();
     size_t at=Put(line,0,sizeof(line),"[");
@@ -254,13 +264,15 @@ static void Log(const char* format,...) {
     IoStatus io={0,0}; HANDLE file=NULL;
     // GENERIC_WRITE with SYNCHRONIZE; FILE_OVERWRITE_IF the first time this
     // boot, FILE_OPEN_IF after; a synchronous, non-directory file.
-    if(K.NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,LogStarted ? 3 : 5,0x60)<0) return;
-    LogStarted=true;
-    LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
-    K.NtWriteFile(file,NULL,NULL,NULL,&io,line,DWORD(at),&end);
-    K.NtClose(file);
+    if(K.NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,LogStarted ? 3 : 5,0x60)>=0) {
+        LogStarted=true;
+        LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
+        K.NtWriteFile(file,NULL,NULL,NULL,&io,line,DWORD(at),&end);
+        K.NtClose(file);
+    }
+    InterlockedExchange(&LogBusy,0);
 }
-// The note Status shows, also logged. Worker only.
+// The note Status shows, also logged.
 static void SetNote(const char* format,...) {
     char text[sizeof(NoteText)];
     va_list args; va_start(args,format);
@@ -303,16 +315,24 @@ static const DWORD WouldBlock=WSAEWOULDBLOCK;
 // can take a while.
 static const long ReplySeconds=15,ConnectSeconds=3;
 
+static bool ToldNoNetwork=false;
 static bool NetworkUp() {
     if(!NetworkStarted) {
         // XNetStartupParams: its size, the rest XNet's defaults (as NetISO.xex started it).
         BYTE parameters[13]; memset(parameters,0,sizeof(parameters)); parameters[0]=13;
         static BYTE wsa[512];
-        if(K.XNetStartup(SystemCaller,parameters) || K.WSAStartupEx(SystemCaller,2,wsa,0x20352400)) return false;
+        Log("Starting the network (XNetStartup).");
+        if(int failed=K.XNetStartup(SystemCaller,parameters)) { Log("XNetStartup failed: %X.",DWORD(failed)); return false; }
+        Log("Starting the network (WSAStartupEx).");
+        if(int failed=K.WSAStartupEx(SystemCaller,2,wsa,0x20352400)) { Log("WSAStartupEx failed: %X.",DWORD(failed)); return false; }
+        Log("The network is started.");
         NetworkStarted=true;
     }
     DWORD status=0;
-    return !K.XnpGetConfigStatus(SystemCaller,&status) && (status&1);
+    bool up=!K.XnpGetConfigStatus(SystemCaller,&status) && (status&1);
+    if(!up && !ToldNoNetwork) { Log("The console's network isn't up yet (%X); waiting for it.",status); ToldNoNetwork=true; }
+    else if(up && ToldNoNetwork) { Log("The console's network is up."); ToldNoNetwork=false; }
+    return up;
 }
 static void Disconnect(const char* why) {
     if(Socket!=INVALID_SOCKET) {
@@ -699,6 +719,7 @@ static void Housekeeping() {
         if(HasDisc()) {
             if(Reconnect()) SetNote("The server is back; %s is still in the drive.",Mounted);
         } else if(NetworkUp()) {
+            if(!ToldWaiting) Log("Connecting to the server at %I, port %u.",ServerAddress,ServerPort);
             if(Connect()) { Log("Connected to the server at %I, port %u.",ServerAddress,ServerPort); ToldWaiting=false; }
             else if(!ToldWaiting) { Log("The server at %I, port %u, doesn't answer; trying again every %u s.",ServerAddress,ServerPort,IdleRetryMs/1000); ToldWaiting=true; }
         }
@@ -706,16 +727,17 @@ static void Housekeeping() {
     if(DWORD code=Unhandled) { Unhandled=0; Log("The drive got control %X, which it doesn't answer.",code); }
 }
 
-// The drive's thread: a couple of seconds after the plugin started, it
-// takes over the drive, then serves the queue until the plugin stops.
-static bool Activate();
+// The drive's thread. As NetISO.xex's worker, it starts before the drive
+// is taken over and connects to the server at once; then it serves the
+// queue until the plugin stops.
 static void Deactivate();
+static bool NetIsoLoaded();
 static DWORD WINAPI WorkerMain(void*) {
-    Delay(2000); // DashLaunch loads the other plugins meanwhile.
-    if(!Stopping && Activate()) {
-        while(!Stopping) {
-            LARGE_INTEGER timeout; timeout.QuadPart=-10000000; // 1 s
-            K.KeWaitForSingleObject(&QueueEvent,0,0,FALSE,&timeout);
+    Log("The drive's thread runs.");
+    DWORD started=GetTickCount();
+    bool checkedNetIso=false;
+    while(!Stopping) {
+        if(Activated) {
             for(Link* entry;!Stopping && (entry=Take())!=NULL;) {
                 if(IsCommand(entry)) {
                     Command command=*(Command*)entry;
@@ -723,11 +745,21 @@ static DWORD WINAPI WorkerMain(void*) {
                     if(command.kind==MountCommand) RunMount(command); else RunEject(command);
                 } else ServeRead((BYTE*)entry-IrpLink);
             }
-            if(!Stopping) Housekeeping();
-            Publish();
         }
-        Deactivate();
+        if(Stopping) break;
+        Housekeeping();
+        // A NetISO.xex later in launch.ini than this plugin loads after the
+        // drive was taken over, and takes it over again on top.
+        if(!checkedNetIso && GetTickCount()-started>=10000) {
+            checkedNetIso=true;
+            if(Activated && NetIsoLoaded()) Log("NetISO.xex is loaded too, after this plugin: take it out of launch.ini, two disc drives don't mix.");
+        }
+        Publish();
+        LARGE_INTEGER timeout; timeout.QuadPart=-10000000; // 1 s
+        K.KeWaitForSingleObject(&QueueEvent,0,0,FALSE,&timeout);
     }
+    if(Activated) Deactivate();
+    Disconnect(NULL);
     InterlockedExchange(&Running,0);
     return 0;
 }
@@ -1068,38 +1100,46 @@ static bool NetIsoLoaded() {
     HANDLE module=NULL;
     return XexGetModuleHandle("NetISO.xex",&module)>=0 && module;
 }
-// On the worker, once the other plugins are loaded. The launcher's device
-// comes last, so that it being there means the drive is ready.
-static bool Activate() {
-    if(NetIsoLoaded()) { SetNote("Off: NetISO.xex is loaded, so it is the disc drive. Take it out of launch.ini to use NetDisc360's own."); Publish(); return false; }
-    // The SMC's notification list: a handler registered and taken off again shows where it is.
+// The tray: the SMC's notification list (a handler registered and taken off
+// again shows where it is) and xam's tray queries.
+static int SetUpTray() {
     memset(SmcRegistration,0,sizeof(SmcRegistration));
     Word(SmcRegistration,0)=DWORD(SmcNoticed);
     K.HalRegisterSMCNotification(SmcRegistration,TRUE);
     SmcHandlers=(Link*)Word(SmcRegistration,8);
     K.HalRegisterSMCNotification(SmcRegistration,FALSE);
-    if(!HookDrive()) { SetNote("Off: \\Device\\Cdrom0 couldn't be taken over."); Publish(); return false; }
-    int smc=HookSmc();
-    bool mediaId=HookMediaId();
+    return HookSmc();
+}
+// At the plugin's start (DllMain), before DashLaunch starts the dashboard,
+// in the order NetISO.xex did it: the worker (already running), the tray,
+// \Device\Cdrom0 with the media ID, then the launcher's device. Each step
+// is logged before it is taken, so a start that hangs shows where.
+static bool Activate() {
+    Log("Setting up the tray.");
+    int smc=SetUpTray();
+    if(smc!=1) Log("xam's tray queries hooked: %u (1 expected).",DWORD(smc));
+    Log("Taking over \\Device\\Cdrom0.");
+    if(!HookDrive()) { UnhookSmc(); SetNote("Off: \\Device\\Cdrom0 couldn't be taken over."); Publish(); return false; }
+    Log("Hooking XeKeysGetMediaID.");
+    if(!HookMediaId()) Log("XeKeysGetMediaID couldn't be hooked; games get the console's own answer.");
+    Log("Making \\Device\\NetDisc360.");
     if(!MakeControlDevice()) {
-        UnhookMediaId(); UnhookSmc(); UnhookDrive();
+        UnhookMediaId(); UnhookDrive(); UnhookSmc();
         SetNote("Off: \\Device\\NetDisc360 couldn't be made.");
         Publish();
         return false;
     }
     State=netdisc::StateIdle;
     InterlockedExchange(&Activated,1);
-    if(S.about) Log("%s",S.about);
     Log("Reads of up to %u KB, %u at once, receive buffer %u KB; %s.",S.readBytes/1024,DWORD(S.depth),DWORD(S.receiveBytes/1024),
         RealDrive ? "the console's own drive works while no disc from the server is in" : "the console has no drive");
-    if(smc!=1) Log("xam's tray queries hooked: %u (1 expected).",DWORD(smc));
-    if(!mediaId) Log("XeKeysGetMediaID couldn't be hooked; games get the console's own answer.");
     SetNote("On: this plugin is the disc drive.");
     Publish();
     return true;
 }
 // On the worker, when the plugin stops: reads still queued fail.
 static void Deactivate() {
+    Log("Giving the disc drive back.");
     InterlockedExchange(&Activated,0);
     UnhookDrive();
     UnhookMediaId();
@@ -1108,7 +1148,6 @@ static void Deactivate() {
         if(IsCommand(entry)) InterlockedExchange(&((Command*)entry)->used,0);
         else Complete((BYTE*)entry-IrpLink,DeviceError,0);
     if(ControlDevice) { K.IoDeleteDevice(ControlDevice); ControlDevice=NULL; }
-    Disconnect(NULL);
     State=netdisc::StateOff;
     Publish();
 }
@@ -1132,12 +1171,18 @@ void Start(const Settings& settings) {
     K.KeInitializeEvent(&QueueEvent,1,FALSE); // A synchronization event.
     Public.version=netdisc::Version; Public.size=sizeof(Public); Public.state=netdisc::StateOff;
     Put(NoteText,0,sizeof(NoteText),"Starting.");
+    if(S.about) Log("%s",S.about);
     InterlockedExchange(&Running,1);
     // NetISO.xex's worker had these flags and this priority; this one has a
     // bigger stack.
     DWORD id=0;
+    Log("Starting the drive's thread.");
     if(ExCreateThread(&Worker,0x10000,&id,NULL,WorkerMain,NULL,0x200006AA)>=0) K.KeSetBasePriorityThread(Worker,0x10);
-    else { Worker=NULL; InterlockedExchange(&Running,0); Put(NoteText,0,sizeof(NoteText),"Off: its thread didn't start."); }
+    else { Worker=NULL; InterlockedExchange(&Running,0); SetNote("Off: its thread didn't start."); return; }
+    if(!Activate()) {
+        InterlockedExchange(&Stopping,1);
+        K.KeSetEvent(&QueueEvent,1,FALSE);
+    }
 }
 
 void Stop() {

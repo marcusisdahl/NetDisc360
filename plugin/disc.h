@@ -19,10 +19,10 @@ struct Settings {
     int port;
     const char* about;  // Where the settings came from, for the drive's log; kept.
 };
-// At DllMain. The drive's thread starts at once; a couple of seconds later,
-// when DashLaunch has loaded the other plugins, it becomes the disc drive
-// (\Device\NetDisc360, \Device\Cdrom0, the tray and the media ID), unless
-// NetISO.xex is loaded or the settings turn it off.
+// At DllMain, before DashLaunch starts the dashboard, in NetISO.xex's
+// order: the drive's thread (which connects to the server), the tray,
+// \Device\Cdrom0 with the media ID, then \Device\NetDisc360. Unless
+// NetISO.xex is loaded already or the settings turn the drive off.
 void Start(const Settings& settings);
 // At unload: gives the drive back to the console as it was.
 void Stop();
