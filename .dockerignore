@@ -3,3 +3,4 @@
 !shared/
 !tests/posix_compat.h
 !docker/
+!art/aurora/*/*.asset

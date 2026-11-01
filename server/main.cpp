@@ -1137,6 +1137,73 @@ void RefreshInstallFilter(const Console& console, FtpClient& ftp, const Options&
     else if(written<0) XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
 }
 
+// Aurora's art for NetDisc360 and FastFTP360 ---------------------------------
+
+// Aurora looks a title's cover up on XboxUnity by its Title ID, and XboxUnity
+// has no entry for these two homebrew apps (only its admins add homebrew
+// titles), so Aurora keeps empty placeholders for them in its GameData
+// folder: <Title ID>_<n>/GC (cover), BK (background) and GL (icon and banner)
+// .asset files of 2048 bytes. The server fills those in with the art from
+// art/aurora (see tools/aurora_asset.py). Art that is already there, whether
+// Aurora's or someone's own, is left alone.
+struct AppArt { DWORD titleId; const char* app; const char* folder; int ids[3]; std::vector<unsigned char> files[3]; };
+AppArt AppArts[] = {
+    {0xFFFF4E49,"NetDisc360","netdisc360",{IDR_ART_NETDISC_GC,IDR_ART_NETDISC_BK,IDR_ART_NETDISC_GL}},
+    {0xFFFF4646,"FastFTP360","fastftp360",{IDR_ART_FASTFTP_GC,IDR_ART_FASTFTP_BK,IDR_ART_FASTFTP_GL}},
+};
+const char* const ArtKinds[3] = {"GC","BK","GL"};
+const size_t ArtPlaceholder = 2048;  // An .asset file with no picture in it: the header alone.
+const char GameDataFolder[] = "/Data/GameData";
+
+bool BuiltIn(int id, std::vector<unsigned char>& out);
+bool LoadFile(const std::string& path, std::vector<unsigned char>& out);
+// From the exe's resources on Windows, or else from an aurora folder beside
+// the launcher given with --launcher (in the Docker image,
+// /usr/local/share/netdisc/aurora; see the Dockerfile).
+void LoadAppArt(const Options& o) {
+    std::string folder=o.launcherPath.substr(0,o.launcherPath.find_last_of("/\\")+1)+"aurora/";
+    for(size_t a=0;a<sizeof(AppArts)/sizeof(AppArts[0]);++a)
+        for(int k=0;k<3;++k) {
+            AppArt& art=AppArts[a];
+            char name[32]; _snprintf_s(name,sizeof(name),_TRUNCATE,"%s%08X.asset",ArtKinds[k],unsigned(art.titleId));
+            if(!BuiltIn(art.ids[k],art.files[k]) && !o.launcherPath.empty()) LoadFile(folder+art.folder+"/"+name,art.files[k]);
+        }
+}
+
+void GuardAppArt(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string root=o.aurora+GameDataFolder;
+    std::vector<FtpEntry> entries;
+    if(!ftp.List(root.c_str(),entries)) return;  // Aurora keeps its folder elsewhere; GuardFilter says so.
+    for(size_t i=0;i<entries.size();++i) {
+        unsigned titleId=0, number=0;
+        char rest;
+        if(!entries[i].folder || sscanf(entries[i].name.c_str(),"%8X_%8X%c",&titleId,&number,&rest)!=2) continue;
+        for(size_t a=0;a<sizeof(AppArts)/sizeof(AppArts[0]);++a) {
+            const AppArt& art=AppArts[a];
+            if(art.titleId!=titleId) continue;
+            int written=0;
+            for(int k=0;k<3;++k) {
+                if(art.files[k].empty()) continue;
+                char name[32]; _snprintf_s(name,sizeof(name),_TRUNCATE,"/%s%08X.asset",ArtKinds[k],titleId);
+                std::string path=root+"/"+entries[i].name+name;
+                std::vector<unsigned char> old, back;
+                // Bigger than a placeholder (or unreadable): there's art already.
+                if(!ftp.Retrieve(path.c_str(),old,ArtPlaceholder) && !ftp.Missing()) continue;
+                const std::vector<unsigned char>& data=art.files[k];
+                if(ftp.Store(path.c_str(),data.data(),data.size()) && ftp.Retrieve(path.c_str(),back,data.size()+1) && back==data) ++written;
+                else {
+                    XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
+                    if(!old.empty()) ftp.Store(path.c_str(),old.data(),old.size());  // The placeholder back, rather than a cut-short file.
+                }
+            }
+            if(written) {
+                XboxLog(console,"wrote %s's cover art to Aurora (%s/%s). Restart Aurora to see it.",art.app,root.c_str(),entries[i].name.c_str());
+                XboxEvent(console,EventGood,std::string(art.app)+"'s cover art added to Aurora; restart Aurora to see it");
+            }
+        }
+    }
+}
+
 // Pushing the game folders ---------------------------------------------------
 
 // Sync keeps its lists in static buffers (it runs on the console too), so the
@@ -1321,6 +1388,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
     if(o.filter && (back || pushDue)) GuardFilter(console,ftp,back,o);
+    if(back || pushDue) GuardAppArt(console,ftp,o);
     if(pushDue && !online && !s.toldWaiting) {
         XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",o.onlineWait);
         s.toldWaiting=true;
@@ -3258,6 +3326,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         if(!CanPush && o.push) Log("This build has no launcher built in, so it won't update the Xbox (--launcher gives one).");
     }
     if(!CanPush) o.push=false;
+    LoadAppArt(o);
 #ifdef _WIN32
     if(!InTray) o.updateAuto=false;
 #else
