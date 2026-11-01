@@ -2220,6 +2220,55 @@ print('lua ok')
             server.kill()
             server.communicate()
 
+    def test_the_plugin_makes_profiles_with_aurora_on_screen(self):
+        # A console whose NetDisc360.xex plugin takes the job (NetDisc360.job
+        # on the drive's root) makes the profiles under Aurora: the helper
+        # isn't started. Here a thread does what the plugin does.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        aurora = AuroraWeb()
+        self.addCleanup(aurora.close)
+        root = os.path.join(self.xbox, "Hdd1")
+        stop, jobs = threading.Event(), []
+
+        def plugin():
+            while not stop.is_set():
+                path = os.path.join(root, "NetDisc360.job")
+                if os.path.exists(path):
+                    with open(path) as f:
+                        job = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line and not line.startswith(";"))
+                    os.remove(path)
+                    jobs.append(job)
+                    # The pictures are where folder= says.
+                    folder = os.path.join(root, *job["folder"].strip("\\").split("\\"))
+                    self.assertTrue(os.path.exists(os.path.join(folder, job["picture1"])))
+                    xuid = "E00000000000B%03X" % len(jobs)
+                    os.makedirs(os.path.join(root, "Content", xuid, "FFFE07D1", "00010000"))
+                    with open(os.path.join(root, "Content", xuid, "FFFE07D1", "00010000", xuid), "wb") as f:
+                        f.write(b"CON " + bytes(0x2000))
+                    with open(os.path.join(root, "NetDisc360.done"), "w", newline="") as f:
+                        f.write("job=%s\r\nby=plugin\r\nguest1=%s\r\npicture1=ok\r\n" % (job["job"], xuid))
+                stop.wait(0.3)
+        threading.Thread(target=plugin, daemon=True).start()
+        self.addCleanup(stop.set)
+        config = os.path.join(self.tmp.name, "plugin.ini")
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config, auto_profiles=True)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 20))
+            self.json("POST", "/api/party", {"gamemaster": "127.0.0.1", "consoles": ["127.0.0.1"], "guests": [{"name": "Nora", "here": True}]})
+            self.assertTrue(self.wait_for(lambda: any(g["xuid"] for g in self.json("GET", "/api/party/profiles")["profiles"]), 40))
+            r = self.json("GET", "/api/party/profiles")
+            self.assertEqual([(g["name"], g["xuid"], g["on"]) for g in r["profiles"]], [("Nora", "E00000000000B001", ["127.0.0.1"])])
+            self.assertEqual(aurora.launched, [])  # Aurora stayed on screen.
+            self.assertEqual([j["guest1"] for j in jobs], ["Nora"])
+            self.assertFalse(os.path.exists(os.path.join(root, "NetDisc360.done")))
+            self.assertEqual([f for f in os.listdir(os.path.join(root, "NetISO", "NetDisc360")) if f.endswith(".png")], [])
+        finally:
+            stop.set()
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("making 1 guest profile with its NetDisc360.xex plugin (Aurora stays on screen).", out)
+
     def test_copies_profiles_to_the_seats_through_the_wheel_app(self):
         # After a spin or a swap, each seated guest's profile goes to their
         # console: here the second shows the wheel, so through the wheel

@@ -6115,6 +6115,74 @@ std::vector<Console*> ProfileConsoles() {
 }
 std::string ConsoleWord(const Console& c) { std::string name=NameOf(c); return name.empty() ? std::string(c.text) : name; }
 
+// The NetDisc360.xex plugin's way (plugin/profiles_job.h): the job on the
+// hard drive's root, which the plugin takes within seconds and does while
+// Aurora stays on screen. 1: made (done says how each went); 0: no plugin
+// took it (or it couldn't make any), so the helper does it; -1: taken, but
+// no answer came (error says so: the helper isn't started then, as the
+// plugin may still be making them). A console whose plugin didn't take a job
+// isn't asked again while the server runs.
+const char PluginJobPath[]="/Hdd1/NetDisc360.job", PluginDonePath[]="/Hdd1/NetDisc360.done";
+const double PluginTakeSeconds=6;
+std::mutex PluginJobLock;
+std::set<std::string> NoPluginJobs;  // Under PluginJobLock.
+int PluginProfileJob(Console& c, const Options& o, const std::string& folder, const std::string& job, const std::vector<std::string>& gamertags, ProfileJobDone& done, std::string& error) {
+    if(folder.compare(0,6,"/Hdd1/")) return 0;
+    { std::lock_guard<std::mutex> hold(PluginJobLock); if(NoPluginJobs.count(c.text)) return 0; }
+    std::string under=folder.substr(5);
+    for(size_t i=0;i<under.size();++i) if(under[i]=='/') under[i]='\\';
+    auto clean=[&](FtpClient& ftp) {
+        for(size_t i=0;i<gamertags.size();++i)
+            for(int size=64;size>=32;size-=32) ftp.Delete((folder+"/"+ProfilePictureFile(int(i)+1,size)).c_str());
+    };
+    {
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+        ftp.Delete(PluginDonePath);
+        if(!ftp.Open() || !StoreChecked(ftp,PluginJobPath,ProfileJobText(job,gamertags,true,"folder="+under+"\r\n"))) return 0;
+    }
+    // Taken: the plugin deletes it first.
+    bool taken=false;
+    for(double until=Now()+PluginTakeSeconds;!taken && Now()<until;) {
+        Sleep(1000);
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        taken=ftp.Open() && !FtpHas(ftp,"/Hdd1","NetDisc360.job") && ftp.Code()/100==2;
+    }
+    if(!taken) {
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        // Gone after all (taken just now): wait for it below.
+        if(ftp.Open() && ftp.Delete(PluginJobPath)) {
+            { std::lock_guard<std::mutex> hold(PluginJobLock); NoPluginJobs.insert(c.text); }
+            XboxLog(c,"its NetDisc360.xex plugin doesn't make guest profiles (an older one, or none), so the helper does.");
+            return 0;
+        }
+    }
+    XboxLog(c,"making %s with its NetDisc360.xex plugin (Aurora stays on screen).",Count(int(gamertags.size()),"guest profile","guest profiles").c_str());
+    std::string text;
+    for(double until=Now()+20+10*double(gamertags.size());;Sleep(1000)) {
+        if(Now()>until) { error="The console's NetDisc360.xex plugin took the job but didn't answer: look at its netiso.log."; return -1; }
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        std::vector<unsigned char> data;
+        if(!ftp.Open() || !ftp.Retrieve(PluginDonePath,data,64*1024)) continue;
+        text.assign(data.begin(),data.end());
+        ftp.Delete(PluginDonePath);
+        clean(ftp);
+        break;
+    }
+    if(!ReadProfileDone(text,done) || done.job!=job) { error="The plugin's answer isn't this job's."; return -1; }
+    if(done.xuids.empty()) {
+        // It couldn't make any (xam may not take it from a plugin): the helper's way, from now on.
+        { std::lock_guard<std::mutex> hold(PluginJobLock); NoPluginJobs.insert(c.text); }
+        XboxLog(c,"its plugin couldn't make the guest profiles (%s), so the helper does.",done.errors.empty() ? "no reason given" : done.errors.begin()->second.c_str());
+        done=ProfileJobDone();
+        return 0;
+    }
+    return 1;
+}
+
 // Makes gamertags as profiles on console c with the helper's profile job
 // (ProfileJob in shared/helper.h): the job in the helper's folder, the helper
 // started from Aurora, its answer read once Aurora is back. False, with why
@@ -6134,7 +6202,16 @@ bool RunProfileJob(Console& c, const Options& o, const std::vector<std::string>&
         for(size_t i=0;i<gamertags.size();++i)
             for(int size=64;size>=32;size-=32)
                 if(!StoreChecked(ftp,folder+"/"+ProfilePictureFile(int(i)+1,size),GamerPicturePng(gamertags[i],size))) { error=std::string("Couldn't write the gamer pictures: ")+ftp.Error(); return false; }
-        if(!StoreChecked(ftp,folder+"/"+ProfileJob,ProfileJobText(job,gamertags,true))) { error=std::string("Couldn't write the job: ")+ftp.Error(); return false; }
+        ftp.Close();
+    }
+    // The NetDisc360.xex plugin makes them under Aurora if it can (no Aurora restart).
+    int plugin=PluginProfileJob(c,o,folder,job,gamertags,done,error);
+    if(plugin>0) return true;
+    if(plugin<0) return false;
+    {
+        Busy busy(&c);
+        FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+        if(!ftp.Open() || !StoreChecked(ftp,folder+"/"+ProfileJob,ProfileJobText(job,gamertags,true))) { error=std::string("Couldn't write the job: ")+ftp.Error(); return false; }
         ftp.Close();
     }
     AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
@@ -6375,7 +6452,9 @@ void RemoveGuestProfiles(std::vector<std::string> names) {
             if(!ReadTree(ftp,folder,std::string(),files,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error); continue; }
             std::map<std::string,std::string>::const_iterator package=files.find("FFFE07D1/00010000/"+p.xuid);
             ProfileStats stats;
-            if(package==files.end() || !ReadProfileStats(package->second,stats) || _stricmp(stats.gamertag.c_str(),p.gamertag.c_str())) {
+            // The package's name is its gamertag, or (as xam names one it
+            // makes, seen on the consoles 2026-11-01) its own XUID.
+            if(package==files.end() || !ReadProfileStats(package->second,stats) || (_stricmp(stats.gamertag.c_str(),p.gamertag.c_str()) && _stricmp(stats.gamertag.c_str(),p.xuid.c_str()))) {
                 failed.push_back(p.name+" on "+ConsoleWord(c)+": "+DashPath(folder)+" isn't the profile NetDisc360 made ("+(package==files.end() ? std::string("no profile in it") : "it's called "+stats.gamertag)+"), so it's left alone");
                 continue;
             }

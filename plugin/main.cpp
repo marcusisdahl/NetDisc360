@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include "../shared/isvr.h"
 #include "disc.h"
+#include "profiles_job.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -1606,7 +1607,10 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         StartDrive();
         FindSwapExports();
         StartWatcher();
+        // The LAN party's guest profiles, made here under Aurora (profiles_job.h).
+        profilejob::Start(Note,Show);
     } else if(reason==DLL_PROCESS_DETACH) {
+        profilejob::Stop();
         disc::Stop();
         StopWatcher();
         UnpatchReceiveBuffer();
