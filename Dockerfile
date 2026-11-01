@@ -50,6 +50,7 @@ COPY --from=build /launcher/ /usr/local/share/netdisc/
 # Aurora's art for NetDisc360's own tile and FastFTP360 (server/main.cpp, LoadAppArt).
 COPY art/aurora/netdisc360/*.asset /usr/local/share/netdisc/aurora/netdisc360/
 COPY art/aurora/fastftp360/*.asset /usr/local/share/netdisc/aurora/fastftp360/
+COPY art/aurora/netdiscparty/*.asset /usr/local/share/netdisc/aurora/netdiscparty/
 COPY docker/entrypoint.sh /usr/local/bin/netdisc-entrypoint
 RUN chmod 0755 /usr/local/bin/netdisc-entrypoint
 USER netdisc

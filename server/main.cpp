@@ -1620,10 +1620,10 @@ void RefreshInstallFilter(const Console& console, FtpClient& ftp, const Options&
     else if(written<0) XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
 }
 
-// Aurora's art for NetDisc360 and FastFTP360 ---------------------------------
+// Aurora's art for NetDisc360, its party app and FastFTP360 ---------------------------------
 
 // Aurora looks a title's cover up on XboxUnity by its Title ID, and XboxUnity
-// has no entry for these two homebrew apps (only its admins add homebrew
+// has no entry for these homebrew apps (only its admins add homebrew
 // titles), so Aurora keeps empty placeholders for them in its GameData
 // folder: <Title ID>_<n>/GC (cover), BK (background) and GL (icon and banner)
 // .asset files of 2048 bytes. The server fills those in with the art from
@@ -1633,6 +1633,7 @@ struct AppArt { DWORD titleId; const char* app; const char* folder; int ids[3]; 
 AppArt AppArts[] = {
     {0xFFFF4E49,"NetDisc360","netdisc360",{IDR_ART_NETDISC_GC,IDR_ART_NETDISC_BK,IDR_ART_NETDISC_GL}},
     {0xFFFF4646,"FastFTP360","fastftp360",{IDR_ART_FASTFTP_GC,IDR_ART_FASTFTP_BK,IDR_ART_FASTFTP_GL}},
+    {0xFFFF4E50,"NetDisc360 Party","netdiscparty",{IDR_ART_PARTY_GC,IDR_ART_PARTY_BK,IDR_ART_PARTY_GL}},
 };
 const char* const ArtKinds[3] = {"GC","BK","GL"};
 const size_t ArtPlaceholder = 2048;  // An .asset file with no picture in it: the header alone.
