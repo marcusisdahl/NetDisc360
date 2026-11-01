@@ -10,7 +10,7 @@
 //
 // The folder is the path this XEX was started from, which the kernel keeps
 // in the running title's loader entry (xboxkrnl's XexExecutableModuleHandle,
-// export 403, which the NetIsoTiles plugin reads the same way).
+// export 403, which the NetDisc360 plugin reads the same way).
 #include "../shared/helper.h"
 #include <stdarg.h>
 #include <stdio.h>
