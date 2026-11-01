@@ -988,6 +988,92 @@ class Push(ServerTest):
             server.communicate()
             sharing.close()
 
+    def test_sets_a_console_up_with_the_plugin_set(self):
+        # launch.ini's plugin lines become the set; files the console lacks
+        # come from the kit folder, settings files end up at the drive's top
+        # and beside the plugin; launch.ini is backed up first, and put back.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        usb = os.path.join(self.xbox, "Usb0")
+        plugins = os.path.join(usb, "Plugins")
+        os.makedirs(plugins)
+        before = ("[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n\r\n[Plugins]\r\nplugin1 = Usb:\\Plugins\\NetISO.xex\r\n"
+                  "plugin2 = Usb:\\Plugins\\NetIsoTiles.xex\r\n; plugin3 = Usb:\\Plugins\\Old.xex\r\nplugin3 = Usb:\\Plugins\\UsbdSecPatch.xex\r\n"
+                  "\r\n[Settings]\r\npingpatch = true\r\n")
+        files = {os.path.join(usb, "launch.ini"): before, os.path.join(plugins, "NetISO.xex"): "netiso", os.path.join(plugins, "NetIsoTiles.xex"): "tiles",
+                 os.path.join(plugins, "UsbdSecPatch.xex"): "patch", os.path.join(usb, "NetIsoTiles.ini"): "rcvbuf=65536\r\n",
+                 os.path.join(plugins, "NetISO.xex.txt"): "10.0.0.5\r\n"}
+        kit = os.path.join(self.tmp.name, "kit")
+        os.makedirs(kit)
+        for name, data in (("xbdm.xex", "xbdm"), ("JRPC2.xex", "jrpc2"), ("AutoDNS.xex", "autodns"), ("xbdm.ini", "dbgname=FABLE\r\n")):
+            files[os.path.join(kit, name)] = data
+        for path, data in files.items():
+            with open(path, "w", newline="") as f:
+                f.write(data)
+        def read(*parts):
+            with open(os.path.join(usb, *parts), newline="") as f:
+                return f.read()
+        self.web = free_port()
+        config = os.path.join(self.tmp.name, "setup.ini")
+        server, _ = self.run_server("--web-port", str(self.web), "--config", config)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            status, _, data = self.call("POST", "/api/settings", {"pluginKit": os.path.join(self.tmp.name, "nowhere")})
+            self.assertEqual(status, 400)
+            self.json("POST", "/api/settings", {"pluginKit": kit})
+            # What it has.
+            r = self.json("GET", "/api/console/setup?address=127.0.0.1")
+            self.assertEqual(r["launchIni"], "/Usb0/launch.ini")
+            self.assertEqual([(p["slot"], p["name"], p["found"]) for p in r["plugins"]],
+                             [(1, "NetISO.xex", True), (2, "NetIsoTiles.xex", True), (3, "UsbdSecPatch.xex", True)])
+            self.assertEqual(r["set"], ["NetISO.xex", "NetIsoTiles.xex", "xbdm.xex", "AutoDNS.xex", "JRPC2.xex"])
+            self.assertEqual(sorted(r["kitFiles"]), ["AutoDNS.xex", "JRPC2.xex", "xbdm.xex"])
+            self.assertEqual(r["backups"], [])
+            # What it would do: nothing written yet.
+            want = {"address": "127.0.0.1", "plugins": r["set"]}
+            plan = self.json("POST", "/api/console/setup", want)
+            self.assertEqual([x["from"] for x in plan["slots"]], ["console", "console", "kit", "kit", "kit"])
+            self.assertIn("[Plugins]\r\nplugin1 = Usb:\\Plugins\\NetISO.xex\r\nplugin2 = Usb:\\Plugins\\NetIsoTiles.xex\r\n"
+                          "plugin3 = Usb:\\Plugins\\xbdm.xex\r\nplugin4 = Usb:\\Plugins\\AutoDNS.xex\r\nplugin5 = Usb:\\Plugins\\JRPC2.xex\r\n"
+                          "; plugin3 = Usb:\\Plugins\\Old.xex\r\n\r\n[Settings]\r\npingpatch = true\r\n", plan["text"])
+            self.assertTrue(plan["text"].startswith("[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n"))
+            self.assertIn("Usb:\\Plugins\\NetIsoTiles.ini, a copy of Usb:\\NetIsoTiles.ini", plan["copies"])
+            self.assertIn("Usb:\\NetISO.xex.txt, a copy of Usb:\\Plugins\\NetISO.xex.txt", plan["copies"])
+            self.assertIn("Usb:\\xbdm.ini, from " + kit, plan["copies"])
+            self.assertEqual(read("launch.ini"), before)
+            self.assertFalse(os.path.exists(os.path.join(plugins, "xbdm.xex")))
+            # Rules: 5 at most, each from the console or the kit.
+            for plugins_asked, code in ((r["set"] + ["UsbdSecPatch.xex"], 400), (["NetISO.xex", "Nope.xex"], 400), (["NetISO.xex", "NetISO.xex"], 400)):
+                self.assertEqual(self.call("POST", "/api/console/setup", {"address": "127.0.0.1", "plugins": plugins_asked})[0], code)
+            self.assertEqual(self.call("POST", "/api/console/setup", dict(want, apply=True, base="0" * 64))[0], 409)
+            # Done: backed up on the console and here, files copied, launch.ini as previewed.
+            done = self.json("POST", "/api/console/setup", dict(want, apply=True, base=plan["base"]))
+            self.assertTrue(done["applied"])
+            self.assertEqual(read("launch.ini"), plan["text"])
+            self.assertRegex(done["backup"], r"^launch\.ini\.netdisc-\d{8}-\d{6}\.bak$")
+            self.assertEqual(read(done["backup"]), before)
+            with open(os.path.join(self.tmp.name, "Backups", "Consoles", "127.0.0.1", done["backup"]), newline="") as f:
+                self.assertEqual(f.read(), before)
+            self.assertEqual(read("Plugins", "xbdm.xex"), "xbdm")
+            self.assertEqual(read("Plugins", "JRPC2.xex"), "jrpc2")
+            self.assertEqual(read("xbdm.ini"), read("Plugins", "xbdm.ini"))
+            self.assertEqual(read("Plugins", "NetIsoTiles.ini"), "rcvbuf=65536\r\n")
+            self.assertEqual(read("NetISO.xex.txt"), "10.0.0.5\r\n")
+            self.assertEqual(read("Plugins", "UsbdSecPatch.xex"), "patch")  # Left out of launch.ini, not deleted.
+            # Again: nothing more to copy.
+            again = self.json("POST", "/api/console/setup", want)
+            self.assertEqual(again["copies"], [])
+            self.assertEqual(again["text"], plan["text"])
+            # Put back.
+            time.sleep(1.1)  # Backups are named by the second.
+            self.assertEqual(self.call("POST", "/api/console/setup/restore", {"address": "127.0.0.1", "backup": "../launch.ini"})[0], 400)
+            back = self.json("POST", "/api/console/setup/restore", {"address": "127.0.0.1", "backup": done["backup"]})
+            self.assertEqual(read("launch.ini"), before)
+            self.assertEqual(read(back["backup"]), plan["text"])
+            self.assertEqual(self.json("GET", "/api/console/setup?address=127.0.0.1")["backups"], [back["backup"], done["backup"]])
+        finally:
+            server.kill()
+            server.communicate()
+
     def test_console_tools_on_the_dashboard(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         aurora, xbdm = AuroraWeb(), Xbdm()

@@ -120,6 +120,9 @@ struct Options {
     // Aurora's filter script also takes the games whose tile is gone off its
     // list as Aurora starts (see OnlineScript in aurora.h), without asking.
     bool tidyAurora;
+    // "Set up this console": the plugin set (file names in slot order) and the
+    // folder on this computer with the plugin files (see ConsoleSetup).
+    std::string pluginSet, pluginKit;
     // Aurora's web server (Aurora's settings, HTTP server), to start games and restart Aurora.
     std::string auroraWebUser, auroraWebPassword;
     int auroraWebPort;
@@ -137,6 +140,7 @@ struct Options {
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true), tidyAurora(false),
+                pluginSet("NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex"),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
                 namePort(ConsoleNamePort), showName(true) {}
 };
@@ -321,6 +325,7 @@ std::string Location(const IsoFile& disc) {
 
 std::string Count(int n, const char* one, const char* many);
 std::string Number(long long n);
+std::vector<std::string> PluginSetNames(const std::string& text);
 
 // Brings Conflicts up to date with what Isos() found, under DuplicatesLock,
 // and tells about conflicts that are newly open.
@@ -2587,6 +2592,8 @@ bool Save() {
     f.Set("installed_folders",o.installedFolders);
     f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
     f.Set("tidy_aurora",o.tidyAurora ? "1" : "0");
+    f.Set("plugin_set",o.pluginSet);
+    f.Set("plugin_kit",o.pluginKit);
     f.Set("restart_aurora",o.restartAurora ? "1" : "0");
     f.Set("aurora_web_user",o.auroraWebUser);
     f.Set("aurora_web_password",config::Protect(o.auroraWebPassword));
@@ -2700,6 +2707,8 @@ bool LoadConfig(Options& o) {
     if(f.Has("installed_folders")) o.installedFolders=f.Get("installed_folders");
     o.auroraScripts=Flag(f,"aurora_scripts",o.auroraScripts);
     o.tidyAurora=Flag(f,"tidy_aurora",o.tidyAurora);
+    if(f.Has("plugin_set")) o.pluginSet=f.Get("plugin_set");
+    o.pluginKit=f.Get("plugin_kit");
     o.restartAurora=Flag(f,"restart_aurora",o.restartAurora);
     if(!f.Get("aurora_web_user").empty()) o.auroraWebUser=f.Get("aurora_web_user");
     if(f.Has("aurora_web_password") && config::Unprotect(f.Get("aurora_web_password"),password)) o.auroraWebPassword=password;
@@ -3089,7 +3098,7 @@ void State(web::Reply& out) {
     j.Set("skipInstalled",o.skipInstalled).Set("installedFolders",o.installedFolders).Set("auroraScripts",o.auroraScripts);
     j.Set("restartAurora",o.restartAurora).Set("auroraWebUser",o.auroraWebUser).Set("auroraWebPasswordSet",!o.auroraWebPassword.empty());
     j.Set("auroraWebPort",o.auroraWebPort).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake).Set("autoOffMinutes",o.autoOffMinutes);
-    j.Set("showName",o.showName).Set("tidyAurora",o.tidyAurora);
+    j.Set("showName",o.showName).Set("tidyAurora",o.tidyAurora).Set("pluginSet",o.pluginSet).Set("pluginKit",o.pluginKit);
 #ifdef _WIN32
     if(InTray) j.Set("startWithWindows",StartsWithWindows());
 #endif
@@ -3609,7 +3618,7 @@ std::string Trim(const std::string& text) {
 
 // DashLaunch's launch.ini on the console: the first one DashLaunch reads
 // (USB before the hard drive), its default dashboard and its plugins by slot.
-struct LaunchIni { std::string path, defaultPath; std::vector<std::pair<int,std::string> > plugins; };
+struct LaunchIni { std::string path, defaultPath, text; std::vector<std::pair<int,std::string> > plugins; };
 // listFirst: each drive's listing tells where launch.ini is before it's read
 // (a read of a file that isn't there can stall FtpDll's next one); without
 // it, each place is tried in turn, as the setup wizard does.
@@ -3634,6 +3643,7 @@ bool ReadLaunchIni(FtpClient& ftp, LaunchIni& ini, bool listFirst) {
     }
     if(ini.path.empty()) return true;
     std::string file(data.begin(),data.end()), section;
+    ini.text=file;
     for(size_t at=0;at<file.size();) {
         size_t end=file.find('\n',at);
         if(end==std::string::npos) end=file.size();
@@ -3982,6 +3992,17 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Bool(v,"keepAwake",next.keepAwake);
     Bool(v,"showName",next.showName);
     Bool(v,"tidyAurora",next.tidyAurora);
+    if(Text(v,"pluginSet",text)) {
+        std::vector<std::string> set=PluginSetNames(text);
+        if(set.size()>5) { error="DashLaunch loads 5 plugins at most."; return false; }
+        std::string list;
+        for(size_t i=0;i<set.size();++i) list+=(i ? ", " : "")+set[i];
+        next.pluginSet=list;
+    }
+    if(Text(v,"pluginKit",text)) {
+        if(!text.empty() && !config::IsFolder(config::FromUtf8(text))) { error="That folder with the plugin files isn't there: "+text; return false; }
+        next.pluginKit=text;
+    }
     if(!Whole(v,"autoOffMinutes",0,1440,next.autoOffMinutes,error) && !error.empty()) return false;
     Bool(v,"updateCheck",next.updateCheck);
     if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
@@ -4026,6 +4047,8 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.auroraWebUser!=was.auroraWebUser || next.auroraWebPassword!=was.auroraWebPassword || next.auroraWebPort!=was.auroraWebPort) changed.push_back("Aurora's web server login");
     if(next.followAddress!=was.followAddress) changed.push_back(next.followAddress ? "NetISO follows this PC's address" : "NetISO.xex.txt left alone");
     if(next.keepAwake!=was.keepAwake) changed.push_back(next.keepAwake ? "PC kept awake while a console plays" : "PC may sleep while a console plays");
+    if(next.pluginSet!=was.pluginSet) changed.push_back("plugin set "+next.pluginSet);
+    if(next.pluginKit!=was.pluginKit) changed.push_back(next.pluginKit.empty() ? std::string("no folder with plugin files") : "plugin files from "+next.pluginKit);
     if(next.tidyAurora!=was.tidyAurora) changed.push_back(next.tidyAurora ? "Aurora's list tidied as it starts" : "Aurora's list not tidied as it starts");
     if(next.showName!=was.showName) changed.push_back(next.showName ? "each console's name shown on it when Aurora starts" : "consoles' names not shown on them");
     if(next.autoOffMinutes!=was.autoOffMinutes)
@@ -4041,6 +4064,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
         Settings.autoOffMinutes=next.autoOffMinutes; Settings.showName=next.showName; Settings.tidyAurora=next.tidyAurora;
+        Settings.pluginSet=next.pluginSet; Settings.pluginKit=next.pluginKit;
     }
     // Pre-releases in or out changes which release is the newest.
     if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
@@ -4177,6 +4201,7 @@ void Reload(std::vector<std::string>& notes) {
         Settings.restartAurora=o.restartAurora; Settings.auroraWebUser=o.auroraWebUser; Settings.auroraWebPassword=o.auroraWebPassword;
         Settings.auroraWebPort=o.auroraWebPort; Settings.followAddress=o.followAddress; Settings.keepAwake=o.keepAwake;
         Settings.autoOffMinutes=o.autoOffMinutes; Settings.showName=o.showName; Settings.tidyAurora=o.tidyAurora;
+        Settings.pluginSet=o.pluginSet; Settings.pluginKit=o.pluginKit;
     }
     UpdateConsoles(o.xboxes);
     FoldersChangedAt=(long long)(Now()*1000);
@@ -4614,6 +4639,360 @@ bool PowerOn(Console& console, const std::string& action, std::string& error) {
     XboxEvent(*c,EventXbox,"Aurora restarted from the dashboard");
     c->launchedAt=0;
     c->recheck=true;  // Back in Aurora: what's installed and its title updates are looked at again.
+    return true;
+}
+
+// "Set up this console" ---------------------------------------------------------
+
+// The plugin set (pluginSet: file names in slot order) rolled out to a console
+// from a folder on this computer holding the plugin files (pluginKit), as the
+// Consoles page asks: launch.ini's plugin lines become the set, a file the
+// console lacks is copied next to its other plugins, and each plugin's own
+// settings files (<name>.ini, <name>.xex.txt) end up both at the top of that
+// drive and next to the plugin, as the plugins and the launcher read them from
+// either; none is overwritten or deleted. launch.ini is backed up first, on the
+// console (launch.ini.netdisc-<time>.bak beside it) and here, and a backup can
+// be put back. DashLaunch loads plugins as the console starts: it takes a
+// restart. NetISO.xex, xbdm.xex and JRPC2.xex can't be shared, so NetDisc360
+// has none of its own: they come from the kit folder.
+const int PluginSlots = 5;  // DashLaunch reads plugin1 to plugin5.
+const size_t PluginMost = 16 << 20, PluginConfigMost = 64 << 10;
+
+std::string FileOf(const std::string& path) { size_t cut=path.find_last_of("/\\"); return cut==std::string::npos ? path : path.substr(cut+1); }
+std::string FolderOfFtp(const std::string& path) { size_t cut=path.rfind('/'); return cut==std::string::npos ? std::string() : path.substr(0,cut); }
+std::string KitPath(const std::string& folder, const std::string& name) {
+    if(folder.empty()) return name;
+    char last=folder[folder.size()-1];
+    return last=='/' || last=='\\' ? folder+name : InFolder(folder,name);
+}
+
+// DashLaunch's spelling of a path Aurora's FTP server has (/Usb0/Plugins/x.xex: Usb:\Plugins\x.xex).
+std::string DashPath(const std::string& ftpPath) {
+    size_t slash=ftpPath.find('/',1);
+    std::string device=ftpPath.substr(1,slash==std::string::npos ? std::string::npos : slash-1);
+    std::string rest=slash==std::string::npos ? std::string() : ftpPath.substr(slash), lower=Lower(device);
+    if(lower=="usb0") device="Usb"; else if(lower=="hdd1") device="Hdd";
+    std::replace(rest.begin(),rest.end(),'/','\\');
+    return device+":"+rest;
+}
+
+// The plugin set's file names, each once, at most PluginSlots.
+std::vector<std::string> PluginSetNames(const std::string& text) {
+    std::vector<std::string> out;
+    for(size_t at=0;at<=text.size();) {
+        size_t end=text.find_first_of(",;",at);
+        if(end==std::string::npos) end=text.size();
+        std::string name=FileOf(Trim(text.substr(at,end-at)));
+        at=end+1;
+        bool listed=false;
+        for(size_t i=0;i<out.size() && !listed;++i) listed=!_stricmp(out[i].c_str(),name.c_str());
+        if(!name.empty() && !listed) out.push_back(name);
+    }
+    return out;
+}
+
+// launch.ini's text with its [Plugins] section's pluginN lines replaced by
+// paths, in slot order, where the first of them was; every other line, a
+// plugin line commented out too, stays as it was. No [Plugins]: one is added.
+std::string WithPlugins(const std::string& text, const std::vector<std::string>& paths) {
+    const char* eol=text.find("\r\n")!=std::string::npos || text.find('\n')==std::string::npos ? "\r\n" : "\n";
+    std::string lines;
+    for(size_t i=0;i<paths.size();++i) lines+="plugin"+Number((long long)i+1)+" = "+paths[i]+eol;
+    std::string out;
+    bool placed=false, inPlugins=false, sawPlugins=false;
+    auto ended=[&out,eol]() { if(!out.empty() && out[out.size()-1]!='\n') out+=eol; };
+    for(size_t at=0;at<text.size();) {
+        size_t end=text.find('\n',at);
+        size_t next=end==std::string::npos ? text.size() : end+1;
+        std::string raw=text.substr(at,next-at), line=Trim(raw);
+        at=next;
+        if(!line.empty() && line[0]=='[') {
+            if(inPlugins && !placed) { ended(); out+=lines; placed=true; }
+            inPlugins=!Lower(line).compare(0,9,"[plugins]");
+            sawPlugins=sawPlugins || inPlugins;
+            ended();
+            out+=raw;
+            continue;
+        }
+        size_t equals=line.find('=');
+        std::string key=equals==std::string::npos ? std::string() : Lower(Trim(line.substr(0,equals)));
+        if(inPlugins && key.size()==7 && !key.compare(0,6,"plugin") && key[6]>='1' && key[6]<='9') {
+            if(!placed) { ended(); out+=lines; placed=true; }
+            continue;
+        }
+        out+=raw;
+    }
+    if(inPlugins && !placed) { ended(); out+=lines; placed=true; }
+    if(!sawPlugins) { ended(); if(!out.empty()) out+=eol; out+=std::string("[Plugins]")+eol+lines; }
+    return out;
+}
+
+// A file in the kit folder: its bytes, if it's there.
+bool KitFile(const Options& o, const std::string& name, std::string& data, size_t most) {
+    if(o.pluginKit.empty()) return false;
+    std::vector<config::Entry> files=config::Files(o.pluginKit);
+    for(size_t i=0;i<files.size();++i)
+        if(!_stricmp(files[i].name.c_str(),name.c_str())) return config::ReadFile(KitPath(o.pluginKit,files[i].name),data,most);
+    return false;
+}
+// A plugin's own settings files' names: <name>.ini and <name>.xex.txt (the
+// way NetISO.xex names its own).
+std::vector<std::string> PluginConfigs(const std::string& file) {
+    std::string base=file.size()>4 && !_stricmp(file.c_str()+file.size()-4,".xex") ? file.substr(0,file.size()-4) : file;
+    std::vector<std::string> out;
+    out.push_back(base+".ini");
+    out.push_back(file+".txt");
+    return out;
+}
+
+bool FtpHas(FtpClient& ftp, const std::string& folder, const std::string& name, U64* size = NULL) {
+    std::vector<FtpEntry> entries;
+    if(!ftp.List(folder.c_str(),entries)) return false;
+    for(size_t i=0;i<entries.size();++i)
+        if(!entries[i].folder && !_stricmp(entries[i].name.c_str(),name.c_str())) { if(size) *size=entries[i].size; return true; }
+    return false;
+}
+
+// What setting the console up does: launch.ini's new text, the plugins (each
+// its slot's path and where it comes from) and the files copied.
+struct SetupPlan {
+    LaunchIni ini;
+    std::string folder;                       // Where new plugins go (FTP path).
+    std::vector<std::string> paths, from;     // Per slot: DashLaunch path; "console" or "kit".
+    std::vector<std::pair<std::string,std::string> > copies;  // FTP path, its bytes (from the kit, or the other copy, or made).
+    std::vector<std::string> copied;          // What each copy is, for the page.
+    std::string text;
+};
+
+// The plan for plugins (file names, or launch.ini paths to keep, in slot
+// order) on the console logged in on ftp. False with why in error.
+bool PlanSetup(FtpClient& ftp, const Options& o, const std::vector<std::string>& plugins, SetupPlan& plan, std::string& error) {
+    if(!ReadLaunchIni(ftp,plan.ini,true)) { error=std::string("Couldn't read launch.ini: ")+ftp.Error(); return false; }
+    if(plan.ini.path.empty()) { error="There's no launch.ini on its USB drive or hard drive: DashLaunch's installer writes one."; return false; }
+    if(plugins.size()>size_t(PluginSlots)) { error="DashLaunch loads 5 plugins at most."; return false; }
+    // New plugins go where its plugins are (the first one's folder), else in
+    // Plugins on launch.ini's drive.
+    for(size_t i=0;i<plan.ini.plugins.size() && plan.folder.empty();++i) {
+        std::string path=FtpPath(plan.ini.plugins[i].second);
+        if(!path.empty()) plan.folder=FolderOfFtp(path);
+    }
+    std::string drive=plan.ini.path.substr(0,plan.ini.path.find('/',1));
+    if(plan.folder.empty()) plan.folder=drive+"/Plugins";
+    std::string top=plan.folder.substr(0,plan.folder.find('/',1));
+    for(size_t i=0;i<plugins.size();++i) {
+        std::string name=FileOf(plugins[i]), path;
+        if(name.empty() || name.find_first_of(":*?\"<>|")!=std::string::npos) { error="\""+plugins[i]+"\" isn't a plugin's file name."; return false; }
+        for(size_t k=0;k<plan.ini.plugins.size() && path.empty();++k)
+            if(!_stricmp(FileOf(plan.ini.plugins[k].second).c_str(),name.c_str())) path=plan.ini.plugins[k].second;
+        std::string ftpPath=path.empty() ? plan.folder+"/"+name : FtpPath(path);
+        for(size_t k=0;k<plan.paths.size();++k)
+            if(!_stricmp(FileOf(plan.paths[k]).c_str(),name.c_str())) { error=name+" is in the list twice."; return false; }
+        if(!path.empty() && FtpHas(ftp,FolderOfFtp(ftpPath),name)) { plan.paths.push_back(path); plan.from.push_back("console"); }
+        else {
+            std::string data;
+            if(!KitFile(o,name,data,PluginMost))
+                { error=name+" isn't on the console"+(o.pluginKit.empty() ? std::string(", and no folder with plugin files is chosen.") : ", nor in "+o.pluginKit+"."); return false; }
+            plan.copies.push_back(std::make_pair(ftpPath,data));
+            plan.copied.push_back(name+" from "+o.pluginKit);
+            plan.paths.push_back(DashPath(ftpPath));
+            plan.from.push_back("kit");
+        }
+        // Its settings files at the drive's top and beside it: the one there is
+        // copied to where it's missing; with neither, the kit's.
+        std::string beside=FolderOfFtp(ftpPath);
+        bool one=!_stricmp(beside.c_str(),top.c_str());  // A plugin at the drive's top: one place.
+        std::vector<std::string> configs=PluginConfigs(name);
+        for(size_t c=0;c<configs.size();++c) {
+            std::string places[2]={top+"/"+configs[c],beside+"/"+configs[c]};
+            bool has[2];
+            has[0]=FtpHas(ftp,top,configs[c]);
+            has[1]=one ? has[0] : FtpHas(ftp,beside,configs[c]);
+            if(has[0] && has[1]) continue;
+            std::vector<unsigned char> bytes;
+            std::string data, made;
+            if(has[0] || has[1]) {
+                const std::string& at=places[has[0] ? 0 : 1];
+                if(!ftp.Retrieve(at.c_str(),bytes,PluginConfigMost)) continue;
+                data.assign(bytes.begin(),bytes.end());
+                made="a copy of "+DashPath(at);
+            } else if(KitFile(o,configs[c],data,PluginConfigMost)) made="from "+o.pluginKit;
+            else if(Lower(configs[c])=="netiso.xex.txt") {
+                // NetISO.xex reads the server's address from it: this computer's.
+                DWORD here=ftp.LocalAddress();
+                if(!here) continue;
+                char text[16]; AddressText(here,text,sizeof(text));
+                data=std::string(text)+"\r\n";
+                made="naming this computer ("+std::string(text)+")";
+            } else continue;
+            for(int k=0;k<(one ? 1 : 2);++k) if(!has[k]) {
+                plan.copies.push_back(std::make_pair(places[k],data));
+                plan.copied.push_back(DashPath(places[k])+", "+made);
+            }
+        }
+    }
+    plan.text=WithPlugins(plan.ini.text,plan.paths);
+    return true;
+}
+
+// The console a setup request names, logged in, when it's in Aurora and
+// this server isn't working on it already.
+Console* SetupConsole(const std::string& address, std::string& error) {
+    Console* c=AskedConsole(address,error);
+    if(!c) return NULL;
+    if(PlaysNow(*c)) { error="It's playing a game: set it up in Aurora."; return NULL; }
+    return c;
+}
+
+std::string StampNow() {
+    time_t t=time(NULL);
+    struct tm local;
+    char text[32]="0";
+#ifdef _WIN32
+    bool known=!localtime_s(&local,&t);
+#else
+    bool known=localtime_r(&t,&local)!=NULL;
+#endif
+    if(known) strftime(text,sizeof(text),"%Y%m%d-%H%M%S",&local);
+    return text;
+}
+
+// launch.ini as it is now, kept on the console beside it and here
+// (Backups/Consoles/<address>), before a change. The console's copy's name in name.
+bool BackUpLaunchIni(FtpClient& ftp, const Console& c, const Options& o, const LaunchIni& ini, std::string& name, std::string& error) {
+    name="launch.ini.netdisc-"+StampNow()+".bak";
+    if(!StoreChecked(ftp,FolderOfFtp(ini.path)+"/"+name,ini.text)) { error=std::string("Couldn't back up launch.ini on the console: ")+ftp.Error(); return false; }
+    std::string here=BackupFolder(o);
+    if(!here.empty()) {
+        std::string folder=KitPath(KitPath(here,"Consoles"),c.text);
+        config::MakeFolder(here); config::MakeFolder(KitPath(here,"Consoles")); config::MakeFolder(folder);
+        if(!config::WriteFile(KitPath(folder,name),ini.text,false)) XboxLog(c,"couldn't keep a copy of its launch.ini in %s.",config::FromUtf8(folder).c_str());
+    }
+    XboxLog(c,"its launch.ini (%s) backed up as %s.",ini.path.c_str(),name.c_str());
+    return true;
+}
+
+void SetupJson(web::Json& j, FtpClient& ftp, const Options& o, const SetupPlan* plan, const LaunchIni& ini) {
+    j.Set("launchIni",ini.path).Set("launchIniText",ini.text).Set("kit",o.pluginKit).Key("set").Open('[');
+    std::vector<std::string> set=PluginSetNames(o.pluginSet);
+    for(size_t i=0;i<set.size();++i) j.String(set[i]);
+    j.Close(']').Key("plugins").Open('[');
+    for(size_t i=0;i<ini.plugins.size();++i) {
+        std::string path=FtpPath(ini.plugins[i].second);
+        j.Open('{').Set("slot",ini.plugins[i].first).Set("path",ini.plugins[i].second).Set("name",FileOf(ini.plugins[i].second))
+         .Set("found",!path.empty() && FtpHas(ftp,FolderOfFtp(path),FileOf(path))).Close('}');
+    }
+    j.Close(']').Key("kitFiles").Open('[');
+    if(!o.pluginKit.empty()) {
+        std::vector<config::Entry> files=config::Files(o.pluginKit);
+        for(size_t i=0;i<files.size();++i)
+            if(files[i].name.size()>4 && !_stricmp(files[i].name.c_str()+files[i].name.size()-4,".xex")) j.String(files[i].name);
+    }
+    j.Close(']');
+    // The console's backups of launch.ini, newest first.
+    j.Key("backups").Open('[');
+    std::vector<FtpEntry> entries;
+    std::vector<std::string> backups;
+    if(!ini.path.empty() && ftp.List(FolderOfFtp(ini.path).c_str(),entries))
+        for(size_t i=0;i<entries.size();++i)
+            if(!entries[i].folder && !Lower(entries[i].name).compare(0,19,"launch.ini.netdisc-")) backups.push_back(entries[i].name);
+    std::sort(backups.rbegin(),backups.rend());
+    for(size_t i=0;i<backups.size();++i) j.String(backups[i]);
+    j.Close(']');
+    if(plan) {
+        j.Set("text",plan->text).Set("folder",DashPath(plan->folder)).Key("slots").Open('[');
+        for(size_t i=0;i<plan->paths.size();++i) j.Open('{').Set("path",plan->paths[i]).Set("from",plan->from[i]).Close('}');
+        j.Close(']').Key("copies").Open('[');
+        for(size_t i=0;i<plan->copied.size();++i) j.String(plan->copied[i]);
+        j.Close(']');
+    }
+}
+
+// GET /api/console/setup?address=: its launch.ini, plugins and backups, the
+// plugin set and the kit folder's plugins.
+// POST /api/console/setup {address, plugins: [file names in slot order], apply}:
+// what it would do (text, slots, copies), or with apply, does it.
+void ConsoleSetup(const std::string& address, const web::Value* v, web::Reply& out) {
+    std::string error;
+    Console* c=SetupConsole(address,error);
+    if(!c) { out.Error(400,error); return; }
+    Options o=Current();
+    bool apply=false, post=v!=NULL;
+    std::vector<std::string> plugins;
+    if(post) {
+        Bool(*v,"apply",apply);
+        const web::Value* list=v->Get("plugins");
+        if(!list || list->type!=web::Value::Array) { out.Error(400,"Send the plugins, in slot order."); return; }
+        for(size_t i=0;i<list->items.size();++i) if(list->items[i].type==web::Value::String) plugins.push_back(list->items[i].text);
+    }
+    std::string why;
+    if(apply && !SafeSoon(*c,PowerWaitMost,why)) { out.Error(409,"Not now: "+why+". Try again in a moment."); return; }
+    Busy busy(c);
+    FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { out.Error(502,std::string("Aurora's FTP server doesn't answer (it does while Aurora is on screen): ")+ftp.Error()); return; }
+    SetupPlan plan;
+    web::Json j;
+    j.Open('{');
+    if(!post) {
+        LaunchIni ini;
+        if(!ReadLaunchIni(ftp,ini,true)) { out.Error(502,std::string("Couldn't read launch.ini: ")+ftp.Error()); return; }
+        SetupJson(j,ftp,o,NULL,ini);
+        ftp.Close();
+        out.body=j.Close('}').Text();
+        return;
+    }
+    if(!PlanSetup(ftp,o,plugins,plan,error)) { ftp.Close(); out.Error(400,error); return; }
+    std::string base;
+    if(apply && Text(*v,"base",base) && base!=web::Sha256Hex(plan.ini.text)) { ftp.Close(); out.Error(409,"launch.ini changed since it was read: look at it again."); return; }
+    if(apply) {
+        std::string backup;
+        if(!BackUpLaunchIni(ftp,*c,o,plan.ini,backup,error)) { ftp.Close(); out.Error(502,error); return; }
+        for(size_t i=0;i<plan.copies.size();++i) {
+            EnsureFolder(ftp,FolderOfFtp(plan.copies[i].first));
+            if(!StoreChecked(ftp,plan.copies[i].first,plan.copies[i].second)) {
+                std::string failed=std::string("Couldn't write ")+DashPath(plan.copies[i].first)+": "+ftp.Error()+". launch.ini wasn't changed.";
+                ftp.Close(); out.Error(502,failed); return;
+            }
+        }
+        if(!StoreChecked(ftp,plan.ini.path,plan.text)) {
+            std::string failed=std::string("Couldn't write launch.ini: ")+ftp.Error()+". Its backup is "+backup+".";
+            ftp.Close(); out.Error(502,failed); return;
+        }
+        std::string list;
+        for(size_t i=0;i<plan.paths.size();++i) list+=(i ? ", " : "")+FileOf(plan.paths[i]);
+        XboxLog(*c,"set up: its launch.ini loads %s (%s copied). Restart it to load them.",list.empty() ? "no plugins" : list.c_str(),Count(int(plan.copies.size()),"file","files").c_str());
+        XboxEvent(*c,EventWarning,"Set up: restart it to load its plugins");
+        j.Set("applied",true).Set("backup",backup);
+    }
+    SetupJson(j,ftp,o,&plan,plan.ini);
+    j.Set("base",web::Sha256Hex(plan.ini.text));
+    ftp.Close();
+    out.body=j.Close('}').Text();
+}
+
+// POST /api/console/setup/restore {address, backup}: launch.ini as that
+// backup (on the console) has it, after backing up the one there now.
+bool RestoreLaunchIni(const web::Value& v, std::string& done, std::string& error) {
+    std::string address, name, why;
+    Text(v,"address",address);
+    Console* c=SetupConsole(address,error);
+    if(!c) return false;
+    if(!Text(v,"backup",name) || Lower(name).compare(0,19,"launch.ini.netdisc-") || name.find_first_of("/\\")!=std::string::npos) { error="Send one of its launch.ini backups."; return false; }
+    if(!SafeSoon(*c,PowerWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
+    Options o=Current();
+    Busy busy(c);
+    FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { error=std::string("Aurora's FTP server doesn't answer: ")+ftp.Error(); return false; }
+    LaunchIni ini;
+    std::vector<unsigned char> data;
+    if(!ReadLaunchIni(ftp,ini,true) || ini.path.empty()) { error="Couldn't read its launch.ini."; ftp.Close(); return false; }
+    if(!ftp.Retrieve((FolderOfFtp(ini.path)+"/"+name).c_str(),data,256<<10)) { error="That backup isn't there."; ftp.Close(); return false; }
+    std::string backup;
+    if(!BackUpLaunchIni(ftp,*c,o,ini,backup,error)) { ftp.Close(); return false; }
+    if(!StoreChecked(ftp,ini.path,std::string(data.begin(),data.end()))) { error=std::string("Couldn't write launch.ini: ")+ftp.Error(); ftp.Close(); return false; }
+    ftp.Close();
+    XboxLog(*c,"its launch.ini put back as %s had it (the one before is %s). Restart it to load its plugins.",name.c_str(),backup.c_str());
+    XboxEvent(*c,EventWarning,"launch.ini put back: restart it");
+    done=backup;
     return true;
 }
 
@@ -5335,6 +5714,13 @@ void Api(const web::Request& r, web::Reply& out) {
             (r.method=="POST" && (r.path=="/api/console/screenshot/take" || r.path=="/api/console/screenshot/delete"))) Screenshots(r,body,out);
     else if(r.method=="POST" && r.path=="/api/console/power") {
         if(Power(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="GET" && r.path=="/api/console/setup") ConsoleSetup(r.Param("address"),NULL,out);
+    else if(r.method=="POST" && r.path=="/api/console/setup") { std::string address; Text(body,"address",address); ConsoleSetup(address,&body,out); }
+    else if(r.method=="POST" && r.path=="/api/console/setup/restore") {
+        std::string backup;
+        if(RestoreLaunchIni(body,backup,error)) { web::Json j; out.body=j.Open('{').Set("ok",true).Set("backup",backup).Close('}').Text(); }
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/console/identify") {
