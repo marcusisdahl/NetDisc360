@@ -39,12 +39,15 @@ int ListProfiles(ProfileInfo* out, int capacity);
 // go to xam as they are; xuid is the offline XUID to give it (0: xam picks
 // one); reservedFlags and cachedUserFlags go into the account (an offline
 // profile's from the same console are what the dashboard writes);
-// zeroTokens hands xam zeroed payment and Live token records instead of none.
+// zeroTokens hands xam zeroed payment and Live token records instead of none;
+// makeFolders makes the XUID's folders on the hard drive first
+// (Content\<XUID>\FFFE07D1\00010000), without which xam answers
+// ERROR_PATH_NOT_FOUND for an XUID it's given (seen on the console).
 struct ProfileCall {
     DWORD device, flags;
     ULONGLONG xuid;
     DWORD reservedFlags, cachedUserFlags;
-    bool zeroTokens;
+    bool zeroTokens, makeFolders;
 };
 // The call for this console: its first offline profile's device and account
 // flags (the console's language when it has none), xam's own XUID.

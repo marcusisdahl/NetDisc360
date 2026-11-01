@@ -6,6 +6,9 @@
 
 extern "C" LONG __stdcall XexGetModuleHandle(const char* name,HANDLE* module);
 extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,void** address);
+struct ProfileKernelString { USHORT length,capacity; char* text; };
+extern "C" LONG __stdcall ObCreateSymbolicLink(ProfileKernelString* link,ProfileKernelString* device);
+extern "C" LONG __stdcall ObDeleteSymbolicLink(ProfileKernelString* link);
 
 namespace {
 // X_XAMACCOUNTINFO: the profile's Account file before xam encrypts it,
@@ -53,6 +56,23 @@ void* Xam(DWORD ordinal) {
 }
 
 void Pause(void (*wait)(int), int ms) { if(wait) wait(ms); else Sleep(ms); }
+
+// The hard drive (device 1) as a drive, for the new profile's folders.
+const char HddLink[]="\\??\\NdProf:", HddDevice[]="\\Device\\Harddisk0\\Partition1", HddRoot[]="NdProf:";
+bool LinkHdd(bool on) {
+    char name[32],device[64]; strcpy_s(name,HddLink); strcpy_s(device,HddDevice);
+    ProfileKernelString link={USHORT(strlen(name)),USHORT(sizeof(name)),name}, target={USHORT(strlen(device)),USHORT(sizeof(device)),device};
+    ObDeleteSymbolicLink(&link);
+    return !on || ObCreateSymbolicLink(&link,&target)>=0;
+}
+// The folders a profile's package goes in, Content\<XUID>\FFFE07D1\00010000,
+// from the top: the first count of them.
+void ProfileFolder(ULONGLONG xuid, int count, char* path, size_t capacity) {
+    sprintf_s(path,capacity,"%s\\Content",HddRoot);
+    if(count>=1) { size_t at=strlen(path); sprintf_s(path+at,capacity-at,"\\%016I64X",xuid); }
+    if(count>=2) strcat_s(path,capacity,"\\FFFE07D1");
+    if(count>=3) strcat_s(path,capacity,"\\00010000");
+}
 
 // Zeroed records for zeroTokens: X_USER_PAYMENT_INFO is under 2 KB and a Live
 // token 0x1C bytes, so these are big enough whatever xam reads.
@@ -108,6 +128,7 @@ ULONGLONG NewOfflineXuid(ULONGLONG like, const ProfileInfo* profiles, int count)
     }
 }
 
+bool MakeProfileWith(const WCHAR* gamertag, size_t length, const ProfileCall& call, ULONGLONG& xuid, DWORD& code, char* error, size_t capacity, void (*wait)(int ms));
 bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid, DWORD& code, char* error, size_t capacity, void (*wait)(int ms)) {
     xuid=0;
     code=0;
@@ -117,6 +138,30 @@ bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid
     ProfileCreate create=(ProfileCreate)Xam(OrdinalProfileCreate);
     CreationStatus status=(CreationStatus)Xam(OrdinalCreationStatus);
     if(!create || !status) { sprintf_s(error,capacity,"This console's xam.xex doesn't have the profile calls."); return false; }
+    // xam answers ERROR_PATH_NOT_FOUND for an XUID whose folders aren't
+    // there (seen on the console), so they're made first, and the ones made
+    // are removed again if it fails.
+    bool folders=call.xuid && call.makeFolders, made=false;
+    bool madeAt[4]={false,false,false,false};
+    char folder[96];
+    if(folders && !LinkHdd(true)) { sprintf_s(error,capacity,"Couldn't reach the hard drive for its folders."); return false; }
+    for(int depth=1;folders && depth<=3 && !error[0];++depth) {
+        ProfileFolder(call.xuid,depth,folder,sizeof(folder));
+        if(CreateDirectory(folder,NULL)) madeAt[depth]=true;
+        else if(GetLastError()!=ERROR_ALREADY_EXISTS) sprintf_s(error,capacity,"Couldn't make %s (%lu).",folder,GetLastError());
+    }
+    if(!error[0]) made=MakeProfileWith(gamertag,length,call,xuid,code,error,capacity,wait);
+    // On a failure, the folders made here go again (if xam left them empty).
+    for(int depth=3;folders && !made && depth>=1;--depth)
+        if(madeAt[depth]) { ProfileFolder(call.xuid,depth,folder,sizeof(folder)); RemoveDirectory(folder); }
+    if(folders) LinkHdd(false);
+    return made;
+}
+
+// MakeProfile once its folders are there.
+bool MakeProfileWith(const WCHAR* gamertag, size_t length, const ProfileCall& call, ULONGLONG& xuid, DWORD& code, char* error, size_t capacity, void (*wait)(int ms)) {
+    ProfileCreate create=(ProfileCreate)Xam(OrdinalProfileCreate);
+    CreationStatus status=(CreationStatus)Xam(OrdinalCreationStatus);
     static AccountInfo account;
     memset(&account,0,sizeof(account));
     memcpy(account.gamertag,gamertag,length*sizeof(WCHAR));

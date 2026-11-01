@@ -1355,7 +1355,10 @@ static bool ProfileJob() {
     if(nia::IniValue(job,"reserved",value,sizeof(value)) && value[0]) call.reservedFlags=strtoul(value,NULL,0);
     if(nia::IniValue(job,"cached",value,sizeof(value)) && value[0]) call.cachedUserFlags=strtoul(value,NULL,0);
     call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
-    bool ownXuid=IniNumber(job,"own_xuid",0)!=0, probe=IniNumber(job,"probe",0)!=0;
+    // xam turns down XUID 0 as an invalid argument (seen on the console), so
+    // each gets an offline XUID like the console's own, with its folders made.
+    bool ownXuid=IniNumber(job,"own_xuid",1)!=0, probe=IniNumber(job,"probe",0)!=0;
+    call.makeFolders=IniNumber(job,"make_folders",1)!=0;
     ULONGLONG like=0;
     for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
     static char names[nia::ProfileJobMost][nia::GamertagMost+1];
@@ -1367,8 +1370,9 @@ static bool ProfileJob() {
         strncpy_s(names[count],name,_TRUNCATE);
         slot[count++]=i;
     }
-    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s).",number[0] ? number : "?",count,
-         call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",probe ? ", trying other ways too" : "");
+    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s%s).",number[0] ? number : "?",count,
+         call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",
+         call.makeFolders ? ", folders made first" : "",probe ? ", trying other ways too" : "");
     strcpy_s(Shown.game,"Guest profiles");
     ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
     ScreenStart();
@@ -1382,18 +1386,24 @@ static bool ProfileJob() {
         WCHAR gamertag[nia::GamertagMost+1];
         size_t length=strlen(names[n]);
         for(size_t k=0;k<=length;++k) gamertag[k]=WCHAR((unsigned char)names[n][k]);
-        // With probe=, each way in turn until one works: as asked, with an
-        // XUID of its own (like the console's), then both with zeroed tokens.
+        // The XUID the server gave it (xuidN=), else one like the console's.
+        char key[16],given[32]="";
+        sprintf_s(key,"xuid%d",slot[n]);
+        ULONGLONG asked=nia::IniValue(job,key,given,sizeof(given)) && given[0] ? _strtoui64(given,NULL,16) : 0;
+        if(!asked && ownXuid) asked=nia::NewOfflineXuid(like,profiles,listed);
+        // With probe=, each way in turn until one works: as asked, then with
+        // zeroed tokens, then with xam picking the XUID.
         ULONGLONG xuid=0;
         DWORD code=0;
         char why[160]="";
         bool ok=false;
-        for(int way=0;way<(probe ? 4 : 1) && !ok;++way) {
+        for(int way=0;way<(probe ? 3 : 1) && !ok;++way) {
             nia::ProfileCall tried=call;
-            if(ownXuid || way==1 || way==2) tried.xuid=nia::NewOfflineXuid(like,profiles,listed);
-            if(way>=2) tried.zeroTokens=true;
+            tried.xuid=way==2 ? 0 : asked;
+            if(way==1) tried.zeroTokens=true;
             ok=nia::MakeProfile(gamertag,tried,xuid,code,why,sizeof(why),Wait);
-            Note("%s %s, way %d (XUID asked %016I64X%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",ok ? "" : why,ok ? "" : ".");
+            Note("%s %s, way %d (XUID asked %016I64X%s%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",
+                 tried.makeFolders && tried.xuid ? ", folders made first" : "",ok ? "" : why,ok ? "" : ".");
         }
         if(ok) {
             ++made;
