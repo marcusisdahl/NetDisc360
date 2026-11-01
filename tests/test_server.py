@@ -1429,6 +1429,38 @@ class Push(ServerTest):
             self.assertIn("iso=Halo 3.iso", f.read())
         self.assertEqual(len(local_copy("Skate 3")), 1)
 
+    def test_leaves_out_original_xbox_games_installed_on_the_console(self):
+        # An original Xbox game is a folder with default.xbe, its Title ID in
+        # the certificate, there as on the PC; a 360 game beside it stays.
+        def xbe(title_id, cert_at=0x180):
+            base = 0x10000
+            data = bytearray(cert_at + 0x20)
+            data[0:4] = b"XBEH"
+            struct.pack_into("<I", data, 0x104, base)
+            struct.pack_into("<I", data, 0x108, len(data))
+            struct.pack_into("<I", data, 0x118, base + cert_at)
+            struct.pack_into("<I", data, cert_at + 8, title_id)
+            return bytes(data)
+        for name in ("Halo CE", "Burnout 3"):
+            os.makedirs(os.path.join(self.isos, name))
+        with open(os.path.join(self.isos, "Halo CE", "default.xbe"), "wb") as f:
+            f.write(xbe(0x4D530004))
+        with open(os.path.join(self.isos, "Burnout 3", "default.xbe"), "wb") as f:
+            f.write(xbe(0x4541000D))
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push()
+        self.assertIn("3 added", out)
+        # Halo CE is installed; its certificate lies past the first 64 KB
+        # read, so the rest of its headers is read too.
+        folder = os.path.join(self.xbox, "Hdd1", "Games", "Halo CE")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xbe"), "wb") as f:
+            f.write(xbe(0x4D530004, cert_at=0x10400))
+        out = self.push(extra=["--installed", "/Hdd1/Games"])
+        self.assertIn("1 game is installed on it", out)
+        self.assertIn("1 removed", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Burnout 3", "Halo 3", "NetDisc360"])
+
     def test_a_game_deleted_from_the_console_gets_its_folder_back(self):
         # Installed games are looked at again while the server runs, though
         # nothing changed on the PC: one deleted in Aurora gets its tile.

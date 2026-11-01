@@ -796,6 +796,15 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
 }
 
 bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) { return XexTitle(xex,size,titleId,mediaId,disc); }
+bool XbeIds(const unsigned char* xbe, DWORD size, DWORD& titleId, DWORD* headers) {
+    titleId=0;
+    if(headers) *headers=size>=0x10C && !memcmp(xbe,"XBEH",4) ? Little32(xbe+0x108) : 0;
+    return XbeHeaderTitle([&](U64 at, unsigned char* data, DWORD n) {
+        if(at>size || n>size-at) return false;
+        memcpy(data,xbe+at,n);
+        return true;
+    },size,titleId);
+}
 bool GodIds(const unsigned char* h, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) {
     if(size<0x368 || (memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) || Big32(h+0x344)!=GodContentType) return false;
     titleId=Big32(h+0x360); mediaId=Big32(h+0x354); disc=h[0x366] ? h[0x366] : 1;

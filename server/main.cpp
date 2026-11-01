@@ -4251,7 +4251,8 @@ bool LibraryGame(const std::string& name, IsoFile& game) {
 // console leaves what it runs, a game too (the page asks first).
 bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string& how, std::string& error) {
     Options o=Current();
-    std::string tile, installed, elsewhere;
+    // An installed copy's file: default.xex, or an original Xbox game's default.xbe.
+    std::string tile, installed, elsewhere, installedExec="default.xex", elsewhereExec="default.xex";
     bool god=false;
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
@@ -4260,13 +4261,15 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
         for(size_t i=0;i<c.installed.size() && installed.empty() && game.titleId;++i) {
             const InstalledGame& g=c.installed[i];
             if(g.titleId!=game.titleId || g.disc!=game.disc) continue;
-            std::string at=g.path.substr(0,g.path.rfind('/'));
+            size_t cut=g.path.rfind('/');
+            std::string at=g.path.substr(0,cut), file=g.path.substr(cut+1);
             if(g.god) god=true;
-            else if(!DevicePath(at).empty()) installed=at;
-            else if(elsewhere.empty()) elsewhere=at;
+            else if(!DevicePath(at).empty()) { installed=at; installedExec=file; }
+            else if(elsewhere.empty()) { elsewhere=at; elsewhereExec=file; }
         }
     }
     std::string folder=(preferInstalled || tile.empty()) && !installed.empty() ? installed : !tile.empty() ? tile : elsewhere;
+    std::string exec=folder==installed ? installedExec : folder==elsewhere && folder!=tile ? elsewhereExec : "default.xex";
     how=folder.empty() ? std::string() : folder==tile ? "tile" : "installed";
     if(folder.empty()) {
         error=god ? "It's installed on that console as Games on Demand; start it in Aurora."
@@ -4276,7 +4279,7 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
     std::string device=DevicePath(folder);
     if(device.empty()) { error="Aurora starts games from the dashboard on the hard drive only, and this one is in "+folder+"."; return false; }
     AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
-    if(!aurora.Launch(device,"default.xex")) {
+    if(!aurora.Launch(device,exec)) {
         error=aurora.Error()+".";
         XboxLog(c,"couldn't start %s from the dashboard: %s",WithoutIso(game.name).c_str(),error.c_str());
         return false;
