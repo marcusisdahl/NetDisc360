@@ -35,9 +35,12 @@ try {
     # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
     # Xbox's game folders current, with the tile launcher (default.xex) and the helper (boot.xex) built in
     # (server/). Rebuilt every time so it carries the XEXs just made, and the
-    # dashboard page (web/index.html, made into server/web_page.h).
+    # dashboard page (web/index.html, made into server/web_page.h) and the
+    # System Link list (data/systemlink.json, made into server/systemlink.cpp).
     & python tools\make_web.py
     if ($LASTEXITCODE) { throw 'make_web.py failed.' }
+    & python tools\make_systemlink.py
+    if ($LASTEXITCODE) { throw 'make_systemlink.py failed.' }
     & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
