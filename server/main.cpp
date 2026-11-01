@@ -695,11 +695,18 @@ void SavePlays() {
     if(!config::WriteFile(path,text,false)) Log("Couldn't save the play history to %s.",config::FromUtf8(path).c_str());
 }
 
+// Has the dashboard read the games again: what a console has of them (its
+// tiles, its installed games, its title updates) changed, or which consoles
+// their title updates are compared on.
+void GamesChanged() {
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    ++GamesVersion;
+}
+
 // Saves the play history, and has the dashboard read the games again.
 void PlaysChanged() {
     SavePlays();
-    std::lock_guard<std::mutex> hold(GamesListLock);
-    ++GamesVersion;
+    GamesChanged();
 }
 
 // Ends the game console plays, adding its time; true if there was one.
@@ -1548,7 +1555,11 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
                 Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt);
         tiles.swap(PushTiles);
     }
-    if(ok) { std::lock_guard<std::mutex> hold(ConsoleLock); console.tiles.swap(tiles); }
+    if(ok) {
+        bool changed;
+        { std::lock_guard<std::mutex> hold(ConsoleLock); changed=console.tiles!=tiles; console.tiles.swap(tiles); }
+        if(changed) GamesChanged();
+    }
     if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
                                     result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
     else if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
@@ -1748,8 +1759,17 @@ void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options
         s.installedSeen=seen;
         XboxLog(console,"%s installed on it (in %s, or as Games on Demand).",Count(int(found.size()),"game is","games are").c_str(),o.installedFolders.c_str());
     }
-    std::lock_guard<std::mutex> hold(ConsoleLock);
-    console.installed=found;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        changed=console.installed.size()!=found.size();
+        for(size_t i=0;i<found.size() && !changed;++i) {
+            const InstalledGame& a=console.installed[i], & b=found[i];
+            changed=a.titleId!=b.titleId || a.disc!=b.disc || a.path!=b.path || a.god!=b.god;
+        }
+        console.installed=found;
+    }
+    if(changed) GamesChanged();
 }
 
 // The title updates the console's Aurora has, and which it applies, for the
@@ -1794,11 +1814,21 @@ void LookTitleUpdates(Console& console, PushState& s, FtpClient& ftp, const Opti
         else XboxLog(console,"couldn't look at the title updates in Aurora: %s.",error.c_str());
         s.toldUpdates=told;
     }
-    std::lock_guard<std::mutex> hold(ConsoleLock);
-    console.titleUpdatesError=error;
-    if(!error.empty()) return;
-    console.titleUpdates.swap(updates);
-    console.titleUpdatesRead=(long long)time(NULL);
+    bool changed;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        console.titleUpdatesError=error;
+        if(!error.empty()) return;
+        changed=!console.titleUpdatesRead || console.titleUpdates.size()!=updates.size();
+        for(size_t i=0;i<updates.size() && !changed;++i) {
+            const TitleUpdate& a=console.titleUpdates[i], & b=updates[i];
+            changed=a.id!=b.id || a.titleId!=b.titleId || a.mediaId!=b.mediaId || a.baseVersion!=b.baseVersion || a.version!=b.version ||
+                    a.name!=b.name || a.file!=b.file || a.active!=b.active;
+        }
+        console.titleUpdates.swap(updates);
+        console.titleUpdatesRead=(long long)time(NULL);
+    }
+    if(changed) GamesChanged();
 }
 
 // Makes folder unless it's there (a failed MKD costs FtpDll's connection).
@@ -4309,6 +4339,8 @@ bool ChangeParty(const web::Value& v, std::string& error) {
         }
     TidyParty(next);
     { std::lock_guard<std::mutex> hold(PartyLock); TheParty=next; }
+    // The games' title updates are compared on the party's consoles while it's on.
+    if(next.active!=was.active || (next.active && next.consoles!=was.consoles)) GamesChanged();
     if(next.active && !was.active) {
         Log("LAN party %s started on the dashboard: %s, the Gamemaster console %s.",next.name.empty() ? "" : ("\""+next.name+"\"").c_str(),
             Count(int(next.consoles.size()),"console","consoles").c_str(),next.gamemaster.empty() ? "not chosen yet" : next.gamemaster.c_str());
