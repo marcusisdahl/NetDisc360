@@ -66,7 +66,8 @@ std::string ContentFolderFtp(const std::string& xuid);   // /Hdd1/Content/<XUID>
 std::string ProfilePackageFtp(const std::string& xuid);  // .../FFFE07D1/00010000/<XUID>
 
 // What a profile's package (STFS, as the console wrote it) says: its
-// gamertag (the package's display name), and the gamerscore and achievements
+// display name (the gamertag, or the XUID for a profile xam has just made:
+// the gamertag itself is in the encrypted Account), and the gamerscore and achievements
 // its dashboard record (FFFE07D1.gpd) counts, -1 if they can't be read.
 struct ProfileStats { std::string gamertag; int gamerscore, achievements; ProfileStats() : gamerscore(-1), achievements(-1) {} };
 bool ReadProfileStats(const std::string& package, ProfileStats& stats);

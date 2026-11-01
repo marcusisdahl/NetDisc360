@@ -6320,7 +6320,9 @@ void RemoveGuestProfiles(std::vector<std::string> names) {
             if(!ReadTree(ftp,folder,std::string(),files,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error); continue; }
             std::map<std::string,std::string>::const_iterator package=files.find("FFFE07D1/00010000/"+p.xuid);
             ProfileStats stats;
-            if(package==files.end() || !ReadProfileStats(package->second,stats) || _stricmp(stats.gamertag.c_str(),p.gamertag.c_str())) {
+            // The package's name is its gamertag, or (as xam names one it
+            // makes, seen on the consoles 2026-11-01) its own XUID.
+            if(package==files.end() || !ReadProfileStats(package->second,stats) || (_stricmp(stats.gamertag.c_str(),p.gamertag.c_str()) && _stricmp(stats.gamertag.c_str(),p.xuid.c_str()))) {
                 failed.push_back(p.name+" on "+ConsoleWord(c)+": "+DashPath(folder)+" isn't the profile NetDisc360 made ("+(package==files.end() ? std::string("no profile in it") : "it's called "+stats.gamertag)+"), so it's left alone");
                 continue;
             }

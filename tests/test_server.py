@@ -2110,8 +2110,10 @@ print('lua ok')
                 content = os.path.join(other, "Hdd1", "Content", xuid)
                 os.makedirs(os.path.join(content, "FFFE07D1", "00010000"))
                 os.makedirs(os.path.join(content, "4D5307E6", "00000001"))
+                # A profile xam has just made is named for its XUID; the
+                # gamertag is only in its (encrypted) Account file.
                 with open(os.path.join(content, "FFFE07D1", "00010000", xuid), "wb") as f:
-                    f.write(package(job[key]))
+                    f.write(package(xuid if len(made) % 2 else job[key]))
                 with open(os.path.join(content, "4D5307E6", "00000001", "save"), "wb") as f:
                     f.write(b"halo save " + xuid.encode())
                 answer += key + "=" + xuid + "\r\n"
