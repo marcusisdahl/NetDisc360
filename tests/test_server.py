@@ -2176,6 +2176,80 @@ class Dashboard(ServerTest):
             ftp.shutdown()
             ftp.server_close()
 
+    def test_copies_a_bonus_disc_s_packages_where_their_headers_say(self):
+        # Skyrim's add-on disc keeps its DLC under a placeholder Title ID; the
+        # package's own header says whose it is. Avatar items stay behind.
+        def package(title_id, content_type, size=0x1000):
+            data = bytearray(b"LIVE" + bytes(size - 4))
+            struct.pack_into(">I", data, 0x344, content_type)
+            struct.pack_into(">I", data, 0x360, title_id)
+            data[-8:] = os.urandom(8)
+            return bytes(data)
+        dlc, maps, avatar = package(0x425307D6, 0x2), package(0x4D53085B, 0x2, 0x2000), package(0x425307D6, 0x9000)
+        write_tree_iso(os.path.join(self.isos, "Skyrim - Add-ons.iso"), {
+            "default.xex": xex(execution_info(0x55667788, 0x425307D6, 2, 2)),
+            "content": {"0000000000000000": {
+                "FFED2000": {"FFFFFFFF": {"Dawnguard": dlc, "Avatar": avatar}},
+                "4D53085B": {"00000002": {"Reach maps": maps}}}}})
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            self.state_when(lambda s: s["library"]["games"] == 1)
+            game = self.json("GET", "/api/games")["games"][0]
+            self.assertEqual(game["packages"], 2)
+            self.json("POST", "/api/copy", {"game": "Skyrim - Add-ons", "address": "127.0.0.2"})
+            jobs = self.state_when(lambda s: len(s["installs"]) == 2 and all(j["state"] not in ("queued", "copying") for j in s["installs"]), 60)["installs"]
+            self.assertEqual([(j["kind"], j["state"]) for j in jobs], [("game", "done"), ("content", "done")], [j["error"] for j in jobs])
+            with open(os.path.join(content, "425307D6", "00000002", "Dawnguard"), "rb") as f:
+                self.assertEqual(f.read(), dlc)
+            with open(os.path.join(content, "4D53085B", "00000002", "Reach maps"), "rb") as f:
+                self.assertEqual(f.read(), maps)
+            self.assertFalse(os.path.exists(os.path.join(content, "425307D6", "00009000")))
+            self.assertFalse(os.path.exists(os.path.join(content, "FFED2000")))
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def test_copies_an_original_xbox_game_as_its_files(self):
+        folder = os.path.join(self.isos, "Halo - Combat Evolved")
+        os.makedirs(os.path.join(folder, "maps"))
+        xbe = bytearray(0x2000)
+        xbe[:4] = b"XBEH"
+        struct.pack_into("<I", xbe, 0x104, 0x10000)          # Base address.
+        struct.pack_into("<I", xbe, 0x118, 0x10000 + 0x1000)  # Certificate.
+        struct.pack_into("<I", xbe, 0x1000 + 8, 0x4D530004)   # Its Title ID.
+        files = {"default.xbe": bytes(xbe), os.path.join("maps", "a10.map"): os.urandom(70000), os.path.join("maps", "ui.map"): b"ui" * 100}
+        for name, data in files.items():
+            with open(os.path.join(folder, name), "wb") as f:
+                f.write(data)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            self.state_when(lambda s: s["library"]["games"] == 1)
+            self.json("POST", "/api/copy", {"game": "Halo - Combat Evolved", "address": "127.0.0.2"})
+            job = self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+            self.assertEqual((job["kind"], job["state"], job["folder"]), ("files", "done", "/Hdd1/Games/Halo - Combat Evolved"), job["error"])
+            for name, data in files.items():
+                with open(os.path.join(xbox, "Hdd1", "Games", "Halo - Combat Evolved", name), "rb") as f:
+                    self.assertEqual(f.read(), data, name)
+            self.assertEqual(ftp.scans[-1], "/Hdd1/Games")
+            # Again: every file is there.
+            self.json("POST", "/api/copy", {"game": "Halo - Combat Evolved", "address": "127.0.0.2"})
+            job = self.state_when(lambda s: s["installs"][-1]["id"] != job["id"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+            self.assertEqual(job["skipped"], 3)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
     def test_puts_title_updates_on_consoles_from_xboxunity(self):
         halo = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)

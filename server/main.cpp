@@ -132,6 +132,9 @@ struct Options {
 Options Settings;
 std::mutex SettingsLock;
 Options Current() { std::lock_guard<std::mutex> hold(SettingsLock); return Settings; }
+// 8 hex digits, as Title IDs and Media IDs are written.
+std::string Hex8(DWORD v) { char text[12]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",(unsigned)v); return text; }
+
 
 std::vector<unsigned char> Launcher, Boot;
 bool CanPush;         // A launcher is built in (or given), so game folders can be written.
@@ -1641,9 +1644,11 @@ void InstallFor(const char* iso, InstallNeed& need) {
     if(!install) return;
     _snprintf_s(need.iso,sizeof(need.iso),_TRUNCATE,"%s",install->name.c_str());
     std::string lines;
+    int n=0;
     for(size_t i=0;i<install->packages.size();++i) {
+        if(install->packages[i].titleId!=game->titleId) continue;  // Only what this game needs.
         char line[IsvrNameBytes+64];
-        _snprintf_s(line,sizeof(line),_TRUNCATE,"package_%d=%s|%llu\r\n",int(i+1),install->packages[i].path.c_str(),
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"package_%d=%s|%llu\r\n",++n,install->packages[i].path.c_str(),
                     (unsigned long long)install->packages[i].size);
         if(lines.size()+strlen(line)>=sizeof(need.packages)) break;
         lines+=line;
@@ -2800,7 +2805,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     }
     j.Set("name",config::ToUtf8(WithoutIso(g.name))).Set("path",config::ToUtf8(g.path)).Set("kind",KindName(g.kind));
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
-    j.Set("disc",g.disc).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
+    j.Set("disc",g.disc).Set("mediaId",g.mediaId ? Hex8(g.mediaId) : std::string()).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
     j.Set("role",g.role).Set("roleLabel",g.roleLabel).Set("incomplete",g.incomplete);
     U64 content=0;
     for(size_t i=0;i<g.packages.size();++i) content+=g.packages[i].size;
@@ -4605,6 +4610,15 @@ bool QueueDisc(const IsoFile& disc, const std::string& game, DWORD at, std::stri
     }
     if(!AddCopy(job,at,error)) return false;
     Log("Xbox %s: queued %s (%s, from %s).",job->console.c_str(),job->label.c_str(),job->kind.c_str(),disc.path.c_str());
+    // A disc that's played and carries packages too (Splinter Cell:
+    // Blacklist's second disc and its textures, Halo: CE Anniversary's
+    // Reach maps): its content after it.
+    if(job->kind=="game" && !disc.packages.empty()) {
+        IsoFile content=disc;
+        content.role="install";
+        std::string why;
+        if(!QueueDisc(content,name,at,why)) Log("Xbox %s: %s's content isn't queued: %s",job->console.c_str(),name.c_str(),why.c_str());
+    }
     return true;
 }
 
@@ -4755,8 +4769,6 @@ void CopiesJson(web::Json& j) {
 // by the name it was downloaded under. Older updates of the same disc are
 // moved out of the way (to <NetISO folder>\NetDisc360\Title updates), never
 // deleted, so the console uses the one put there.
-std::string Hex8(DWORD v) { char text[12]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",(unsigned)v); return text; }
-
 struct TuTitle {
     std::vector<tu::Offer> offers;
     double fetchedAt;  // Now(); 0: never.

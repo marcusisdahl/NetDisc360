@@ -641,63 +641,128 @@ U64 ImageDataEnd(DiscImage& image) {
 // Content on a storage device (inferred: GTA V's guides copy them there).
 
 const char ContentFolder[] = "content", CommonProfile[] = "0000000000000000";
-enum { MaxPackages = 16 };
+enum { MaxPackages = 64, HeaderBytes = 0x971 };
 
-// list(path, entries) lists the folder at path (names as on the disc, from its top).
-template<class Lister> void FindPackages(Lister list, DWORD titleId, std::vector<Package>& out) {
+DWORD HexName(const std::string& name, bool& ok) {
+    ok=name.size()==8;
+    DWORD v=0;
+    for(size_t i=0;i<name.size() && ok;++i) {
+        char c=name[i];
+        int d=c>='0' && c<='9' ? c-'0' : c>='a' && c<='f' ? c-'a'+10 : c>='A' && c<='F' ? c-'A'+10 : -1;
+        if(d<0) ok=false; else v=(v<<4)|DWORD(d);
+    }
+    return v;
+}
+
+// Where a package from content\0000000000000000\<folder>\<type> on a disc
+// goes, by its own header (CON, LIVE or PIRS: its Title ID at 0x360, its
+// content type at 0x344), as the console reads it: bonus discs keep theirs
+// under a placeholder (FFED2000\FFFFFFFF on Skyrim's, Fallout's, BioShock's).
+// False for one that isn't a game's (avatar items, themes, gamer pictures,
+// the dashboard's), or whose Title ID nothing says.
+bool PackageTarget(const unsigned char* head, size_t got, const std::string& folder, const std::string& type, DWORD& titleId, DWORD& contentType) {
+    bool folderOk=false, typeOk=false;
+    titleId=HexName(folder,folderOk); contentType=HexName(type,typeOk);
+    if(got>=0x364 && (!memcmp(head,"CON ",4) || !memcmp(head,"LIVE",4) || !memcmp(head,"PIRS",4))) {
+        DWORD t=Big32(head+0x360), c=Big32(head+0x344);
+        if(t) { titleId=t; folderOk=true; }
+        if(c) { contentType=c; typeOk=true; }
+    }
+    if(!folderOk || !typeOk || !titleId) return false;
+    if(titleId==0xFFED2000 || titleId==0xFFFFFFFF || (titleId>>16)==0xFFFE) return false;  // A placeholder it didn't say better, or the dashboard's.
+    switch(contentType) {
+    case 0x9000: case 0x10000: case 0x20000: case 0x30000: case 0x1: return false;  // Avatar items, profiles, gamer pictures, themes, saves.
+    }
+    return true;
+}
+
+// list(path, entries) lists the folder at path (names as on the disc, from
+// its top); head(path, name, data, bytes) reads a file's first bytes.
+template<class Lister, class Reader> void FindPackages(Lister list, Reader head, std::vector<Package>& out) {
     out.clear();
-    char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",titleId);
-    const char* const steps[]={ ContentFolder, CommonProfile, title };
+    const char* const steps[]={ ContentFolder, CommonProfile };
     std::vector<std::string> path;
     std::vector<Entry> entries;
-    for(int i=0;i<3;++i) {
+    for(int i=0;i<2;++i) {
         const Entry* e=list(path,entries) ? Find(entries,steps[i],true) : NULL;
         if(!e) return;
         path.push_back(e->name);
     }
-    std::vector<Entry> types;
-    if(!list(path,types)) return;
-    for(size_t t=0;t<types.size();++t) {
-        if(!types[t].folder) continue;
-        path.push_back(types[t].name);
-        if(list(path,entries)) for(size_t f=0;f<entries.size();++f) {
-            if(entries[f].folder) continue;
-            Package p; p.path=path[1]+"\\"+path[2]+"\\"+path[3]+"\\"+entries[f].name; p.size=entries[f].size;
-            out.push_back(p);
+    std::vector<Entry> titles, types;
+    if(!list(path,titles)) return;
+    for(size_t t=0;t<titles.size() && out.size()<MaxPackages;++t) {
+        if(!titles[t].folder) continue;
+        path.push_back(titles[t].name);
+        if(list(path,types)) for(size_t k=0;k<types.size();++k) {
+            if(!types[k].folder) continue;
+            path.push_back(types[k].name);
+            if(list(path,entries)) for(size_t f=0;f<entries.size() && out.size()<MaxPackages;++f) {
+                if(entries[f].folder) continue;
+                unsigned char data[HeaderBytes];
+                size_t got=head(path,entries[f].name,data,sizeof(data));
+                DWORD titleId=0, type=0;
+                if(!PackageTarget(data,got,path[2],path[3],titleId,type)) continue;
+                char target[48]; _snprintf_s(target,sizeof(target),_TRUNCATE,"%s\\%08X\\%08X\\",CommonProfile,(unsigned)titleId,(unsigned)type);
+                Package p; p.path=target+entries[f].name; p.size=entries[f].size; p.titleId=titleId;
+                std::string source=path[1]+"\\"+path[2]+"\\"+path[3]+"\\"+entries[f].name;
+                // Where it is already: as the disc spells it.
+                if(!_stricmp(source.c_str(),p.path.c_str())) p.path=source;
+                else p.source=source;
+                out.push_back(p);
+            }
+            path.pop_back();
         }
         path.pop_back();
     }
     std::sort(out.begin(),out.end(),[](const Package& a, const Package& b) { return _stricmp(a.path.c_str(),b.path.c_str())<0; });
-    if(out.size()>MaxPackages) out.resize(MaxPackages);
 }
-void FolderPackages(const std::string& game, DWORD titleId, std::vector<Package>& out) {
-    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
+void FolderPackages(const std::string& game, std::vector<Package>& out) {
+    auto at=[&](const std::vector<std::string>& path) {
         std::string folder=game;
         for(size_t i=0;i<path.size();++i) folder=Join(folder,path[i]);
-        return List(folder,entries);
-    },titleId,out);
+        return folder;
+    };
+    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) { return List(at(path),entries); },
+        [&](const std::vector<std::string>& path, const std::string& name, unsigned char* data, size_t bytes) -> size_t {
+            File f;
+            if(!f.Open(Join(at(path),name))) return 0;
+            long long got=f.Read(0,data,DWORD(bytes));
+            return got>0 ? size_t(got) : 0;
+        },out);
 }
-void ImagePackages(DiscImage& image, DWORD titleId, std::vector<Package>& out) {
+void ImagePackages(DiscImage& image, std::vector<Package>& out) {
     Volume volume;
     if(!ImageVolume(image,volume)) { out.clear(); return; }
-    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
-        std::vector<ImageEntry> table;
+    std::vector<ImageEntry> last;  // The table listed last, for head.
+    auto table=[&](const std::vector<std::string>& path, std::vector<ImageEntry>& found) {
         DWORD sector=volume.rootSector,size=volume.rootSize;
         for(size_t i=0;i<=path.size();++i) {
-            if(!ReadTable(image,volume,sector,size,table)) return false;
+            if(!ReadTable(image,volume,sector,size,found)) return false;
             if(i==path.size()) break;
             size_t k=0;
-            while(k<table.size() && (!table[k].folder || _stricmp(table[k].name.c_str(),path[i].c_str()))) ++k;
-            if(k==table.size()) return false;
-            sector=table[k].sector; size=table[k].size;
+            while(k<found.size() && (!found[k].folder || _stricmp(found[k].name.c_str(),path[i].c_str()))) ++k;
+            if(k==found.size()) return false;
+            sector=found[k].sector; size=found[k].size;
         }
+        return true;
+    };
+    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
+        if(!table(path,last)) return false;
         entries.clear();
-        for(size_t i=0;i<table.size();++i) {
-            Entry e; e.name=table[i].name; e.folder=table[i].folder; e.size=table[i].folder ? 0 : table[i].size; e.modified=0;
+        for(size_t i=0;i<last.size();++i) {
+            Entry e; e.name=last[i].name; e.folder=last[i].folder; e.size=last[i].folder ? 0 : last[i].size; e.modified=0;
             entries.push_back(e);
         }
         return true;
-    },titleId,out);
+    }, [&](const std::vector<std::string>&, const std::string& name, unsigned char* data, size_t bytes) -> size_t {
+        for(size_t i=0;i<last.size();++i)
+            if(!last[i].folder && last[i].name==name) {
+                size_t n=std::min(bytes,size_t(last[i].size));
+                U64 at=volume.start+U64(last[i].sector)*Sector;
+                return n && at+n<=image.Size() && image.Read(at,data,DWORD(n)) ? n : 0;
+            }
+        return 0;
+    },out);
 }
 
 struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete; };
@@ -881,16 +946,17 @@ void ReadTitles(std::vector<IsoFile>& discs) {
         DWORD titleId=0,mediaId=0; int disc=0;
         if(d.kind==DiscFolder) {
             if(!FileTitle(Join(d.path,"default.xex"),titleId,mediaId,disc) && XbeTitle(Join(d.path,"default.xbe"),titleId)) { mediaId=0; disc=1; }
-            if(titleId) FolderPackages(d.path,titleId,d.packages);
+            FolderPackages(d.path,d.packages);
         } else if(d.kind==DiscGod) {  // The Title ID is from its header already.
             titleId=d.titleId; mediaId=d.mediaId; disc=d.disc;
             std::string error;
             std::unique_ptr<DiscImage> god(OpenGodImage(d.path,error));
-            if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
+            if(god.get()) ImagePackages(*god,d.packages);
         } else {
             IsoImage iso; std::string error;
             if(iso.Open(d.path,error)) {
-                if(ImageTitle(iso,titleId,mediaId,disc)) ImagePackages(iso,titleId,d.packages);
+                ImageTitle(iso,titleId,mediaId,disc);
+                ImagePackages(iso,d.packages);
                 d.incomplete=ImageDataEnd(iso)>iso.Size();
             }
         }
@@ -912,11 +978,16 @@ void ReadTitles(std::vector<IsoFile>& discs) {
 }
 
 void LinkInstallDiscs(std::vector<IsoFile>& discs) {
+    // A disc's own packages: those for its game (a bonus disc can carry another's).
+    auto own=[](const IsoFile& d) {
+        for(size_t k=0;k<d.packages.size();++k) if(d.packages[k].titleId==d.titleId) return true;
+        return false;
+    };
     std::map<DWORD,const IsoFile*> carriers;  // Title ID: a disc of it with packages.
-    for(size_t i=0;i<discs.size();++i) if(discs[i].titleId && !discs[i].packages.empty()) carriers[discs[i].titleId]=&discs[i];
+    for(size_t i=0;i<discs.size();++i) if(discs[i].titleId && own(discs[i])) carriers[discs[i].titleId]=&discs[i];
     for(size_t i=0;i<discs.size();++i) {
         IsoFile& d=discs[i];
-        std::map<DWORD,const IsoFile*>::const_iterator c=d.packages.empty() ? carriers.find(d.titleId) : carriers.end();
+        std::map<DWORD,const IsoFile*>::const_iterator c=!own(d) ? carriers.find(d.titleId) : carriers.end();
         if(c!=carriers.end() && c->second->disc!=d.disc) d.installDisc=c->second->name;
         else d.installDisc.clear();
     }
