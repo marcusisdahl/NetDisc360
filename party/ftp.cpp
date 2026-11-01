@@ -19,6 +19,7 @@ static void MutexLock(Mutex& m) { EnterCriticalSection(&m); }
 static void MutexUnlock(Mutex& m) { LeaveCriticalSection(&m); }
 static void CloseSocket(Socket s) { closesocket(s); }
 static unsigned long Ticks() { return GetTickCount(); }
+static void Pause(int ms) { Sleep(DWORD(ms)); }
 static bool Spawn(DWORD (WINAPI* run)(void*), void* with) {
     HANDLE thread=CreateThread(NULL,0,run,with,0,NULL);
     if(!thread) return false;
@@ -52,6 +53,7 @@ static void MutexInit(Mutex& m) { pthread_mutex_init(&m,NULL); }
 static void MutexLock(Mutex& m) { pthread_mutex_lock(&m); }
 static void MutexUnlock(Mutex& m) { pthread_mutex_unlock(&m); }
 static void CloseSocket(Socket s) { close(s); }
+static void Pause(int ms) { usleep(useconds_t(ms)*1000); }
 static unsigned long Ticks() { timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (unsigned long)(t.tv_sec*1000+t.tv_nsec/1000000); }
 static bool Spawn(void* (*run)(void*), void* with) {
     pthread_t thread;
@@ -518,7 +520,8 @@ THREAD_RESULT Listen(void* with) {
         socklen_t length=sizeof(from);
 #endif
         Socket s=accept(listener,(sockaddr*)&from,&length);
-        if(s==INVALID_SOCKET) continue;
+        // Never round and round at full speed: the app has the console's other work to share it with.
+        if(s==INVALID_SOCKET) { Pause(200); continue; }
         MutexLock(Lock);
         unsigned long allowed=AllowFrom;
         bool room=Sessions<FtpSessionsMost;
@@ -547,12 +550,16 @@ THREAD_RESULT Listen(void* with) {
 }
 }
 
-bool FtpStart(const char* root, int port, unsigned long allowFrom) { return FtpStartAt(root,INADDR_ANY,port,allowFrom); }
-bool FtpStartAt(const char* root, unsigned long address, int port, unsigned long allowFrom) {
+void FtpInit() {
     MutexInit(Lock);
     memset(&Now,0,sizeof(Now));
+}
+bool FtpStart(const char* root, int port, unsigned long allowFrom) { return FtpStartAt(root,INADDR_ANY,port,allowFrom); }
+bool FtpStartAt(const char* root, unsigned long address, int port, unsigned long allowFrom) {
+    MutexLock(Lock);
     Copy(Root,sizeof(Root),root);
     Port=port; AllowFrom=allowFrom;
+    MutexUnlock(Lock);
     Socket listener=Listener(address,port,4);
     if(listener==INVALID_SOCKET) return false;
     if(!Spawn(Listen,(void*)(size_t)listener)) { CloseSocket(listener); return false; }

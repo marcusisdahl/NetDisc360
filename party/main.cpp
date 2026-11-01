@@ -359,6 +359,8 @@ void NewSeats(const party::Seat* mine) {
 
 void __cdecl main() {
     InitializeCriticalSection(&Lock);
+    // Before any thread or frame asks the FTP server anything (FtpNow).
+    party::FtpInit();
     // A title that reads no notifications can leave the Guide dead (seen
     // with the launcher), so this reads them, as a game does.
     Notifications=XNotifyCreateListener(XNOTIFY_ALL);

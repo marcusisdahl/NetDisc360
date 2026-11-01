@@ -23,6 +23,9 @@ const unsigned long long FtpFileMost = 512ull << 20;
 // Xbox a drive linked to \Device\Harddisk0\Partition1, as "PartyF:"; any
 // folder in the host tests). allowFrom: the only address that may connect
 // (network order); AllowFrom changes it later. False if it can't listen.
+// FtpInit first, once, before anything else here is called (FtpNow too):
+// it sets up the lock everything shares.
+void FtpInit();
 bool FtpStart(const char* root, int port, unsigned long allowFrom);
 // The same on one address of the computer's (the tests' fake consoles).
 bool FtpStartAt(const char* root, unsigned long address, int port, unsigned long allowFrom);

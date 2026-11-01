@@ -2776,8 +2776,9 @@ Pages.party = root => {
     edit({ guests: list }).then(ok => {
       if (!ok) return;
       typed.value = ''; typed.focus();
-      // Their profiles too, on every console (one console makes them, then they're copied).
-      if (added.length) profileWork('make', added, 'Making ' + (added.length === 1 ? added[0] + '’s profile' : plural(added.length, 'guest profile')) + ' on the consoles');
+      // Their profiles too: the server makes them by itself a few seconds
+      // after the list changes (one console makes them, then they're copied).
+      if (added.length) toast((added.length === 1 ? added[0] + '’s profile is' : plural(added.length, 'guest profile') + ' are') + ' made on the consoles in a moment.');
     });
   }
   const setGuests = list => edit({ guests: list });

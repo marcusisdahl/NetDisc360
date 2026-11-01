@@ -518,7 +518,7 @@ class ServerTest(unittest.TestCase):
         # binds it; then the server says so and stops, and gets another.
         for _ in range(3):
             self.port = free_port()
-            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + self.ports() + list(extra),
+            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0", "--no-auto-profiles"] + self.ports() + list(extra),
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             deadline = time.time() + 10
             said = []
@@ -748,9 +748,9 @@ class Push(ServerTest):
         self.push()
         self.assertEqual(len(self.ftp.scans), 2)
 
-    def run_server(self, *options, xbox="127.0.0.1", ftp_port=None):
+    def run_server(self, *options, xbox="127.0.0.1", ftp_port=None, auto_profiles=False):
         port = free_port()
-        server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox, "--web-port", "0",
+        server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox, "--web-port", "0"] + ([] if auto_profiles else ["--no-auto-profiles"]) + [
                                    "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
                                    "--launcher", self.launcher, "--boot", self.boot] + list(options),
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -2134,7 +2134,7 @@ print('lua ok')
         aurora2.on_launch = helper
         config = os.path.join(self.tmp.name, "profiles.ini")
         self.web = free_port()
-        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config, auto_profiles=True)
 
         def finished():
             self.assertTrue(self.wait_for(lambda: not self.json("GET", "/api/party/profiles")["work"]["running"], 60))
@@ -2209,6 +2209,11 @@ print('lua ok')
                 self.assertEqual(f.read(), b"halo save " + xuids[0].encode())
             for body, code in (({"action": "make", "names": ["Nobody"]}, 400), ({"action": "forget", "names": ["Ståle Øvrebø"]}, 409), ({"action": "nap"}, 400)):
                 self.assertEqual(self.call("POST", "/api/party/profiles", body)[0], code)
+            # A name put on the list gets its profile by itself, a few seconds later, on both.
+            self.json("POST", "/api/party", {"guests": [{"name": "Ståle Øvrebø", "here": True}, {"name": "Kristoffer Hansen", "here": False}, {"name": "Nora", "here": True}]})
+            self.assertTrue(self.wait_for(lambda: any(g["name"] == "Nora" and g["xuid"] and len(g["on"]) == 2 for g in self.json("GET", "/api/party/profiles")["profiles"]), 40))
+            self.assertEqual(made[-1][0], "Nora")
+            self.assertEqual(len(aurora2.launched), 2)
         finally:
             aurora.close()
             aurora2.close()

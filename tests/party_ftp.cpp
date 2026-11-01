@@ -9,6 +9,7 @@
 
 int main(int argc, char** argv) {
     if(argc<4) { fprintf(stderr,"party-ftp <root> <address> <port> [allowed address]\n"); return 2; }
+    party::FtpInit();
     if(!party::FtpStartAt(argv[1],inet_addr(argv[2]),atoi(argv[3]),argc>4 ? inet_addr(argv[4]) : 0)) { perror("listen"); return 1; }
     printf("ready\n"); fflush(stdout);
     for(;;) pause();

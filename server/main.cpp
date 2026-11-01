@@ -127,6 +127,10 @@ struct Options {
     // Aurora's filter script also takes the games whose tile is gone off its
     // list as Aurora starts (see OnlineScript in aurora.h), without asking.
     bool tidyAurora;
+    // A profile for each new name on the LAN party's guest list, made by
+    // itself (MakeProfilesSoon); --no-auto-profiles (the tests) leaves that
+    // to the page's Make profiles.
+    bool autoProfiles;
     // "Set up this console": the plugin set (file names in slot order) and the
     // folder on this computer with the plugin files (see ConsoleSetup).
     std::string pluginSet, pluginKit;
@@ -146,7 +150,7 @@ struct Options {
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
-                skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true), tidyAurora(false),
+                skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true), tidyAurora(false), autoProfiles(true),
                 pluginSet("NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex"),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
                 namePort(ConsoleNamePort), showName(true) {}
@@ -717,6 +721,11 @@ struct SeatProfiles {
 };
 std::map<std::string,SeatProfiles> SeatPushes;
 void PushSeatProfilesSoon();
+std::vector<std::string> GuestsWithoutProfile();
+// Each name on the guest list gets its profile by itself (MakeProfilesSoon),
+// seconds after the list last changed.
+enum { AutoMakeDelaySeconds = 8 };
+void MakeProfilesSoon(double seconds);
 // The party's version, one more with each change (Save), which
 // NetDiscParty.xex waits on (PartyWait) so it hears of a spin at once
 // without asking again and again.
@@ -2372,6 +2381,8 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     if(back) {
         XboxLog(console,"its FTP server answers.");
         XboxEvent(console,EventXbox,"Aurora answers",std::string("Aurora on ")+console.text+" answers");
+        // Back in Aurora: a guest still without a profile gets one now.
+        if(!o.pushOnce && !GuestsWithoutProfile().empty()) MakeProfilesSoon(10);
         // Aurora started: its name on its screen, so it's told from the others.
         if(o.showName && !o.pushOnce) {
             Console* c=&console;
@@ -6256,9 +6267,11 @@ void MakeGuestProfiles(std::vector<std::string> names) {
     // One console makes the new ones: the Gamemaster's if it's in Aurora.
     if(!make.empty() && failed.empty()) {
         Party party=CurrentParty();
-        Console* maker=open[0];
-        for(size_t k=0;k<open.size();++k) if(open[k]->text==party.gamemaster) maker=open[k];
-        for(size_t from=0;from<make.size();from+=ProfileJobMost) {
+        // Not one showing the party wheel: the helper starts from Aurora.
+        Console* maker=NULL;
+        for(size_t k=0;k<open.size();++k) if(!ShowsWheel(open[k]->text) && (!maker || open[k]->text==party.gamemaster)) maker=open[k];
+        if(!maker) failed.push_back("Every console shows the party wheel, so new profiles are made once one is back in Aurora");
+        for(size_t from=0;maker && from<make.size();from+=ProfileJobMost) {
             std::vector<std::string> tags;
             for(size_t n=from;n<make.size() && n<from+ProfileJobMost;++n) tags.push_back(todo[make[n]].gamertag);
             WorkStep("%s makes %s (Aurora is back in a moment)",ConsoleWord(*maker).c_str(),Count(int(tags.size()),"profile","profiles").c_str());
@@ -6563,6 +6576,61 @@ void PushSeatProfilesSoon() {
                 SeatPushAgain=false;
             }
             PushSeatsOnce();
+        }
+    }).detach();
+}
+
+// New names on the guest list get their profile without being asked
+// (Marcus: as soon as the name is written): MakeGuestProfiles for every
+// name that has none, once the list has been still for a few seconds, and
+// then each seated guest's profile goes to their console. Tried again
+// a minute later while a name has none (no console in Aurora, say), at most
+// AutoMakeTries times for the same names.
+enum { AutoMakeTries = 3, AutoMakeRetrySeconds = 60 };
+std::mutex AutoMakeLock;
+double AutoMakeAt=0;          // Under AutoMakeLock.
+bool AutoMakeRunning=false;
+std::vector<std::string> GuestsWithoutProfile() {
+    Party p=CurrentParty();
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    std::vector<std::string> names;
+    for(size_t i=0;i<p.guests.size();++i) {
+        GuestProfile* r=GuestProfileNamed(records,p.guests[i].name);
+        if(!r || r->xuid.empty()) names.push_back(p.guests[i].name);
+    }
+    return names;
+}
+void MakeProfilesSoon(double seconds) {
+    if(!Current().autoProfiles) return;
+    std::lock_guard<std::mutex> hold(AutoMakeLock);
+    AutoMakeAt=Now()+seconds;
+    if(AutoMakeRunning) return;
+    AutoMakeRunning=true;
+    std::thread([]() {
+        std::vector<std::string> tried;
+        int tries=0;
+        for(;;Sleep(1000)) {
+            {
+                std::lock_guard<std::mutex> hold(AutoMakeLock);
+                if(Now()<AutoMakeAt) continue;
+            }
+            std::vector<std::string> names=GuestsWithoutProfile();
+            if(names!=tried) { tried=names; tries=0; }
+            if(names.empty() || tries>=AutoMakeTries) { std::lock_guard<std::mutex> hold(AutoMakeLock); AutoMakeRunning=false; return; }
+            bool start=false;
+            {
+                std::lock_guard<std::mutex> hold(GuestLock);
+                if(!Work.running) { Work=ProfileWork(); Work.running=true; Work.what="make"; Work.at=(long long)time(NULL); start=true; }
+            }
+            if(start) {
+                ++tries;
+                Log("Guest profiles: making %s for the names on the guest list.",Count(int(names.size()),"profile","profiles").c_str());
+                MakeGuestProfiles(names);
+                // Then to the seats, now that there are more to copy.
+                PushSeatProfilesSoon();
+            }
+            std::lock_guard<std::mutex> hold(AutoMakeLock);
+            AutoMakeAt=Now()+(start ? AutoMakeRetrySeconds : 5);
         }
     }).detach();
 }
@@ -6901,7 +6969,7 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party") {
-        if(ChangeParty(body,error)) out.body="{\"ok\":true}";
+        if(ChangeParty(body,error)) { out.body="{\"ok\":true}"; MakeProfilesSoon(AutoMakeDelaySeconds); }
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party/raffle") PartyRaffle(body,out);
@@ -7114,6 +7182,8 @@ void Usage() {
         "  --no-push               only serve games; leave the Xbox alone\n"
         "  --no-category           leave Aurora's Xbox 360 category alone\n"
         "  --no-scan               don't ask Aurora to scan after adding or removing games\n"
+        "  --no-auto-profiles      don't make a LAN party guest's profile by itself once\n"
+        "                          the name is on the list (Make profiles on the page does)\n"
         "  --installed <folders>   where games installed on the Xbox are, as FTP paths with\n"
         "                          semicolons between (/Hdd1/Games); those and Games on Demand\n"
         "                          get no game folder\n"
@@ -7152,6 +7222,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(a=="--no-push") o.push=false;
         else if(a=="--no-category") o.filter=false;
         else if(a=="--no-scan") o.scan=false;
+        else if(a=="--no-auto-profiles") o.autoProfiles=false;
         else if(a=="--no-installed") o.skipInstalled=false;
         else if(a=="--no-aurora-scripts") o.auroraScripts=false;
         else if(a=="--tidy-aurora") o.tidyAurora=true;  // For the tests.
