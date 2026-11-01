@@ -1323,6 +1323,25 @@ class Push(ServerTest):
         self.assertIn("2 added", out)
         self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "Halo 3", "NetDisc360", "Skate 3"])
 
+    def test_a_game_deleted_from_the_console_gets_its_folder_back(self):
+        # Installed games are looked at again while the server runs, though
+        # nothing changed on the PC: one deleted in Aurora gets its tile.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
+        server, _ = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "Skate 3"])
+            shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
+            self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "Halo 3")), 15))
+            self.assertTrue(self.wait_for(lambda: len(self.ftp.scans) == 2, 10))
+        finally:
+            server.kill()
+            out = server.stdout.read()
+        self.assertIn("1 game is installed on it", out)
+        self.assertIn("0 games are installed on it", out)
+
     def test_writes_aurora_s_cleanup_script_and_online_filter(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)

@@ -90,6 +90,9 @@ struct Options {
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see WatchLoop).
     double onlineWait, removeWait;
+    // How often the games installed on a console are looked at again, so one
+    // installed or deleted there (in Aurora, over FTP) gets or loses its tile.
+    double installedEvery;
     double pingSeconds;  // How often each console is pinged to see it's still on (PingLoop); 0: never.
     // Backups of the settings (BackupLoop): every so many days (0: only by
     // hand), keeping the newest so many but those made by hand.
@@ -117,7 +120,7 @@ struct Options {
     int xbdmPort;        // The consoles' debug monitor (xbdm), which turns them off; --xbdm-port for the tests.
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
+                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(60), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort) {}
@@ -539,6 +542,7 @@ struct Console {
     std::atomic<bool> inAurora;
     std::atomic<U64> sentInAurora;     // sent when it got back.
     std::atomic<long long> probeAt;    // When AuroraLoop next tries its FTP port, in Now() milliseconds.
+    std::atomic<bool> lookInstalled;   // Back in Aurora: its push thread looks at its installed games now.
     // PingLoop's pings: the latest answer's round trip in ms (-1: none yet),
     // whether the latest ping was answered and any ever was, the misses in a
     // row, and offline: it answered before, then stopped (see PingLoop).
@@ -564,7 +568,7 @@ struct Console {
     // milliseconds; 0 once it turned off, or plays again (see AutoOff).
     std::atomic<long long> gameEndedAt;
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
-                                 inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
+                                 inAurora(false), sentInAurora(0), probeAt(0), lookInstalled(false), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
                                  answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), marked(false), gameTitle(0), gameSince(0), gameEndedAt(0) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
@@ -768,6 +772,7 @@ void AuroraLoop() {
             XboxLog(c,"back in Aurora after %s (its FTP server answers).",game.c_str());
             PlayEnded(c);
             c.gameEndedAt=(long long)(Now()*1000);
+            c.lookInstalled=true;
             XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
         }
         Sleep(1000);
@@ -1551,7 +1556,7 @@ bool StartScan(const Console& console, FtpClient& ftp, const Options& o) {
 // What a console's push thread knows about it.
 struct PushState {
     std::string pushed;  // The games when its folders were last written.
-    double nextProbe, probedAt, retryAt, scanAt, downSince, upSince;
+    double nextProbe, probedAt, retryAt, scanAt, downSince, upSince, installedAt;
     int scanTries;
     bool attempted, reachable, toldDown, toldWaiting;
     std::atomic<bool> everPushed;
@@ -1561,7 +1566,7 @@ struct PushState {
     bool toldInstalled;          // Looking for them failed, and the log said so.
     bool restarted;              // Aurora was restarted for its filter once (see RefreshAuroraScripts).
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
-    PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
+    PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), installedAt(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
                   toldInstalled(false), restarted(false) {}
 };
@@ -1649,8 +1654,11 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     Options o=Current();
     bool pushDue=settled && (!s.everPushed || state!=s.pushed || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
+    // Its installed games, looked at again now and then and when it's back in
+    // Aurora after a game; a change pushes its folders again.
+    bool installedDue=o.skipInstalled && !o.pushOnce && settled && s.everPushed && (console.lookInstalled || Now()>=s.installedAt+o.installedEvery);
     bool online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=o.onlineWait;
-    if(!(pushDue || scanDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
+    if(!(pushDue || scanDue || installedDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
     // Not while it plays a game: Aurora's FTP server isn't there to write
     // to, and a push then failed file by file (seen on the console). It goes
     // on once AuroraLoop sees Aurora again.
@@ -1681,6 +1689,15 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         s.upSince=Now();
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
+    std::vector<InstalledGame> installed;
+    bool looked=false;
+    if(installedDue && !pushDue) {
+        console.lookInstalled=false;
+        std::string before=s.installedSeen;
+        LookInstalled(console,s,ftp,o,installed);
+        looked=true; s.installedAt=Now();
+        if(s.installedSeen!=before) { pushDue=true; s.retryAt=Now(); }  // Due until a push works.
+    }
     if(o.filter && (back || pushDue)) GuardFilter(console,ftp,back,o);
     if(pushDue && !online && !s.toldWaiting) {
         XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",o.onlineWait);
@@ -1693,8 +1710,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         bool missing=FoldersMissing;
         // Before the push's own connections to this server count as the console's.
         if(o.followAddress) FollowAddress(console,s,ftp,o);
-        std::vector<InstalledGame> installed;
-        if(o.skipInstalled) LookInstalled(console,s,ftp,o,installed);
+        if(o.skipInstalled && !looked) { console.lookInstalled=false; LookInstalled(console,s,ftp,o,installed); s.installedAt=Now(); }
         else { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state;
@@ -4011,6 +4027,7 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
+        "  --installed-every <s>   how often each console's installed games are looked at again (60)\n"
         "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
         "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
@@ -4058,6 +4075,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--boot") o.bootPath=args[++i];
         else if(hasValue && a=="--online-wait") o.onlineWait=atof(args[++i].c_str());
         else if(hasValue && a=="--remove-wait") o.removeWait=atof(args[++i].c_str());
+        else if(hasValue && a=="--installed-every") o.installedEvery=atof(args[++i].c_str());
         else if(hasValue && a=="--ping") o.pingSeconds=atof(args[++i].c_str());
         else if(hasValue && a=="--config") o.configPath=config::ToUtf8(args[++i]);
         else if(hasValue && a=="--releases") o.releasesFile=config::ToUtf8(args[++i]);  // For the tests.
