@@ -8,3 +8,4 @@
 !art/aurora/*/*.asset
 !web/
 !tools/make_web.py
+!tools/make_version.py

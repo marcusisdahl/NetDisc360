@@ -31,6 +31,16 @@ struct PartyTheme {
 
 struct PartyGuest { std::string name; bool here; };
 
+// The colours a team can have (TeamPalette): its name ("Red": Team Red), its
+// fill, a darker one for text on a light page, a brighter one for text on a
+// dark screen, and whether text on its fill is dark (yellow). Each of the
+// party's teams has one of them (Party::teamColours), no two the same.
+struct TeamColour { const char* name; const char* fill; const char* text; const char* bright; bool darkInk; };
+enum { TeamColoursCount = 8 };
+extern const TeamColour TeamPalette[TeamColoursCount];
+// Team t's name with the party's colours ("Team Red").
+std::string TeamName(const std::vector<int>& colours, int t);
+
 // The raffle wheel: a draw shown as a wheel of the guests' names that turns
 // once for each of them and stops on the next one to join a team (or once,
 // for one guest picked: who picks the game, say). The server plans every turn
@@ -68,6 +78,7 @@ struct Party {
     std::vector<std::string> consoles;   // The party's consoles (addresses), the Gamemaster's first.
     std::vector<PartyGuest> guests;
     int teams;                           // How many the raffle draws.
+    std::vector<int> teamColours;        // Team 1's to team 4's colour (TeamPalette), all different.
     std::vector<NamePair> together, apart;
     int round;                           // Rounds whose teams were kept (Keep).
     // The latest draw (or seats set by hand): its teams, its seats and what
@@ -78,7 +89,7 @@ struct Party {
     std::string note;
     std::vector<Team> last;              // The teams kept last, which the next raffle doesn't draw again.
     Spin spin;                           // The latest wheel; gone (id kept) once its draw is changed some other way.
-    Party() : active(false), teams(2), round(0), drawn(false), kept(false) {}
+    Party() : active(false), teams(2), round(0), drawn(false), kept(false) { for(int t=0;t<TeamsMost;++t) teamColours.push_back(t); }
 };
 
 // A name as typed (a guest's, the party's, a birthday's person): trimmed,
@@ -131,6 +142,24 @@ double SpinAngle(const Spin& spin, double ms, int* step=NULL, bool* stopped=NULL
 // (partyTitle, partyLine in web/index.html).
 std::string PartyTitle(const Party& party);
 std::string PartyLine(const Party& party);
+
+// What a guest did at the parties, kept with the guest list (by name) from
+// one party to the next: their profile's gamerscore and achievements as last
+// read from a console (the most any console has; -1 before), and when; the
+// gamerscore when this party started (-1: not known), so the page shows
+// what they earned at it; the time they played games, how many games and
+// the latest; and how many parties they were at, and the latest's end.
+struct GuestStats {
+    std::string name;
+    int gamerscore, achievements, partyStart;
+    long long readAt, playSeconds, lastParty;
+    int plays, parties;
+    std::string lastGame;
+    GuestStats() : gamerscore(-1), achievements(-1), partyStart(-1), readAt(0), playSeconds(0), lastParty(0), plays(0), parties(0) {}
+};
+// Kept as guest_stats=count, guest_statN=name|gamerscore|achievements|partyStart|readAt|playSeconds|plays|parties|lastParty|lastGame.
+void SaveGuestStats(config::File& file, const std::vector<GuestStats>& stats);
+void LoadGuestStats(const config::File& file, std::vector<GuestStats>& stats);
 
 // The party in the settings file (party_... keys), and back, tidied.
 void SaveParty(config::File& file, const Party& party);

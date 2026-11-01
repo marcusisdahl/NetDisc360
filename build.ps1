@@ -7,6 +7,9 @@ try {
     $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (!$vsPath) { throw 'Install Visual Studio C++ build tools.' }
     $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+    # Which build this is (shared/build_id.h): the same for everything below.
+    & python tools\make_version.py
+    if ($LASTEXITCODE) { throw 'make_version.py failed.' }
     & $msbuild launcher\NetIsoLauncher.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation failed. Check the SDK and RXDK integration.' }
     & $msbuild launcher\NetDiscTile.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo

@@ -22,7 +22,7 @@ COPY third_party/imgui/imstb_truetype.h third_party/imgui/
 COPY third_party/fonts/roboto_medium.h third_party/fonts/
 # The dashboard page, made into server/web_page.h (it isn't kept in git).
 COPY web/ web/
-COPY tools/make_web.py tools/
+COPY tools/make_web.py tools/make_version.py tools/
 RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \

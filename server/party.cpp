@@ -226,6 +226,18 @@ void TidyParty(Party& p) {
     TidyPairs(p,p.together,std::vector<NamePair>());
     TidyPairs(p,p.apart,p.together);
     p.teams=std::max<int>(TeamsLeast,std::min<int>(TeamsMost,p.teams));
+    // Four colours, each once: a missing or repeated one gets the first not taken.
+    {
+        std::vector<int> colours;
+        bool taken[TeamColoursCount]={false};
+        for(int t=0;t<TeamsMost;++t) {
+            int c=t<int(p.teamColours.size()) ? p.teamColours[t] : -1;
+            if(c<0 || c>=TeamColoursCount || taken[c]) { c=0; while(taken[c]) ++c; }
+            taken[c]=true;
+            colours.push_back(c);
+        }
+        p.teamColours.swap(colours);
+    }
     p.round=std::max(0,p.round);
     if(!KnownPreset(p.theme.preset)) p.theme.preset="classic";
     PartyTheme plain;
@@ -436,6 +448,9 @@ void SaveParty(config::File& f, const Party& p) {
     for(size_t i=0;i<p.guests.size();++i) guests.push_back(std::string(p.guests[i].here ? "1" : "0")+"|"+Escaped(p.guests[i].name));
     SetList(f,"party_guests","party_guest",guests);
     f.Set("party_teams",Number(p.teams));
+    std::string colours;
+    for(size_t i=0;i<p.teamColours.size();++i) colours+=(i ? "," : "")+Number(p.teamColours[i]);
+    f.Set("party_team_colours",colours);
     for(int rule=0;rule<2;++rule) {
         const std::vector<NamePair>& pairs=rule ? p.apart : p.together;
         std::vector<std::string> lines;
@@ -452,6 +467,31 @@ void SaveParty(config::File& f, const Party& p) {
     f.Set("party_seats",seats);
     f.Set("party_note",p.note);
     f.Set("party_kept",p.kept ? "1" : "0");
+}
+
+void SaveGuestStats(config::File& f, const std::vector<GuestStats>& stats) {
+    std::vector<std::string> lines;
+    for(size_t i=0;i<stats.size();++i) {
+        const GuestStats& g=stats[i];
+        lines.push_back(Escaped(g.name)+"|"+Number(g.gamerscore)+"|"+Number(g.achievements)+"|"+Number(g.partyStart)+"|"+Number(g.readAt)+"|"+
+                        Number(g.playSeconds)+"|"+Number(g.plays)+"|"+Number(g.parties)+"|"+Number(g.lastParty)+"|"+Escaped(g.lastGame));
+    }
+    SetList(f,"guest_stats","guest_stat",lines);
+}
+void LoadGuestStats(const config::File& f, std::vector<GuestStats>& stats) {
+    stats.clear();
+    std::vector<std::string> lines=GetList(f,"guest_stats","guest_stat");
+    for(size_t i=0;i<lines.size();++i) {
+        std::vector<std::string> v=Split(lines[i],'|');
+        if(v.size()<10) continue;
+        GuestStats g;
+        g.name=Unescaped(v[0]);
+        g.gamerscore=atoi(v[1].c_str()); g.achievements=atoi(v[2].c_str()); g.partyStart=atoi(v[3].c_str());
+        g.readAt=atoll(v[4].c_str()); g.playSeconds=std::max(0LL,atoll(v[5].c_str()));
+        g.plays=std::max(0,atoi(v[6].c_str())); g.parties=std::max(0,atoi(v[7].c_str())); g.lastParty=atoll(v[8].c_str());
+        g.lastGame=Unescaped(v[9]);
+        if(!g.name.empty()) stats.push_back(g);
+    }
 }
 
 void LoadParty(const config::File& f, Party& p) {
@@ -477,6 +517,11 @@ void LoadParty(const config::File& f, Party& p) {
         p.guests.push_back(g);
     }
     p.teams=int(std::max<long long>(TeamsLeast,std::min<long long>(TeamsMost,f.Number("party_teams",2))));
+    if(f.Has("party_team_colours")) {
+        std::vector<std::string> colours=Split(f.Get("party_team_colours"),',');
+        p.teamColours.clear();
+        for(size_t i=0;i<colours.size();++i) p.teamColours.push_back(atoi(colours[i].c_str()));
+    }
     for(int rule=0;rule<2;++rule) {
         std::vector<std::string> lines=GetList(f,rule ? "party_apart" : "party_together",rule ? "party_apart" : "party_together");
         for(size_t i=0;i<lines.size();++i) {
@@ -586,6 +631,21 @@ double SpinAngle(const Spin& spin, double ms, int* step, bool* stopped) {
     if(step) *step=at;
     if(stopped) *stopped=still;
     return angle;
+}
+
+const TeamColour TeamPalette[TeamColoursCount]={
+    {"Red","#e5483e","#b3261e","#ff6b61",false},
+    {"Blue","#3f7fe6","#2559b0","#6ea8ff",false},
+    {"Green","#2c9a2c","#0e6e0e","#5fd35f",false},
+    {"Yellow","#d9a400","#7f6200","#ffd23f",true},
+    {"Orange","#f07c1e","#a8500c","#ffa257",false},
+    {"Purple","#8e52d6","#6a35b0","#b98cff",false},
+    {"Pink","#e0509a","#b02a72","#ff8cc6",false},
+    {"Teal","#149c9c","#0b6d6d","#4fd8d8",false},
+};
+std::string TeamName(const std::vector<int>& colours, int t) {
+    int c=t>=0 && t<int(colours.size()) ? colours[t] : t;
+    return c>=0 && c<TeamColoursCount ? std::string("Team ")+TeamPalette[c].name : "Team "+Number(t+1);
 }
 
 std::string PartyTitle(const Party& p) {

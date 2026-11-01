@@ -1161,7 +1161,7 @@ function frame() {
       h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
       h('nav.nav', nav),
       h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
-        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
+        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'), h('div.row.muted#server-version'))),
     h('main',
       h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label)),
         h('a', { href: '#', title: 'Latest releases', onclick: e => { e.preventDefault(); releases(); } }, ic('download', 'sm'), 'Releases')),
@@ -1169,6 +1169,8 @@ function frame() {
       h('div.page#page')));
   route();
 }
+// This build: its version, and the commit it was built from (each test build has its own).
+const versionText = () => 'v' + S.version + (S.commit ? ' \u00b7 ' + S.commit : '');
 function mark() {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 32 32'); svg.setAttribute('class', 'brand-mark');
@@ -1199,6 +1201,7 @@ function updateFrame(problem) {
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
+  fill($('#server-version'), ic('tag', 'sm'), h('span', { title: 'Built ' + S.built }, versionText()));
   document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (playingNow ? '\u25b6 ' : '') + 'NetDisc360';
 }
 
@@ -4064,7 +4067,7 @@ Pages.settings = root => {
       if (u && u.installError && !u.installing) extra = h('div.notice', { style: { marginTop: '12px' } }, ic('triangle-alert'), h('span', 'The update wasn\u2019t installed: ' + u.installError));
       fill(hero,
         h('div.hero', h('div.mark.' + mark[1], ic(mark[0], mark[2] ? 'spin' : null)), h('div.text', h('h3', title), h('p', text), extra), actions.length ? h('div.actions', actions) : null),
-        h('div.hero-foot', h('span', 'This version: ', h('b', here)), h('span', 'Built ' + S.built), checked && h('span', checked), u && u.newer && checkBtn(true)));
+        h('div.hero-foot', h('span', 'This version: ', h('b', here), S.commit ? ' (' + S.commit + ')' : ''), h('span', 'Built ' + S.built), checked && h('span', checked), u && u.newer && checkBtn(true)));
       // The changes: every version since this one (not only the newest), then the earlier ones.
       const all = u && u.releases && u.releases.length ? u.releases : latest ? [Object.assign({ newer: !!u.newer }, latest)] : [];
       const newer = all.filter(r => r.newer), older = all.filter(r => !r.newer);
@@ -4176,7 +4179,7 @@ Pages.settings = root => {
       h('div.card', h('div.hero', h('div', mark()), h('div.text', h('h3', 'NetDisc360 ' + S.version), h('p', 'Your Xbox 360 games from your PC or NAS, in Aurora like installed games.')),
         h('div.actions', h('button.btn', { onclick: () => openWizard(true) }, ic('sparkles', 'sm'), 'Run the setup again'), h('button.btn', { onclick: releases }, ic('download', 'sm'), 'Latest releases'), h('a.btn', { href: 'https://github.com/marcusisdahl/NetDisc360', target: '_blank', rel: 'noopener noreferrer' }, 'GitHub', ic('external-link', 'sm'))))),
       card('info', 'This copy', null, h('div.facts',
-        h('div.k', 'Version'), h('div.v', S.version + ', built ' + S.built),
+        h('div.k', 'Version'), h('div.v', S.version + (S.commit ? ' (' + S.commit + ')' : '') + ', built ' + S.built),
         h('div.k', 'Runs on'), h('div.v', S.platform === 'windows' ? (S.tray ? 'Windows, in the notification area' : 'Windows') : S.update.how === 'docker' ? 'Docker' : 'Linux'),
         h('div.k', 'NetISO port'), h('div.v', S.ports.netiso + (S.addresses.length ? ' on ' + S.addresses.join(', ') : '')),
         h('div.k', 'Dashboard'), h('div.v', 'Port ' + S.ports.web + (st.webAddress === '0.0.0.0' ? ', open to the network' : ', this computer only')),
