@@ -2711,7 +2711,7 @@ class Dashboard(ServerTest):
         self.assertEqual(self.json("GET", "/api/state")["party"],
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
                                                                  "logo": False, "backgrounds": 0, "pictures": ""},
-                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None})
+                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": []})
         tricky = "Cid | 50%, ok; ="  # Every character the settings file's lists split at.
         self.json("POST", "/api/party", {"active": True, "name": " Bjørn's 40th ", "gamemaster": "10.10.1.42",
                                          "theme": {"preset": "birthday", "person": "Bjørn", "age": 40, "accent": "#FF8800", "accent2": "#1a1a1a"},
@@ -2722,7 +2722,7 @@ class Dashboard(ServerTest):
                                                                     "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
-                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None}
+                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": []}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
             self.assertEqual(self.json("GET", "/api/state")["party"], party)
@@ -2899,6 +2899,60 @@ class Dashboard(ServerTest):
         self.refused("/api/party/spin", [({"kind": "pick"}, "Tick at least two guests who are here")])
         self.json("POST", "/api/party", {"active": False})
         self.assertIn("hasn't started", self.spin_ask("127.0.0.2", 2))
+
+    def sign_in(self, address, seat, controller, gamertag=b"", xuid=0, out=False):
+        """NetDiscParty.xex saying who signed in (PartySignIn): its answer."""
+        with connect_from(address, self.port) as conn:
+            index = seat | (controller << 8) | (0x8000 if out else 0)
+            conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5049, index, xuid, len(gamertag)) + gamertag)
+            size = struct.unpack(">I", exact(conn, 4))[0]
+            return exact(conn, size).decode("utf-8")
+
+    def test_wheel_for_consoles_and_sign_in(self):
+        self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
+        here = ["Ann", "Bob", "Cid", "Dee", "Eve", "Fay"]
+        self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.2", "consoles": ["127.0.0.2"], "teams": 2,
+                                         "guests": [{"name": n, "here": True} for n in here]})
+        self.refused("/api/party/spin", [({"consoles": ["10.9.9.9"]}, "isn't a console NetDisc360 knows.")])
+        # Both consoles show the wheel already (they wait on the server), so opening it there is done.
+        self.party_text("127.0.0.2")
+        self.party_text("127.0.0.3")
+        drawn = self.json("POST", "/api/party/spin", {"teams": 2, "seed": 3, "consoles": ["127.0.0.3", "127.0.0.2"], "open": True})
+        self.assertEqual(drawn["spin"]["leadMs"], 12000)  # A wait while the consoles open it.
+        self.assertEqual([(o["address"], o["ok"], o["how"]) for o in drawn["opened"]], [("127.0.0.3", True, "showing"), ("127.0.0.2", True, "showing")])
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual(party["consoles"], ["127.0.0.2", "127.0.0.3"])  # .3 joined the party, after the Gamemaster's.
+        self.assertEqual(sorted(party["wheelOn"]), ["127.0.0.2", "127.0.0.3"])
+        seats = party["drawn"]["seats"]
+        self.assertEqual((list(seats), [len(x) for x in seats.values()]), (["127.0.0.2", "127.0.0.3"], [3, 3]))
+        self.assertEqual(party["signedIn"], {"127.0.0.2": [None, None, None], "127.0.0.3": [None, None, None]})
+        # A guest signs in on controller 2 of .3: the dashboard and the console see it.
+        first = seats["127.0.0.3"][0]
+        self.assertEqual(self.sign_in("127.0.0.3", 0, 1, b"Gamer Ann", 0xE000000000000001), "ok\n")
+        self.assertEqual(self.json("GET", "/api/state")["party"]["signedIn"]["127.0.0.3"], [{"controller": 2, "gamertag": "Gamer Ann"}, None, None])
+        _, lines = self.party_text("127.0.0.3")
+        self.assertEqual(lines["signin"], [["0", "1", "Gamer Ann"]])
+        self.assertNotIn("signin", self.party_text("127.0.0.2")[1])
+        # The same controller on another seat moves; a seat no one sits in, a fifth controller and a PC are refused.
+        self.assertEqual(self.sign_in("127.0.0.3", 2, 1, b"Gamer Ann"), "ok\n")
+        self.assertEqual(self.json("GET", "/api/state")["party"]["signedIn"]["127.0.0.3"], [None, None, {"controller": 2, "gamertag": "Gamer Ann"}])
+        self.assertEqual(self.sign_in("127.0.0.3", 3, 0, b"X"), "error\tNo one sits in that seat on this console.\n")
+        self.assertEqual(self.sign_in("127.0.0.3", 0, 4), "error\tThere are four controllers.\n")
+        self.assertEqual(self.sign_in("127.0.0.1", 0, 0, b"X"), "error\tThis isn't one of NetDisc360's Xboxes.\n")
+        # Signed out: gone.
+        self.assertEqual(self.sign_in("127.0.0.3", 0, 1, out=True), "ok\n")
+        self.assertEqual(self.json("GET", "/api/state")["party"]["signedIn"]["127.0.0.3"], [None, None, None])
+        # A sign-in counts while its guest keeps the seat: a swap moves it out.
+        self.sign_in("127.0.0.3", 0, 0, b"P1")
+        swapped = {"127.0.0.2": seats["127.0.0.2"], "127.0.0.3": seats["127.0.0.3"][1:]}
+        self.json("POST", "/api/party/seats", {"seats": swapped})
+        self.assertEqual(self.json("GET", "/api/state")["party"]["signedIn"]["127.0.0.3"], [None, None])
+        self.assertEqual(first, seats["127.0.0.3"][0])
+        # The console seats a guest profile by its gamertag (party/state.cpp), as NetDisc360 names them.
+        tags = [("Kristoffer H", "Kristoffer Hansen", "1"), ("Oyvind", "Øyvind", "1"), ("AEsa", "Æsa", "1"), ("ola", "OLA", "1"), ("Ola", "Olav", "0"), ("KIOSK 1", "Ola", "0")]
+        read = subprocess.run([build_party_parse()] + ["tag=%s=%s" % (t, n) for t, n, _ in tags], input=b"", stdout=subprocess.PIPE, check=True).stdout.decode("utf-8")
+        for t, n, want in tags:
+            self.assertIn("tag %s|%s %s\n" % (t, n, want), read)
 
     def test_raffle_follows_the_rules(self):
         self.start(*self.PARTY_CONSOLES)

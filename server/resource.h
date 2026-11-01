@@ -14,3 +14,5 @@
 #define IDR_ART_PARTY_GC 109
 #define IDR_ART_PARTY_BK 110
 #define IDR_ART_PARTY_GL 111
+// NetDiscParty.xex itself, which the server puts on a console to open the wheel there.
+#define IDR_PARTY_APP 112

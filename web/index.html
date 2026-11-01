@@ -611,6 +611,7 @@ canvas.wheel { width: min(100%, 380px); aspect-ratio: 1; display: block; }
 .slot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slot:hover { border-color: var(--accent); }
 .slot.empty { border-style: dashed; color: var(--faint); font-weight: 500; }
+.slot .signed { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--good); flex: none; }
 .slot[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
 .slot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bench { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
@@ -693,6 +694,10 @@ body.on-screen { overflow: hidden; }
 .screen-consoles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, clamp(230px, 22vw, 460px)), 1fr)); gap: clamp(10px, 1.4vw, 30px); margin-top: auto; }
 .screen-spin { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: clamp(16px, 2.5vw, 56px); align-items: center; }
 .screen-wheel canvas.wheel { width: min(64vh, 48vw); }
+.screen-wheel { position: relative; }
+.screen-wait { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; }
+.screen-wait small { font-size: 2.2vh; text-transform: uppercase; letter-spacing: .08em; opacity: .85; }
+.screen-wait b { font-size: 14vh; line-height: 1; text-shadow: 0 4px 24px rgba(0,0,0,.6); }
 .screen-teams.stacked { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9em), 1fr)); }
 .screen-picked p { margin: 0; opacity: .85; }
 .screen-picked h2 { margin: .2em 0 0; font-size: 3em; line-height: 1.05; overflow-wrap: anywhere; }
@@ -2779,7 +2784,8 @@ Pages.party = root => {
       for (const g of got) teams[g.team].push(g.name);
       result = h('div.teams', teams.map((t, i) => teamBox(i, t, where(t))));
     } else result = h('div.wheel-pick', h('span.muted', sp.title || (turning ? 'Picking one guest…' : 'The wheel picked')), got.length ? h('b', got[0].name) : null);
-    const status = turning ? (sp.kind === 'teams' ? 'Spinning: ' + got.length + ' of ' + sp.wheel.length + ' on a team' : 'Spinning…') : sp.kind === 'teams' ? 'Round ' + (p.round + (S.party.drawn && S.party.drawn.kept ? 0 : 1)) + ': keep these, or spin again' : 'Picked';
+    const wait = spinWait(sp);
+    const status = wait ? 'The consoles open the wheel: it turns in ' + wait + ' s' : turning ? (sp.kind === 'teams' ? 'Spinning: ' + got.length + ' of ' + sp.wheel.length + ' on a team' : 'Spinning…') : sp.kind === 'teams' ? 'Round ' + (p.round + (S.party.drawn && S.party.drawn.kept ? 0 : 1)) + ': keep these, or spin again' : 'Picked';
     return [
       h('div.raffle-bar', h('span.muted', { 'aria-live': 'polite' }, status)),
       h('div.wheel-box', wheel.el), result,
@@ -2797,12 +2803,59 @@ Pages.party = root => {
       d ? h('button.btn', { 'data-focus': 'keep', disabled: busy || d.kept, onclick: keep }, ic('check', 'sm'), d.kept ? 'Kept' : 'Keep') : null,
       h('span.muted', rulesSaid));
   }
+  // Before each spin: which consoles the wheel is for (the party's, or every
+  // console that's on), and whether to open it on them (NetDisc360 Party,
+  // copied there first when it's missing). { consoles, open }, or null.
+  function spinWhere(kind) {
+    const p = S.party, onNow = S.consoles.filter(consoleOn).map(c => c.address);
+    const extra = onNow.filter(ip => !p.consoles.includes(ip)), all = p.consoles.concat(extra);
+    const names = list => list.length ? list.map(nameOf).join(', ') : 'none yet';
+    let which = store('party.wheelFor') === 'all' && extra.length ? 'all' : 'party', open = store('party.wheelOpen') !== '0';
+    return new Promise(done => {
+      let answer = null;
+      const radio = (value, title, help, disabled) => h('label.radio', { style: disabled ? { opacity: 0.6, cursor: 'default' } : null },
+        h('input', { type: 'radio', name: 'wheel-for', value, checked: which === value, disabled, onchange: () => { which = value; } }),
+        h('div', h('div.title', title), h('div.help', help)));
+      modal(kind === 'pick' ? 'Pick one guest' : 'Spin for teams', close => [
+        h('div.modal-body', h('div', { style: { display: 'grid', gap: '8px' } },
+          h('p', { style: { margin: '0 0 4px' } }, 'Which consoles is the wheel for?'),
+          radio('party', 'The party’s consoles', names(p.consoles) + (kind === 'pick' ? '' : '. The teams sit on these.'), !p.consoles.length),
+          radio('all', 'All consoles that are on', extra.length ? names(all) + '. ' + names(extra) + (extra.length === 1 ? ' joins' : ' join') + ' the party.' : 'No other console is on now.', !extra.length),
+          h('label.check-label', { style: { marginTop: '8px' } }, h('input', { type: 'checkbox', checked: open, onchange: e => { open = e.target.checked; } }), 'Open the wheel on them'),
+          h('p.hint', { style: { margin: 0 } }, 'Starts NetDisc360 Party on each console from Aurora (and copies it there first if it’s missing). Each shows the wheel, then its players sign in one after another. The wheel waits a few seconds for them.'))),
+        h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
+          h('button.btn.primary', { 'data-focus': 'spin-go', onclick: () => {
+            store('party.wheelFor', which); store('party.wheelOpen', open ? '1' : '0');
+            answer = { consoles: which === 'all' ? all : p.consoles.slice(), open };
+            close();
+          } }, ic(kind === 'pick' ? 'target' : 'ferris-wheel', 'sm'), kind === 'pick' ? 'Pick one' : 'Spin')),
+      ], true, () => done(answer));
+    });
+  }
   async function spinWheel(kind) {
+    const where = await spinWhere(kind);
+    if (!where) return;
     await queue;
     try {
-      const asked = performance.now();
-      const r = await api('party/spin', kind === 'pick' ? { kind } : { kind, teams: S.party.teams });
-      noteSpin(r.spin, (asked + performance.now()) / 2);
+      const body = Object.assign(kind === 'pick' ? { kind } : { kind, teams: S.party.teams }, where.consoles.length ? { consoles: where.consoles } : {}, { open: where.open && where.consoles.length > 0 });
+      let asked = performance.now(), r;
+      try { r = await api('party/spin', body); }
+      catch (e) {
+        // A console in a game: asked once, then sent again.
+        if (e.status !== 409 || !e.data || !e.data.busy) throw e;
+        const busy = e.data.busy;
+        if (!(await confirmBox('Open the wheel on every console?', [h('p', { style: { marginTop: 0 } }, busy.length === 1 ? 'This console is in a game, which ends:' : 'These consoles are in a game, which ends:'),
+          h('ul', { style: { marginBottom: 0 } }, busy.map(b => h('li', h('b', nameOf(b.address)), ': ', b.title)))], 'Open the wheel'))) return;
+        asked = performance.now();
+        r = await api('party/spin', Object.assign(body, { confirm: true }));
+      }
+      // Opening the consoles takes a while: the answer's own moment is closer then.
+      noteSpin(r.spin, body.open ? performance.now() : (asked + performance.now()) / 2);
+      if (r.opened) {
+        const bad = r.opened.filter(x => !x.ok);
+        if (bad.length) toast('The wheel didn’t open on ' + bad.map(x => nameOf(x.address) + ': ' + x.error).join('; '), true);
+        else toast('The wheel is open on ' + plural(r.opened.length, 'console'));
+      }
       S.party.spin = r.spin;  // Turning here at once, before the next look at the server.
       raffle.reset();
       update();
@@ -2866,18 +2919,22 @@ Pages.party = root => {
     const seated = new Set([].concat(...p.consoles.map(ip => placed[ip] || [])));
     const bench = guestsHere(p).filter(n => !seated.has(n));
     const picked = pick ? pickedName(p) : null;
+    const signedIn = S.party.signedIn || {}, wheelOn = S.party.wheelOn || [];
     const slot = (at, name) => {
       const on = !!pick && pick.ip === at.ip && pick.i === at.i, t = name ? teamOf(name) : -1;
+      const signed = at.ip && name && (signedIn[at.ip] || [])[at.i];
       const where = at.ip ? 'seat ' + (at.i + 1) + ' on ' + nameOf(at.ip) : 'not seated';
       return h('button.slot' + (name ? '' : '.empty') + (t >= 0 ? '.' + Teams[t][1] : ''), { type: 'button', 'aria-pressed': String(on), 'data-focus': 'slot-' + at.ip + '-' + at.i,
         'aria-label': (name || 'Empty') + ', ' + where + (pick && !on ? ': swap with ' + (picked || 'the empty seat') : ''), onclick: () => tap(at) },
-        name ? [h('span.dot'), h('span.n', name)] : h('span.n', at.ip ? 'Empty seat' : 'Not playing'));
+        name ? [h('span.dot'), h('span.n', name), signed ? h('span.signed', { title: 'Signed in on controller ' + signed.controller + (signed.gamertag ? ' as ' + signed.gamertag : '') }, ic('gamepad-2', 'sm'), signed.controller) : null]
+          : h('span.n', at.ip ? 'Empty seat' : 'Not playing'));
     };
     return [
       h('div.seat-boxes', p.consoles.map(ip => {
         const names = placed[ip] || [], st = partyConsole(ip), gm = ip === p.gamemaster;
         return h('div.seat-box' + (gm ? '.gm' : ''),
-          h('div.seat-head', ic('monitor', 'sm'), h('b', { title: ip }, nameOf(ip)), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+          h('div.seat-head', ic('monitor', 'sm'), h('b', { title: ip }, nameOf(ip)), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null,
+            wheelOn.includes(ip) ? h('span.pill', { title: 'NetDisc360 Party is open on it' }, ic('ferris-wheel', 'sm'), 'Wheel') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
           h('div.slots', [0, 1, 2, 3].map(i => slot({ ip, i }, names[i]))));
       })),
       bench.length || (pick && pick.ip && picked) ? h('div.bench', h('div.bench-head', h('b', 'Not seated'), h('span.muted', bench.length ? plural(bench.length, 'guest') + ' here without a seat' : 'Choose one to take off a seat')),
@@ -3023,9 +3080,9 @@ Pages.party = root => {
     guests.show(JSON.stringify(p.guests), () => drawGuests(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
-    const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn] : null;
+    const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp)] : null;
     raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
-    seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses]), () => drawSeats(p));
+    seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn]), () => drawSeats(p));
     start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
@@ -3081,6 +3138,8 @@ function spinPicked(spin, ms) {
 const SpinShownAfterMs = 20000;
 const spinLive = spin => !!spin && spinNow(spin) < spin.totalMs + SpinShownAfterMs;
 const spinDone = spin => !!spin && spinNow(spin) >= spin.totalMs;
+// Seconds before the wheel turns, while the consoles open it (a long lead); 0 otherwise.
+const spinWait = spin => spin && spin.leadMs > 3000 && spinNow(spin) < spin.leadMs ? Math.ceil((spin.leadMs - spinNow(spin)) / 1000) : 0;
 
 // The party as shown: the teams the wheel draws stay hidden until it stops on the last guest.
 function partyShown(p) {
@@ -3205,7 +3264,7 @@ function bigScreen(parent) {
       }
       fill(time, new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }), p.round || (p.drawn && p.drawn.teams.length) ? h('small', 'Round ' + (p.round + (p.drawn && p.drawn.teams.length && !p.drawn.kept ? 1 : 0))) : null);
       const got = sp ? spinPicked(sp, spinNow(sp)) : [];
-      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp)]]);
+      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp), spinWait(sp)]]);
       if (key === drawn) return;
       drawn = key;
       const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p);
@@ -3219,7 +3278,8 @@ function bigScreen(parent) {
           for (const g of got) teams[g.team].push(g.name);
           side = h('div.screen-teams.stacked', teams.map((team, i) => h('div.screen-team.' + Teams[i][1], h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))))));
         } else side = h('div.screen-picked', h('p', sp.title || (spinDone(sp) ? 'The wheel picked' : 'Who will it be?')), got.length ? h('h2', got[0].name) : null);
-        return h('div.screen-spin', h('div.screen-wheel', wheel.el), side);
+        const wait = spinWait(sp);
+        return h('div.screen-spin', h('div.screen-wheel', wheel.el, wait ? h('div.screen-wait', h('small', 'Turns in'), h('b', wait)) : null), side);
       };
       fill(body,
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,

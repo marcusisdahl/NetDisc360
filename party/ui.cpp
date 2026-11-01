@@ -16,9 +16,10 @@
 #endif
 
 namespace party {
-Screen::Screen() : spinMs(0), time(0), link(LinkLooking) {
+Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1) {
     memset(&state,0,sizeof(state));
     server[0]=notice[0]=0;
+    for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; }
 }
 
 static ImFont* Small; static ImFont* Body; static ImFont* Heading; static ImFont* Title; static ImFont* Names; static ImFont* Big;
@@ -29,7 +30,7 @@ static const double AfterMs=30000;
 
 static ImU32 Hex(unsigned int rgb, int alpha=255) { return IM_COL32((rgb>>16)&255,(rgb>>8)&255,rgb&255,alpha); }
 static const unsigned int Background=0x0F1725,Card=0x192537,Raised=0x223349,White=0xE2EBF4,Muted=0x8FA6BA,Dim=0x51667A,
-    Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,Ink=0x1B1E22,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0;
+    Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,Ink=0x1B1E22,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0,ButtonY=0xF2C811;
 // The teams' colours: Red, Blue, Green and Yellow, as the dashboard's big screen has them.
 static const unsigned int TeamFill[TeamsMost]={0xE5483E,0x3F7FE6,0x2C9A2C,0xD9A400};
 static const unsigned int TeamText[TeamsMost]={0xFF6B61,0x6EA8FF,0x5FD35F,0xFFD23F};
@@ -188,6 +189,93 @@ static void TeamCard(float x, float y, float w, float h, int t, const Name* name
     }
 }
 
+// A controller's ring of light: four quarters round c, the one for
+// controller (0-3: top left, top right, bottom left, bottom right) lit.
+static void Ring(ImVec2 c, float r, int controller, unsigned lit, float glow) {
+    // Clockwise from the top left quarter: 0, 1, 3, 2.
+    static const int quarter[4]={0,1,3,2};
+    List->AddCircleFilled(c,r+10,Hex(Background),48);
+    for(int q=0;q<4;++q) {
+        int pad=quarter[q];
+        float a0=Pi+q*Pi/2+0.12f, a1=Pi+(q+1)*Pi/2-0.12f;
+        List->PathArcTo(c,r,a0,a1,16);
+        List->PathStroke(pad==controller ? Hex(lit) : Hex(Raised),false,10);
+        if(pad==controller && glow>0) { List->PathArcTo(c,r,a0,a1,16); List->PathStroke(Hex(lit,int(70*glow)),false,22); }
+    }
+    List->AddCircleFilled(c,r*0.62f,Hex(Raised),48);
+    List->AddCircleFilled(c,r*0.5f,Hex(controller>=0 ? lit : Card),48);
+    if(controller>=0) {
+        char n[12]; _snprintf_s(n,sizeof(n),_TRUNCATE,"%d",controller+1);
+        Text(Heading,c.x-Width(Heading,n)/2,c.y-22,Hex(Ink),n);
+    }
+}
+
+// This console's players, signing in one after another: a card for each of
+// the four seats, the one asked now lit, its guest's team colour on top.
+static void DrawPlayers(const Screen& screen, const Seat& mine) {
+    const State& s=screen.state;
+    char text[256];
+    const float top=172, cw=270, ch=378, gap=(Right-Left-4*cw)/3;
+    int in=0;
+    for(int i=0;i<mine.count;++i) in+=screen.players[i].controller>=0;
+    _snprintf_s(text,sizeof(text),_TRUNCATE,"Playing on %s",s.console[0] ? s.console : "this Xbox");
+    TextFit(Body,Left,top-44,700,Hex(Muted),text);
+    _snprintf_s(text,sizeof(text),_TRUNCATE,"%d of %d signed in",in,mine.count);
+    TextRight(Body,Right,top-44,Hex(in==mine.count ? Green : Muted),text);
+    const float pulse=0.5f+0.5f*sinf(float(screen.time)*5);
+    for(int i=0;i<PerConsole;++i) {
+        const float x=Left+i*(cw+gap), y=top, cx=x+cw/2;
+        if(i>=mine.count) {
+            Box(x,y,cw,ch,Hex(Card,120),16);
+            Ring(ImVec2(cx,y+130),52,-1,ButtonA,0);
+            TextCentred(Body,cx,y+214,cw-32,Hex(Dim),"Free seat");
+            continue;
+        }
+        const Player& p=screen.players[i];
+        const int t=TeamOf(s,mine.names[i]);
+        const bool asked=screen.asking==i, signedIn=p.controller>=0;
+        Box(x,y,cw,ch,Hex(asked ? Raised : Card),16);
+        if(asked) List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(Mix(Raised,0xFFFFFF,0.35f+0.45f*pulse)),16,0,4);
+        if(t>=0) {
+            Box(x,y,cw,12,Hex(TeamFill[t]),6);
+            Text(Small,x+20,y+26,Hex(TeamText[t]),TeamName[t]);
+        }
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"Player %d",i+1);
+        TextRight(Small,x+cw-20,y+26,Hex(Muted),text);
+        Ring(ImVec2(cx,y+130),52,p.controller,signedIn ? ButtonA : Dim,signedIn ? 1.f : 0.f);
+        TextCentred(Heading,cx,y+204,cw-28,Hex(White),mine.names[i]);
+        if(signedIn) {
+            List->AddCircleFilled(ImVec2(cx-Width(Body,"Signed in")/2-18,y+293),12,Hex(Green),20);
+            List->AddLine(ImVec2(cx-Width(Body,"Signed in")/2-24,y+293),ImVec2(cx-Width(Body,"Signed in")/2-19,y+298),Hex(Ink),3);
+            List->AddLine(ImVec2(cx-Width(Body,"Signed in")/2-19,y+298),ImVec2(cx-Width(Body,"Signed in")/2-11,y+287),Hex(Ink),3);
+            Text(Body,cx-Width(Body,"Signed in")/2+2,y+278,Hex(Green),"Signed in");
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"Controller %d",p.controller+1);
+            TextCentred(Small,cx,y+322,cw-32,Hex(Muted),text);
+            if(p.gamertag[0]) TextCentred(Small,cx,y+350,cw-32,Hex(Muted),p.gamertag);
+        } else if(asked && screen.choosing>=0) {
+            TextCentred(Body,cx,y+278,cw-32,Hex(White),"Choose your profile");
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"on controller %d",screen.choosing+1);
+            TextCentred(Small,cx,y+318,cw-32,Hex(Muted),text);
+        } else if(asked) {
+            const float bw=42+Width(Body,"Press");
+            const float bx=cx-bw/2;
+            List->AddCircleFilled(ImVec2(bx+16,y+294),16+3*pulse,Hex(ButtonA),24);
+            Text(Small,bx+16-Width(Small,"A")/2,y+282,Hex(Background),"A");
+            Text(Body,bx+42,y+279,Hex(White),"Press");
+            TextCentred(Small,cx,y+322,cw-32,Hex(Muted),"on your own controller");
+        } else TextCentred(Body,cx,y+282,cw-32,Hex(Dim),"Next");
+    }
+    // What to do now, under the cards.
+    const float py=top+ch+16;
+    if(screen.asking>=0 && screen.asking<mine.count) {
+        _snprintf_s(text,sizeof(text),_TRUNCATE,screen.choosing>=0 ? "%s, choose your profile" : "%s, press A to sign in",mine.names[screen.asking]);
+        TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(White),text);
+    } else if(screen.leaveIn>=0) {
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"Everyone's in! Back to Aurora in %d",screen.leaveIn);
+        TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(Green),text);
+    } else TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(Green),"Everyone's in! Have fun");
+}
+
 void DrawUi(const Screen& screen) {
     const State& s=screen.state;
     ImGui::NewFrame();
@@ -213,6 +301,10 @@ void DrawUi(const Screen& screen) {
         Text(Small,lx,Top+46,Hex(Muted),label);
     }
 
+    const Seat* seat=s.valid ? MySeat(s) : NULL;
+    const bool players=screen.view==ViewPlayers && seat && seat->count>0;
+    if(players) DrawPlayers(screen,*seat);
+    else {
     // The wheel: the latest spin's, else the guests who are here, turning slowly.
     const ImVec2 centre(354,388);
     const float radius=222;
@@ -254,6 +346,9 @@ void DrawUi(const Screen& screen) {
             TextCentred(Big,px+pw/2,py+130,pw-48,Hex(White),name);
             List->AddLine(ImVec2(px+pw/2-90,py+238),ImVec2(px+pw/2+90,py+238),Hex(Mix(accent,0xFFFFFF,0.4f)),4);
             TextCentred(Small,px+pw/2,py+262,pw-48,Hex(Muted),"Everyone sees the same wheel");
+        } else if(s.leadMs>3000 && screen.spinMs<s.leadMs) {
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"Turns in %d",int((s.leadMs-screen.spinMs)/1000)+1);
+            TextCentred(Heading,px+pw/2,py+150,pw-48,Hex(White),text);
         } else TextCentred(Heading,px+pw/2,py+150,pw-48,Hex(White),"...");
     } else if(live) {
         // The teams filling as the wheel stops on each guest.
@@ -264,7 +359,9 @@ void DrawUi(const Screen& screen) {
             int t=s.steps[i].team;
             if(t>=0 && t<TeamsMost) _snprintf_s(filled[t][sizes[t]++],NameBytes,_TRUNCATE,"%s",s.wheel[s.steps[i].segment]);
         }
-        if(turning) _snprintf_s(text,sizeof(text),_TRUNCATE,"Spinning: %d of %d on a team",stopped,s.stepCount);
+        // A long lead: the consoles open the wheel first (OpenWheel on the server).
+        if(turning && s.leadMs>3000 && screen.spinMs<s.leadMs) _snprintf_s(text,sizeof(text),_TRUNCATE,"The wheel turns in %d",int((s.leadMs-screen.spinMs)/1000)+1);
+        else if(turning) _snprintf_s(text,sizeof(text),_TRUNCATE,"Spinning: %d of %d on a team",stopped,s.stepCount);
         else _snprintf_s(text,sizeof(text),_TRUNCATE,"Round %d: the teams are drawn",s.round>0 ? s.round : 1);
         Text(Body,px,py-6,Hex(Muted),text);
         const int columns=teams>2 ? 2 : teams, rows=(teams+1)/2;
@@ -321,6 +418,8 @@ void DrawUi(const Screen& screen) {
         }
     }
 
+    }
+
     // A word back from the server on the Gamemaster's last spin.
     if(screen.notice[0]) {
         float nw=Width(Small,screen.notice)+48; if(nw>Right-Left) nw=Right-Left;
@@ -332,9 +431,16 @@ void DrawUi(const Screen& screen) {
     // Footer: the buttons, and the server.
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
-    if(s.valid && s.gamemaster && s.active) {
-        bx=Button(bx,Bottom-40,"A",ButtonA,"Spin for teams");
-        bx=Button(bx,Bottom-40,"X",ButtonX,"Pick one");
+    if(players) {
+        if(screen.asking>=0) bx=Button(bx,Bottom-40,"A",ButtonA,"Sign in");
+        else if(screen.leaveIn>=0) bx=Button(bx,Bottom-40,"A",ButtonA,"Go now");
+        bx=Button(bx,Bottom-40,"Y",ButtonY,"See the wheel");
+    } else {
+        if(s.valid && s.gamemaster && s.active) {
+            bx=Button(bx,Bottom-40,"A",ButtonA,"Spin for teams");
+            bx=Button(bx,Bottom-40,"X",ButtonX,"Pick one");
+        }
+        if(seat && seat->count>0 && !(s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s))) bx=Button(bx,Bottom-40,"Y",ButtonY,"Sign in");
     }
     bx=Button(bx,Bottom-40,"B",ButtonB,"Back to Aurora");
     const char* where=screen.link==LinkConnected ? "Connected to NetDisc360 at %s" : screen.link==LinkLost ? "Lost NetDisc360 at %s, trying again" : screen.link==LinkWaiting ? "Waiting for the network" : "Looking for NetDisc360 %s";
