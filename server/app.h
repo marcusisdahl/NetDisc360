@@ -14,6 +14,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& config, b
 std::string ServerSummary();   // "12 games, 1 console connected", for the icon's tip.
 std::string ServerProblem();   // The log's last line.
 bool FirstTrayStart();         // True only the first time the icon shows, for its tip balloon.
+// Before the server quits for good (not to restart): each console loses the
+// marker that tells Aurora's "Hide PC games while NetDisc360 is off" filter
+// it runs, and Aurora is restarted where that filter shows the PC games.
+// Takes at most a few seconds.
+void ServerStopping();
 
 #ifdef _WIN32
 // tray.cpp
