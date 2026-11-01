@@ -37,8 +37,10 @@ public:
 };
 
 // updated counts kept folders whose launcher was rewritten with this version;
-// failed counts files of kept folders that couldn't be written or removed.
-struct SyncResult { int added, kept, updated, removed, skipped, held, failed; };
+// failed counts files of kept folders that couldn't be written or removed;
+// installed counts ISOs that get no folder since their game is installed on
+// the console (see Wanted).
+struct SyncResult { int added, kept, updated, removed, skipped, held, failed, installed; };
 
 // Value of key in an ini text ("key=value" lines), or false.
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);
@@ -77,6 +79,12 @@ struct DiscRoleInfo {
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
+
+// Whether the console is to have a game folder for an ISO: not when the
+// same game is installed on it, which Aurora lists already.
+typedef bool (*Wanted)(const char* iso);
+// Told, after a sync, the game folder of each ISO that has one.
+typedef void (*Placed)(const char* iso, const char* folder);
 // launcher is the tile launcher XEX (any copy; its execution info is
 // overwritten), each game folder's default.xex. boot, if not NULL, is the
 // helper XEX without execution info that they share, kept in root as
@@ -84,8 +92,10 @@ typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
 // got before then goes.
 // With removeGone false, folders whose ISO is gone are left and counted in held.
 // findInstall, if not NULL, is asked about each game folder's install.ini,
-// and findRole about the disc_role and disc_label in its netiso.ini.
+// and findRole about the disc_role and disc_label in its netiso.ini. An ISO
+// that wanted, if not NULL, says no to gets no folder, and loses the one it
+// has whatever removeGone says; placed, if not NULL, is told the folders.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
-          FindInstall findInstall=NULL, FindRole findRole=NULL);
+          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL);
 }

@@ -192,6 +192,14 @@ void Quit() {
     ExitProcess(0);
 }
 
+// Quit from the menu, or Windows shutting down: unlike a restart, nothing
+// takes over, so the consoles hear first (ServerStopping).
+void Stop() {
+    Shell_NotifyIconW(NIM_DELETE, &Tray);
+    ServerStopping();
+    Quit();
+}
+
 void Menu(int x, int y) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, IdOpen, L"Open the dashboard");
@@ -223,8 +231,11 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         switch (LOWORD(wParam)) {
         case IdOpen: OpenDashboard(); break;
         case IdBoot: SetStartWithWindows(!StartsWithWindows()); break;
-        case IdQuit: Quit(); break;
+        case IdQuit: Stop(); break;
         }
+        return 0;
+    case WM_ENDSESSION:
+        if (wParam) Stop();
         return 0;
     case WM_SHOWDASHBOARD:  // Started again.
         OpenDashboard();
