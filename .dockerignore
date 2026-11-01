@@ -3,5 +3,9 @@
 !shared/
 !tests/posix_compat.h
 !docker/
+<<<<<<< HEAD
 !third_party/miniz/
 !third_party/lzma/
+=======
+!art/aurora/*/*.asset
+>>>>>>> origin/dev
