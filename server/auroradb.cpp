@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Aurora's content database (see auroradb.h). The page, cell and record
+// Aurora's databases (see auroradb.h). The page, cell and record
 // layouts are SQLite's file format (sqlite.org/fileformat2.html).
 #include "auroradb.h"
 #include <ctype.h>
@@ -145,13 +145,15 @@ bool Values(const Bytes& record, std::vector<SqlValue>& out) {
 }
 
 // Column names of a CREATE TABLE statement, in order, and which one is the
-// INTEGER PRIMARY KEY (the row id), or -1.
+// row id (-1 for none): an INTEGER PRIMARY KEY column, or an INTEGER column
+// that the table's own PRIMARY KEY (name) names alone, as SQLite has it.
 void ColumnNames(const std::string& sql, std::vector<std::string>& names, int& rowid) {
     names.clear(); rowid=-1;
     size_t open=sql.find('('), close=sql.rfind(')');
     if(open==std::string::npos || close==std::string::npos || close<open) return;
-    std::vector<std::string> parts;
-    std::string part; int depth=0;
+    std::vector<std::string> parts, types;
+    std::string part, key;
+    int depth=0;
     for(size_t i=open+1;i<close;++i) {
         char c=sql[i];
         if(c=='(') ++depth; else if(c==')') --depth;
@@ -169,6 +171,7 @@ void ColumnNames(const std::string& sql, std::vector<std::string>& names, int& r
             char closing=quote=='[' ? ']' : quote;
             size_t to=def.find(closing,at+1);
             name=def.substr(at+1,to==std::string::npos ? std::string::npos : to-at-1);
+            at=to==std::string::npos ? def.size() : to+1;
         } else {
             while(at<def.size() && !isspace((unsigned char)def[at])) ++at;
             name=def.substr(from,at-from);
@@ -177,10 +180,26 @@ void ColumnNames(const std::string& sql, std::vector<std::string>& names, int& r
         for(size_t k=0;k<def.size();++k) upper+=isspace((unsigned char)def[k]) ? ' ' : char(toupper((unsigned char)def[k]));  // Aurora's has tabs.
         std::string first;
         for(size_t k=0;k<name.size();++k) first+=char(toupper((unsigned char)name[k]));
-        if(!quote && (first=="PRIMARY" || first=="UNIQUE" || first=="CHECK" || first=="FOREIGN" || first=="CONSTRAINT")) continue;
+        if(!quote && first=="PRIMARY") {
+            // PRIMARY KEY (Id): one column, without quotes or an order.
+            size_t a=def.find('('), b=def.find(')');
+            if(a!=std::string::npos && b!=std::string::npos && b>a) {
+                key=def.substr(a+1,b-a-1);
+                size_t x=key.find_first_not_of(" \t\r\n"), y=key.find_last_not_of(" \t\r\n");
+                key=x==std::string::npos ? std::string() : key.substr(x,y-x+1);
+                if(key.find_first_of(" \t,\"`[")!=std::string::npos) key.clear();
+            }
+            continue;
+        }
+        if(!quote && (first=="UNIQUE" || first=="CHECK" || first=="FOREIGN" || first=="CONSTRAINT")) continue;
         if(upper.find(" INTEGER")!=std::string::npos && upper.find("PRIMARY KEY")!=std::string::npos) rowid=int(names.size());
+        // The declared type: the word after the name.
+        size_t t=upper.find_first_not_of(' ',at), e=t==std::string::npos ? t : upper.find(' ',t);
+        types.push_back(t==std::string::npos ? std::string() : upper.substr(t,e==std::string::npos ? std::string::npos : e-t));
         names.push_back(name);
     }
+    for(size_t i=0;i<names.size() && rowid<0 && !key.empty();++i)
+        if(!_stricmp(names[i].c_str(),key.c_str()) && types[i]=="INTEGER") rowid=int(i);
 }
 
 struct Schema {
@@ -247,6 +266,35 @@ bool ReadAuroraItems(const std::vector<unsigned char>& file, std::vector<AuroraI
         item.titleName=rows[i][3].text;
         items.push_back(item);
     }
+    return true;
+}
+
+bool ReadTitleUpdates(const std::vector<unsigned char>& contentDb, std::vector<TitleUpdate>& updates, std::string& error) {
+    updates.clear();
+    static const char* const names[]={"Id","DisplayName","FileName","TitleId","MediaId","BaseVersion","Version"};
+    std::vector<std::string> columns(names,names+sizeof(names)/sizeof(names[0]));
+    std::vector<std::vector<SqlValue> > rows;
+    if(!ReadSqlTable(contentDb,"TitleUpdates",columns,rows,error)) return false;
+    for(size_t i=0;i<rows.size();++i) {
+        const std::vector<SqlValue>& r=rows[i];
+        if(r[0].null || r[3].null) continue;
+        TitleUpdate u;
+        u.id=r[0].number; u.name=r[1].text; u.file=r[2].text;
+        // DWORDs kept as signed numbers.
+        u.titleId=unsigned(r[3].number); u.mediaId=unsigned(r[4].number);
+        u.baseVersion=unsigned(r[5].number); u.version=unsigned(r[6].number);
+        u.active=false;
+        updates.push_back(u);
+    }
+    return true;
+}
+
+bool ReadActiveTitleUpdates(const std::vector<unsigned char>& settingsDb, std::vector<long long>& ids, std::string& error) {
+    ids.clear();
+    std::vector<std::string> columns(1,"TitleUpdateId");
+    std::vector<std::vector<SqlValue> > rows;
+    if(!ReadSqlTable(settingsDb,"ActiveTitleUpdates",columns,rows,error)) return false;
+    for(size_t i=0;i<rows.size();++i) if(!rows[i][0].null) ids.push_back(rows[i][0].number);
     return true;
 }
 }
