@@ -198,6 +198,11 @@ static DWORD LastTicket=0;
 static DWORD State=netdisc::StateOff,DoneTicket=0,DoneResult=netdisc::ResultNone;
 static DWORD ServerAddress=0,ServerPort=netdisc::DefaultPort;
 static volatile LONG Connected=0;
+// While the server is away, a read waits up to ReadWaitMs and the disc stays
+// in for DiscKeepMs (ServeRead, Housekeeping). LostAt: when the connection
+// under the disc went, 0 while connected.
+static const DWORD ReadWaitMs=20000,DiscKeepMs=120000;
+static DWORD LostAt=0;
 static DWORD Reads=0,FailedReads=0,Reconnects=0,SlowestReadMs=0;
 static U64 BytesRead=0;
 static char NoteText[128]="Not started.";
@@ -500,6 +505,7 @@ static void Probe() {
     }
 }
 static void Forget() {
+    LostAt=0;
     Sectors=0; Size=0; Partition=0; Security=0; Mounted[0]=0; MountedLength=0; SlowestReadMs=0;
 }
 enum MountOutcome { MountOk, MountRefused, MountEmpty, MountLost };
@@ -533,7 +539,7 @@ static bool Reconnect() {
 // The server went away and didn't come back: the disc goes out.
 static void LoseDisc() {
     if(!HasDisc()) return;
-    SetNote("%s went out of the drive: the server stopped answering.",Mounted);
+    SetNote("%s went out of the drive: the server didn't come back in %u s.",Mounted,DiscKeepMs/1000);
     Forget();
     State=netdisc::StateIdle;
     Publish();
@@ -673,8 +679,11 @@ static void RunEject(const Command& command) {
     Finish(command.ticket,netdisc::ResultEjected);
 }
 // A read from the drive, into the caller's buffer. While the server is
-// away it connects again (and mounts the disc again), three tries a second
-// apart, before the disc goes out.
+// away it connects again (and mounts the disc again) every second, for up to
+// ReadWaitMs, as a slow disc would keep a game waiting: a server restarted
+// on the PC (a new exe) is back within seconds. A read that still fails
+// fails alone; the disc stays in until the server has been gone DiscKeepMs
+// (Housekeeping), so a game that retries carries on once it is back.
 static void ServeRead(BYTE* irp) {
     BYTE* stack=Stack(irp);
     DWORD length=Word(stack,ReadLength),sector=Word(stack,ReadOffset);
@@ -684,15 +693,21 @@ static void ServeRead(BYTE* irp) {
     U64 offset=U64(sector)*Sector;
     DWORD start=GetTickCount();
     bool read=false;
-    for(int attempt=0;attempt<3 && !read && !Stopping;++attempt) {
-        if(attempt) Delay(1000);
-        if(!Connected && !Reconnect()) continue;
+    for(int attempt=0;!read && !Stopping && HasDisc();++attempt) {
+        if(attempt) {
+            if(GetTickCount()-start>=ReadWaitMs) break;
+            Delay(1000);
+        }
+        if(!Connected) {
+            if(!LostAt) LostAt=GetTickCount()|1;
+            if(!Reconnect()) continue;
+        }
+        LostAt=0;
         read=ReadAt(offset,length,buffer);
     }
     if(!read) {
         ++FailedReads;
-        Log("Reading %u bytes at sector %u failed.",length,sector);
-        LoseDisc();
+        Log("Reading %u bytes at sector %u failed: no answer from the server for %u s.",length,sector,(GetTickCount()-start)/1000);
         Complete(irp,DeviceError,1);
         return;
     }
@@ -720,7 +735,9 @@ static void Housekeeping() {
     if(!Connected && ServerAddress && now-LastTry>=(HasDisc() ? RetryMs : IdleRetryMs)) {
         LastTry=now;
         if(HasDisc()) {
-            if(Reconnect()) SetNote("The server is back; %s is still in the drive.",Mounted);
+            if(!LostAt) LostAt=now|1;
+            if(Reconnect()) { LostAt=0; SetNote("The server is back; %s is still in the drive.",Mounted); }
+            else if(now-LostAt>=DiscKeepMs) LoseDisc();
         } else if(NetworkUp()) {
             if(!ToldWaiting) Log("Connecting to the server at %I, port %u.",ServerAddress,ServerPort);
             if(Connect()) { Log("Connected to the server at %I, port %u.",ServerAddress,ServerPort); ToldWaiting=false; }
