@@ -29,6 +29,7 @@ import time
 import unittest
 import urllib.parse
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -59,7 +60,7 @@ def build_server():
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/system.cpp", "server/auroradb.cpp",
-                                               "server/party.cpp", "server/systemlink.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -200,12 +201,13 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
         elif name == "launch":
             self.server.launched.append((form.get("path"), form.get("exec"), form.get("type")))
             self.server.cookies.append(self.headers.get("Cookie"))
+            if self.server.on_launch:
+                self.server.on_launch(form.get("path"), form.get("exec"))
             self.answer(200, {})
         elif name == "temperature":
             self.answer(200, {"celsius": True, "cpu": 51.25, "gpu": 48.0, "memory": 45.5, "case": 40.0})
         elif name == "profiles":
-            self.answer(200, [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
-                              {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}])
+            self.answer(200, self.server.profiles)
         elif name == "memory":
             self.answer(200, {"total": 536870912, "used": 268435456, "free": 268435456})
         elif name == "shots":
@@ -241,6 +243,9 @@ class AuroraWeb(http.server.ThreadingHTTPServer):
         self.old = old
         self.cookies = []
         self.launched = []
+        self.on_launch = None  # Called with a start's path and file, to act as what it starts.
+        self.profiles = [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
+                         {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}]
         self.shots = ["000000002026101900442758"]
         self.port = self.server_address[1]
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -1918,6 +1923,18 @@ print('lua ok')
         self.assertNotIn("NetISO.xex.txt (", out)
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
             self.assertEqual(f.read(), "127.0.0.8")
+        # NetDisc360.xex's own drive reads server= in NetDisc360.ini.
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetDisc360.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), "w", newline="") as f:
+            f.write("; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.9:4323\r\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetDisc360.ini (/Usb0/Plugins/NetDisc360.ini) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), newline="") as f:
+            self.assertEqual(f.read(), "; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.1:4323\r\n")
+        os.remove(os.path.join(usb, "Plugins", "NetDisc360.ini"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
         # And so is all of it when following is off.
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
             f.write("127.0.0.9")
@@ -2047,6 +2064,137 @@ print('lua ok')
                 status, _, data = self.call("POST", "/api/party/start", body)
                 self.assertEqual(status, 400)
                 self.assertIn(words, data)
+        finally:
+            aurora.close()
+            aurora2.close()
+            server.kill()
+            server.communicate()
+
+    def test_makes_keeps_and_gives_back_guest_profiles(self):
+        # The Gamemaster's console makes each guest's profile (the helper's
+        # job, started from Aurora); the server copies it to the others.
+        # Removing keeps a copy here first; the same name gets it back.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other, ftp2 = self.second_console()
+        for root in (self.xbox, other):
+            os.makedirs(os.path.join(root, "Hdd1", "Content", "0000000000000000"))
+        aurora = AuroraWeb()
+        aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
+        made, pictures = [], []
+
+        def package(gamertag):
+            name = gamertag.encode("utf-16-be")
+            # Bytes above 0x7F too, as a real (signed) package has.
+            return b"CON " + bytes(range(256)) + bytes(0x411 - 4 - 256) + name + bytes(0xA000 - 0x411 - len(name))
+
+        def helper(path, exe):
+            # The helper as the console runs it: the job in its folder, a
+            # profile (and a save) for each gamertag, its answer back.
+            folder = os.path.join(other, "Hdd1", "NetISO", "NetDisc360")
+            with open(os.path.join(folder, "profiles.job")) as f:
+                job = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line and not line.startswith(";"))
+            os.remove(os.path.join(folder, "profiles.job"))
+            answer = "job=" + job["job"] + "\r\n"
+            for key in sorted(k for k in job if k.startswith("guest")):
+                xuid = "E000%04X5EEDF00D" % (0x100 + len(made))
+                made.append((job[key], xuid))
+                # Its gamer picture beside the job: the PNGs, 64 and 32 pixels square.
+                n = key[5:]
+                for name, size in ((job["picture" + n], 64), (job["picture_small" + n], 32)):
+                    with open(os.path.join(folder, name), "rb") as f:
+                        png = f.read()
+                    pictures.append((job[key], name, png[:8], struct.unpack(">II", png[16:24])))
+                    self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                    self.assertEqual(struct.unpack(">II", png[16:24]), (size, size))
+                answer += "picture" + n + "=ok\r\n" if n == "1" else "picture_error" + n + "=XamProfileOpen with flags 3: 80070057\r\n"
+                content = os.path.join(other, "Hdd1", "Content", xuid)
+                os.makedirs(os.path.join(content, "FFFE07D1", "00010000"))
+                os.makedirs(os.path.join(content, "4D5307E6", "00000001"))
+                with open(os.path.join(content, "FFFE07D1", "00010000", xuid), "wb") as f:
+                    f.write(package(job[key]))
+                with open(os.path.join(content, "4D5307E6", "00000001", "save"), "wb") as f:
+                    f.write(b"halo save " + xuid.encode())
+                answer += key + "=" + xuid + "\r\n"
+            with open(os.path.join(folder, "profiles.done"), "w", newline="") as f:
+                f.write(answer)
+        aurora2.on_launch = helper
+        config = os.path.join(self.tmp.name, "profiles.ini")
+        self.web = free_port()
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+
+        def finished():
+            self.assertTrue(self.wait_for(lambda: not self.json("GET", "/api/party/profiles")["work"]["running"], 60))
+            return self.json("GET", "/api/party/profiles")
+
+        def has(root, xuid):
+            return os.path.exists(os.path.join(root, "Hdd1", "Content", xuid, "FFFE07D1", "00010000", xuid))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans and ftp2.scans, 20))
+            self.json("POST", "/api/party", {"gamemaster": "127.0.0.2", "consoles": ["127.0.0.1"],
+                                             "guests": [{"name": "Ståle Øvrebø", "here": True}, {"name": "Kristoffer Hansen", "here": False}]})
+            r = self.json("GET", "/api/party/profiles")
+            self.assertEqual([(g["name"], g["gamertag"], g["xuid"], g["on"]) for g in r["profiles"]],
+                             [("Ståle Øvrebø", "Stale Ovrebo", "", []), ("Kristoffer Hansen", "Kristoffer H", "", [])])
+            # Made on the Gamemaster's console, copied to the other with the saves.
+            self.json("POST", "/api/party/profiles", {"action": "make"})
+            self.assertEqual(self.call("POST", "/api/party/profiles", {"action": "make"})[0], 409)  # One at a time.
+            r = finished()
+            self.assertEqual(r["work"]["error"], "")
+            self.assertIn("2 guests have a profile on every console", r["work"]["result"])
+            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360", "boot.xex", "0")])
+            self.assertEqual(aurora.launched, [])
+            self.assertEqual([g for g, _ in made], ["Stale Ovrebo", "Kristoffer H"])
+            xuids = [x for _, x in made]
+            self.assertEqual([(g["xuid"], sorted(g["on"]), g["madeOn"]) for g in r["profiles"]],
+                             [(x, ["127.0.0.1", "127.0.0.2"], "127.0.0.2") for x in xuids])
+            for xuid in xuids:
+                self.assertTrue(has(self.xbox, xuid) and has(other, xuid))
+                with open(os.path.join(self.xbox, "Hdd1", "Content", xuid, "4D5307E6", "00000001", "save"), "rb") as f:
+                    self.assertEqual(f.read(), b"halo save " + xuid.encode())
+            self.assertFalse(os.path.exists(os.path.join(other, "Hdd1", "NetISO", "NetDisc360", "profiles.done")))
+            # The pictures went with the job and are gone again; one the helper
+            # couldn't give is only noted (the profile is made all the same).
+            self.assertEqual([(g, f) for g, f, _, _ in pictures], [("Stale Ovrebo", "guest1.png"), ("Stale Ovrebo", "guest1_32.png"), ("Kristoffer H", "guest2.png"), ("Kristoffer H", "guest2_32.png")])
+            self.assertEqual([f for f in os.listdir(os.path.join(other, "Hdd1", "NetISO", "NetDisc360")) if f.endswith(".png")], [])
+            # The page shows each guest's picture.
+            status, response, png = self.call("GET", "/api/party/profiles/picture?gamertag=Stale%20Ovrebo")
+            self.assertEqual((status, response.getheader("Content-Type"), png[:8], struct.unpack(">II", png[16:24])), (200, "image/png", b"\x89PNG\r\n\x1a\n", (64, 64)))
+            idat = png.index(b"IDAT")
+            pixels = zlib.decompress(png[idat + 4:idat + 4 + struct.unpack(">I", png[idat - 4:idat])[0]])
+            self.assertEqual(len(pixels), 64 * (64 * 3 + 1))  # 8-bit RGB rows, each with its filter byte.
+            self.assertGreater(len(set(pixels[1 + 64 * 3 * 32:64 * 3 * 33])), 2)  # The letters across the middle.
+            self.assertEqual(self.call("GET", "/api/party/profiles/picture?gamertag=Stale%20Ovrebo", page=False)[0], 403)
+            self.assertEqual(self.call("GET", "/api/party/profiles/picture?gamertag=")[0], 400)
+            # Asked again: they're there, nothing to make.
+            self.json("POST", "/api/party/profiles", {"action": "make"})
+            finished()
+            self.assertEqual(len(aurora2.launched), 1)
+            # A console's own profiles are never removed: a copy named otherwise stays.
+            own = os.path.join(self.xbox, "Hdd1", "Content", xuids[1], "FFFE07D1", "00010000", xuids[1])
+            with open(own, "wb") as f:
+                f.write(package("Someone Else"))
+            self.json("POST", "/api/party/profiles", {"action": "remove"})
+            r = finished()
+            self.assertIn("isn't the profile NetDisc360 made", r["work"]["error"])
+            self.assertIn("3 guest profiles removed, 3 copies kept", r["work"]["result"])
+            self.assertFalse(has(self.xbox, xuids[0]) or has(other, xuids[0]) or has(other, xuids[1]))
+            self.assertTrue(has(self.xbox, xuids[1]))
+            self.assertEqual([(g["on"], g["copies"]) for g in r["profiles"]], [([], 2), (["127.0.0.1"], 1)])
+            kept = os.path.join(self.tmp.name, "Backups", "Profiles", xuids[0])
+            self.assertEqual(sorted(n[-4:] for n in os.listdir(kept)), [".ini", ".ini", ".zip", ".zip"])
+            with open(config, encoding="utf-8") as f:
+                self.assertIn("guest_profile1=Ståle Øvrebø|Stale Ovrebo|" + xuids[0] + "|", f.read())
+            # Ståle comes back: the kept copy (with the save) goes on both, no new profile.
+            self.json("POST", "/api/party/profiles", {"action": "make", "names": ["Ståle Øvrebø"]})
+            r = finished()
+            self.assertEqual(r["work"]["error"], "")
+            self.assertIn("Ståle Øvrebø gets their profile back", r["work"]["result"])
+            self.assertEqual(len(aurora2.launched), 1)
+            self.assertTrue(has(self.xbox, xuids[0]) and has(other, xuids[0]))
+            with open(os.path.join(other, "Hdd1", "Content", xuids[0], "4D5307E6", "00000001", "save"), "rb") as f:
+                self.assertEqual(f.read(), b"halo save " + xuids[0].encode())
+            for body, code in (({"action": "make", "names": ["Nobody"]}, 400), ({"action": "forget", "names": ["Ståle Øvrebø"]}, 409), ({"action": "nap"}, 400)):
+                self.assertEqual(self.call("POST", "/api/party/profiles", body)[0], code)
         finally:
             aurora.close()
             aurora2.close()

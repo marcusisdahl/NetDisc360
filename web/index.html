@@ -560,6 +560,22 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .pill.gm { background: var(--accent); color: var(--on-accent); }
 .guest-add { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .guest-add .input { flex: 1 1 220px; min-width: 0; }
+/* Guest profiles */
+.gp-list { display: flex; flex-direction: column; gap: 6px; }
+.gp { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; min-width: 0; }
+.gp > .i { color: var(--muted); flex: none; }
+.gp-pic { width: 36px; height: 36px; border-radius: 6px; flex: none; display: block; background: var(--hover); }
+.gp .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.gp b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp .sub { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.gp-on { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; flex: none; max-width: 50%; }
+.gp-on .pill { height: 20px; font-size: 11.5px; padding: 0 7px; background: var(--hover); color: var(--muted); }
+.gp-on .pill.good { background: var(--good-soft); color: var(--good); }
+.gp-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.gp-work { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: var(--muted); }
+.gp-work .i { flex: none; margin-top: 2px; }
+.gp-work.bad { color: var(--bad); }
+@media (max-width: 560px) { .gp { flex-wrap: wrap; } .gp-on { max-width: none; justify-content: flex-start; margin-left: 48px; } }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); color: var(--text); }
 .chip > button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 4px 0 6px; font-weight: 550; border-radius: 99px; min-width: 0; }
@@ -2570,7 +2586,8 @@ Pages.party = root => {
   root.append(wrap);
   const banner = livePart(h('div.party-banner')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
-  const parts = [banner, form, consoles, guests, rules, raffle, seats, start, results];
+  const profiles = livePart(h('div'));
+  const parts = [banner, form, consoles, guests, profiles, rules, raffle, seats, start, results];
   const guestCount = h('span.sub');
   const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
   const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
@@ -2588,6 +2605,7 @@ Pages.party = root => {
         card('users', 'Guests', guestCount, [h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here')],
           h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
             h('button.btn.ghost', { title: 'The names typed take the place of the guest list kept from before', onclick: () => addGuests(true) }, ic('list', 'sm'), 'New list')), guests.el),
+        card('user', 'Guest profiles', h('span.sub', 'an Xbox profile for each guest, on every console'), null, profiles.el),
         card('link', 'Rules', h('span.sub', 'for the team raffle'), null, rules.el)),
       h('div.stack',
         card('dices', 'Team raffle', null, null, raffle.el),
@@ -2642,9 +2660,13 @@ Pages.party = root => {
     const live = h('input', { type: 'checkbox', checked: p.active, 'data-focus': 'active', onchange: async e => {
       if (e.target.checked && !p.gamemaster) { e.target.checked = false; toast('Choose the Gamemaster console first, under Consoles.', true); return; }
       // Ending it clears who's here, the rounds, the teams and the seats (for the next party).
+      const withProfiles = !e.target.checked && prof && prof.profiles && prof.profiles.some(g => g.on.length) && !(prof.work && prof.work.running);
+      const removeToo = h('input', { type: 'checkbox', checked: true });
       if (!e.target.checked && !(await confirmBox('End the LAN party?', [h('p', { style: { marginTop: 0 } }, 'Who’s here, the rounds, the teams and the seats are cleared. ' +
-        'The guest list, the consoles, the theme and the rules stay for the next party.')], 'End the party', true))) { e.target.checked = true; return; }
+        'The guest list, the consoles, the theme and the rules stay for the next party.'),
+        withProfiles ? h('label.check-label', removeToo, h('span', 'Remove the guest profiles from the consoles too (a copy with their achievements is kept on this PC)')) : null], 'End the party', true))) { e.target.checked = true; return; }
       change({ active: e.target.checked }, e.target.checked ? 'The LAN party is on' : 'The LAN party ended');
+      if (withProfiles && removeToo.checked) profileWork('remove');
     } });
     return [
       pics.backgrounds[0] ? h('img.photo', { src: pics.backgrounds[0], alt: '' }) : null, h('span.ring'), h('span.ring.b'),
@@ -2748,7 +2770,13 @@ Pages.party = root => {
       const known = list.find(g => sameName(g.name, name));
       if (known) known.here = true; else list.push({ name, here: true });
     }
-    edit({ guests: list }).then(ok => { if (ok) { typed.value = ''; typed.focus(); } });
+    const added = names.filter(n => !p.guests.some(g => sameName(g.name, n)));
+    edit({ guests: list }).then(ok => {
+      if (!ok) return;
+      typed.value = ''; typed.focus();
+      // Their profiles too, on every console (one console makes them, then they're copied).
+      if (added.length) profileWork('make', added, 'Making ' + (added.length === 1 ? added[0] + '’s profile' : plural(added.length, 'guest profile')) + ' on the consoles');
+    });
   }
   const setGuests = list => edit({ guests: list });
   const everyone = here => setGuests(shownParty().guests.map(g => ({ name: g.name, here })));
@@ -2759,6 +2787,68 @@ Pages.party = root => {
         onclick: () => setGuests(p.guests.map(x => x === g ? { name: x.name, here: !x.here } : x)) }, h('span.tick', g.here ? ic('check', 'sm') : null), h('span.chip-name', g.name)),
       h('button.x', { type: 'button', title: 'Take off the guest list', 'aria-label': 'Take ' + g.name + ' off the guest list', onclick: () => setGuests(p.guests.filter(x => x !== g)) }, ic('x', 'sm'))))),
     h('p.hint', 'Tap a name to tick who’s here. The list is kept for the next party.')];
+  }
+
+  // Guest profiles: one console makes each guest's profile, the server
+  // copies it to the others; removing keeps a copy on this computer first,
+  // so a guest who comes back gets their achievements and saves again.
+  let prof = null, profTimer = 0;
+  async function loadProfiles() {
+    clearTimeout(profTimer);
+    try { prof = await api('party/profiles'); }
+    catch (e) { if (!prof) prof = { error: e.message }; }
+    update();
+    if (prof && prof.work && prof.work.running) profTimer = setTimeout(loadProfiles, 2000);
+  }
+  async function profileWork(action, names, said) {
+    try {
+      prof = await api('party/profiles', names ? { action, names } : { action });
+      if (said) toast(said);
+    } catch (e) { toast(e.message, true); }
+    loadProfiles();
+  }
+  function profileConsoles(p) { return p.consoles.length ? p.consoles : S.consoles.map(c => c.address); }
+  // The gamer picture a guest's profile gets on the consoles (initials on a
+  // colour), fetched once per gamertag.
+  const guestPictures = {};
+  function guestPicture(tag) {
+    const img = h('img.gp-pic', { alt: '', width: 36, height: 36, title: 'Its gamer picture on the consoles' });
+    const known = guestPictures[tag] || (guestPictures[tag] = fetchImage('party/profiles/picture?gamertag=' + encodeURIComponent(tag)));
+    known.then(url => { img.src = url; }, () => { delete guestPictures[tag]; });
+    return img;
+  }
+  function drawProfiles(p) {
+    if (!prof) return h('p.muted', { style: { margin: 0 } }, 'Looking…');
+    if (prof.error) return h('p.muted', { style: { margin: 0 } }, prof.error);
+    const w = prof.work || {}, list = prof.profiles || [], ips = profileConsoles(p);
+    const onConsoles = list.filter(g => g.on.length);
+    const rows = list.length ? h('div.gp-list', list.map(g => {
+      const on = ips.filter(ip => g.on.includes(ip)), away = ips.filter(ip => !g.on.includes(ip));
+      const kept = g.best ? 'a copy is kept on this PC' + (g.best.gamerscore >= 0 ? ' (' + g.best.gamerscore.toLocaleString() + ' G)' : '') : '';
+      let text;
+      if (!g.xuid) text = 'Not made yet';
+      else if (!g.guest) text = g.on.length ? 'Not on the guest list any more: remove it from the consoles' : 'Not on the guest list; ' + (kept || 'nothing kept');
+      else if (!g.on.length) text = kept ? 'Removed from the consoles; ' + kept + ' and goes back with Make profiles' : 'On no console now';
+      else if (!away.length) text = 'On every console';
+      else text = 'On ' + on.map(nameOf).join(', ') + '; not yet on ' + away.map(nameOf).join(', ');
+      const ready = g.xuid && g.on.length && !away.length;
+      return h('div.gp' + (ready ? '.ready' : ''), g.gamertag ? guestPicture(g.gamertag) : ic('user', 'sm'),
+        h('div.grow', h('b', g.name + (g.gamertag && g.gamertag !== g.name ? ' · ' + g.gamertag : '')), h('span.sub', text)),
+        g.xuid ? h('div.gp-on', ips.map(ip => h('span.pill' + (g.on.includes(ip) ? '.good' : ''), { title: g.on.includes(ip) ? 'On ' + nameOf(ip) : 'Not on ' + nameOf(ip) }, nameOf(ip)))) : null);
+    })) : h('p.muted', { style: { margin: 0 } }, 'Add guests above: each gets a profile with their name on every console.');
+    const work = w.running ? h('div.gp-work', ic('loader-circle', 'sm spin'), h('span', w.step || (w.what === 'remove' ? 'Removing the guest profiles…' : 'Making the guest profiles…')))
+      : w.error ? h('div.gp-work.bad', ic('circle-alert', 'sm'), h('span', (w.result ? w.result + ' ' : '') + w.error))
+      : w.result ? h('div.gp-work', ic('info', 'sm'), h('span', w.result)) : null;
+    return [rows, work,
+      h('div.gp-tools',
+        h('button.btn.primary', { disabled: w.running || !p.guests.length, title: 'A profile for each guest on the list, on every party console; a kept one goes back', onclick: () => profileWork('make', null, 'Making the guest profiles') }, ic('user-plus', 'sm'), 'Make profiles'),
+        h('button.btn.danger.ghost', { disabled: w.running || !onConsoles.length, onclick: () => removeProfiles() }, ic('trash-2', 'sm'), 'Remove from consoles')),
+      h('p.hint', 'One console makes them (Aurora is away for a few seconds), then they’re copied to the others. Only profiles NetDisc360 made are ever removed.')];
+  }
+  async function removeProfiles() {
+    if (!(await confirmBox('Remove the guest profiles?', [h('p', { style: { marginTop: 0 } }, 'Each guest profile is copied to this PC first, with its achievements and game saves, then removed from the consoles. ' +
+      'A guest who comes back gets it again. Profiles signed in now stay, and your own profiles are never touched.'), prof && prof.folder ? h('p.muted', 'Kept in ' + prof.folder) : null], 'Remove them', true))) return;
+    profileWork('remove', null, 'Removing the guest profiles');
   }
 
   // The raffle's rules: two people together, or apart.
@@ -3100,6 +3190,7 @@ Pages.party = root => {
     form.show(JSON.stringify([p.name, p.theme, pics.key, S.settings.saved]), () => drawForm(p, pics));
     consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses]), () => drawConsoles(p));
     guests.show(JSON.stringify(p.guests), () => drawGuests(p));
+    profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), S.consoles.map(c => c.address + '=' + c.name)]), () => drawProfiles(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
@@ -3119,7 +3210,8 @@ Pages.party = root => {
     update();
   }
   route();
-  return { update, games: update, route, leave: closeScreen };
+  loadProfiles();
+  return { update, games: update, route, leave: () => { closeScreen(); clearTimeout(profTimer); } };
 };
 
 // The raffle wheel (see Spin in server/party.h): the server plans every
@@ -3775,7 +3867,7 @@ Pages.settings = root => {
         row('Tidy Aurora\u2019s game list as it starts', 'Takes the games whose NetDisc360 tile is gone off Aurora\u2019s list each time Aurora starts, as NetDisc360 Cleanup does but without asking. Only rows in Aurora\u2019s list change; no file is deleted. Needs Aurora scripts on.', toggle(st.tidyAurora, (v, i) => flip('tidyAurora', v, i), !st.auroraScripts)),
         row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i))),
         row('Show each console\u2019s name when Aurora starts', 'A note on its screen, like \u201cThis is FABLE (192.168.1.42)\u201d, so you can tell the consoles apart. The name is the one set on the Xbox under Settings, System, Console Settings, Console Name, and Media Sharing must be on there. Needs JRPC2.xex as a DashLaunch plugin; each console\u2019s page has Identify for any time.', toggle(st.showName, (v, i) => flip('showName', v, i))),
-        row('Follow this PC\u2019s address', 'When your router gives this PC a new address, NetISO.xex.txt on the console is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
+        row('Follow this PC\u2019s address', 'When your router gives this PC a new address, the console\u2019s NetDisc360.ini (or NetISO.xex.txt) is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
         row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; each console\u2019s page turns it off or restarts it by hand too.',
           h('select.input', { style: { width: 'auto' }, onchange: e => save({ autoOffMinutes: Number(e.target.value) }, Number(e.target.value) ? 'Consoles turn off after their last game' : 'Consoles stay on') },
             [[0, 'Never'], [15, 'After 15 minutes'], [30, 'After 30 minutes'], [60, 'After 1 hour'], [120, 'After 2 hours']].concat([0, 15, 30, 60, 120].includes(st.autoOffMinutes) ? [] : [[st.autoOffMinutes, 'After ' + plural(st.autoOffMinutes, 'minute')]])
