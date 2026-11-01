@@ -8,10 +8,10 @@
 0. On `dev`, the README's Quick install downloads `docker-compose.yml` and `.env.example` from the `dev` branch (`raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/...`). In the pull request from `dev` into `main`, change those two links to `main`, check CI is green, test the `dev` image and a build from it, and merge it; then merge `main` back into `dev` and set the links to `dev` again. Steps 1 to 6 happen on `main`.
 1. Set the new version in `server/version.h` (`NETDISC_VERSION` and `NETDISC_VERSION_NUMBERS`) and commit it. The tag must be that version with a `v` in front: the installed apps compare it with their own version to see that an update is out, and the Docker workflow stops if the two differ.
 2. On the PC with Visual Studio and the Xbox 360 SDK, on the commit to release: `.\build.ps1 -Tests`.
-3. Test on a console: the new `NetIsoTiles.xex`, and a game started from its tile with the new `NetDisc360.exe`.
+3. Test on a console: the new `NetDisc360.xex` (without NetISO.xex in launch.ini), and a game started from its tile with the new `NetDisc360.exe`.
 4. On GitHub, draft a new release with a tag like `v1.0.0`, and attach these files from `build\` **before publishing**:
    - `NetDisc360.exe` (exactly this name: the in-app update looks for it)
-   - `NetIsoTiles.xex`
+   - `NetDisc360.xex` (the console plugin; `NetIsoTiles.xex` up to 1.0)
    - `NetISO-Sync.zip`
 5. Make the repository public (Settings, General, Danger Zone, Change visibility), if it isn't yet. Do this before publishing: the Docker workflow downloads `NetISO-Sync.zip` from the release, which only works once the repository is public.
 6. Publish the release. The "Docker image" workflow then builds `ghcr.io/marcusisdahl/netdisc360` for x86-64 and ARM64 with that release's launchers, tagged with the version and `latest`.
@@ -19,4 +19,4 @@
 
 If the workflow ran before the files were attached, run it again from the Actions tab ("Docker image", Run workflow) with the release's tag.
 
-Write the release notes for people updating: the dashboard shows them under **Settings > Updates** before they install. Say when `NetIsoTiles.xex` changed, since that one is copied to the USB drive by hand. Mark a test version as a pre-release: only those who turn on **Include test versions** are offered it.
+Write the release notes for people updating: the dashboard shows them under **Settings > Updates** before they install. Say when `NetDisc360.xex` changed, since that one is copied to the console by hand. Mark a test version as a pre-release: only those who turn on **Include test versions** are offered it.

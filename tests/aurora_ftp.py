@@ -161,6 +161,22 @@ class Handler(socketserver.StreamRequestHandler):
                     self.reply("250 File deleted")
                 else:
                     self.reply("550 Could not delete file")
+            elif command == "RNFR":
+                path = self.local(argument)
+                if path and os.path.exists(path):
+                    self.rename_from = path
+                    self.reply("350 File exists, ready for destination name")
+                else:
+                    self.reply("550 File not found")
+            elif command == "RNTO":
+                path = self.local(argument)
+                source, self.rename_from = getattr(self, "rename_from", None), None
+                if source and path and not os.path.exists(path):
+                    os.rename(source, path)
+                    self.server.renamed.append(argument)
+                    self.reply("250 Rename successful")
+                else:
+                    self.reply("550 Rename failed")
             elif command == "RMD":
                 path = self.local(argument)
                 try:
@@ -179,7 +195,7 @@ class Server(socketserver.ThreadingTCPServer):
     def __init__(self, root, port=0, user="xboxftp", password="xboxftp", host="127.0.0.1"):
         super().__init__((host, port), Handler)
         self.root, self.user, self.password, self.host = root, user, password, host
-        self.log, self.stored, self.scans = [], [], []
+        self.log, self.stored, self.scans, self.renamed = [], [], [], []
 
 
 def main():
