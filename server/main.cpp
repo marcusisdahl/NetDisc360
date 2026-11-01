@@ -19,7 +19,9 @@
 #include "discs.h"
 #include "ftp.h"
 #include "installed.h"
+#include "party.h"
 #include "system.h"
+#include "systemlink.h"
 #include "update.h"
 #include "version.h"
 #include "web.h"
@@ -554,6 +556,17 @@ struct Console {
     // listed name of their disc (lower case), and the games installed on it.
     std::map<std::string,std::string> tiles;
     std::vector<InstalledGame> installed;
+    // Raised when it's back in Aurora (after a game, or turned on again):
+    // its push thread looks at what's installed on it again, and writes its
+    // game folders again if that changed, so a game installed since loses
+    // its tile (see PushTo).
+    std::atomic<bool> recheck;
+    // The title updates its Aurora has (see LookTitleUpdates), under
+    // ConsoleLock: as last read (time() then; 0: never), and why the latest
+    // look failed ("" if it didn't).
+    std::vector<TitleUpdate> titleUpdates;
+    long long titleUpdatesRead;
+    std::string titleUpdatesError;
     // NetDisc360's marker for Aurora's "Hide PC games while NetDisc360 is
     // off" filter is on it (see aurora.h), so quitting deletes it.
     std::atomic<bool> marked;
@@ -567,7 +580,7 @@ struct Console {
     std::atomic<long long> gameEndedAt;
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
                                  inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
-                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), marked(false), gameTitle(0), gameSince(0), gameEndedAt(0) {
+                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), recheck(false), titleUpdatesRead(0), marked(false), gameTitle(0), gameSince(0), gameEndedAt(0) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
     }
@@ -611,6 +624,11 @@ std::vector<KnownConsole> Known;  // Under SettingsLock.
 // is told from one naming another server (see FollowAddress). Under SettingsLock.
 std::vector<std::string> OwnAddresses;
 const size_t OwnAddressesKept = 16;
+// The LAN party (see party.h), kept in the settings file; under PartyLock,
+// which is taken alone.
+Party TheParty;
+std::mutex PartyLock;
+Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return TheParty; }
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -768,6 +786,7 @@ void AuroraLoop() {
             c.inAurora=true;
             c.ftp=2;
             XboxLog(c,"back in Aurora after %s (its FTP server answers).",game.c_str());
+            c.recheck=true;
             PlayEnded(c);
             c.gameEndedAt=(long long)(Now()*1000);
             XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
@@ -854,6 +873,7 @@ void GoOffline(Console& c, long long now) {
 void BackOnline(Console& c, const char* how) {
     c.offline=false;
     c.missed=0;
+    c.recheck=true;
     XboxLog(c,"back online (%s).",how);
     XboxEvent(c,EventXbox,"Back online",std::string(c.text)+" is back online");
 }
@@ -1699,11 +1719,19 @@ struct PushState {
     InstalledGames installed;    // What was read of its installed games.
     std::string installedSeen;   // Their Title IDs and discs, as last logged.
     bool toldInstalled;          // Looking for them failed, and the log said so.
+    bool installedChanged;       // What's installed changed since its folders were last written (see Console::recheck).
     bool restarted;              // Aurora was restarted for its filter once (see RefreshAuroraScripts).
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
+    // Aurora's databases as last read for the title updates (see
+    // LookTitleUpdates): each file's size and time as its folder listed
+    // them, and what they held.
+    std::string contentSeen, settingsSeen;
+    std::vector<TitleUpdate> titleUpdates;
+    std::vector<long long> activeUpdates;
+    std::string toldUpdates;     // What the log last said about them.
     PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
-                  toldInstalled(false), restarted(false) {}
+                  toldInstalled(false), installedChanged(false), restarted(false) {}
 };
 
 // The games installed on the console, for its push and the dashboard (see installed.h).
@@ -1722,6 +1750,55 @@ void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options
     }
     std::lock_guard<std::mutex> hold(ConsoleLock);
     console.installed=found;
+}
+
+// The title updates the console's Aurora has, and which it applies, for the
+// dashboard (see auroradb.h): its content.db and settings.db, downloaded
+// again only when their folder's listing shows a new size or time, and
+// never written. Read while the server talks to the console anyway (a push,
+// or its return to Aurora).
+const char AuroraDatabases[] = "/Data/Databases";
+void LookTitleUpdates(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
+    std::string folder=o.aurora+AuroraDatabases, error;
+    std::vector<FtpEntry> entries;
+    // Entered first: a folder that isn't there keeps FtpDll's connection.
+    if(!ftp.Enters(folder.c_str())) error=ftp.Code()/100==5 ? "Aurora has no "+folder+" folder" : "couldn't open "+folder+": "+ftp.Error();
+    else if(!ftp.List(folder.c_str(),entries)) error="couldn't list "+folder+": "+ftp.Error();
+    static const char* const names[2]={"content.db","settings.db"};
+    const FtpEntry* files[2]={NULL,NULL};
+    for(size_t i=0;i<entries.size();++i)
+        for(int k=0;k<2;++k) if(!entries[i].folder && !_stricmp(entries[i].name.c_str(),names[k])) files[k]=&entries[i];
+    if(error.empty() && !files[0]) error="Aurora's content.db isn't in "+folder;
+    std::string* seen[2]={&s.contentSeen,&s.settingsSeen};
+    for(int k=0;k<2 && error.empty();++k) {
+        // No settings.db: no update is in use.
+        std::string now=files[k] ? Number((long long)files[k]->size)+"|"+files[k]->stamp : std::string("none");
+        if(now==*seen[k]) continue;
+        seen[k]->clear();
+        std::vector<unsigned char> data;
+        std::string path=folder+"/"+names[k], why;
+        if(!files[k]) s.activeUpdates.clear();
+        else if(!ftp.Retrieve(path.c_str(),data,size_t(256)<<20)) { error="couldn't read "+path+": "+ftp.Error(); break; }
+        else if(!(k ? ReadActiveTitleUpdates(data,s.activeUpdates,why) : ReadTitleUpdates(data,s.titleUpdates,why))) { error="couldn't read "+path+": "+why; break; }
+        *seen[k]=now;
+    }
+    std::vector<TitleUpdate> updates=s.titleUpdates;
+    int active=0;
+    for(size_t i=0;i<updates.size();++i) {
+        updates[i].active=std::find(s.activeUpdates.begin(),s.activeUpdates.end(),updates[i].id)!=s.activeUpdates.end();
+        active+=updates[i].active;
+    }
+    std::string told=error.empty() ? Count(int(updates.size()),"title update","title updates")+" in Aurora, "+Number(active)+" in use" : error;
+    if(told!=s.toldUpdates) {
+        if(error.empty()) XboxLog(console,"%s.",told.c_str());
+        else XboxLog(console,"couldn't look at the title updates in Aurora: %s.",error.c_str());
+        s.toldUpdates=told;
+    }
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    console.titleUpdatesError=error;
+    if(!error.empty()) return;
+    console.titleUpdates.swap(updates);
+    console.titleUpdatesRead=(long long)time(NULL);
 }
 
 // Makes folder unless it's there (a failed MKD costs FtpDll's connection).
@@ -1787,10 +1864,13 @@ void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
     Options o=Current();
-    bool pushDue=settled && (!s.everPushed || state!=s.pushed || (s.retryAt && Now()>=s.retryAt));
+    bool pushDue=settled && (!s.everPushed || state!=s.pushed || s.installedChanged || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
+    // Back in Aurora (see Console::recheck): what's installed is looked at
+    // again (listings only, see installed.h), and the title updates.
+    bool recheck=console.recheck && s.everPushed && !pushDue && !o.pushOnce;
     bool online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=o.onlineWait;
-    if(!(pushDue || scanDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
+    if(!(pushDue || scanDue || recheck) || Now()<s.nextProbe || !(!s.reachable || online || scanDue || recheck)) return;
     // Not while it plays a game: Aurora's FTP server isn't there to write
     // to, and a push then failed file by file (seen on the console). It goes
     // on once AuroraLoop sees Aurora again.
@@ -1802,6 +1882,8 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     s.probedAt=Now();
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
+        // Only to look again: quietly, as Aurora may still be starting.
+        if(recheck && !scanDue) { s.nextProbe=Now()+ProbeDownSeconds; return; }
         if(s.reachable || !s.toldDown) {
             XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
             XboxEvent(console,EventInfo,"Waiting for Aurora");
@@ -1821,6 +1903,19 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         s.upSince=Now();
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
+    bool lookUpdates=false;
+    if(recheck) {
+        console.recheck=false;
+        lookUpdates=true;
+        std::string before=s.installedSeen;
+        std::vector<InstalledGame> found;
+        LookInstalled(console,s,ftp,o,found);
+        if(s.installedSeen!=before) {
+            XboxLog(console,"what's installed on it changed; its game folders are written again.");
+            s.installedChanged=true;
+            pushDue=settled;
+        }
+    }
     if(o.filter && (back || pushDue)) GuardFilter(console,ftp,back,o);
     if(pushDue && !online && !s.toldWaiting) {
         XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",o.onlineWait);
@@ -1836,7 +1931,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         std::vector<InstalledGame> installed;
         LookInstalled(console,s,ftp,o,installed);
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
-            s.everPushed=true; s.pushed=state;
+            s.everPushed=true; s.pushed=state; s.installedChanged=false;
+            console.recheck=false;  // The push looked at everything a recheck would.
+            lookUpdates=true;
             console.synced=(long long)time(NULL);
             if(o.filter) RefreshInstallFilter(console,ftp,o);
             if(o.auroraScripts) RefreshAuroraScripts(console,s,ftp,o);
@@ -1849,6 +1946,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
             }
         } else s.nextProbe=Now()+30;
     }
+    if(lookUpdates) LookTitleUpdates(console,s,ftp,o);
     if(scanDue) {
         if(StartScan(console,ftp,o)) s.scanTries=0;
         else if(--s.scanTries) s.scanAt=Now()+ScanRetrySeconds;
@@ -2124,6 +2222,7 @@ bool Save() {
     std::vector<KnownConsole> known;
     { std::lock_guard<std::mutex> hold(SettingsLock); o=Settings; known=Known; }
     if(o.configPath.empty()) return false;
+    Party party=CurrentParty();
     std::lock_guard<std::mutex> hold(SaveLock);
     config::File f;
     f.Load(o.configPath);
@@ -2189,6 +2288,7 @@ bool Save() {
     f.Set("consoles",Number((long long)known.size()));
     for(size_t i=0;i<known.size();++i) f.Set(("console"+Number((long long)i+1)).c_str(),known[i].address+"|"+Number(known[i].seen));
     for(long long i=(long long)known.size()+1;i<=before;++i) f.Remove(("console"+Number(i)).c_str());
+    SaveParty(f,party);
     if(f.Save(o.configPath)) return true;
     static bool told;
     if(!told) Log("Couldn't save the settings in %s; changes last until the server stops.",config::FromUtf8(o.configPath).c_str());
@@ -2312,6 +2412,17 @@ bool LoadConfig(Options& o) {
         KnownConsole c = {value.substr(0,bar), atoll(value.c_str()+bar+1)};
         known.push_back(c);
     }
+    // The LAN party: its consoles are addresses (a file made by hand could have anything).
+    Party party;
+    LoadParty(f,party);
+    DWORD at=inet_addr(party.gamemaster.c_str());
+    if(at==INADDR_NONE || !at) party.gamemaster.clear();
+    for(size_t i=party.consoles.size();i-->0;) {
+        at=inet_addr(party.consoles[i].c_str());
+        if(at==INADDR_NONE || !at) party.consoles.erase(party.consoles.begin()+long(i));
+    }
+    TidyParty(party);
+    { std::lock_guard<std::mutex> hold(PartyLock); TheParty=party; }
     std::lock_guard<std::mutex> hold(SettingsLock);
     Known.swap(known);
     return true;
@@ -2424,6 +2535,174 @@ void UpdateJson(web::Json& j, const Options& o, bool notes) {
     j.Close('}');
 }
 
+// The LAN party's pictures and the consoles' title updates ------------------
+
+// The party theme's pictures (its logo, its background photos), uploaded on
+// the dashboard: in the folder "party" next to the settings file, under
+// names the server gives them (logo.png, background3.jpg), never the
+// browser's. Too big for the settings' backups, which leave them out.
+enum { PartyPictureMost = 3 << 20, PartyBackgroundsMost = 8 };
+std::mutex PartyFilesLock;  // While pictures are added or removed.
+
+std::string PartyFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"party"; }
+
+std::string InFolder(const std::string& folder, const std::string& name) {
+#ifdef _WIN32
+    return folder+"\\"+name;
+#else
+    return folder+"/"+name;
+#endif
+}
+
+// The pictures the party takes, by extension and type.
+const char* const PictureTypes[][2]={ { "png", "image/png" }, { "jpg", "image/jpeg" }, { "webp", "image/webp" } };
+
+// A picture's type by its file name's extension; NULL if it's no picture of ours.
+const char* PictureType(const std::string& name) {
+    size_t dot=name.rfind('.');
+    for(size_t i=0;i<sizeof(PictureTypes)/sizeof(PictureTypes[0]) && dot!=std::string::npos;++i)
+        if(name.compare(dot+1,std::string::npos,PictureTypes[i][0])==0) return PictureTypes[i][1];
+    return NULL;
+}
+
+// The party's pictures as they are in its folder: the logo's file name ("" for
+// none), and the background photos' in their order (by their number).
+struct PartyPictures { std::string logo; std::vector<std::string> backgrounds; long most; PartyPictures() : most(0) {} };
+PartyPictures PicturesNow(const Options& o) {
+    PartyPictures out;
+    std::string folder=PartyFolder(o);
+    if(folder.empty()) return out;
+    std::vector<config::Entry> files=config::Files(folder);
+    std::vector<std::pair<long,std::string> > numbered;
+    for(size_t i=0;i<files.size();++i) {
+        const std::string& name=files[i].name;
+        if(!PictureType(name)) continue;
+        std::string stem=name.substr(0,name.rfind('.'));
+        if(stem=="logo") out.logo=name;
+        else if(stem.size()>10 && stem.size()<=19 && !stem.compare(0,10,"background") && stem.find_first_not_of("0123456789",10)==std::string::npos)
+            numbered.push_back(std::make_pair(atol(stem.c_str()+10),name));
+    }
+    std::sort(numbered.begin(),numbered.end());
+    for(size_t i=0;i<numbered.size();++i) { out.backgrounds.push_back(numbered[i].second); out.most=std::max(out.most,numbered[i].first); }
+    return out;
+}
+
+void NamesJson(web::Json& j, const std::vector<std::string>& names) {
+    j.Open('[');
+    for(size_t i=0;i<names.size();++i) j.String(names[i]);
+    j.Close(']');
+}
+
+void TeamsJson(web::Json& j, const std::vector<Team>& teams) {
+    j.Open('[');
+    for(size_t i=0;i<teams.size();++i) NamesJson(j,teams[i]);
+    j.Close(']');
+}
+
+void PairsJson(web::Json& j, const std::vector<NamePair>& pairs) {
+    j.Open('[');
+    for(size_t i=0;i<pairs.size();++i) j.Open('[').String(pairs[i].first).String(pairs[i].second).Close(']');
+    j.Close(']');
+}
+
+void SeatsJson(web::Json& j, const Seats& seats) {
+    j.Open('{');
+    for(size_t i=0;i<seats.size();++i) { j.Key(seats[i].first.c_str()); NamesJson(j,seats[i].second); }
+    j.Close('}');
+}
+
+// The party as the page reads it (in /api/state).
+void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
+    j.Open('{').Set("active",p.active).Set("name",p.name);
+    j.Key("theme").Open('{').Set("preset",p.theme.preset).Set("accent",p.theme.accent).Set("accent2",p.theme.accent2);
+    j.Set("person",p.theme.person).Set("age",p.theme.age).Set("logo",!pictures.logo.empty()).Set("backgrounds",int(pictures.backgrounds.size())).Close('}');
+    j.Set("gamemaster",p.gamemaster).Key("consoles");
+    NamesJson(j,p.consoles);
+    j.Key("guests").Open('[');
+    for(size_t i=0;i<p.guests.size();++i) j.Open('{').Set("name",p.guests[i].name).Set("here",p.guests[i].here).Close('}');
+    j.Close(']').Set("teams",p.teams).Key("together");
+    PairsJson(j,p.together);
+    j.Key("apart");
+    PairsJson(j,p.apart);
+    j.Set("round",p.round).Key("drawn");
+    if(p.drawn) {
+        j.Open('{').Key("teams");
+        TeamsJson(j,p.drawnTeams);
+        j.Key("seats");
+        SeatsJson(j,p.seats);
+        j.Set("note",p.note).Set("kept",p.kept).Close('}');
+    } else j.Null();
+    j.Key("last");
+    TeamsJson(j,p.last);
+    j.Close('}');
+}
+
+// The title updates of the consoles compared (see LookTitleUpdates): those
+// in only (the party's, in its order), or every console when it's empty.
+// read: they were read once at least (readAt, time()); error: why the latest
+// look failed.
+struct ConsoleUpdates { std::string address; bool read; long long readAt; std::string error; std::vector<TitleUpdate> updates; };
+std::vector<ConsoleUpdates> UpdatesOf(const std::vector<std::string>& only) {
+    std::vector<Console*> consoles=AllConsoles();
+    std::vector<ConsoleUpdates> out;
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t k=0;k<(only.empty() ? consoles.size() : only.size());++k)
+        for(size_t i=0;i<consoles.size();++i) {
+            const Console& c=*consoles[i];
+            if(only.empty() ? i!=k : only[k]!=c.text) continue;
+            if(only.empty() && c.hiddenAt!=-2 && c.seenAt<=c.hiddenAt && !c.connections) continue;  // Forgotten.
+            ConsoleUpdates u;
+            u.address=c.text; u.read=c.titleUpdatesRead!=0; u.readAt=c.titleUpdatesRead; u.error=c.titleUpdatesError; u.updates=c.titleUpdates;
+            out.push_back(u);
+        }
+    return out;
+}
+
+// The consoles whose title updates are compared: the party's while it's on, else all (empty).
+std::vector<std::string> ComparedConsoles() {
+    Party p=CurrentParty();
+    return p.active ? p.consoles : std::vector<std::string>();
+}
+
+// A title update as the page names it: "Title Update 8".
+std::string UpdateName(const TitleUpdate& u) {
+    if(u.version) return "Title Update "+Number(u.version);
+    return u.name.empty() ? u.file : u.name;
+}
+
+// One game's title updates on consoles: the one each console that was read
+// applies (NULL: none), the newest that any of them has (the highest
+// version, then base version; of those for the game's own disc, its Media
+// ID, when there are such), and whether the ones applied differ. The
+// pointers are into consoles, which has to outlive the answer.
+struct GameUpdates { std::vector<std::pair<std::string,const TitleUpdate*> > inUse; const TitleUpdate* newest; bool mismatch; };
+GameUpdates JudgeUpdates(DWORD titleId, DWORD mediaId, const std::vector<ConsoleUpdates>& consoles) {
+    GameUpdates g;
+    g.newest=NULL; g.mismatch=false;
+    if(!titleId) return g;
+    bool ownDisc=false;
+    for(size_t c=0;c<consoles.size() && mediaId;++c)
+        for(size_t i=0;i<consoles[c].updates.size();++i) ownDisc=ownDisc || (consoles[c].updates[i].titleId==titleId && consoles[c].updates[i].mediaId==mediaId);
+    std::vector<unsigned> versions;
+    for(size_t c=0;c<consoles.size();++c) {
+        if(!consoles[c].read) continue;
+        const TitleUpdate* use=NULL;
+        for(size_t i=0;i<consoles[c].updates.size();++i) {
+            const TitleUpdate& u=consoles[c].updates[i];
+            if(u.titleId!=titleId) continue;
+            if((!ownDisc || u.mediaId==mediaId) && (!g.newest || u.version>g.newest->version || (u.version==g.newest->version && u.baseVersion>g.newest->baseVersion))) g.newest=&u;
+            // Of those applied (one each disc), the one for this disc, else the highest.
+            bool better=!use || ((u.mediaId==mediaId)!=(use->mediaId==mediaId) ? u.mediaId==mediaId : u.version>use->version);
+            if(u.active && better) use=&u;
+        }
+        g.inUse.push_back(std::make_pair(consoles[c].address,use));
+        unsigned version=use ? use->version : 0;
+        if(std::find(versions.begin(),versions.end(),version)==versions.end()) versions.push_back(version);
+    }
+    g.mismatch=versions.size()>1;
+    return g;
+}
+
 void State(web::Reply& out) {
     Options o;
     std::vector<KnownConsole> known;
@@ -2530,6 +2809,15 @@ void State(web::Reply& out) {
     { std::lock_guard<std::mutex> hold(ConsoleLock); peak=Peak; }
     j.Key("totals").Open('{').Set("sent",(unsigned long long)total).Set("rate",rate).Set("peak",peak).Close('}');
 
+    Party party=CurrentParty();
+    j.Key("party");
+    PartyJson(j,party,PicturesNow(o));
+    // Games whose consoles (the party's while it's on) apply different title updates.
+    std::vector<ConsoleUpdates> updates=UpdatesOf(party.active ? party.consoles : std::vector<std::string>());
+    std::set<DWORD> mismatched;
+    for(size_t i=0;i<games.size();++i) if(!mismatched.count(games[i].titleId) && JudgeUpdates(games[i].titleId,games[i].mediaId,updates).mismatch) mismatched.insert(games[i].titleId);
+    j.Key("titleUpdates").Open('{').Set("mismatches",int(mismatched.size())).Close('}');
+
     j.Key("events").Open('[');
     {
         std::lock_guard<std::mutex> hold(EventLock);
@@ -2560,6 +2848,12 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
     j.Set("disc",g.disc).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
     j.Set("role",g.role).Set("roleLabel",g.roleLabel).Set("incomplete",g.incomplete);
+    // System Link (see systemlink.h): players on one console and in all, null where it isn't known.
+    const SystemLinkGame* link=g.titleId ? FindSystemLink(g.titleId) : NULL;
+    j.Set("systemLink",link!=NULL).Key("perConsole");
+    if(link && link->perConsole) j.Int(link->perConsole); else j.Null();
+    j.Key("total");
+    if(link && link->total) j.Int(link->total); else j.Null();
 }
 
 void Games(web::Reply& out) {
@@ -2580,6 +2874,8 @@ void Games(web::Reply& out) {
             }
         }
     }
+    // The title updates of the consoles compared (the party's while it's on).
+    std::vector<ConsoleUpdates> updates=UpdatesOf(ComparedConsoles());
     // The play history, with the games being played now counted so far.
     std::map<std::string,Played> plays;
     { std::lock_guard<std::mutex> hold(PlaysLock); plays=Plays; }
@@ -2606,7 +2902,15 @@ void Games(web::Reply& out) {
             std::map<std::pair<DWORD,int>,std::vector<std::string> >::const_iterator n=g.titleId ? installed.find(std::make_pair(g.titleId,g.disc)) : installed.end();
             j.Key("installedOn").Open('[');
             for(size_t k=0;n!=installed.end() && k<n->second.size();++k) j.String(n->second[k]);
-            j.Close(']').Close('}');
+            j.Close(']');
+            // The title update each console applies to it (null: none), and whether they differ.
+            GameUpdates u=JudgeUpdates(g.titleId,g.mediaId,updates);
+            j.Key("titleUpdates").Open('{');
+            for(size_t k=0;k<u.inUse.size();++k) {
+                j.Key(u.inUse[k].first.c_str());
+                if(u.inUse[k].second) j.String(UpdateName(*u.inUse[k].second)); else j.Null();
+            }
+            j.Close('}').Set("tuMismatch",u.mismatch).Close('}');
         }
         j.Close(']');
     }
@@ -3722,36 +4026,36 @@ void UpdateInfo(web::Reply& out) {
 
 // Starting a game from the dashboard -------------------------------------------
 
-// Starts a game on a console through Aurora's web server: its game folder
-// there, or its copy installed on the hard drive. The console leaves what it
-// runs, a game too (the page asks first).
-bool Play(const web::Value& v, std::string& error) {
-    std::string name, address;
-    if(!Text(v,"game",name) || !Text(v,"console",address)) { error="Send the game and the console."; return false; }
-    DWORD at=inet_addr(address.c_str());
-    Console* c=at==INADDR_NONE || !at ? NULL : ConsoleIfKnown(at);
-    if(!c) { error="That console hasn't used NetDisc360 since it started."; return false; }
-    IsoFile game;
-    bool found=false;
-    {
-        std::lock_guard<std::mutex> hold(GamesListLock);
-        for(size_t i=0;i<GamesList.size() && !found;++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) { game=GamesList[i]; found=true; }
-    }
-    if(!found) { error="That game isn't in your folders any more."; return false; }
+// The library's game listed as name (without .iso, in UTF-8); false if it isn't there.
+bool LibraryGame(const std::string& name, IsoFile& game) {
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    for(size_t i=0;i<GamesList.size();++i) if(config::ToUtf8(WithoutIso(GamesList[i].name))==name) { game=GamesList[i]; return true; }
+    return false;
+}
+
+// Starts game on console c through Aurora's web server: from its tile, or
+// from its copy installed on the hard drive (an extracted one; a Games on
+// Demand copy can't be started this way yet). With preferInstalled the
+// installed copy goes first, so the tile's "which copy?" question can't
+// hold the start up. how says which it was: installed or tile. The console
+// leaves what it runs, a game too (the page asks first).
+bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string& how, std::string& error) {
     Options o=Current();
-    std::string folder;
+    std::string tile, installed;
     bool god=false;
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
-        std::map<std::string,std::string>::const_iterator tile=c->tiles.find(Lower(game.name));
-        if(tile!=c->tiles.end()) folder=o.xboxFolder+"/"+tile->second;
-        for(size_t i=0;i<c->installed.size() && folder.empty();++i) {
-            const InstalledGame& g=c->installed[i];
+        std::map<std::string,std::string>::const_iterator t=c.tiles.find(Lower(game.name));
+        if(t!=c.tiles.end()) tile=o.xboxFolder+"/"+t->second;
+        for(size_t i=0;i<c.installed.size() && installed.empty() && game.titleId;++i) {
+            const InstalledGame& g=c.installed[i];
             if(g.titleId!=game.titleId || g.disc!=game.disc) continue;
             if(g.god) god=true;
-            else folder=g.path.substr(0,g.path.rfind('/'));
+            else installed=g.path.substr(0,g.path.rfind('/'));
         }
     }
+    std::string folder=(preferInstalled || tile.empty()) && !installed.empty() ? installed : tile;
+    how=folder.empty() ? std::string() : folder==installed ? "installed" : "tile";
     if(folder.empty()) {
         error=god ? "It's installed on that console as Games on Demand; start it in Aurora."
                   : "That console has no tile for it yet: its game folders are written while it's in Aurora.";
@@ -3759,15 +4063,28 @@ bool Play(const web::Value& v, std::string& error) {
     }
     std::string device=DevicePath(folder);
     if(device.empty()) { error="Aurora starts games from the dashboard on the hard drive only, and this one is in "+folder+"."; return false; }
-    AuroraWeb aurora(c->address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
     if(!aurora.Launch(device,"default.xex")) {
         error=aurora.Error()+".";
-        XboxLog(*c,"couldn't start %s from the dashboard: %s",WithoutIso(game.name).c_str(),error.c_str());
+        XboxLog(c,"couldn't start %s from the dashboard: %s",WithoutIso(game.name).c_str(),error.c_str());
         return false;
     }
-    XboxLog(*c,"started %s from the dashboard (%s).",WithoutIso(game.name).c_str(),folder.c_str());
-    XboxEvent(*c,EventPlay,WithoutIso(game.name)+" started from the dashboard");
+    XboxLog(c,"started %s from the dashboard (%s).",WithoutIso(game.name).c_str(),folder.c_str());
+    XboxEvent(c,EventPlay,WithoutIso(game.name)+" started from the dashboard");
     return true;
+}
+
+// POST /api/play {game, console}: starts a game on a console, its installed
+// copy if it has one, else its tile.
+bool Play(const web::Value& v, std::string& error) {
+    std::string name, address, how;
+    if(!Text(v,"game",name) || !Text(v,"console",address)) { error="Send the game and the console."; return false; }
+    DWORD at=inet_addr(address.c_str());
+    Console* c=at==INADDR_NONE || !at ? NULL : ConsoleIfKnown(at);
+    if(!c) { error="That console hasn't used NetDisc360 since it started."; return false; }
+    IsoFile game;
+    if(!LibraryGame(name,game)) { error="That game isn't in your folders any more."; return false; }
+    return StartOn(*c,game,true,how,error);
 }
 
 // "Check my setup" -------------------------------------------------------------
@@ -3838,13 +4155,9 @@ void Screenshots(const web::Request& r, const web::Value& body, web::Reply& out)
 }
 
 // Turns a console off (its debug monitor), or starts Aurora again on it
-// (Aurora's web server), from a game too.
-bool Power(const web::Value& v, std::string& error) {
-    std::string address, action;
-    Text(v,"address",address);
-    Text(v,"action",action);
-    Console* c=AskedConsole(address,error);
-    if(!c) return false;
+// (Aurora's web server), from a game too: action off or aurora.
+bool PowerOn(Console& console, const std::string& action, std::string& error) {
+    Console* c=&console;
     Options o=Current();
     if(action=="off") {
         if(!Xbdm(c->address,o.xbdmPort,"shutdown",error)) { error="It can't be turned off from here: "+error+"."; return false; }
@@ -3865,7 +4178,563 @@ bool Power(const web::Value& v, std::string& error) {
     if(!aurora.Launch(folder,exec)) { error=aurora.Error()+"."; return false; }
     XboxLog(*c,"Aurora started again (asked on the dashboard).");
     XboxEvent(*c,EventXbox,"Aurora restarted from the dashboard");
+    c->recheck=true;  // Back in Aurora: what's installed and its title updates are looked at again.
     return true;
+}
+
+// POST /api/console/power {address, action}.
+bool Power(const web::Value& v, std::string& error) {
+    std::string address, action;
+    Text(v,"address",address);
+    Text(v,"action",action);
+    Console* c=AskedConsole(address,error);
+    return c && PowerOn(*c,action,error);
+}
+
+// The LAN party ------------------------------------------------------------------
+//
+// The dashboard's LAN party page (see party.h): the party itself, its team
+// raffle and seats, its theme's pictures, and the commands for all its
+// consoles at once (Start on all, Back to Aurora on all, Turn off all).
+
+// Whether address is a console the dashboard knows: one that used this
+// server since it started, or one the settings file remembers.
+bool KnownAddress(const std::string& address) {
+    DWORD at=inet_addr(address.c_str());
+    if(address.empty() || at==INADDR_NONE || !at) return false;
+    if(ConsoleIfKnown(at)) return true;
+    std::lock_guard<std::mutex> hold(SettingsLock);
+    for(size_t i=0;i<Known.size();++i) if(Known[i].address==address) return true;
+    return false;
+}
+
+// A list of strings from the page; false if it isn't one.
+bool Strings(const web::Value& v, std::vector<std::string>& out) {
+    out.clear();
+    if(v.type!=web::Value::Array) return false;
+    for(size_t i=0;i<v.items.size();++i) {
+        if(v.items[i].type!=web::Value::String) return false;
+        out.push_back(v.items[i].text);
+    }
+    return true;
+}
+
+// Consoles the page names for the party: known ones, each once, as
+// addresses; false with why in error otherwise.
+bool PartyConsoles(const web::Value& v, const char* what, std::vector<std::string>& out, std::string& error) {
+    std::vector<std::string> list;
+    if(!Strings(v,list)) { error=std::string(what)+" is a list of console addresses."; return false; }
+    out.clear();
+    for(size_t i=0;i<list.size();++i) {
+        if(!KnownAddress(list[i])) { error=list[i]+" isn't a console NetDisc360 knows."; return false; }
+        if(std::find(out.begin(),out.end(),list[i])==out.end()) out.push_back(list[i]);
+    }
+    return true;
+}
+
+// POST /api/party: changes any of active, name, theme {preset, accent,
+// accent2, person, age}, gamemaster, consoles, guests [{name, here}], teams,
+// together and apart [[name, name]]. Typing the guest list again replaces
+// it (it's kept from one party to the next); the Gamemaster's console is
+// always one of the party's, its first.
+bool ChangeParty(const web::Value& v, std::string& error) {
+    if(v.type!=web::Value::Object) { error="Send the party as a JSON object."; return false; }
+    Party was=CurrentParty(), next=was;
+    const web::Value* f;
+    std::string text;
+    if((f=v.Get("active"))) {
+        if(f->type!=web::Value::Bool) { error="active is true or false."; return false; }
+        next.active=f->boolean;
+    }
+    if((f=v.Get("name"))) {
+        if(f->type!=web::Value::String) { error="The party's name is text."; return false; }
+        if(!CleanName(f->text,0,PartyNameMost,"The party's name",next.name,error)) return false;
+    }
+    if((f=v.Get("theme"))) {
+        if(f->type!=web::Value::Object) { error="theme is an object."; return false; }
+        if(Text(*f,"preset",text)) {
+            if(!KnownPreset(text)) { error="The theme is classic, birthday, company or retro."; return false; }
+            next.theme.preset=text;
+        }
+        if((Text(*f,"accent",text) && !CleanColour(text,next.theme.accent)) || (Text(*f,"accent2",text) && !CleanColour(text,next.theme.accent2))) {
+            error="The theme's colours are written like #107c10."; return false;
+        }
+        if(Text(*f,"person",text) && !CleanName(text,0,GuestNameMost,"The birthday person's name",next.theme.person,error)) return false;
+        if(!Whole(*f,"age",0,150,next.theme.age,error) && !error.empty()) return false;
+    }
+    if((f=v.Get("guests"))) {
+        if(f->type!=web::Value::Array) { error="guests is a list of {name, here}."; return false; }
+        if(f->items.size()>PartyGuestsMost) { error="A party has "+Number(PartyGuestsMost)+" guests at most."; return false; }
+        next.guests.clear();
+        for(size_t i=0;i<f->items.size();++i) {
+            const web::Value& g=f->items[i];
+            PartyGuest guest={std::string(),false};
+            if(g.type!=web::Value::Object || !Text(g,"name",text)) { error="guests is a list of {name, here}."; return false; }
+            if(!CleanName(text,1,GuestNameMost,"A guest's name",guest.name,error)) return false;
+            if(g.Get("here") && !Bool(g,"here",guest.here)) { error="here is true or false."; return false; }
+            if(!GuestNamed(next,guest.name).empty()) { error=guest.name+" is on the guest list twice."; return false; }
+            next.guests.push_back(guest);
+        }
+    }
+    if((f=v.Get("consoles")) && !PartyConsoles(*f,"consoles",next.consoles,error)) return false;
+    if((f=v.Get("gamemaster"))) {
+        if(f->type!=web::Value::String || (!f->text.empty() && !KnownAddress(f->text))) {
+            error=f->type==web::Value::String ? f->text+" isn't a console NetDisc360 knows." : "gamemaster is a console's address.";
+            return false;
+        }
+        next.gamemaster=f->text;
+    }
+    if(!Whole(v,"teams",TeamsLeast,TeamsMost,next.teams,error) && !error.empty()) return false;
+    for(int rule=0;rule<2;++rule) {
+        const char* key=rule ? "apart" : "together";
+        if(!(f=v.Get(key))) continue;
+        std::vector<NamePair>& pairs=rule ? next.apart : next.together;
+        if(f->type!=web::Value::Array || f->items.size()>PartyPairsMost) { error=std::string(key)+" is a list of up to "+Number(PartyPairsMost)+" pairs of guests' names."; return false; }
+        pairs.clear();
+        for(size_t i=0;i<f->items.size();++i) {
+            std::vector<std::string> pair;
+            if(!Strings(f->items[i],pair) || pair.size()!=2) { error=std::string(key)+" is a list of pairs of guests' names."; return false; }
+            std::string a=GuestNamed(next,pair[0]), b=GuestNamed(next,pair[1]);
+            if(a.empty() || b.empty()) { error=(a.empty() ? pair[0] : pair[1])+" isn't on the guest list."; return false; }
+            if(SameName(a,b)) { error=a+" can't be kept "+(rule ? "apart from" : "together with")+" themselves."; return false; }
+            pairs.push_back(std::make_pair(a,b));
+        }
+    }
+    for(size_t i=0;i<next.together.size();++i)
+        for(size_t k=0;k<next.apart.size();++k) {
+            const NamePair& t=next.together[i], & a=next.apart[k];
+            if((SameName(t.first,a.first) && SameName(t.second,a.second)) || (SameName(t.first,a.second) && SameName(t.second,a.first))) {
+                error=t.first+" and "+t.second+" can't be kept together and apart at once."; return false;
+            }
+        }
+    TidyParty(next);
+    { std::lock_guard<std::mutex> hold(PartyLock); TheParty=next; }
+    if(next.active && !was.active) {
+        Log("LAN party %s started on the dashboard: %s, the Gamemaster console %s.",next.name.empty() ? "" : ("\""+next.name+"\"").c_str(),
+            Count(int(next.consoles.size()),"console","consoles").c_str(),next.gamemaster.empty() ? "not chosen yet" : next.gamemaster.c_str());
+        Event(EventInfo,"LAN party started%s%s",next.name.empty() ? "" : ": ",next.name.c_str());
+    } else if(!next.active && was.active) {
+        Log("LAN party ended on the dashboard.");
+        Event(EventInfo,"LAN party ended");
+    }
+    Save();
+    return true;
+}
+
+// POST /api/party/raffle {teams, seed?}: draws teams from the guests who are
+// here and seats them on the party's consoles; seed draws the same teams again.
+std::atomic<unsigned> Draws(0);
+void PartyRaffle(const web::Value& v, web::Reply& out) {
+    Party p=CurrentParty();
+    std::string error, note;
+    int teams=p.teams, seed=-1;
+    if((!Whole(v,"teams",TeamsLeast,TeamsMost,teams,error) && !error.empty()) || (!Whole(v,"seed",0,0x7FFFFFFF,seed,error) && !error.empty())) { out.Error(400,error); return; }
+    unsigned from=seed>=0 ? unsigned(seed) : unsigned(time(NULL))*2654435761u^unsigned(Now()*1e6)^(++Draws*40503u);
+    std::vector<Team> drawn;
+    Seats seats;
+    if(!Raffle(GuestsHere(p),teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,p.consoles,seats,error)) { out.Error(400,error); return; }
+    int round;
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        TheParty.teams=teams; TheParty.drawn=true; TheParty.kept=false;
+        TheParty.drawnTeams=drawn; TheParty.seats=seats; TheParty.note=note;
+        round=TheParty.round+1;
+    }
+    Save();
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("round",round).Key("teams");
+    TeamsJson(j,drawn);
+    j.Key("seats");
+    SeatsJson(j,seats);
+    j.Set("note",note).Close('}');
+    out.body=j.Text();
+}
+
+// POST /api/party/keep: the teams drawn are this round's, and the next
+// raffle doesn't draw them again.
+bool KeepTeams(int& round, std::string& error) {
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        if(!TheParty.drawn || TheParty.drawnTeams.empty()) { error="Draw the teams first."; return false; }
+        if(!TheParty.kept) { TheParty.last=TheParty.drawnTeams; TheParty.kept=true; ++TheParty.round; }
+        round=TheParty.round;
+    }
+    Save();
+    return true;
+}
+
+// POST /api/party/seats {seats: {address: [names]}}: seats changed by hand
+// (a swap): the party's consoles, up to SeatsPerConsole guests who are here
+// on each, each guest once. A console left out gets no one.
+bool ChangeSeats(const web::Value& v, std::string& error) {
+    const web::Value* given=v.Get("seats");
+    if(!given || given->type!=web::Value::Object) { error="Send seats: the guests on each console, by its address."; return false; }
+    Party p=CurrentParty();
+    std::vector<std::string> here=GuestsHere(p), seen;
+    Seats seats;
+    for(size_t i=0;i<p.consoles.size();++i) seats.push_back(std::make_pair(p.consoles[i],Team()));
+    for(size_t f=0;f<given->fields.size();++f) {
+        const std::string& address=given->fields[f].first;
+        size_t at=std::find(p.consoles.begin(),p.consoles.end(),address)-p.consoles.begin();
+        if(at==p.consoles.size()) { error=address+" isn't one of the party's consoles."; return false; }
+        std::vector<std::string> names;
+        if(!Strings(given->fields[f].second,names)) { error="Each console's seats are a list of guests' names."; return false; }
+        if(names.size()>SeatsPerConsole) { error="Up to "+Number(SeatsPerConsole)+" play on one console (split-screen)."; return false; }
+        for(size_t i=0;i<names.size();++i) {
+            std::string name=GuestNamed(p,names[i]);
+            bool isHere=false;
+            for(size_t k=0;k<here.size() && !isHere;++k) isHere=SameName(here[k],names[i]);
+            if(name.empty() || !isHere) { error=names[i]+" isn't a guest who is here."; return false; }
+            for(size_t k=0;k<seen.size();++k) if(SameName(seen[k],name)) { error=name+" has two seats."; return false; }
+            seen.push_back(name);
+            seats[at].second.push_back(name);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        TheParty.seats=seats;
+        if(!TheParty.drawn) { TheParty.drawn=true; TheParty.kept=false; TheParty.drawnTeams.clear(); TheParty.note.clear(); }
+    }
+    Save();
+    return true;
+}
+
+// The consoles a party command is for: those the page names (consoles),
+// else the party's; the Gamemaster's first.
+bool CommandConsoles(const web::Value& v, std::vector<std::string>& out, std::string& error) {
+    Party p=CurrentParty();
+    const web::Value* given=v.Get("consoles");
+    if(given) { if(!PartyConsoles(*given,"consoles",out,error)) return false; }
+    else out=p.consoles;
+    if(out.empty()) { error="Choose the Gamemaster console and tick the party's consoles first."; return false; }
+    std::vector<std::string>::iterator host=std::find(out.begin(),out.end(),p.gamemaster);
+    if(host!=out.end()) std::rotate(out.begin(),host,host+1);
+    return true;
+}
+
+// A game a console runs, by the path Aurora's web server gives: its tile's
+// or its installed copy's game, else the folder it's in.
+std::string RunningName(const Console& c, const Options& o, const std::string& path) {
+    size_t cut=path.rfind('\\');
+    std::string folder=cut==std::string::npos ? path : path.substr(0,cut);
+    std::string listed;
+    DWORD titleId=0;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(std::map<std::string,std::string>::const_iterator t=c.tiles.begin();t!=c.tiles.end() && listed.empty();++t)
+            if(!_stricmp(DevicePath(o.xboxFolder+"/"+t->second).c_str(),folder.c_str())) listed=t->first;
+        for(size_t i=0;i<c.installed.size() && !titleId;++i)
+            if(!_stricmp(DevicePath(c.installed[i].path.substr(0,c.installed[i].path.rfind('/'))).c_str(),folder.c_str())) titleId=c.installed[i].titleId;
+    }
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size();++i)
+            if((!listed.empty() && Lower(GamesList[i].name)==listed) || (titleId && GamesList[i].titleId==titleId)) return config::ToUtf8(WithoutIso(GamesList[i].name));
+    }
+    cut=folder.rfind('\\');
+    return cut==std::string::npos ? folder : folder.substr(cut+1);
+}
+
+// What console c runs when it isn't Aurora: its NetISO game, or what Aurora's
+// web server names (a game installed on it, say). "" in Aurora, or when that
+// can't be told: whether Aurora's web server answers during a game isn't
+// known (it doesn't always), so then only a NetISO game shows.
+std::string RunningGame(Console& c, const Options& o) {
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        if(c.connections>0 && !c.mounted.empty() && !c.inAurora) return c.game.empty() ? config::ToUtf8(WithoutIso(c.mounted)) : c.game;
+    }
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
+    std::string path;
+    if(!aurora.Title(path) || path.empty()) return std::string();
+    std::string lower=Lower(path);
+    if(lower.size()>=11 && !lower.compare(lower.size()-11,11,"\\aurora.xex")) return std::string();
+    return RunningName(c,o,path);
+}
+
+// The title updates of a game on consoles, for Start on all's answer: the one
+// each console that was read applies ("none" for none), the newest any of
+// them has, and whether they differ.
+void UpdatesJson(web::Json& j, const IsoFile& game, const std::vector<std::string>& addresses) {
+    std::vector<ConsoleUpdates> consoles=UpdatesOf(addresses);  // u points into it.
+    GameUpdates u=JudgeUpdates(game.titleId,game.mediaId,consoles);
+    j.Key("titleUpdates").Open('{').Set("mismatch",u.mismatch).Key("byConsole").Open('{');
+    for(size_t i=0;i<u.inUse.size();++i) j.Set(u.inUse[i].first.c_str(),u.inUse[i].second ? UpdateName(*u.inUse[i].second) : std::string("none"));
+    j.Close('}').Set("newest",u.newest ? UpdateName(*u.newest) : std::string()).Close('}');
+}
+
+// POST /api/party/start {game, consoles?, confirm?}: Start on all. The same
+// game on every party console (or those named), the Gamemaster's first,
+// then the others at once; each from its installed copy if it has one (an
+// extracted one), else its tile. A console in a game would leave it, so
+// without confirm the answer is 409 with the busy consoles, for the page to
+// ask once and send again with confirm.
+void PartyStart(const web::Value& v, web::Reply& out) {
+    std::string name, error;
+    if(!Text(v,"game",name)) { out.Error(400,"Send the game."); return; }
+    IsoFile game;
+    if(!LibraryGame(name,game)) { out.Error(400,"That game isn't in your folders any more."); return; }
+    std::vector<std::string> addresses;
+    if(!CommandConsoles(v,addresses,error)) { out.Error(400,error); return; }
+    bool confirm=false;
+    Bool(v,"confirm",confirm);
+    Options o=Current();
+    std::vector<Console*> consoles;
+    for(size_t i=0;i<addresses.size();++i) consoles.push_back(ConsoleIfKnown(inet_addr(addresses[i].c_str())));
+    if(!confirm) {
+        std::vector<std::string> running(consoles.size());
+        std::vector<std::thread> asks;
+        for(size_t i=0;i<consoles.size();++i)
+            if(consoles[i]) asks.push_back(std::thread([&running,&consoles,&o,i]() { running[i]=RunningGame(*consoles[i],o); }));
+        for(size_t i=0;i<asks.size();++i) asks[i].join();
+        web::Json j;
+        j.Open('{').Key("busy").Open('[');
+        int busy=0;
+        for(size_t i=0;i<running.size();++i)
+            if(!running[i].empty()) { j.Open('{').Set("address",addresses[i]).Set("title",running[i]).Close('}'); ++busy; }
+        j.Close(']');
+        if(busy) {
+            j.Set("error",busy==1 ? "A console is in a game, which it leaves to start this one." : "Some consoles are in a game, which they leave to start this one.").Close('}');
+            out.status=409;
+            out.body=j.Text();
+            return;
+        }
+    }
+    struct Result { bool ok; std::string how, error; };
+    std::vector<Result> results(consoles.size());
+    auto start=[&results,&consoles,&game](size_t i) {
+        Result& r=results[i];
+        r.ok=false;
+        if(!consoles[i]) r.error="That console hasn't used NetDisc360 since it started.";
+        else r.ok=StartOn(*consoles[i],game,true,r.how,r.error);
+    };
+    start(0);
+    std::vector<std::thread> starts;
+    for(size_t i=1;i<consoles.size();++i) starts.push_back(std::thread(start,i));
+    for(size_t i=0;i<starts.size();++i) starts[i].join();
+    int started=0;
+    web::Json j;
+    j.Open('{').Set("ok",true).Key("results").Open('[');
+    for(size_t i=0;i<results.size();++i) {
+        j.Open('{').Set("address",addresses[i]).Set("ok",results[i].ok).Set("how",results[i].how).Set("error",results[i].error).Close('}');
+        started+=results[i].ok;
+    }
+    j.Close(']');
+    UpdatesJson(j,game,addresses);
+    j.Close('}');
+    out.body=j.Text();
+    Log("Start on all: %s started on %d of %s.",WithoutIso(game.name).c_str(),started,Count(int(results.size()),"console","consoles").c_str());
+    Event(EventPlay,"%s started on %d of %s (Start on all)",WithoutIso(game.name).c_str(),started,Count(int(results.size()),"console","consoles").c_str());
+}
+
+// POST /api/party/power {action, consoles?}: Back to Aurora on all (aurora)
+// or Turn off all (off), on the party's consoles (or those named) at once.
+void PartyPower(const web::Value& v, web::Reply& out) {
+    std::string action, error;
+    if(!Text(v,"action",action) || (action!="aurora" && action!="off")) { out.Error(400,"Send action aurora or off."); return; }
+    std::vector<std::string> addresses;
+    if(!CommandConsoles(v,addresses,error)) { out.Error(400,error); return; }
+    std::vector<std::string> errors(addresses.size());
+    std::vector<char> done(addresses.size(),0);
+    std::vector<std::thread> threads;
+    for(size_t i=0;i<addresses.size();++i)
+        threads.push_back(std::thread([&addresses,&errors,&done,&action,i]() {
+            Console* c=AskedConsole(addresses[i],errors[i]);
+            done[i]=c && PowerOn(*c,action,errors[i]);
+        }));
+    for(size_t i=0;i<threads.size();++i) threads[i].join();
+    web::Json j;
+    j.Open('{').Key("results").Open('[');
+    for(size_t i=0;i<addresses.size();++i) j.Open('{').Set("address",addresses[i]).Set("ok",done[i]!=0).Set("error",done[i] ? std::string() : errors[i]).Close('}');
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
+// Whether data starts as a picture of type does (PNG, JPEG, WebP).
+bool PictureIs(const std::string& data, const std::string& type) {
+    if(type=="image/png") return data.size()>8 && !data.compare(0,8,"\x89PNG\r\n\x1a\n",8);
+    if(type=="image/jpeg") return data.size()>3 && !data.compare(0,3,"\xFF\xD8\xFF",3);
+    if(type=="image/webp") return data.size()>12 && !data.compare(0,4,"RIFF") && !data.compare(8,4,"WEBP");
+    return false;
+}
+
+// POST /api/party/asset {kind: logo or background, type, data (base64)}: a
+// picture for the party's theme. A new logo takes the old one's place; a
+// background photo goes after the others. index: where it is.
+void PartyAsset(const web::Value& v, web::Reply& out) {
+    Options o=Current();
+    std::string folder=PartyFolder(o), kind, type, data, bytes;
+    if(folder.empty()) { out.Error(400,"The settings aren't kept in a file (start NetDisc360 with --config), so pictures can't be kept."); return; }
+    if(!Text(v,"kind",kind) || (kind!="logo" && kind!="background")) { out.Error(400,"kind is logo or background."); return; }
+    const char* extension=NULL;
+    Text(v,"type",type);
+    for(size_t i=0;i<sizeof(PictureTypes)/sizeof(PictureTypes[0]);++i) if(type==PictureTypes[i][1]) extension=PictureTypes[i][0];
+    if(!extension) { out.Error(400,"Send a PNG, JPEG or WebP picture."); return; }
+    if(!Text(v,"data",data) || !backup::FromBase64(data,bytes) || bytes.empty()) { out.Error(400,"The picture didn't arrive whole; try again."); return; }
+    if(bytes.size()>PartyPictureMost) {
+        char size[32]; _snprintf_s(size,sizeof(size),_TRUNCATE,"%.1f",bytes.size()/1048576.0);
+        out.Error(400,std::string("That picture is ")+size+" MB; "+Number(PartyPictureMost>>20)+" MB at most."); return;
+    }
+    if(!PictureIs(bytes,type)) { out.Error(400,std::string("That file isn't a ")+(extension[0]=='p' ? "PNG" : extension[0]=='j' ? "JPEG" : "WebP")+" picture."); return; }
+    std::lock_guard<std::mutex> hold(PartyFilesLock);
+    PartyPictures pictures=PicturesNow(o);
+    if(kind=="background" && pictures.backgrounds.size()>=PartyBackgroundsMost) {
+        out.Error(400,"A party has "+Number(PartyBackgroundsMost)+" background photos at most; remove one first."); return;
+    }
+    std::string file=kind=="logo" ? std::string("logo.")+extension : "background"+Number(pictures.most+1)+"."+extension;
+    if(!config::MakeFolder(folder) || !config::WriteFile(InFolder(folder,file),bytes,false)) { out.Error(400,"The picture couldn't be saved in "+folder+"."); return; }
+    if(kind=="logo" && !pictures.logo.empty() && pictures.logo!=file) config::RemoveFile(InFolder(folder,pictures.logo));
+    Log("The LAN party's %s was added on the dashboard (%s).",kind=="logo" ? "logo" : "background photo",InFolder(folder,file).c_str());
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("index",kind=="logo" ? 0 : int(pictures.backgrounds.size())).Close('}');
+    out.body=j.Text();
+}
+
+// POST /api/party/asset/remove {kind, index?}: removes the logo, a background
+// photo (by index), or every background photo (without one).
+bool RemovePartyAsset(const web::Value& v, std::string& error) {
+    Options o=Current();
+    std::string kind;
+    int index=-1;
+    if(!Text(v,"kind",kind) || (kind!="logo" && kind!="background")) { error="kind is logo or background."; return false; }
+    if(!Whole(v,"index",0,PartyBackgroundsMost-1,index,error) && !error.empty()) return false;
+    std::lock_guard<std::mutex> hold(PartyFilesLock);
+    PartyPictures pictures=PicturesNow(o);
+    std::vector<std::string> gone;
+    if(kind=="logo") { if(!pictures.logo.empty()) gone.push_back(pictures.logo); }
+    else if(index<0) gone=pictures.backgrounds;
+    else if(size_t(index)<pictures.backgrounds.size()) gone.push_back(pictures.backgrounds[size_t(index)]);
+    else { error="There's no background photo "+Number(index+1)+"."; return false; }
+    for(size_t i=0;i<gone.size();++i) config::RemoveFile(InFolder(PartyFolder(o),gone[i]));
+    return true;
+}
+
+// GET /api/party/asset?kind=logo, or ?kind=background&n=0: the picture.
+void PartyAssetFile(const web::Request& r, web::Reply& out) {
+    Options o=Current();
+    std::string kind=r.Param("kind"), n=r.Param("n"), file;
+    PartyPictures pictures=PicturesNow(o);
+    if(kind=="logo") file=pictures.logo;
+    else if(kind=="background" && !n.empty() && n.size()<=3 && n.find_first_not_of("0123456789")==std::string::npos && size_t(atoi(n.c_str()))<pictures.backgrounds.size())
+        file=pictures.backgrounds[size_t(atoi(n.c_str()))];
+    if(file.empty() || !config::ReadFile(InFolder(PartyFolder(o),file),out.body,PartyPictureMost+1)) { out.Error(404,"There's no such picture."); return; }
+    out.type=PictureType(file);
+}
+
+// The library's games by Title ID: the first one's name, and the listed name
+// of each (in lower case, as a console's tiles have them).
+void LibraryByTitle(std::map<DWORD,std::string>& names, std::map<DWORD,std::vector<std::string> >& listed) {
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    for(size_t i=0;i<GamesList.size();++i) {
+        const IsoFile& g=GamesList[i];
+        if(!g.titleId) continue;
+        if(!names.count(g.titleId)) names[g.titleId]=config::ToUtf8(WithoutIso(g.name));
+        listed[g.titleId].push_back(Lower(g.name));
+    }
+}
+
+// GET /api/systemlink: the System Link games (see systemlink.h), each with
+// whether it's in the library and which consoles have it (a tile, or
+// installed): the party's while it's on, else every console.
+void SystemLinkList(web::Reply& out) {
+    std::vector<std::string> only=ComparedConsoles();
+    std::map<DWORD,std::string> names;
+    std::map<DWORD,std::vector<std::string> > listed, on;
+    LibraryByTitle(names,listed);
+    std::vector<Console*> consoles=AllConsoles();
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(size_t k=0;k<(only.empty() ? consoles.size() : only.size());++k)
+            for(size_t i=0;i<consoles.size();++i) {
+                const Console& c=*consoles[i];
+                if(only.empty() ? i!=k : only[k]!=c.text) continue;
+                if(only.empty() && c.hiddenAt!=-2 && c.seenAt<=c.hiddenAt && !c.connections) continue;  // Forgotten.
+                std::set<DWORD> has;
+                for(std::map<DWORD,std::vector<std::string> >::const_iterator t=listed.begin();t!=listed.end();++t)
+                    for(size_t n=0;n<t->second.size();++n) if(c.tiles.count(t->second[n])) has.insert(t->first);
+                for(size_t n=0;n<c.installed.size();++n) has.insert(c.installed[n].titleId);
+                for(std::set<DWORD>::const_iterator t=has.begin();t!=has.end();++t) on[*t].push_back(c.text);
+            }
+    }
+    web::Json j;
+    j.Open('{').Set("attribution",SystemLinkAttribution).Key("games").Open('[');
+    for(size_t i=0;i<SystemLinkCount;++i) {
+        const SystemLinkGame& g=SystemLinkGames[i];
+        char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",g.titleId);
+        j.Open('{').Set("titleId",title).Set("name",g.name).Set("platform",g.xbox ? "xbox" : "360").Key("total");
+        if(g.total) j.Int(g.total); else j.Null();
+        j.Key("perConsole");
+        if(g.perConsole) j.Int(g.perConsole); else j.Null();
+        std::map<DWORD,std::string>::const_iterator name=names.find(g.titleId);
+        j.Set("notes",g.notes).Set("inLibrary",name!=names.end()).Key("game");
+        if(name!=names.end()) j.String(name->second); else j.Null();
+        j.Key("consoles");
+        NamesJson(j,on[g.titleId]);
+        j.Close('}');
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
+}
+
+// A time() as ISO 8601 in UTC: 2026-11-01T18:30:00Z.
+std::string IsoTime(long long when) {
+    time_t t=time_t(when);
+    struct tm utc;
+#ifdef _WIN32
+    if(gmtime_s(&utc,&t)) return std::string();
+#else
+    if(!gmtime_r(&t,&utc)) return std::string();
+#endif
+    char text[32];
+    strftime(text,sizeof(text),"%Y-%m-%dT%H:%M:%SZ",&utc);
+    return text;
+}
+
+// GET /api/titleupdates: each console's title updates as last read from its
+// Aurora (the party's consoles while it's on, else all), and the library's
+// games that any of them has one for: the one each console applies, the
+// newest, and whether they differ.
+void TitleUpdatesList(web::Reply& out) {
+    std::vector<ConsoleUpdates> consoles=UpdatesOf(ComparedConsoles());
+    web::Json j;
+    j.Open('{').Key("consoles").Open('[');
+    for(size_t c=0;c<consoles.size();++c) {
+        const ConsoleUpdates& u=consoles[c];
+        j.Open('{').Set("address",u.address).Key("read");
+        if(u.read) j.String(IsoTime(u.readAt)); else j.Null();
+        j.Set("error",u.error).Key("tus").Open('[');
+        for(size_t i=0;i<u.updates.size();++i) {
+            const TitleUpdate& t=u.updates[i];
+            char title[12], media[12];
+            _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",t.titleId);
+            _snprintf_s(media,sizeof(media),_TRUNCATE,"%08X",t.mediaId);
+            j.Open('{').Set("titleId",title).Set("mediaId",media).Set("baseVersion",(long long)t.baseVersion).Set("version",(long long)t.version);
+            j.Set("name",t.name).Set("file",t.file).Set("active",t.active).Close('}');
+        }
+        j.Close(']').Close('}');
+    }
+    j.Close(']').Key("games").Open('[');
+    std::vector<IsoFile> games;
+    { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; }
+    std::set<DWORD> shown;
+    for(size_t i=0;i<games.size();++i) {
+        const IsoFile& g=games[i];
+        if(!g.titleId || shown.count(g.titleId)) continue;
+        GameUpdates u=JudgeUpdates(g.titleId,g.mediaId,consoles);
+        if(!u.newest) continue;  // No console has one.
+        shown.insert(g.titleId);
+        char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",g.titleId);
+        j.Open('{').Set("titleId",title).Set("game",config::ToUtf8(WithoutIso(g.name))).Key("byConsole").Open('{');
+        for(size_t k=0;k<u.inUse.size();++k) {
+            j.Key(u.inUse[k].first.c_str());
+            if(u.inUse[k].second) j.Open('{').Set("version",(long long)u.inUse[k].second->version).Set("name",UpdateName(*u.inUse[k].second)).Close('}');
+            else j.Null();
+        }
+        j.Close('}').Key("newest").Open('{').Set("version",(long long)u.newest->version).Set("name",UpdateName(*u.newest)).Close('}');
+        j.Set("mismatch",u.mismatch).Close('}');
+    }
+    j.Close(']').Close('}');
+    out.body=j.Text();
 }
 
 // A game's netiso.log from its folder on the console (Aurora's FTP server,
@@ -3991,6 +4860,30 @@ void Api(const web::Request& r, web::Reply& out) {
         if(Play(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
     }
+    else if(r.method=="POST" && r.path=="/api/party") {
+        if(ChangeParty(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="POST" && r.path=="/api/party/raffle") PartyRaffle(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/keep") {
+        int round;
+        if(!KeepTeams(round,error)) out.Error(400,error);
+        else { web::Json j; j.Open('{').Set("ok",true).Set("round",round).Close('}'); out.body=j.Text(); }
+    }
+    else if(r.method=="POST" && r.path=="/api/party/seats") {
+        if(ChangeSeats(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="POST" && r.path=="/api/party/start") PartyStart(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/power") PartyPower(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/asset") PartyAsset(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/asset/remove") {
+        if(RemovePartyAsset(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="GET" && r.path=="/api/party/asset") PartyAssetFile(r,out);
+    else if(r.method=="GET" && r.path=="/api/systemlink") SystemLinkList(out);
+    else if(r.method=="GET" && r.path=="/api/titleupdates") TitleUpdatesList(out);
     else if(r.method=="POST" && r.path=="/api/network/private") {
 #ifdef _WIN32
         if(!InTray) out.Error(400,"Only NetDisc360.exe in the notification area can change the network.");
