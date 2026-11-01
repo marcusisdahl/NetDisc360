@@ -352,6 +352,14 @@ bool FtpClient::Site(const char* command, std::string& reply) {
     return code_/100==2;
 }
 
+bool FtpClient::Rename(const char* from, const char* to) {
+    if(!Open()) return false;
+    if(!Command(3,"RNFR %s",from)) return false;
+    if(!Command(2,"RNTO %s",to)) return false;
+    folder_.clear();  // In case the current folder was the one renamed.
+    return true;
+}
+
 bool FtpClient::RemoveFolder(const char* path) {
     std::string parent,name; SplitPath(path,parent,name);
     if(!Open() || !Enter(parent)) return false;
