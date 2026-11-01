@@ -6,7 +6,9 @@
 #include "isvr.h"
 
 namespace nia {
-enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxFolders = 1024, PathMax = 320, IniMax = 4096 };
+// MaxGames: the most ISOs Sync makes folders for (a safety limit; libraries
+// of a few thousand are normal).
+enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxGames = 65536, PathMax = 320, IniMax = 4096 };
 
 #ifdef _XBOX
 const char PathSeparator = '\\';
@@ -81,6 +83,9 @@ struct DiscRoleInfo {
     char local[PathMax];  // "Hdd1:\Games\Halo 3\default.xex" or a Games on Demand package; empty: none.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
+// Called before each of the server's ISOs is looked at (done of total), so a
+// big first sync can show how far it has got.
+typedef void (*Progress)(int done, int total);
 
 // Whether the console is to have a game folder for an ISO: not when the
 // same game is installed on it, which Aurora lists already.
@@ -99,5 +104,6 @@ typedef void (*Placed)(const char* iso, const char* folder);
 // has whatever removeGone says; placed, if not NULL, is told the folders.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
-          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL);
+          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL,
+          Progress progress=NULL);
 }

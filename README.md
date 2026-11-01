@@ -332,6 +332,9 @@ It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release
 - The variables from `NETDISC_XBOX` down are only the first start's settings. Once the server has saved its settings in `/config`, what's saved there wins, and you change them on the dashboard. (`NETDISC_WEB_PASSWORD`, the ports and `NETDISC_VERBOSE` always apply.)
 - The compose file uses **host networking**, so the console reaches the server on port 4323 of the host and the server sees the console's real address. With port mapping instead (`ports:` with `4323:4323` and `8360:8360`, as on Docker Desktop), set `NETDISC_XBOX`.
 - The server runs as user 1000:1000. If it can't read your games, add `user: "<uid>:<gid>"` to the service with an ID that can (and give the config folder to that ID).
+- **Unraid, TrueNAS and Synology:** [docs/nas.md](docs/nas.md) has an Unraid template and the steps for each.
+- **Monitoring:** `http://<server>:8360/metrics` gives Prometheus (and so Grafana or Home Assistant) the games served, games started, and each console's connections, data sent, speed, ping and whether it plays. With a dashboard password, give it as HTTP Basic auth (any user name).
+- Games linked into the games folder (symlinks, say to another share) are followed, unless the link points back at a folder it is in.
 - Without Docker Compose: `docker run -d --name netdisc360 --network host --restart unless-stopped -v /path/to/games:/games:ro -v /path/to/config:/config -e NETDISC_WEB_PASSWORD=<a password> ghcr.io/marcusisdahl/netdisc360`.
 
 ## Playing
@@ -403,6 +406,8 @@ Installing GTA V from its install disc, on a console with a TP-Link UE306 USB ad
 | `read_kb=256`, `rcv_kb=64` | about 26 MB/s |
 
 That is about as fast as the adapter goes on the console's USB 2.0 port. The console's own network port stops at about 12 MB/s.
+
+**Test network speed** on a console's card (the **Consoles** page) shows what the network between the server and that console can do, without starting a game: it writes a 32 MB test file to the console over Aurora's FTP, reads it back, deletes it and shows both speeds. A slow cable, switch port, Wi-Fi bridge or adapter shows up there. FTP adds its own overhead, so games can go a little faster than the test.
 
 - `read_kb` is how much the drive asks for in one request, in KB: `64` by default, `256` or `1024` for more. NetISO's own server, `netiso-srv`, cuts replies of 128 KB or more short, so keep `64` with it; NetDisc360 serves any size.
 - `read_depth` is how many requests are in flight at once: `4` by default, up to `8`.
@@ -539,6 +544,8 @@ Aurora finds art on XboxUnity by Title ID, and XboxUnity has no entry for homebr
 
 Aurora files the launchers under Unsigned, because they aren't retail-signed, so its Xbox 360 category doesn't show them. The server edits `Media\Scripts\Content\FilterFunctions.lua` in Aurora's folder once, so that the category also lists games in the NetISO folder, and keeps the original next to it as `FilterFunctions.lua.before-netiso`. If an Aurora update puts the original back, the server makes the same edit again. A filter it doesn't recognise is left alone, and `--no-category` turns this off.
 
+The server also adds two filters of its own to Aurora (**Filters**, **User**), as files in `User\Scripts\Content\Filters` that it keeps up to date: **Hide install discs** (below) and **Recently added**, the games that came into your game folders in the last 30 days (games already there when you first ran this version count as old). Aurora reads them when it starts, so restart Aurora to see new games in **Recently added**.
+
 ### Aurora's scripts
 
 NetDisc360 keeps two Lua scripts up to date in Aurora's `User\Scripts` folder:
@@ -567,14 +574,14 @@ The dashboard can put the packages there itself: **Install on Xbox** on the game
 
 ## Security
 
-- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user; the dashboard never shows it again, and the server never writes it to its log.
+- **Change Aurora's FTP login.** Aurora's default login (`xboxftp` / `xboxftp`) lets anyone on your network read and write the console's drives. Set your own in Aurora's settings and enter it on the dashboard's **Settings** page (or `NETDISC_FTP_USER`/`NETDISC_FTP_PASSWORD` in Docker, or `--ftp-user`/`--ftp-password`). FTP sends the login unencrypted, so keep the console on a network you trust. On Windows the settings file keeps the password encrypted for your Windows user. On Linux and in Docker it is kept as plain text in `netdisc.ini`, which only the server's user can read, so keep the `/config` folder private. The dashboard never shows the password again, and the server never writes it to its log.
 - **Change Aurora's web server login too**, if you use it (Aurora's settings, HTTP server; `xboxhttp` / `xboxhttp` by default): it can start any program on the console. Enter yours under **Settings > Xbox & Aurora > Aurora's web server**. It is kept like the FTP password. NetDisc360 never asks it for the console's system information, which holds the console's CPU and DVD keys.
 - **The console's debug monitor (`xbdm.xex`) has no login at all**: anything on your network can reach port 730 on a console that loads it, and NetDisc360's **Turn off** uses that. Load it only on a network you trust.
 - **Keep the NetISO server on your home network.** The NetISO protocol has no login: anything that can reach port 4323 can list and read the games you serve. Don't forward that port from the internet. When Windows Firewall asks, allow `NetDisc360.exe` on private networks only. The Docker image runs as an unprivileged user and only needs read access to your games.
 - **Give the dashboard a password when other devices can open it.** On Windows only the PC itself can open it until you turn on **Other devices can open it**, which needs a password. In Docker it is open to your network, so set one. The password is kept only as a salted hash; logging in gives the browser a cookie for 30 days, and changing the password logs every browser out. Without a password the dashboard only answers to addresses and local names (like `nas.local`), so a web site can't reach it through your browser, and it only takes requests from its own page. The login cookie is signed with a random key kept next to the settings file (`session.key`), not with anything a backup holds. Don't forward port 8360 from the internet either.
 - **Covers on the dashboard.** Your browser downloads them from GitHub (the XboxUnity-Scraper archive), asking only for each game's Title ID. Turn them off under **Settings > Dashboard**. **Latest releases** (in the sidebar) asks GitHub for the newest version of NetDisc360, FastFTP360 and NetUsb360 only when you open it. Apart from the update check below, the server itself never goes online.
 - **Backups hold Aurora's FTP login and the dashboard password's hash**, like the settings file (the FTP password is encrypted on Windows, so a backup restored on another PC or in Docker keeps the FTP password already set there). Keep downloaded backups where only you can read them.
-- **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc360.exe` over HTTPS and installs it only if it comes from this project's releases and its size and SHA-256 match what GitHub lists for the release. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
+- **Updates come only from this project's GitHub releases.** On Windows the server asks GitHub's API for the newest release and, when you install it, downloads its `NetDisc360.exe` over HTTPS and installs it only if it comes from this project's releases and its size and SHA-256 match what GitHub lists for the release. Builds that carry an update key also need the release's signature, `NetDisc360.exe.sig`, to match that key, so not even a release put up by someone else on this GitHub page gets installed. Turn off **Look for updates** under **Settings > Updates** to stop it. In Docker the dashboard asks GitHub from your browser instead.
 - The server only reads your game folders; it never writes to them. On the console it writes only inside `--xbox-folder`, unless `--no-category` the one Aurora script above, and the empty art files of the two apps above in Aurora's `Data\GameData`.
 
 ## Limitations

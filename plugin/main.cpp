@@ -91,7 +91,7 @@ static const char MountFolder[]="Mount";
 // After the mount the plugin fakes a tray open and close on its own thread,
 // and the console then reads the new disc. Reading the disc meanwhile broke
 // the game the launcher started, so the disc is left alone this long first.
-static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=256;
+static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=4,MaxEntries=100000;
 
 // ---- Hooks ----
 
@@ -444,10 +444,14 @@ static LONG OpenFolder(const char* folder,HANDLE& handle) {
     char path[MAX_PATH]; sprintf_s(path,"%s\\",folder);
     return OpenPath(path,true,handle);
 }
-// Lists a folder by device path into Names; the number of names, or -1 when
-// it can't be opened. Stops at MaxNames, or if an entry comes back twice in a
-// row.
-static int ListFolder(const char* folder) {
+// Lists a folder by device path and keeps only the entry named want (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed, or -1 when it can't be opened. Stops
+// after MaxEntries, or if an entry comes back twice in a row.
+static int NamesKept=0;
+static char LastName[MAX_PATH];
+static int ListFolder(const char* folder,const char* want) {
+    NamesKept=0; LastName[0]=0;
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
@@ -455,18 +459,22 @@ static int ListFolder(const char* folder) {
     for(;;) {
         LONG result=QueryFolder(handle,count==0);
         if(result<0) { if(result!=NoMoreFiles) Note("%s: listing stopped (status %08X)",folder,result); break; }
-        if(count==MaxNames) { Note("%s: more than %d entries; using the first %d.",folder,MaxNames,MaxNames); break; }
+        if(count==MaxEntries) { Note("%s: more than %d entries; stopping there.",folder,MaxEntries); break; }
+        char name[MAX_PATH];
         DWORD length=Entry.nameLength<MAX_PATH-1 ? Entry.nameLength : MAX_PATH-1;
-        memcpy(Names[count],Entry.name,length); Names[count][length]=0;
-        if(count && !strcmp(Names[count],Names[count-1])) { Note("%s: %s came back twice; stopping.",folder,Names[count]); break; }
+        memcpy(name,Entry.name,length); name[length]=0;
+        if(count && !strcmp(name,LastName)) { Note("%s: %s came back twice; stopping.",folder,name); break; }
+        strcpy_s(LastName,name);
+        if(want && !_stricmp(name,want) && NamesKept<MaxNames) strcpy_s(Names[NamesKept++],name);
         ++count;
     }
     NtClose(handle);
     Note("%s: %d entries",folder,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 // The ISO's Mount folder, \Device\NetIso\<iso>\Mount, after listing the root
@@ -474,13 +482,13 @@ static const char* FindName(int count,const char* name) {
 // these folders doesn't mount. isoFolder gets the ISO's own folder.
 static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,char* isoFolder) {
     isoFolder[0]=0;
-    int count=ListFolder(IsoDevice);
+    int count=ListFolder(IsoDevice,settings.iso);
     if(count<0) return false;
-    const char* iso=FindName(count,settings.iso);
+    const char* iso=FindName(settings.iso);
     if(!iso) { Note("The server doesn't list %s.",settings.iso); return false; }
     sprintf_s(isoFolder,capacity,"%s\\%s",IsoDevice,iso);
-    count=ListFolder(isoFolder);
-    if(count>=0 && !FindName(count,MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
+    count=ListFolder(isoFolder,MountFolder);
+    if(count>=0 && !FindName(MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
     sprintf_s(folder,capacity,"%s\\%s",isoFolder,MountFolder);
     return true;
 }
