@@ -1710,8 +1710,8 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         bool missing=FoldersMissing;
         // Before the push's own connections to this server count as the console's.
         if(o.followAddress) FollowAddress(console,s,ftp,o);
-        if(o.skipInstalled && !looked) { console.lookInstalled=false; LookInstalled(console,s,ftp,o,installed); s.installedAt=Now(); }
-        else { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
+        if(!o.skipInstalled) { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
+        else if(!looked) { console.lookInstalled=false; LookInstalled(console,s,ftp,o,installed); s.installedAt=Now(); }
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
