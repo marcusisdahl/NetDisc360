@@ -117,6 +117,9 @@ struct Options {
     // Aurora restarted (only while it's on screen) when that filter shows the
     // other state than the server is in.
     bool auroraScripts, restartAurora;
+    // Aurora's filter script also takes the games whose tile is gone off its
+    // list as Aurora starts (see OnlineScript in aurora.h), without asking.
+    bool tidyAurora;
     // Aurora's web server (Aurora's settings, HTTP server), to start games and restart Aurora.
     std::string auroraWebUser, auroraWebPassword;
     int auroraWebPort;
@@ -124,12 +127,18 @@ struct Options {
     bool keepAwake;      // Windows doesn't sleep while a console plays (AwakeLoop).
     int autoOffMinutes;  // A console is turned off this long after its last game ended (AutoOff); 0: never.
     int xbdmPort;        // The consoles' debug monitor (xbdm), which turns them off; --xbdm-port for the tests.
+    // Each console's own name (see ConsoleName in aurora.h) is read from its
+    // media sharing on this port (--name-port for the tests), and shown on
+    // its screen when Aurora starts, with showName (through JRPC2).
+    int namePort;
+    bool showName;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
-                skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
-                auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort) {}
+                skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true), tidyAurora(false),
+                auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
+                namePort(ConsoleNamePort), showName(true) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -568,6 +577,13 @@ struct Console {
     // game installed since loses its tile and one deleted gets it back (see
     // PushTo).
     std::atomic<bool> recheck;
+    // Its own name and fixed id (see ConsoleName in aurora.h; "" until read),
+    // under ConsoleLock, and when NamesLoop last tried (Now() milliseconds).
+    std::string name, id;
+    std::atomic<long long> nameAt;
+    // This server's FTP sessions with it now (see Busy): Aurora is never
+    // restarted while one is open (see SafeToRestart).
+    std::atomic<int> busy;
     // The title updates its Aurora has (see LookTitleUpdates), under
     // ConsoleLock: as last read (time() then; 0: never), and why the latest
     // look failed ("" if it didn't).
@@ -604,7 +620,7 @@ struct Console {
     std::atomic<long long> gameEndedAt;
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
                                  inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
-                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), recheck(false), titleUpdatesRead(0), launchedAt(0), launchLeft(false),
+                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), recheck(false), nameAt(0), busy(0), titleUpdatesRead(0), launchedAt(0), launchLeft(false),
                                  marked(false), gameTitle(0), gameSince(0), gameEndedAt(0) {
         AddressText(at,text,sizeof(text));
         dbListedAt[0]=dbListedAt[1]=0;
@@ -641,9 +657,20 @@ std::vector<Console*> AllConsoles() {
     return Consoles;
 }
 
+// Counts an FTP session of this server with a console while it's open (see
+// Console::busy), so Aurora isn't restarted under it.
+struct Busy {
+    Console* c;
+    explicit Busy(Console* console) : c(console) { if(c) ++c->busy; }
+    ~Busy() { if(c) --c->busy; }
+private:
+    Busy(const Busy&); Busy& operator=(const Busy&);
+};
+
 // A console that has used the server, kept in the settings file so the
-// dashboard knows it after a restart.
-struct KnownConsole { std::string address; long long seen; };
+// dashboard knows it after a restart, with its own name and id as last read
+// (see ConsoleName in aurora.h; "" if never).
+struct KnownConsole { std::string address; long long seen; std::string id, name; };
 std::vector<KnownConsole> Known;  // Under SettingsLock.
 // This computer's addresses as far back as the settings file remembers
 // (own_addresses), newest last, so a NetISO.xex.txt naming an address it had
@@ -786,6 +813,7 @@ void PlayStarted(Console& console, const std::string& name, DWORD titleId) {
 void AutoOff(Console& c, const Options& o) {
     long long ended=c.gameEndedAt;
     if(!o.autoOffMinutes || !ended || Now()*1000-ended<o.autoOffMinutes*60000.0) return;
+    if(c.busy>0) return;  // Not while this server works on it over FTP: once that's done.
     c.gameEndedAt=0;
     if(!c.inAurora || c.offline) return;
     DWORD address=c.address;
@@ -952,6 +980,59 @@ void BackOnline(Console& c, const char* how) {
 // if the console is gone. A connection that outlasts it shows the console is
 // on, though not answering pings. A console that never answered a ping is
 // never offline.
+// Each console's own name (see ConsoleName in aurora.h), read while it's on
+// (it answers pings, uses NetISO or Aurora's FTP server answers): when it's
+// not known yet, NameRetrySeconds after a try that failed, and every
+// NameEverySeconds besides, so a name changed on the console shows.
+const double NameEverySeconds = 600, NameRetrySeconds = 60;
+bool LookName(Console& c, const Options& o) {
+    std::string name, id, error;
+    c.nameAt=(long long)(Now()*1000);
+    if(!ConsoleName(c.address,o.namePort,name,id,error)) return false;
+    std::string was;
+    { std::lock_guard<std::mutex> hold(ConsoleLock); was=c.name; c.name=name; c.id=id; }
+    if(was!=name) XboxLog(c,"its own name (Console Settings on it) is %s.",name.c_str());
+    return true;
+}
+// Its name as the page shows it: its own, or as last read (kept in the
+// settings file); "" if never read.
+std::string NameOf(const Console& c) {
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        if(!c.name.empty()) return c.name;
+    }
+    std::lock_guard<std::mutex> hold(SettingsLock);
+    for(size_t k=0;k<Known.size();++k) if(Known[k].address==c.text) return Known[k].name;
+    return std::string();
+}
+void NamesLoop() {
+    for(;;) {
+        Options o=Current();
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            long long now=(long long)(Now()*1000);
+            bool on=(c.answers && !c.offline) || (c.seenAt>=0 && now-c.seenAt<60000) || c.ftp==2;
+            if(!on) continue;
+            bool known;
+            { std::lock_guard<std::mutex> hold(ConsoleLock); known=!c.name.empty(); }
+            if(c.nameAt && now-c.nameAt<(long long)(1000*(known ? NameEverySeconds : NameRetrySeconds))) continue;
+            LookName(c,o);
+        }
+        Sleep(2000);
+    }
+}
+
+// Shows "This is <name> (<address>)" on the console's screen (see
+// ConsoleNotify in aurora.h): when Aurora starts (see PushTo), with
+// showName, and from the dashboard's Identify button.
+bool ShowName(Console& c, const Options& o, std::string& error) {
+    std::string name=NameOf(c);
+    if(name.empty() && LookName(c,o)) name=NameOf(c);
+    std::string text=name.empty() ? std::string("This is ")+c.text : "This is "+name+" ("+c.text+")";
+    return ConsoleNotify(c.address,o.xbdmPort,text,error);
+}
+
 void PingLoop() {
     for(;;) {
         Options o=Current();
@@ -1758,6 +1839,21 @@ bool PlaysNow(const Console& console) {
     return console.connections>0 && !console.mounted.empty() && !console.inAurora;
 }
 
+// Whether Aurora may be restarted on console now: never while this server
+// works on it over FTP (writing game folders, scripts or title updates,
+// reading logs or Aurora's databases), as that would cut the work off. own
+// is the caller's own sessions, which are done. Why not, in why.
+bool SafeToRestart(const Console& console, int own, std::string& why) {
+    if(console.busy>own) { why="NetDisc360 is still working on it over FTP"; return false; }
+    return true;
+}
+// SafeToRestart, waiting up to seconds for that work to end (a push of game
+// folders takes a few seconds): for what the dashboard asks.
+bool SafeSoon(const Console& console, double seconds, std::string& why) {
+    for(double until=Now()+seconds;!SafeToRestart(console,0,why);Sleep(250)) if(Now()>=until) return false;
+    return true;
+}
+
 // The game folders on the console whose tile in Aurora has no cover, and
 // every folder there (for new names). False, with why in error, if Aurora
 // couldn't be asked.
@@ -1857,10 +1953,14 @@ struct PushState {
     bool toldInstalled;          // Looking for them failed, and the log said so.
     bool installedChanged;       // What's installed changed since its folders were last written (see Console::recheck).
     bool restarted;              // Aurora was restarted for its filter once (see RefreshAuroraScripts).
+    // That restart is due, since restartSince (Now()), and waits until
+    // nothing else goes on with the console (see RestartWhenSafe).
+    bool restartWanted;
+    double restartSince;
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
     PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), installedAt(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
-                  toldInstalled(false), installedChanged(false), restarted(false) {}
+                  toldInstalled(false), installedChanged(false), restarted(false), restartWanted(false), restartSince(0) {}
 };
 
 // The games installed on the console, for its push and the dashboard (see installed.h).
@@ -1972,6 +2072,7 @@ void LookTitleUpdatesNow(const std::vector<Console*>& consoles, const Options& o
         if(!c || c->offline) continue;
         { std::lock_guard<std::mutex> hold(ConsoleLock); if(c->connections>0 && !c->mounted.empty() && !c->inAurora) continue; }
         looks.push_back(std::thread([c,&o,timeoutSeconds]() {
+            Busy busy(c);
             FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),timeoutSeconds);
             if(ftp.Open()) LookTitleUpdates(*c,ftp,o);
             ftp.Close();
@@ -2002,7 +2103,7 @@ void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const 
     if(!ftp.List(o.xboxFolder.c_str(),entries)) return;
     std::vector<std::string> folders;
     for(size_t i=0;i<entries.size();++i) if(entries[i].folder) folders.push_back(entries[i].name);
-    std::string cleanup=CleanupScript(o.xboxFolder,folders), online=OnlineScript(o.xboxFolder);
+    std::string cleanup=CleanupScript(o.xboxFolder,folders), online=OnlineScript(o.xboxFolder,o.tidyAurora);
     if(cleanup.empty() || online.empty()) return;  // Game folders at a drive's top: no script could tell them apart.
     std::string cleanupPath=o.aurora+CleanupScriptPath, onlinePath=o.aurora+OnlineScriptPath;
     if(!ftp.Enters(o.aurora.c_str())) return;  // GuardFilter tells about that.
@@ -2035,6 +2136,24 @@ void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const 
     if(!shown || s.restarted || !o.restartAurora || !ftp.Retrieve((helper+"/"+ShownMarker).c_str(),state,64)) return;
     if(std::string(state.begin(),state.end()).compare(0,7,"offline")) return;
     s.restarted=true;
+    s.restartWanted=true;  // Once this push is done (see RestartWhenSafe).
+    s.restartSince=Now();
+}
+
+// Aurora's restart for its filter (see RefreshAuroraScripts), once its scan
+// was asked for and no other FTP work goes on with it; own as for
+// SafeToRestart. One that can't be done for RestartWaitMost is dropped.
+const double RestartWaitMost = 300;
+void RestartWhenSafe(Console& console, PushState& s, const Options& o, int own) {
+    if(s.scanTries) return;
+    std::string why;
+    if(!SafeToRestart(console,own,why)) {
+        if(Now()-s.restartSince<RestartWaitMost) return;
+        XboxLog(console,"didn't restart Aurora for its filter: %s.",why.c_str());
+        s.restartWanted=false;
+        return;
+    }
+    s.restartWanted=false;
     if(RestartAurora(console,o,"so its filter shows the PC games again")) XboxEvent(console,EventInfo,"Aurora restarted to show the PC games");
 }
 
@@ -2043,6 +2162,7 @@ void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
     Options o=Current();
+    if(s.restartWanted) RestartWhenSafe(console,s,o,0);
     bool pushDue=settled && (!s.everPushed || state!=s.pushed || s.installedChanged || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
     // Back in Aurora, or Aurora (re)started (see Console::recheck), and every
@@ -2062,6 +2182,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     bool idle=o.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
     if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
     s.probedAt=Now();
+    Busy busy(&console);
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
         // Only to look again: quietly, as Aurora may still be starting.
@@ -2082,6 +2203,14 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     if(back) {
         XboxLog(console,"its FTP server answers.");
         XboxEvent(console,EventXbox,"Aurora answers",std::string("Aurora on ")+console.text+" answers");
+        // Aurora started: its name on its screen, so it's told from the others.
+        if(o.showName && !o.pushOnce) {
+            Console* c=&console;
+            std::thread([c,o]() {
+                std::string error;
+                if(!ShowName(*c,o,error)) XboxLog(*c,"couldn't show its name on its screen: %s.",error.c_str());
+            }).detach();
+        }
         s.upSince=Now();
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
@@ -2139,6 +2268,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     if(o.pushOnce && s.attempted && !s.scanTries) s.finished=true;
     ftp.Close();
+    if(s.restartWanted) RestartWhenSafe(console,s,o,1);  // This session is done.
 }
 
 // The games' fingerprint, and whether it has settled, for the consoles' threads.
@@ -2185,14 +2315,20 @@ void RememberConsoles() {
             if(consoles[i]->hiddenAt!=-2 && at<=consoles[i]->hiddenAt) continue;  // Forgotten on the dashboard.
         }
         long long seen=(long long)time(NULL)-(long long)(Now()-at/1000.0);
-        bool known=false;
+        std::string id, name;
+        { std::lock_guard<std::mutex> hold(ConsoleLock); id=consoles[i]->id; name=consoles[i]->name; }
+        bool known=false, renamed=false;
         {
             std::lock_guard<std::mutex> hold(SettingsLock);
-            for(size_t k=0;k<Known.size() && !known;++k) if(Known[k].address==consoles[i]->text) { Known[k].seen=seen; known=true; }
-            if(!known) { KnownConsole c = {consoles[i]->text, seen}; Known.push_back(c); }
+            for(size_t k=0;k<Known.size() && !known;++k) {
+                if(Known[k].address!=consoles[i]->text) continue;
+                Known[k].seen=seen; known=true;
+                if(!name.empty() && (Known[k].name!=name || Known[k].id!=id)) { Known[k].name=name; Known[k].id=id; renamed=true; }
+            }
+            if(!known) { KnownConsole c = {consoles[i]->text, seen, id, name}; Known.push_back(c); }
         }
         std::map<DWORD,long long>::iterator last=saved.find(consoles[i]->address);
-        if(!known || last==saved.end() || seen-last->second>600) { saved[consoles[i]->address]=seen; save=true; }
+        if(!known || renamed || last==saved.end() || seen-last->second>600) { saved[consoles[i]->address]=seen; save=true; }
     }
     if(save) Save();
 }
@@ -2450,12 +2586,14 @@ bool Save() {
     f.Set("skip_installed",o.skipInstalled ? "1" : "0");
     f.Set("installed_folders",o.installedFolders);
     f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
+    f.Set("tidy_aurora",o.tidyAurora ? "1" : "0");
     f.Set("restart_aurora",o.restartAurora ? "1" : "0");
     f.Set("aurora_web_user",o.auroraWebUser);
     f.Set("aurora_web_password",config::Protect(o.auroraWebPassword));
     f.Set("aurora_web_port",Number(o.auroraWebPort));
     f.Set("follow_address",o.followAddress ? "1" : "0");
     f.Set("keep_awake",o.keepAwake ? "1" : "0");
+    f.Set("show_name",o.showName ? "1" : "0");
     f.Set("auto_off_minutes",std::to_string(o.autoOffMinutes));
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
@@ -2485,7 +2623,10 @@ bool Save() {
     for(long long i=n+1;i<=before;++i) f.Remove(("choice"+Number(i)).c_str());
     before=Listed(f,"consoles");
     f.Set("consoles",Number((long long)known.size()));
-    for(size_t i=0;i<known.size();++i) f.Set(("console"+Number((long long)i+1)).c_str(),known[i].address+"|"+Number(known[i].seen));
+    // address|seen, then |id|name once its name was read (the name last: no bar is in it).
+    for(size_t i=0;i<known.size();++i)
+        f.Set(("console"+Number((long long)i+1)).c_str(),known[i].address+"|"+Number(known[i].seen)+
+              (known[i].name.empty() ? std::string() : "|"+known[i].id+"|"+known[i].name));
     for(long long i=(long long)known.size()+1;i<=before;++i) f.Remove(("console"+Number(i)).c_str());
     SaveParty(f,party);
     if(f.Save(o.configPath)) return true;
@@ -2558,12 +2699,14 @@ bool LoadConfig(Options& o) {
     o.skipInstalled=Flag(f,"skip_installed",o.skipInstalled);
     if(f.Has("installed_folders")) o.installedFolders=f.Get("installed_folders");
     o.auroraScripts=Flag(f,"aurora_scripts",o.auroraScripts);
+    o.tidyAurora=Flag(f,"tidy_aurora",o.tidyAurora);
     o.restartAurora=Flag(f,"restart_aurora",o.restartAurora);
     if(!f.Get("aurora_web_user").empty()) o.auroraWebUser=f.Get("aurora_web_user");
     if(f.Has("aurora_web_password") && config::Unprotect(f.Get("aurora_web_password"),password)) o.auroraWebPassword=password;
     if(f.Has("aurora_web_port")) o.auroraWebPort=std::max(1,std::min(65535,int(f.Number("aurora_web_port",o.auroraWebPort))));
     o.followAddress=Flag(f,"follow_address",o.followAddress);
     o.keepAwake=Flag(f,"keep_awake",o.keepAwake);
+    o.showName=Flag(f,"show_name",o.showName);
     if(f.Has("auto_off_minutes")) o.autoOffMinutes=std::max(0,std::min(1440,int(f.Number("auto_off_minutes",0))));
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
@@ -2608,7 +2751,9 @@ bool LoadConfig(Options& o) {
         std::string value=f.Get(("console"+Number(i)).c_str());
         size_t bar=value.find('|');
         if(bar==std::string::npos || !bar) continue;
-        KnownConsole c = {value.substr(0,bar), atoll(value.c_str()+bar+1)};
+        KnownConsole c = {value.substr(0,bar), atoll(value.c_str()+bar+1), std::string(), std::string()};
+        size_t idAt=value.find('|',bar+1), nameAt=idAt==std::string::npos ? idAt : value.find('|',idAt+1);
+        if(nameAt!=std::string::npos) { c.id=value.substr(idAt+1,nameAt-idAt-1); c.name=value.substr(nameAt+1); }
         known.push_back(c);
     }
     // The LAN party: its consoles are addresses (a file made by hand could have anything).
@@ -2944,6 +3089,7 @@ void State(web::Reply& out) {
     j.Set("skipInstalled",o.skipInstalled).Set("installedFolders",o.installedFolders).Set("auroraScripts",o.auroraScripts);
     j.Set("restartAurora",o.restartAurora).Set("auroraWebUser",o.auroraWebUser).Set("auroraWebPasswordSet",!o.auroraWebPassword.empty());
     j.Set("auroraWebPort",o.auroraWebPort).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake).Set("autoOffMinutes",o.autoOffMinutes);
+    j.Set("showName",o.showName).Set("tidyAurora",o.tidyAurora);
 #ifdef _WIN32
     if(InTray) j.Set("startWithWindows",StartsWithWindows());
 #endif
@@ -2987,7 +3133,10 @@ void State(web::Reply& out) {
             rate+=c.RateAt(last);
             long long at=c.seenAt;
             if(c.hiddenAt!=-2 && at<=c.hiddenAt && !c.connections) continue;  // Forgotten.
-            j.Open('{').Set("address",c.text).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
+            // Its own name, or as last read (the settings file's).
+            std::string name=c.name, id=c.id;
+            for(size_t k=0;k<known.size() && name.empty();++k) if(known[k].address==c.text) { name=known[k].name; id=known[k].id; }
+            j.Open('{').Set("address",c.text).Set("name",name).Set("id",id).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
             j.Set("ftp",c.ftp.load()).Set("synced",c.synced.load()).Set("mounted",config::ToUtf8(WithoutIso(c.mounted))).Set("push",c.push.load());
             j.Set("playing",c.connections>0 && !c.mounted.empty() && !c.inAurora).Set("inAurora",c.inAurora.load());
             bool answers=c.answers && !c.offline;  // Before pingMs: PingLoop sets pingMs first, so answers implies a ping time.
@@ -3007,7 +3156,7 @@ void State(web::Reply& out) {
         bool listed=false;
         for(size_t i=0;i<consoles.size() && !listed;++i) listed=known[k].address==consoles[i]->text;
         if(listed) continue;
-        j.Open('{').Set("address",known[k].address).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
+        j.Open('{').Set("address",known[k].address).Set("name",known[k].name).Set("id",known[k].id).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
         j.Set("playing",false).Set("inAurora",false).Set("ping",-1).Set("answers",false).Set("offline",false).Set("answered",0LL);
         j.Set("push",o.xboxes.empty() || std::find(o.xboxes.begin(),o.xboxes.end(),inet_addr(known[k].address.c_str()))!=o.xboxes.end());
         j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
@@ -3595,6 +3744,7 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
     if(!Text(body,"ftpPassword",password) || password.empty()) password=o.ftpPassword;
     if(std::find_if(user.begin(),user.end(),[](char c) { return (unsigned char)c<' '; })!=user.end() ||
        std::find_if(password.begin(),password.end(),[](char c) { return (unsigned char)c<' '; })!=password.end()) { out.Error(400,"That can't have a line break or tab in it."); return; }
+    Busy busy(ConsoleIfKnown(address));
     FtpClient ftp(address,o.ftpPort,user.c_str(),password.c_str(),8);
     web::Json j;
     j.Open('{').Set("address",text);
@@ -3659,6 +3809,7 @@ void ConsoleArt(const web::Value& body, web::Reply& out) {
     Console* console=ConsoleIfKnown(address);
     if(!console) { out.Error(404,"No console with that address has used this server."); return; }
     if(PlaysNow(*console)) { out.Error(409,"It's playing a game. Aurora's FTP server is back once it's in Aurora again."); return; }
+    Busy busy(console);
     FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) { out.Error(502,std::string("Aurora doesn't answer: ")+ftp.Error()); return; }
     std::vector<FtpEntry> folders;
@@ -3775,6 +3926,8 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Text(v,"auroraWebPassword",next.auroraWebPassword);
     Bool(v,"followAddress",next.followAddress);
     Bool(v,"keepAwake",next.keepAwake);
+    Bool(v,"showName",next.showName);
+    Bool(v,"tidyAurora",next.tidyAurora);
     if(!Whole(v,"autoOffMinutes",0,1440,next.autoOffMinutes,error) && !error.empty()) return false;
     Bool(v,"updateCheck",next.updateCheck);
     if(Bool(v,"updateAuto",next.updateAuto) && next.updateAuto && strcmp(UpdateHow(),"app")) {
@@ -3819,6 +3972,8 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.auroraWebUser!=was.auroraWebUser || next.auroraWebPassword!=was.auroraWebPassword || next.auroraWebPort!=was.auroraWebPort) changed.push_back("Aurora's web server login");
     if(next.followAddress!=was.followAddress) changed.push_back(next.followAddress ? "NetISO follows this PC's address" : "NetISO.xex.txt left alone");
     if(next.keepAwake!=was.keepAwake) changed.push_back(next.keepAwake ? "PC kept awake while a console plays" : "PC may sleep while a console plays");
+    if(next.tidyAurora!=was.tidyAurora) changed.push_back(next.tidyAurora ? "Aurora's list tidied as it starts" : "Aurora's list not tidied as it starts");
+    if(next.showName!=was.showName) changed.push_back(next.showName ? "each console's name shown on it when Aurora starts" : "consoles' names not shown on them");
     if(next.autoOffMinutes!=was.autoOffMinutes)
         changed.push_back(next.autoOffMinutes ? "consoles turned off "+Count(next.autoOffMinutes,"minute","minutes")+" after their last game" : "consoles not turned off after their last game");
     {
@@ -3831,7 +3986,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.skipInstalled=next.skipInstalled; Settings.installedFolders=next.installedFolders; Settings.auroraScripts=next.auroraScripts;
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
-        Settings.autoOffMinutes=next.autoOffMinutes;
+        Settings.autoOffMinutes=next.autoOffMinutes; Settings.showName=next.showName; Settings.tidyAurora=next.tidyAurora;
     }
     // Pre-releases in or out changes which release is the newest.
     if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
@@ -3839,7 +3994,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     // Anything the push depends on writes every console's folders again (only what differs).
     if(next.xboxes!=was.xboxes || login || next.xboxFolder!=was.xboxFolder || next.aurora!=was.aurora ||
        (next.push && !was.push) || (next.filter && !was.filter) || next.skipInstalled!=was.skipInstalled ||
-       next.installedFolders!=was.installedFolders || (next.auroraScripts && !was.auroraScripts)) ++PushGeneration;
+       next.installedFolders!=was.installedFolders || (next.auroraScripts && !was.auroraScripts) || next.tidyAurora!=was.tidyAurora) ++PushGeneration;
     if(next.webLan!=was.webLan) StartWeb(Current(),true);
     if(!changed.empty()) {
         std::string what;
@@ -3967,7 +4122,7 @@ void Reload(std::vector<std::string>& notes) {
         Settings.skipInstalled=o.skipInstalled; Settings.installedFolders=o.installedFolders; Settings.auroraScripts=o.auroraScripts;
         Settings.restartAurora=o.restartAurora; Settings.auroraWebUser=o.auroraWebUser; Settings.auroraWebPassword=o.auroraWebPassword;
         Settings.auroraWebPort=o.auroraWebPort; Settings.followAddress=o.followAddress; Settings.keepAwake=o.keepAwake;
-        Settings.autoOffMinutes=o.autoOffMinutes;
+        Settings.autoOffMinutes=o.autoOffMinutes; Settings.showName=o.showName; Settings.tidyAurora=o.tidyAurora;
     }
     UpdateConsoles(o.xboxes);
     FoldersChangedAt=(long long)(Now()*1000);
@@ -4249,6 +4404,7 @@ bool LibraryGame(const std::string& name, IsoFile& game) {
 // hold the start up; one Aurora can't start from here (on a USB drive)
 // leaves it to the tile. how says which it was: installed or tile. The
 // console leaves what it runs, a game too (the page asks first).
+const double StartWaitMost = 20, PowerWaitMost = 5;
 bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string& how, std::string& error) {
     Options o=Current();
     // An installed copy's file: default.xex, or an original Xbox game's default.xbe.
@@ -4278,6 +4434,9 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
     }
     std::string device=DevicePath(folder);
     if(device.empty()) { error="Aurora starts games from the dashboard on the hard drive only, and this one is in "+folder+"."; return false; }
+    // Aurora ends as the game starts: not while this server writes to it.
+    std::string why;
+    if(!SafeSoon(c,StartWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
     AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
     if(!aurora.Launch(device,exec)) {
         error=aurora.Error()+".";
@@ -4378,6 +4537,8 @@ void Screenshots(const web::Request& r, const web::Value& body, web::Reply& out)
 bool PowerOn(Console& console, const std::string& action, std::string& error) {
     Console* c=&console;
     Options o=Current();
+    std::string why;
+    if((action=="off" || action=="aurora") && !SafeSoon(*c,PowerWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
     if(action=="off") {
         if(!Xbdm(c->address,o.xbdmPort,"shutdown",error)) { error="It can't be turned off from here: "+error+"."; return false; }
         XboxLog(*c,"turned off (asked on the dashboard).");
@@ -4399,6 +4560,16 @@ bool PowerOn(Console& console, const std::string& action, std::string& error) {
     XboxEvent(*c,EventXbox,"Aurora restarted from the dashboard");
     c->launchedAt=0;
     c->recheck=true;  // Back in Aurora: what's installed and its title updates are looked at again.
+    return true;
+}
+
+// POST /api/console/identify {address}: "This is <name> (<address>)" on its screen.
+bool Identify(const web::Value& v, std::string& error) {
+    std::string address;
+    Text(v,"address",address);
+    Console* c=AskedConsole(address,error);
+    if(!c) return false;
+    if(!ShowName(*c,Current(),error)) { error="It can't show a message: "+error+"."; return false; }
     return true;
 }
 
@@ -5007,6 +5178,7 @@ void GameLog(const std::string& address, const std::string& name, web::Reply& ou
     if(folder.empty()) { out.Error(400,"That console has no folder for it."); return; }
     Options o=Current();
     std::string path=o.xboxFolder+"/"+folder;
+    Busy busy(c);
     FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),8);
     std::vector<FtpEntry> files;
     // Listed first: FtpDll answers a missing file late, and the next command with it.
@@ -5109,6 +5281,10 @@ void Api(const web::Request& r, web::Reply& out) {
             (r.method=="POST" && (r.path=="/api/console/screenshot/take" || r.path=="/api/console/screenshot/delete"))) Screenshots(r,body,out);
     else if(r.method=="POST" && r.path=="/api/console/power") {
         if(Power(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    }
+    else if(r.method=="POST" && r.path=="/api/console/identify") {
+        if(Identify(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/play") {
@@ -5365,6 +5541,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(a=="--no-scan") o.scan=false;
         else if(a=="--no-installed") o.skipInstalled=false;
         else if(a=="--no-aurora-scripts") o.auroraScripts=false;
+        else if(a=="--tidy-aurora") o.tidyAurora=true;  // For the tests.
         else if(a=="--push-once") o.pushOnce=true;  // For the tests.
         else if(hasValue && a=="--xbox") {
             DWORD xbox=inet_addr(args[++i].c_str());
@@ -5378,6 +5555,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--installed") o.installedFolders=args[++i];
         else if(hasValue && a=="--aurora-web-port") o.auroraWebPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--xbdm-port") o.xbdmPort=atoi(args[++i].c_str());
+        else if(hasValue && a=="--name-port") o.namePort=atoi(args[++i].c_str());  // For the tests.
         else if(hasValue && a=="--port") o.port=atoi(args[++i].c_str());
         else if(hasValue && a=="--ftp-port") o.ftpPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--launcher") o.launcherPath=args[++i];
@@ -5543,6 +5721,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(RateLoop).detach();
     std::thread(AuroraLoop).detach();
     std::thread(PingLoop).detach();
+    std::thread(NamesLoop).detach();
     std::thread(SizeLoop).detach();
 #ifdef _WIN32
     std::thread(AwakeLoop).detach();
@@ -5563,6 +5742,7 @@ void ServerStopping() {
         if(!c->marked.exchange(false)) continue;
         ++*left;
         std::thread([c,o,left]() {
+            Busy busy(c);
             FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),3);
             std::string helper=o.xboxFolder+"/"+HelperFolder;
             std::vector<FtpEntry> files;

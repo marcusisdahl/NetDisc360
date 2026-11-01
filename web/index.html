@@ -225,6 +225,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .console.on .icon { background: var(--good-soft); color: var(--good); }
 .console.playing .icon { background: var(--play-soft); color: var(--play); }
 .console .name { font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.console .name .ip { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
 .console .what { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .console .what b { color: var(--text); font-weight: 600; }
 .console .rate { text-align: right; grid-row: span 2; }
@@ -1175,13 +1176,17 @@ function pingText(c) {
   if (c.answers) return [c.ping < 1 ? 'Under 1 ms' : c.ping + ' ms', 'good'];
   return [c.ping < 0 ? '\u2014' : 'No answer', ''];
 }
+// A console by the name it was given on the Xbox (Settings, System, Console
+// Settings, Console Name), or its address while that isn't known.
+const cName = c => c.name || c.address;
+const nameOf = ip => { const c = S && S.consoles.find(x => x.address === ip); return c ? cName(c) : ip; };
 function consoleCard(c, index, wide) {
   const st = consoleStatus(c);
   const now = c.rate.length ? c.rate[c.rate.length - 1] : 0;
   const canvas = h('canvas');
   const card = h('div.console' + (st.cls ? '.' + st.cls : ''),
     h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
-    h('div.name', h('span', c.address), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+    h('div.name', h('span', { title: c.name ? c.name + ' (' + c.address + ')' : c.address }, cName(c), c.name ? h('span.ip', c.address) : null), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
     h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
     h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : c.answers ? 'On; NetISO hasn\u2019t connected yet' : 'Nothing mounted'));
   if (wide) {
@@ -1263,8 +1268,8 @@ Pages.dashboard = root => {
         tile('gauge', 'Streaming now', rate(S.totals.rate), 'peak ' + rate(S.totals.peak)),
         tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
       const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
-      chart.set(list.map(x => ({ name: x.c.address, values: x.c.rate, color: x.i })));
-      fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), x.c.address, x.c.playing ? ' \u00b7 ' + x.c.mounted : '')));
+      chart.set(list.map(x => ({ name: cName(x.c), values: x.c.rate, color: x.i })));
+      fill(legend, list.map(x => h('span', h('i', { style: { background: seriesColor(x.i) } }), cName(x.c), x.c.playing ? ' \u00b7 ' + x.c.mounted : '')));
       const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c)).slice(0, 4);
       fill(consoles, sorted.length ? sorted.map(x => consoleCard(x.c, x.i)) :
         h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to ', h('code', (S.addresses[0] || 'this computer') + ':' + S.ports.netiso), '.')));
@@ -1424,9 +1429,9 @@ function startButton(g, tag) {
 }
 
 async function playOn(g, c, button) {
-  if (c.playing && !(await confirmBox('Start ' + g.name + '?', [h('p', { style: { margin: 0 } }, c.address + ' is playing ', h('b', c.mounted), '. Starting ', h('b', g.name), ' quits it.')], 'Start ' + g.name))) return;
+  if (c.playing && !(await confirmBox('Start ' + g.name + '?', [h('p', { style: { margin: 0 } }, cName(c) + ' is playing ', h('b', c.mounted), '. Starting ', h('b', g.name), ' quits it.')], 'Start ' + g.name))) return;
   button.disabled = true;
-  try { await api('play', { game: g.name, console: c.address }); toast(g.name + ' is starting on ' + c.address); }
+  try { await api('play', { game: g.name, console: c.address }); toast(g.name + ' is starting on ' + cName(c)); }
   catch (e) { toast(e.message, true); }
   button.disabled = false;
 }
@@ -1451,7 +1456,7 @@ function details(g) {
         h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
         h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path),
         consoles.length ? [h('div.k', 'Start on'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-          consoles.map(c => h('button.btn.small', { onclick: e => playOn(g, c, e.currentTarget) }, ic('play', 'sm'), c.address)))] : null,
+          consoles.map(c => h('button.btn.small', { title: c.address, onclick: e => playOn(g, c, e.currentTarget) }, ic('play', 'sm'), cName(c))))] : null,
         g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + a, onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? a : 'netiso.log')))] : null))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
@@ -1540,10 +1545,18 @@ function liveBlock(c, l) {
     h('button.btn.small', { onclick: e => power(c, 'off', e.currentTarget) }, ic('power', 'sm'), 'Turn off')));
 }
 async function power(c, action, button) {
-  if (action === 'off' && !(await confirmBox('Turn off ' + c.address + '?', c.playing ? 'It\u2019s playing ' + c.mounted + '; the game ends.' : 'It turns off as with its power button.', 'Turn off', true))) return;
-  if (action === 'aurora' && c.playing && !(await confirmBox('Restart Aurora on ' + c.address + '?', 'It\u2019s playing ' + c.mounted + '; the game ends.', 'Restart Aurora', true))) return;
+  if (action === 'off' && !(await confirmBox('Turn off ' + cName(c) + '?', c.playing ? 'It\u2019s playing ' + c.mounted + '; the game ends.' : 'It turns off as with its power button.', 'Turn off', true))) return;
+  if (action === 'aurora' && c.playing && !(await confirmBox('Restart Aurora on ' + cName(c) + '?', 'It\u2019s playing ' + c.mounted + '; the game ends.', 'Restart Aurora', true))) return;
   button.disabled = true;
-  try { await api('console/power', { address: c.address, action }); toast(action === 'off' ? c.address + ' is turning off' : 'Aurora is starting again on ' + c.address); Live[c.address] = null; }
+  try { await api('console/power', { address: c.address, action }); toast(action === 'off' ? cName(c) + ' is turning off' : 'Aurora is starting again on ' + cName(c)); Live[c.address] = null; }
+  catch (e) { toast(e.message, true); }
+  button.disabled = false;
+}
+
+// "This is <name> (<address>)" on the console's screen (JRPC2), to tell them apart.
+async function identify(c, button) {
+  button.disabled = true;
+  try { await api('console/identify', { address: c.address }); toast('Look for the note on ' + cName(c) + '\u2019s screen'); }
   catch (e) { toast(e.message, true); }
   button.disabled = false;
 }
@@ -1605,7 +1618,7 @@ function screenshots(c) {
         h('button.btn.primary', { onclick: close }, 'Close')),
     ]);
   }
-  closeIt = modal('Screenshots on ' + c.address, close => [
+  closeIt = modal('Screenshots on ' + cName(c), close => [
     h('div.modal-body', grid),
     h('div.modal-foot', status,
       h('button.btn', { onclick: async e => {
@@ -1694,8 +1707,9 @@ Pages.consoles = root => {
         const actions = h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px' } });
         // Aurora's FTP server is up only while Aurora runs (1: it didn't answer).
         if (x.c.ftp !== 1 && !x.c.playing) actions.appendChild(h('button.btn.small.ghost', { title: 'Find the games in Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(x.c.address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art'));
+        if (x.c.answers || x.c.connections > 0) actions.appendChild(h('button.btn.small.ghost', { title: 'Shows \u201cThis is ' + cName(x.c) + '\u201d on its screen, to tell the consoles apart', onclick: e => identify(x.c, e.currentTarget) }, ic('tv', 'sm'), 'Identify'));
         if (x.c.connections === 0) actions.appendChild(
-          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
+          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + cName(x.c))).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
         if (actions.childNodes.length) $('.console-facts', card).appendChild(actions);
         return card;
       }) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
@@ -1762,7 +1776,7 @@ async function setupCheck() {
   fill(consoles, S.consoles.map(c => {
     const list = h('ul.wz-checks.setup-console', wzCheck('info', 'Checking\u2026'));
     api('consoles/check', { address: c.address }).then(r => fill(list, consoleChecks(r))).catch(e => fill(list, wzCheck('bad', 'The check didn\u2019t work', e.message)));
-    return [h('h3', { style: { margin: '18px 0 4px' } }, 'Xbox ' + c.address), list];
+    return [h('h3', { style: { margin: '18px 0 4px' } }, c.name ? c.name + ' (' + c.address + ')' : 'Xbox ' + c.address), list];
   }));
   copy.disabled = false;
 }
@@ -2121,7 +2135,7 @@ Pages.party = root => {
       return h('div.pc-row' + (on ? '.on' : ''),
         h('label.pick', h('input', { type: 'checkbox', checked: on, disabled: gm, 'data-focus': 'in-' + ip, title: gm ? 'The Gamemaster console is always in the party' : null,
           onchange: e => edit({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
-        h('span.what', h('b', ip), h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
+        h('span.what', h('b', nameOf(ip)), nameOf(ip) !== ip ? h('span.muted', ' ' + ip) : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
         h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster'));
     })), h('p.hint', 'The Gamemaster console is the host’s: it’s seated first and starts first. Tick every console that plays.')];
   }
@@ -2183,7 +2197,7 @@ Pages.party = root => {
   }
   function drawRaffle(p) {
     const here = guestsHere(p), d = p.drawn && p.drawn.teams.length ? p.drawn : null, n = p.teams;
-    const where = team => d ? p.consoles.filter(ip => (d.seats[ip] || []).some(x => team.includes(x))) : [];
+    const where = team => d ? p.consoles.filter(ip => (d.seats[ip] || []).some(x => team.includes(x))).map(nameOf) : [];
     const status = shuffling ? 'Drawing…' : d ? (d.kept ? 'Round ' + p.round + ', kept' : 'Round ' + (p.round + 1) + ': keep these, or draw again') : plural(here.length, 'guest') + ' here';
     const grid = shuffling ? h('div.teams.shuffling', Array.from({ length: n }, (_, i) => teamBox(i, [])))
       : d ? h('div.teams' + (reveal ? '.reveal' : ''), d.teams.map((team, i) => teamBox(i, team, where(team))))
@@ -2242,7 +2256,7 @@ Pages.party = root => {
     const picked = pick ? pickedName(p) : null;
     const slot = (at, name) => {
       const on = !!pick && pick.ip === at.ip && pick.i === at.i, t = name ? teamOf(name) : -1;
-      const where = at.ip ? 'seat ' + (at.i + 1) + ' on ' + at.ip : 'not seated';
+      const where = at.ip ? 'seat ' + (at.i + 1) + ' on ' + nameOf(at.ip) : 'not seated';
       return h('button.slot' + (name ? '' : '.empty') + (t >= 0 ? '.' + Teams[t][1] : ''), { type: 'button', 'aria-pressed': String(on), 'data-focus': 'slot-' + at.ip + '-' + at.i,
         'aria-label': (name || 'Empty') + ', ' + where + (pick && !on ? ': swap with ' + (picked || 'the empty seat') : ''), onclick: () => tap(at) },
         name ? [h('span.dot'), h('span.n', name)] : h('span.n', at.ip ? 'Empty seat' : 'Not playing'));
@@ -2251,7 +2265,7 @@ Pages.party = root => {
       h('div.seat-boxes', p.consoles.map(ip => {
         const names = placed[ip] || [], st = partyConsole(ip), gm = ip === p.gamemaster;
         return h('div.seat-box' + (gm ? '.gm' : ''),
-          h('div.seat-head', ic('monitor', 'sm'), h('b', ip), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+          h('div.seat-head', ic('monitor', 'sm'), h('b', { title: ip }, nameOf(ip)), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
           h('div.slots', [0, 1, 2, 3].map(i => slot({ ip, i }, names[i]))));
       })),
       bench.length || (pick && pick.ip && picked) ? h('div.bench', h('div.bench-head', h('b', 'Not seated'), h('span.muted', bench.length ? plural(bench.length, 'guest') + ' here without a seat' : 'Choose one to take off a seat')),
@@ -2350,7 +2364,7 @@ Pages.party = root => {
   }
   async function powerAll(action, button) {
     const p = S.party, playingNow = p.consoles.map(ip => S.consoles.find(c => c.address === ip)).filter(c => c && c.playing);
-    const ends = playingNow.length ? [h('p', { style: { marginBottom: 0 } }, 'The game ends on ' + playingNow.map(c => c.address + ' (' + c.mounted + ')').join(', ') + '.')] : [];
+    const ends = playingNow.length ? [h('p', { style: { marginBottom: 0 } }, 'The game ends on ' + playingNow.map(c => cName(c) + ' (' + c.mounted + ')').join(', ') + '.')] : [];
     if (action === 'off' && !(await confirmBox('Turn off every party console?', [h('p', { style: { marginTop: 0 } }, plural(p.consoles.length, 'console') + ' turn off as with their power button.'), ends], 'Turn off all', true))) return;
     if (action === 'aurora' && playingNow.length && !(await confirmBox('Back to Aurora on every console?', ends, 'Back to Aurora', true))) return;
     button.disabled = true;
@@ -2393,7 +2407,7 @@ Pages.party = root => {
     fill(guestCount, p.guests.length ? here.length + ' of ' + p.guests.length + ' here' : 'kept for the next party');
     banner.show(JSON.stringify([p.active, p.name, p.theme, pics.key, p.guests, p.consoles.length, p.round, p.gamemaster]), () => drawBanner(p, pics));
     form.show(JSON.stringify([p.name, p.theme, pics.key, S.settings.saved]), () => drawForm(p, pics));
-    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address), statuses]), () => drawConsoles(p));
+    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses]), () => drawConsoles(p));
     guests.show(JSON.stringify(p.guests), () => drawGuests(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling]), () => drawRaffle(p));
@@ -2437,7 +2451,7 @@ function bigScreen(parent) {
   wake();
   // A TV or phone that would dim stays on (where the browser allows it).
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { lock = l; }).catch(() => {});
-  const label = (p, ip) => 'Console ' + (p.consoles.indexOf(ip) + 1);
+  const label = (p, ip) => nameOf(ip) !== ip ? nameOf(ip) : 'Console ' + (p.consoles.indexOf(ip) + 1);
   const now = st => !st.c ? 'Not connected' : st.c.playing ? st.c.mounted : st.c.offline ? 'Offline' : st.c.connections > 0 || st.c.answers ? 'In Aurora' : 'Not connected';
   return {
     update() {
@@ -2489,13 +2503,17 @@ function bigScreen(parent) {
 // have them (the party's while it's on).
 const PlatformNames = { 360: 'Xbox 360', xbox: 'Original Xbox' };
 function systemLinkTab(el) {
-  let data = null, loadedFor = '', busy = false, query = '', platform = 'all', mine = false, sort = 'name', dir = 1, drawn = '';
+  let data = null, loadedFor = '', busy = false, query = '', platform = 'all', mine = false, tonight = false, sort = 'name', dir = 1, drawn = '';
   const search = h('input.input', { type: 'search', placeholder: 'Search games', 'aria-label': 'Search the System Link games', oninput: e => { query = e.target.value.toLowerCase(); draw(); } });
   const platforms = h('div.segmented', { role: 'group', 'aria-label': 'Platform' }, [['all', 'All'], ['360', 'Xbox 360'], ['xbox', 'Original Xbox']].map(([v, label]) =>
     h('button', { 'data-platform': v, onclick: () => { platform = v; draw(); } }, label)));
   const owned = h('label.check-label', h('input', { type: 'checkbox', onchange: e => { mine = e.target.checked; draw(); } }), 'In my library');
+  // What can we play? Every console (the party's while it's on) has it, and
+  // the guests here fit, as far as the lists know the counts.
+  const fits = h('label.check-label', { title: 'Games every console has (the party\u2019s while it\u2019s on) that fit the guests ticked as here' },
+    h('input', { type: 'checkbox', onchange: e => { tonight = e.target.checked; draw(); } }), 'We can all play');
   const count = h('span.muted'), list = h('div'), foot = h('div.attribution');
-  el.append(h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), platforms, owned, count), list, foot);
+  el.append(h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), platforms, owned, fits, count), list, foot);
   // Column, its heading, its cell's class, and the way it sorts first (numbers: most first).
   const Columns = [['name', 'Game', '', 1], ['platform', 'Platform', 'hide-narrow', 1], ['perConsole', 'Per console', 'num', -1], ['total', 'In all', 'num', -1],
     ['library', 'In your library', 'hide-narrow', -1], ['consoles', 'Consoles with it', 'hide-narrow', -1]];
@@ -2520,10 +2538,14 @@ function systemLinkTab(el) {
   function draw() {
     for (const b of platforms.children) { b.classList.toggle('on', b.dataset.platform === platform); b.setAttribute('aria-pressed', String(b.dataset.platform === platform)); }
     if (!data) { if (!busy) return; fill(list, h('div.card', h('div.empty', ic('loader-circle', 'spin'), h('p', 'Loading the list…')))); return; }
-    const key = JSON.stringify([loadedFor, query, platform, mine, sort, dir]);
+    const party = S.party.active && S.party.consoles.length ? S.party.consoles : S.consoles.map(c => c.address);
+    const players = S.party.active ? guestsHere(S.party).length : 0;
+    const key = JSON.stringify([loadedFor, query, platform, mine, tonight, party, players, sort, dir, S.consoles.map(c => c.name)]);
     if (key === drawn) return;
     drawn = key;
-    const games = data.games.filter(g => (platform === 'all' || g.platform === platform) && (!mine || g.inLibrary) &&
+    const fitsAll = g => party.length > 0 && party.every(ip => g.consoles.includes(ip)) &&
+      (!players || ((!g.total || g.total >= players) && (!g.perConsole || g.perConsole * party.length >= players)));
+    const games = data.games.filter(g => (platform === 'all' || g.platform === platform) && (!mine || g.inLibrary) && (!tonight || fitsAll(g)) &&
       (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query) || (g.game || '').toLowerCase().includes(query)));
     // Unknown counts go last whichever way.
     const unknown = g => (sort === 'perConsole' && !g.perConsole) || (sort === 'total' && !g.total);
@@ -2536,13 +2558,13 @@ function systemLinkTab(el) {
     fill(list, games.length ? h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
       h('thead', h('tr', Columns.map(heading))),
       h('tbody', games.map(g => h('tr',
-        h('td', h('div', { style: { fontWeight: 600 } }, g.name), h('div.sl-meta', [PlatformNames[g.platform], g.inLibrary ? 'in your library' : '', g.consoles.length ? 'on ' + g.consoles.join(', ') : ''].filter(Boolean).join(' · '))),
+        h('td', h('div', { style: { fontWeight: 600 } }, g.name), h('div.sl-meta', [PlatformNames[g.platform], g.inLibrary ? 'in your library' : '', g.consoles.length ? 'on ' + g.consoles.map(nameOf).join(', ') : ''].filter(Boolean).join(' · '))),
         h('td.hide-narrow.sl-platform', PlatformNames[g.platform]),
         h('td.num', { title: g.perConsole ? null : 'Not known' }, g.perConsole || dash.cloneNode(true)),
         h('td.num', { title: g.total ? null : 'Not known' }, g.total || dash.cloneNode(true)),
         h('td.hide-narrow', g.inLibrary ? h('span.pill.good', ic('check', 'sm'), g.game && g.game !== g.name ? g.game : 'Yes') : dash.cloneNode(true)),
-        h('td.hide-narrow', g.consoles.length ? h('div.sl-consoles', g.consoles.map(a => h('span.pill.off', a))) : dash.cloneNode(true))))))) :
-      h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', mine ? 'None of your games, or try another name.' : 'Try another name, or All.'))));
+        h('td.hide-narrow', g.consoles.length ? h('div.sl-consoles', g.consoles.map(a => h('span.pill.off', { title: a }, nameOf(a)))) : dash.cloneNode(true))))))) :
+      h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', tonight ? 'No game is on every ' + (S.party.active ? 'party ' : '') + 'console' + (players ? ' for ' + plural(players, 'player') : '') + ' yet.' : mine ? 'None of your games, or try another name.' : 'Try another name, or All.'))));
     const parts = String(data.attribution || '').split(/(https?:\/\/[^\s)]+)/);
     fill(foot, ic('info', 'sm'), h('div', h('p', parts.map((t, i) => i % 2 ? out(t, t) : t)),
       h('p', 'From ', wiki('List of Xbox 360 System Link games'), ' and ', wiki('List of Xbox System Link games'), ' on the English Wikipedia, by Wikipedia contributors, under ',
@@ -2868,7 +2890,9 @@ Pages.settings = root => {
           h('div.form-actions', h('button.btn', { onclick: () => save({ installedFolders: installedFolders.value }, 'Folders saved') }, 'Save folders')))),
       card('scroll-text', 'Aurora extras', null,
         row('Aurora scripts', ['Puts ', h('b', 'NetDisc360 Cleanup'), ' under Aurora\u2019s Utilities, which takes games whose tile is gone off Aurora\u2019s list, and the filter ', h('b', 'Hide PC games while NetDisc360 is off'), ' under Filters, User.'], toggle(st.auroraScripts, (v, i) => flip('auroraScripts', v, i))),
+        row('Tidy Aurora\u2019s game list as it starts', 'Takes the games whose NetDisc360 tile is gone off Aurora\u2019s list each time Aurora starts, as NetDisc360 Cleanup does but without asking. Only rows in Aurora\u2019s list change; no file is deleted. Needs Aurora scripts on.', toggle(st.tidyAurora, (v, i) => flip('tidyAurora', v, i), !st.auroraScripts)),
         row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i))),
+        row('Show each console\u2019s name when Aurora starts', 'A note on its screen, like \u201cThis is FABLE (192.168.1.42)\u201d, so you can tell the consoles apart. The name is the one set on the Xbox under Settings, System, Console Settings, Console Name, and Media Sharing must be on there. Needs JRPC2.xex as a DashLaunch plugin; the Consoles page has Identify for any time.', toggle(st.showName, (v, i) => flip('showName', v, i))),
         row('Follow this PC\u2019s address', 'When your router gives this PC a new address, NetISO.xex.txt on the console is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
         row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; the Consoles page turns a console off by hand too.',
           h('select.input', { style: { width: 'auto' }, onchange: e => save({ autoOffMinutes: Number(e.target.value) }, Number(e.target.value) ? 'Consoles turn off after their last game' : 'Consoles stay on') },

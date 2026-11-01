@@ -12,6 +12,7 @@ import os
 import socket
 import socketserver
 import sys
+import threading
 import time
 
 
@@ -148,6 +149,7 @@ class Handler(socketserver.StreamRequestHandler):
                         break
                     chunks.append(part)
                 conn.close()
+                self.server.gate.wait(60)  # Cleared by a test: uploads take that long.
                 with open(path, "wb") as f:
                     f.write(b"".join(chunks))
                 self.server.stored.append(argument)
@@ -201,6 +203,8 @@ class Server(socketserver.ThreadingTCPServer):
         super().__init__((host, port), Handler)
         self.root, self.user, self.password, self.host = root, user, password, host
         self.log, self.stored, self.scans, self.renamed = [], [], [], []
+        self.gate = threading.Event()
+        self.gate.set()
 
 
 def main():

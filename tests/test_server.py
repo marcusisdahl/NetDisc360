@@ -252,12 +252,16 @@ class AuroraWeb(http.server.ThreadingHTTPServer):
 
 class Xbdm(socketserver.ThreadingTCPServer):
     """The console's debug monitor (xbdm, port 730), as far as turning it off
-    goes; host and port as for AuroraWeb."""
+    goes; host and port as for AuroraWeb. With jrpc (JRPC2 loaded), its
+    notifications (consolefeatures type=12) are answered and kept in notes,
+    as the text shown; commands has the rest."""
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, host="127.0.0.1", port=0):
+    def __init__(self, host="127.0.0.1", port=0, jrpc=True):
         self.commands = []
+        self.notes = []
+        self.jrpc = jrpc
         outer = self
 
         class Handler(socketserver.StreamRequestHandler):
@@ -265,13 +269,59 @@ class Xbdm(socketserver.ThreadingTCPServer):
                 self.wfile.write(b"201- connected\r\n")
                 for line in self.rfile:
                     command = line.strip().decode()
-                    outer.commands.append(command)
-                    if command == "bye":
+                    if command.startswith("consolefeatures "):
+                        found = re.match(r'consolefeatures ver=2 type=12 params="A\\0\\A\\2\\2/(\d+)\\([0-9A-F]*)\\1\\(\d+)\\"$', command)
+                        if not outer.jrpc:
+                            self.wfile.write(b"407- unknown command\r\n")
+                        elif found and int(found.group(1)) * 2 == len(found.group(2)):
+                            outer.notes.append(bytes.fromhex(found.group(2)).decode("ascii"))
+                            self.wfile.write(b"200- S_OK\r\n")
+                        else:
+                            self.wfile.write(b"200- error=The paramaters were not found\r\n")
+                        continue
+                    if command == "bye":  # only goodbye: not kept
                         self.wfile.write(b"200- bye\r\n")
                         return
+                    outer.commands.append(command)
                     if command == "shutdown":
                         return  # the console powers off: xbdm closes without an answer
                     self.wfile.write(b"407- unknown command\r\n")
+
+        super().__init__((host, port), Handler)
+        self.port = self.server_address[1]
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+
+
+class MediaSharing(http.server.ThreadingHTTPServer):
+    """An Xbox 360's media sharing description (port 1027), as consoles give
+    it: its own name (friendlyName) and fixed id (UDN)."""
+    daemon_threads = True
+
+    def __init__(self, name="FABLE", udn="uuid:46687478-4105-2000-0000-0022484BE1C5", model="Xbox 360", host="127.0.0.1", port=0):
+        outer = self
+        self.name, self.udn, self.model, self.asked = name, udn, model, 0
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                outer.asked += 1
+                body = ('<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major>'
+                        '<minor>0</minor></specVersion><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>'
+                        '<manufacturer>Microsoft Corporation</manufacturer><modelName>%s</modelName><modelNumber>2</modelNumber>'
+                        '<friendlyName>%s</friendlyName><serialNumber>466874784105</serialNumber><UDN>%s</UDN></device></root>'
+                        % (outer.model, outer.name, outer.udn)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", 'text/xml; charset="utf-8"')
+                self.send_header("Connection", "close")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
         super().__init__((host, port), Handler)
         self.port = self.server_address[1]
@@ -876,6 +926,68 @@ class Push(ServerTest):
             server.kill()
             server.communicate()
 
+    def test_console_names_and_identify(self):
+        # Each console's own name, from its media sharing, on the dashboard
+        # and in the settings file; shown on its screen when Aurora starts and
+        # with Identify (through JRPC2 on its debug monitor).
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbdm, sharing = Xbdm(), MediaSharing(name="FABLE &amp; Co")
+        self.web = free_port()
+        config = os.path.join(self.tmp.name, "names.ini")
+        server, _ = self.run_server("--web-port", str(self.web), "--config", config, "--xbdm-port", str(xbdm.port),
+                                    "--name-port", str(sharing.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            def console():
+                return self.json("GET", "/api/state")["consoles"][0]
+            self.assertTrue(self.wait_for(lambda: console()["name"] == "FABLE & Co", 15))
+            self.assertEqual(console()["id"], "46687478-4105-2000-0000-0022484be1c5")
+            # Aurora started (its FTP server answered): its name on its screen.
+            self.assertTrue(self.wait_for(lambda: xbdm.notes, 10))
+            self.assertEqual(xbdm.notes, ["This is FABLE & Co (127.0.0.1)"])
+            self.json("POST", "/api/console/identify", {"address": "127.0.0.1"})
+            self.assertEqual(len(xbdm.notes), 2)
+            self.assertEqual(xbdm.commands, [])  # Nothing else was sent.
+            # Without JRPC2 it says so.
+            xbdm.jrpc = False
+            status, _, data = self.call("POST", "/api/console/identify", {"address": "127.0.0.1"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"JRPC2", data)
+            # Kept for the next start, when the console may be off.
+            def saved():
+                with open(config) as f:
+                    return f.read()
+            self.assertTrue(self.wait_for(lambda: "|FABLE & Co\n" in saved(), 30))
+            self.assertIn("console1=127.0.0.1|", saved())
+            self.assertFalse(self.json("GET", "/api/state")["settings"]["showName"] is False)
+            self.json("POST", "/api/settings", {"showName": False})
+            self.assertFalse(self.json("GET", "/api/state")["settings"]["showName"])
+            # Tidying Aurora's list as it starts: off until chosen.
+            self.assertIs(self.json("GET", "/api/state")["settings"]["tidyAurora"], False)
+            self.json("POST", "/api/settings", {"tidyAurora": True})
+            self.assertIs(self.json("GET", "/api/state")["settings"]["tidyAurora"], True)
+            self.assertIn("tidy_aurora=1\n", saved())
+        finally:
+            server.kill()
+            server.communicate()
+            xbdm.close()
+            sharing.close()
+
+    def test_a_media_player_that_isn_t_a_360_gives_no_name(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        sharing = MediaSharing(model="Some TV")
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--name-port", str(sharing.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertTrue(self.wait_for(lambda: sharing.asked, 15))
+            time.sleep(0.5)
+            self.assertEqual(self.json("GET", "/api/state")["consoles"][0]["name"], "")
+        finally:
+            server.kill()
+            server.communicate()
+            sharing.close()
+
     def test_console_tools_on_the_dashboard(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         aurora, xbdm = AuroraWeb(), Xbdm()
@@ -903,6 +1015,26 @@ class Push(ServerTest):
                 aurora.launched.clear()
                 self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "aurora"})
                 self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # Never while NetDisc360 is copying to it over FTP.
+            self.ftp.gate.clear()
+            try:
+                self.add_iso("Skate 3.iso", 0x22222222, 0x45410950)
+                # Written once it has settled (10 s).
+                def uploading():
+                    log = list(self.ftp.log)
+                    into = [i for i, l in enumerate(log) if l == "CWD /Hdd1/NetISO/Skate 3"]
+                    return into and any(l.startswith("STOR") for l in log[into[0]:])
+                self.assertTrue(self.wait_for(uploading, 30))
+                aurora.launched.clear()
+                status, _, data = self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "aurora"})
+                self.assertEqual(status, 400)
+                self.assertIn(b"Not now: NetDisc360 is still working on it over FTP", data)
+                self.assertEqual(aurora.launched, [])
+            finally:
+                self.ftp.gate.set()
+            # Then it can (wait_for asks once more when it's true).
+            self.assertTrue(self.wait_for(lambda: aurora.launched or self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "aurora"})[0] == 200, 20))
+            self.assertEqual(len(aurora.launched), 1, aurora.launched)
             # Turned off through its debug monitor.
             self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
             self.assertEqual(xbdm.commands, ["shutdown"])
@@ -1504,7 +1636,7 @@ class Push(ServerTest):
     def test_writes_aurora_s_cleanup_script_and_online_filter(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
-        out = self.push()
+        out = self.push(extra=["--tidy-aurora"])  # With the tidy as Aurora starts (off unless chosen).
         self.assertIn("wrote Aurora's \"Hide PC games while NetDisc360 is off\" filter", out)
         scripts = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts")
         cleanup = os.path.join(scripts, "Utility", "NetDisc360 Cleanup", "Main.lua")
@@ -1518,7 +1650,7 @@ class Push(ServerTest):
         self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc360")), ["boot.xex"])
         # Nothing new: neither is written again.
         self.ftp.stored.clear()
-        self.push()
+        self.push(extra=["--tidy-aurora"])
         self.assertEqual(self.ftp.stored, ["online.txt"])
         if LUA:
             check = os.path.join(self.tmp.name, "check.lua")
@@ -1573,10 +1705,29 @@ done = {}
 Script.ShowMessageBox = function() return { Button = 2 } end
 main()
 assert(#done == 0)
+-- As Aurora starts, the filter's script does the same without asking:
+-- the rows of tiles without a default.xex (Skate 3 isn't one: no file).
+files = { ['Hdd1:\\NetISO\\halo 3\\default.xex'] = 'x' }
+Script = nil
+GameListFilterCategories = { User = {} }
+dofile(%(online)r)
+assert(#done == 5, #done)
+assert(done[1] == 'DELETE FROM Config.UserRecentGames WHERE ContentId IN (2,4,5)', done[1])
+assert(done[5] == 'DELETE FROM ContentItems WHERE Id IN (2,4,5)', done[5])
+-- No tile there at all (a drive it can't read): nothing changes.
+done, files = {}, {}
+dofile(%(online)r)
+assert(#done == 0)
 print('lua ok')
 """ % {"online": online, "cleanup": cleanup})
             result = subprocess.run([LUA, check], capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+        # Without it, the filter changes nothing in Aurora's list.
+        with open(online, "rb") as f:
+            self.assertIn(b"NetDiscTidy", f.read())
+        self.push()
+        with open(online, "rb") as f:
+            self.assertNotIn(b"NetDiscTidy", f.read())
 
     def test_restarts_aurora_when_its_filter_hid_the_games(self):
         # Aurora started while the server didn't run, and the filter hid the
@@ -1597,7 +1748,7 @@ print('lua ok')
             aurora.launched.clear()
             out = self.push(extra=["--aurora-web-port", str(aurora.port)])
             self.assertIn("restarted Aurora so its filter hides the PC games while NetDisc360 is off", out)
-            self.assertEqual(len(aurora.launched), 1)
+            self.assertEqual(len(aurora.launched), 1, aurora.launched)
             # Never during a game.
             aurora.running = "\\Device\\Cdrom0\\default.xex"
             aurora.launched.clear()
@@ -1778,7 +1929,7 @@ print('lua ok')
 
     def test_turns_every_party_console_off_or_back_to_aurora(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
-        self.second_console()
+        _, ftp2 = self.second_console()
         aurora = AuroraWeb()
         aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
         xbdm = Xbdm()
@@ -1787,6 +1938,8 @@ print('lua ok')
         server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port),
                                     "--xbdm-port", str(xbdm.port))
         try:
+            # Once their game folders are written (never while that goes on).
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans and ftp2.scans, 20))
             self.json("POST", "/api/party", {"gamemaster": "127.0.0.2", "consoles": ["127.0.0.1", "127.0.0.2"]})
             done = self.json("POST", "/api/party/power", {"action": "aurora"})
             self.assertEqual(done, {"results": [{"address": "127.0.0.2", "ok": True, "error": ""}, {"address": "127.0.0.1", "ok": True, "error": ""}]})
