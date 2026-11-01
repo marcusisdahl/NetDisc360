@@ -21,7 +21,7 @@ void Copy(char* out, unsigned capacity, const char* from, const char* to) {
     }
     memcpy(out,from,length); out[length]=0;
 }
-unsigned Colour(const char* text) {
+unsigned Rgb(const char* text) {
     if(text[0]!='#' || strlen(text)!=7) return 0x107C10;
     return unsigned(strtoul(text+1,NULL,16));
 }
@@ -30,6 +30,7 @@ unsigned Colour(const char* text) {
 bool Parse(const char* text, unsigned length, State& s) {
     memset(&s,0,sizeof(s));
     s.accent=0x107C10; s.accent2=0xFFFFFF; s.teams=2;
+    for(int t=0;t<TeamsMost;++t) s.teamColour[t]=t;
     const char* end=text+length;
     const char* at=text;
     bool header=false;
@@ -56,7 +57,7 @@ bool Parse(const char* text, unsigned length, State& s) {
         else if(!strcmp(key,"version") && n>=1) s.version=ParseU64(NUMBER(0),NULL,10);
         else if(!strcmp(key,"console") && n>=3) { FIELD(0,s.console); FIELD(1,s.address); s.gamemaster=atoi(NUMBER(2))==1; }
         else if(!strcmp(key,"party") && n>=4) { s.active=atoi(NUMBER(0))==1; FIELD(1,s.title); FIELD(2,s.line); FIELD(3,s.preset); }
-        else if(!strcmp(key,"colours") && n>=2) { s.accent=Colour(NUMBER(0)); s.accent2=Colour(NUMBER(1)); }
+        else if(!strcmp(key,"colours") && n>=2) { s.accent=Rgb(NUMBER(0)); s.accent2=Rgb(NUMBER(1)); }
         else if(!strcmp(key,"gamemaster") && n>=1) FIELD(0,s.gamemasterName);
         else if(!strcmp(key,"teams") && n>=1) s.teams=atoi(NUMBER(0));
         else if(!strcmp(key,"here")) { for(int i=0;i<n && i<WheelMost;++i) FIELD(i,s.here[i]); s.hereCount=n<WheelMost ? n : WheelMost; }
@@ -83,6 +84,26 @@ bool Parse(const char* text, unsigned length, State& s) {
         else if(!strcmp(key,"profiles") && n>=5) {
             FIELD(0,s.profiles); s.profilesDone=atoi(NUMBER(1)); s.profilesTotal=atoi(NUMBER(2)); FIELD(3,s.profilesNow); FIELD(4,s.profilesNote);
         }
+        else if(!strcmp(key,"build") && n>=4) {
+            s.serverBuild=unsigned(strtoul(NUMBER(0),NULL,10)); FIELD(1,s.serverCommit); FIELD(2,s.serverVersion); s.update=atoi(NUMBER(3))==1;
+        }
+        else if(!strcmp(key,"palette") && n>=5) {
+            int i=atoi(NUMBER(0));
+            if(i>=0 && i<PaletteMost) {
+                Colour& c=s.palette[i];
+                FIELD(1,c.name); c.fill=Rgb(NUMBER(2)); c.bright=Rgb(NUMBER(3)); c.ink=atoi(NUMBER(4))==1;
+                if(i>=s.paletteCount) s.paletteCount=i+1;
+            }
+        }
+        else if(!strcmp(key,"teamcolours")) { for(int t=0;t<n && t<TeamsMost;++t) s.teamColour[t]=atoi(NUMBER(t)); }
+        else if(!strcmp(key,"guest") && n>=4 && s.guestCount<GuestsMost) {
+            Guest& g=s.guests[s.guestCount++];
+            g.here=atoi(NUMBER(0))==1; FIELD(1,g.name); g.gamerscore=atoi(NUMBER(2)); g.joinedHere=atoi(NUMBER(3))==1;
+        }
+        else if(!strcmp(key,"known") && n>=4 && s.knownCount<KnownMost) {
+            Known& k=s.known[s.knownCount++];
+            FIELD(0,k.address); FIELD(1,k.name); FIELD(2,k.state); k.inParty=atoi(NUMBER(3))==1;
+        }
         else if(!strcmp(key,"seat") && n>=2 && s.seatCount<SeatsMost) {
             Seat& seat=s.seats[s.seatCount++];
             FIELD(0,seat.address); FIELD(1,seat.console);
@@ -98,6 +119,14 @@ bool Parse(const char* text, unsigned length, State& s) {
     if(s.teams<2 || s.teams>TeamsMost) s.teams=2;
     s.valid=header;
     return header;
+}
+
+Colour TeamColourOf(const State& s, int t) {
+    static const Colour plain[TeamsMost]={{"Red",0xE5483E,0xFF6B61,false},{"Blue",0x3F7FE6,0x6EA8FF,false},{"Green",0x2C9A2C,0x5FD35F,false},{"Yellow",0xD9A400,0xFFD23F,true}};
+    if(t<0 || t>=TeamsMost) t=0;
+    int c=s.teamColour[t];
+    if(s.paletteCount>0 && c>=0 && c<s.paletteCount) return s.palette[c];
+    return plain[t];
 }
 
 int SpinMs(const State& s) {

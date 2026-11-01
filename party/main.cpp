@@ -3,8 +3,16 @@
 // name (as NetDisc360 knows it), the guests who are here, and the raffle
 // wheel, turning as it turns on the dashboard, the big screen and every other
 // console: NetDisc360 plans each spin, and says how far into it it is, so
-// all of them stop on the same guest at the same moment. On the Gamemaster's
-// console, A spins for teams and X picks one guest. B goes back to Aurora.
+// all of them stop on the same guest at the same moment. B goes back to Aurora.
+//
+// The whole party runs from the consoles too (PartyEditAsk), as Jackbox's
+// games do: while there's no Gamemaster, any console chooses one from the
+// consoles NetDisc360 knows. On every console each player presses A on their
+// own controller and types their name (the Guide's keyboard): they're on the
+// guest list and here, and get a guest profile. The Gamemaster's console
+// spins (Start for teams, X picks one guest) and sets the party up (RB):
+// who plays (ticked) and new players, how many teams and their colours, and
+// the party's consoles, with "Open the party on all consoles".
 //
 // Once the wheel drew the teams, the screen turns to this console's players
 // (up to four, each in their team's colour) and asks them to sign in one
@@ -27,6 +35,7 @@
 // the one in NetISO.xex.txt on Hdd1: or Usb0:, as the game launcher finds it.
 #include <xtl.h>
 #include <winsockx.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -35,6 +44,8 @@
 #include "../shared/netdisc.h"
 #include "../third_party/imgui/imgui.h"
 #include "../launcher/imgui_impl_xbox360.h"
+#include "../server/version.h"
+#include "../shared/build_id.h"
 #include "ftp.h"
 #include "state.h"
 #include "ui.h"
@@ -47,7 +58,7 @@ extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,voi
 
 namespace {
 // The party's commands (server/main.cpp): wait for news, spin, and say who signed in.
-enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, SignedOut = 0x8000, WaitMs = 25000, TextMost = 48 << 10 };
+enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, PartyEditAsk = 0x5045, SignedOut = 0x8000, WaitMs = 25000, TextMost = 64 << 10 };
 // How long the screen stays on the wheel after it stopped, before it turns to
 // the players (a pick's result is read longer), and how long it waits once
 // everyone's in before it goes back to Aurora.
@@ -61,7 +72,8 @@ bool HaveLatest=false;
 int LinkNow=party::LinkLooking;
 char ServerText[32]="";
 DWORD ServerAddress=0; int ServerPort=nia::IsvrPort;
-char Notice[160]="";          // What the server said to the Gamemaster's last spin.
+char Notice[160]="";          // What the server said to the last spin or change.
+bool NoticeGood=false;        // It's good news ("Welcome, Ola!"), not a problem.
 bool FtpFailed=false;         // The FTP server for guest profiles couldn't start.
 DWORD NoticeAt=0;
 
@@ -195,7 +207,8 @@ DWORD WINAPI Listen(void*) {
             continue;
         }
         DWORD size=0;
-        if(!client.Text(PartyWait,0,version,WaitMs,text,sizeof(text),size)) { SetLink(party::LinkLost); client.Close(); Sleep(2000); continue; }
+        // The index says which build this app is, so the server knows an old one (WheelUpdate).
+        if(!client.Text(PartyWait,NETDISC_BUILD_STAMP,version,WaitMs,text,sizeof(text),size)) { SetLink(party::LinkLost); client.Close(); Sleep(2000); continue; }
         DWORD at=GetTickCount();
         if(!party::Parse(text,size,read)) {
             // Not a NetDisc360 that knows the party (an older one, or "error ...").
@@ -223,11 +236,95 @@ DWORD WINAPI AskSpin(void* kind) {
     said[strcspn(said,"\n")]=0;
     EnterCriticalSection(&Lock);
     const char* tab=strchr(said,'\t');
-    if(!strncmp(said,"error",5) && tab) { strcpy_s(Notice,tab+1); NoticeAt=GetTickCount(); }
+    if(!strncmp(said,"error",5) && tab) { strcpy_s(Notice,tab+1); NoticeAt=GetTickCount(); NoticeGood=false; }
     else Notice[0]=0;
     LeaveCriticalSection(&Lock);
     return 0;
 }
+
+// Changes to the party from this console (PartyEditAsk), sent one after
+// another in the order asked, by a thread of their own.
+enum { EditsQueued = 16, EditBytes = 256 };
+char Edits[EditsQueued][EditBytes];
+int EditFirst=0, EditCount=0;  // Under Lock.
+void QueueEdit(const char* format, ...) {
+    char text[EditBytes];
+    va_list a; va_start(a,format); _vsnprintf_s(text,sizeof(text),_TRUNCATE,format,a); va_end(a);
+    EnterCriticalSection(&Lock);
+    if(EditCount<EditsQueued) { strcpy_s(Edits[(EditFirst+EditCount)%EditsQueued],text); ++EditCount; }
+    LeaveCriticalSection(&Lock);
+}
+DWORD WINAPI SendEdits(void*) {
+    nia::IsvrClient client(10);
+    for(;;) {
+        char text[EditBytes];
+        EnterCriticalSection(&Lock);
+        bool have=EditCount>0;
+        if(have) { strcpy_s(text,Edits[EditFirst]); EditFirst=(EditFirst+1)%EditsQueued; --EditCount; }
+        DWORD address=ServerAddress; int port=ServerPort;
+        LeaveCriticalSection(&Lock);
+        if(!have) { Sleep(40); continue; }
+        char said[512]="";
+        DWORD size=0, length=DWORD(strlen(text));
+        bool ok=address && (client.Connected() || client.Connect(address,port,5)) &&
+                client.Text(PartyEditAsk,0,0,length,said,sizeof(said),size,text);
+        if(!ok) { client.Close(); strcpy_s(said,address ? "error\tNetDisc360 didn't answer. Try again." : "error\tNo NetDisc360 found yet."); }
+        said[strcspn(said,"\n")]=0;
+        const char* tab=strchr(said,'\t');
+        EnterCriticalSection(&Lock);
+        if(tab && tab[1]) { strcpy_s(Notice,tab+1); NoticeAt=GetTickCount(); NoticeGood=strncmp(said,"error",5)!=0; }
+        LeaveCriticalSection(&Lock);
+    }
+}
+
+// The Guide's keyboard, for a name: a player joining (on their own
+// controller), or the Gamemaster adding one in the setup.
+enum KeyFor { KeyJoin, KeyAdd };
+XOVERLAPPED KeyWait;
+WCHAR KeyText[40];
+int KeyPad=-1, KeyPurpose=KeyJoin;
+bool OpenKeyboard(int pad, int purpose) {
+    if(KeyPad>=0) return false;
+    // A signed-in profile's gamertag to start from, when joining.
+    WCHAR start[24]=L"";
+    char gamertag[party::GamertagBytes];
+    if(purpose==KeyJoin && XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn && XUserGetName(DWORD(pad),gamertag,sizeof(gamertag))==ERROR_SUCCESS)
+        for(int i=0;i<23 && gamertag[i];++i) { start[i]=WCHAR((unsigned char)gamertag[i]); start[i+1]=0; }
+    ZeroMemory(&KeyWait,sizeof(KeyWait));
+    KeyText[0]=0;
+    DWORD r=XShowKeyboardUI(DWORD(pad),0,start,purpose==KeyJoin ? L"Join the party" : L"Add a player",
+                            purpose==KeyJoin ? L"Type your name or gamertag" : L"Type the player's name",KeyText,32,&KeyWait);
+    if(r!=ERROR_IO_PENDING && r!=ERROR_SUCCESS) {
+        EnterCriticalSection(&Lock);
+        strcpy_s(Notice,"The keyboard didn't open. Sign in on that controller, or join on the dashboard.");
+        NoticeAt=GetTickCount(); NoticeGood=false;
+        LeaveCriticalSection(&Lock);
+        return false;
+    }
+    KeyPad=pad; KeyPurpose=purpose;
+    return true;
+}
+// Each frame: the name typed, once the keyboard closed.
+void WatchKeyboard() {
+    if(KeyPad<0 || !XHasOverlappedIoCompleted(&KeyWait)) return;
+    int purpose=KeyPurpose;
+    KeyPad=-1;
+    if(XGetOverlappedResult(&KeyWait,NULL,FALSE)!=ERROR_SUCCESS) return;  // Cancelled.
+    // As UTF-8, trimmed.
+    char name[128]; size_t n=0;
+    for(int i=0;KeyText[i] && n+4<sizeof(name);++i) {
+        unsigned c=KeyText[i];
+        if(c<0x20) continue;
+        if(c<0x80) name[n++]=char(c);
+        else if(c<0x800) { name[n++]=char(0xC0|(c>>6)); name[n++]=char(0x80|(c&0x3F)); }
+        else { name[n++]=char(0xE0|(c>>12)); name[n++]=char(0x80|((c>>6)&0x3F)); name[n++]=char(0x80|(c&0x3F)); }
+    }
+    name[n]=0;
+    char* at=name; while(*at==' ') ++at;
+    for(size_t k=strlen(at);k && at[k-1]==' ';--k) at[k-1]=0;
+    if(*at) QueueEdit(purpose==KeyJoin ? "join\t%s" : "add\t%s",at);
+}
+
 
 // A sign-in (or a controller signed out), told to the server on a connection of its own.
 struct SignInNews { int seat, controller; bool out; ULONGLONG xuid; char gamertag[party::GamertagBytes]; };
@@ -273,9 +370,60 @@ bool ScreenStart() {
     if(Screen && !ImGuiXbox360Init(Screen)) { Screen->Release(); Screen=NULL; }
     return Screen!=NULL;
 }
+// A controller's buttons; the left stick counts as the d-pad.
 WORD Buttons(DWORD pad) {
     XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
-    return XInputGetState(pad,&state)==ERROR_SUCCESS ? state.Gamepad.wButtons : 0;
+    if(XInputGetState(pad,&state)!=ERROR_SUCCESS) return 0;
+    WORD b=state.Gamepad.wButtons;
+    const SHORT x=state.Gamepad.sThumbLX, y=state.Gamepad.sThumbLY, far=20000;
+    if(y>far) b|=XINPUT_GAMEPAD_DPAD_UP;
+    if(y<-far) b|=XINPUT_GAMEPAD_DPAD_DOWN;
+    if(x<-far) b|=XINPUT_GAMEPAD_DPAD_LEFT;
+    if(x>far) b|=XINPUT_GAMEPAD_DPAD_RIGHT;
+    return b;
+}
+// The d-pad's directions pressed now, or held long enough to repeat.
+const WORD Directions=XINPUT_GAMEPAD_DPAD_UP|XINPUT_GAMEPAD_DPAD_DOWN|XINPUT_GAMEPAD_DPAD_LEFT|XINPUT_GAMEPAD_DPAD_RIGHT;
+WORD Repeated(WORD down, WORD pressed, DWORD now) {
+    static WORD was=0; static DWORD since=0, last=0;
+    WORD dir=WORD(down&Directions);
+    if(pressed&Directions) { was=dir; since=last=now; return WORD(pressed&Directions); }
+    if(!dir || dir!=was) { was=dir; since=last=now; return 0; }
+    if(now-since>=400 && now-last>=110) { last=now; return dir; }
+    return 0;
+}
+
+// The Gamemaster's setup (Screen::setup): a button on the picked row.
+void SetupMove(party::Screen& f, int by) {
+    int rows=party::SetupRows(f.state,f.setupTab);
+    f.setupRow+=by;
+    if(f.setupRow<0) f.setupRow=0;
+    if(f.setupRow>=rows) f.setupRow=rows-1;
+    if(f.setupRow<f.setupTop) f.setupTop=f.setupRow;
+    if(f.setupRow>=f.setupTop+party::SetupShown) f.setupTop=f.setupRow-party::SetupShown+1;
+}
+// Left and right (by -1, 1), or A (by 0: on to the next) on the Teams tab.
+void SetupChange(party::Screen& f, int by) {
+    const party::State& s=f.state;
+    if(f.setupTab!=party::TabTeams) return;
+    if(f.setupRow==0) {
+        int n=by ? s.teams+by : (s.teams>=party::TeamsMost ? 2 : s.teams+1);
+        if(n>=2 && n<=party::TeamsMost) QueueEdit("teams\t%d",n);
+        return;
+    }
+    int t=f.setupRow-1, count=s.paletteCount>0 ? s.paletteCount : party::TeamsMost;
+    int c=(s.teamColour[t]+(by ? by : 1)+count)%count;
+    QueueEdit("colour\t%d\t%d",t,c);
+}
+void SetupPress(party::Screen& f, int pad) {
+    const party::State& s=f.state;
+    const int r=f.setupRow;
+    if(f.setupTab==party::TabPlayers) {
+        if(r==0) OpenKeyboard(pad,KeyAdd);
+        else if(r-1<s.guestCount) QueueEdit("here\t%s\t%d",s.guests[r-1].name,s.guests[r-1].here ? 0 : 1);
+    } else if(f.setupTab==party::TabTeams) SetupChange(f,0);
+    else if(r==0) QueueEdit("openall");
+    else if(r-1<s.knownCount) QueueEdit("console\t%s\t%d",s.known[r-1].address,s.known[r-1].inParty ? 0 : 1);
 }
 bool SignedIn(int pad) { return XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn; }
 
@@ -369,7 +517,10 @@ void __cdecl main() {
     if(listener) CloseHandle(listener);
     party::Screen& frame=Frame;
     unsigned shownSpin=0;
-    DWORD spinStart=0, started=GetTickCount(), askedAt=0;
+    DWORD spinStart=0, started=GetTickCount(), askedAt=0, updatingAt=0;
+    _snprintf_s(frame.version,sizeof(frame.version),_TRUNCATE,"v%s%s%s",NETDISC_VERSION,NETDISC_COMMIT[0] ? "  " : "",NETDISC_COMMIT);
+    HANDLE edits=CreateThread(NULL,0,SendEdits,NULL,0,NULL);
+    if(edits) CloseHandle(edits);
     WORD held[4];  // The A that started this may still be down.
     for(DWORD pad=0;pad<4;++pad) held[pad]=Buttons(pad);
     char seatKey[party::PerConsole*party::NameBytes+1]="\x01";  // Whose seats these are: none read yet.
@@ -396,7 +547,8 @@ void __cdecl main() {
         strcpy_s(frame.server,ServerText);
         if(Notice[0] && now-NoticeAt>8000) Notice[0]=0;
         strcpy_s(frame.notice,Notice);
-        if(!frame.notice[0] && FtpFailed) strcpy_s(frame.notice,"Guest profiles can't be copied here: the FTP port is taken.");
+        frame.noticeGood=NoticeGood;
+        if(!frame.notice[0] && FtpFailed) { strcpy_s(frame.notice,"Guest profiles can't be copied here: the FTP port is taken."); frame.noticeGood=false; }
         LeaveCriticalSection(&Lock);
         frame.spinMs=frame.state.spinId ? double(int(now-spinStart)) : 0;
         frame.time=(now-started)/1000.0;
@@ -419,21 +571,65 @@ void __cdecl main() {
         frame.copying=ftp.sessions>0 || ftp.transfers>0 || (ftp.lastAt && now-ftp.lastAt<3000) ||
                       (frame.link==party::LinkConnected && mine && mine->count && !strcmp(frame.state.profiles,"copying"));
         WatchSignIns(mine,now);
-        if((any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) && !frame.copying) break;
-        if(frame.view==party::ViewPlayers && mine && mine->count) {
-            if(any&XINPUT_GAMEPAD_Y) { frame.view=party::ViewWheel; Stay=true; }
-            for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) {
-                if(frame.asking>=0) { if(!frame.copying) SignInPad(pad,mine); }
-                else if(frame.leaveIn>=0) frame.leaveIn=0;
-            }
-            if(frame.leaveIn==0 && !frame.copying) break;
+        WatchKeyboard();
+        frame.typing=KeyPad;
+        WORD down=0;
+        for(int pad=0;pad<4;++pad) down|=held[pad];
+        const WORD moved=Repeated(down,any,now);
+        const party::State& st=frame.state;
+        const bool turning=spun && after<0;
+        // This app makes way for the server's newer one, when nothing is under way.
+        if(st.valid && st.update && !frame.updating && !frame.copying && !turning && KeyPad<0 && !ChooserOpen) {
+            frame.updating=true; updatingAt=now; frame.setup=false;
+            QueueEdit("reopen");
+        }
+        if(frame.updating) { if(now-updatingAt>2500) break; }
+        else if(KeyPad>=0 || ChooserOpen) {}  // The Guide has the controllers.
+        else if(frame.setup && st.valid && st.gamemaster) {
+            // The Gamemaster's setup: B closes it, LB and RB change tabs.
+            if(any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) frame.setup=false;
+            int tab=frame.setupTab+((any&XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 1 : 0)-((any&XINPUT_GAMEPAD_LEFT_SHOULDER) ? 1 : 0);
+            if(tab!=frame.setupTab) { frame.setupTab=(tab+party::TabsCount)%party::TabsCount; frame.setupRow=frame.setupTop=0; }
+            if(moved&XINPUT_GAMEPAD_DPAD_UP) SetupMove(frame,-1);
+            if(moved&XINPUT_GAMEPAD_DPAD_DOWN) SetupMove(frame,1);
+            SetupMove(frame,0);  // The list may have shrunk.
+            if(moved&XINPUT_GAMEPAD_DPAD_LEFT) SetupChange(frame,-1);
+            if(moved&XINPUT_GAMEPAD_DPAD_RIGHT) SetupChange(frame,1);
+            for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { SetupPress(frame,pad); break; }
+            if((any&XINPUT_GAMEPAD_Y) && frame.setupTab==party::TabConsoles && frame.setupRow>0 && frame.setupRow-1<st.knownCount)
+                QueueEdit("gamemaster\t%s",st.known[frame.setupRow-1].address);
         } else {
-            if((any&XINPUT_GAMEPAD_Y) && mine && mine->count && !(spun && after<0)) frame.view=party::ViewPlayers;
-            // The Gamemaster spins: A for teams, X to pick one guest; once a second at most.
-            if((any&(XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_X)) && frame.state.valid && frame.state.gamemaster && now-askedAt>1000) {
-                askedAt=now;
-                HANDLE ask=CreateThread(NULL,0,AskSpin,(void*)(ULONG_PTR)(any&XINPUT_GAMEPAD_A ? 1 : 2),0,NULL);
-                if(ask) CloseHandle(ask);
+            if(frame.setup) frame.setup=false;  // No longer the Gamemaster's.
+            if((any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) && !frame.copying) break;
+            if(frame.view==party::ViewPlayers && mine && mine->count) {
+                if(any&XINPUT_GAMEPAD_Y) { frame.view=party::ViewWheel; Stay=true; }
+                for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) {
+                    if(frame.asking>=0) { if(!frame.copying) SignInPad(pad,mine); }
+                    else if(frame.leaveIn>=0) frame.leaveIn=0;
+                }
+                if(frame.leaveIn==0 && !frame.copying) break;
+            } else if(st.valid && !st.gamemasterName[0]) {
+                // No Gamemaster yet: choose one of the consoles that are on.
+                int choices[party::KnownMost];
+                int n=party::HostChoices(st,choices);
+                if(moved&XINPUT_GAMEPAD_DPAD_UP) --frame.hostRow;
+                if(moved&XINPUT_GAMEPAD_DPAD_DOWN) ++frame.hostRow;
+                if(frame.hostRow>=n) frame.hostRow=n-1;
+                if(frame.hostRow<0) frame.hostRow=0;
+                if((any&XINPUT_GAMEPAD_A) && n) QueueEdit("gamemaster\t%s",st.known[choices[frame.hostRow]].address);
+            } else if(st.valid) {
+                if((any&XINPUT_GAMEPAD_Y) && mine && mine->count && !turning) frame.view=party::ViewPlayers;
+                // Each player joins on their own controller: A, then their name.
+                if(!turning) for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { OpenKeyboard(pad,KeyJoin); break; }
+                if(st.gamemaster && !turning) {
+                    if(any&XINPUT_GAMEPAD_RIGHT_SHOULDER) { frame.setup=true; frame.setupTab=party::TabPlayers; frame.setupRow=frame.setupTop=0; }
+                    // The Gamemaster spins: Start for teams, X to pick one guest; once a second at most.
+                    if((any&(XINPUT_GAMEPAD_START|XINPUT_GAMEPAD_X)) && now-askedAt>1000) {
+                        askedAt=now;
+                        HANDLE ask=CreateThread(NULL,0,AskSpin,(void*)(ULONG_PTR)(any&XINPUT_GAMEPAD_START ? 1 : 2),0,NULL);
+                        if(ask) CloseHandle(ask);
+                    }
+                }
             }
         }
         ImGui::GetIO().DeltaTime=1.0f/60;

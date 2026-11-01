@@ -29,8 +29,25 @@ struct Screen {
     // Guest profiles are being copied to this console (state.profiles, or
     // the app's FTP server busy): B doesn't leave, and no one signs in yet.
     bool copying;
+    bool noticeGood;    // notice is good news ("Welcome, Ola!"), not a problem.
+    // The Gamemaster's party setup over the wheel (Setup): its tab (SetupTab),
+    // the row picked, and the first row shown (the list scrolls).
+    bool setup; int setupTab, setupRow, setupTop;
+    int hostRow;        // The console picked while there's no Gamemaster (the known consoles that are on).
+    int typing;         // The controller typing a name to join (-1: none).
+    bool updating;      // Making way for the server's newer app: back to Aurora in a moment.
+    char version[48];   // This app's version and build ("v1.1.0-dev  c9c9b76").
     Screen();
 };
+// The setup's tabs, and how many rows each has: Players (Add a player, then
+// every guest), Teams (how many, then each team's colour) and Consoles (Open
+// the party on all, then every console NetDisc360 knows).
+enum SetupTab { TabPlayers, TabTeams, TabConsoles, TabsCount };
+int SetupRows(const State& s, int tab);
+enum { SetupShown = 6 };  // Rows shown at once.
+// The consoles to choose the Gamemaster from (those that are on), by
+// hostRow: indices into s.known; count of them.
+int HostChoices(const State& s, int* out);
 // Creates the Dear ImGui context, its style and fonts.
 void InitUi();
 // Builds one frame; the caller renders ImGui::GetDrawData().

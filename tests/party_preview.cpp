@@ -5,6 +5,8 @@
 // moment of the spin asked for. The rasterizer is tests/ui_preview.cpp's.
 //   party-preview <out-prefix> <party.txt> <from ms> [<to ms> <every ms>] [lost|looking]
 //   party-preview <out-prefix> <party.txt> <ms> <ms> 1 players <c0,c1,c2,c3> <asking> <choosing> <leave in>
+//   party-preview <out-prefix> <party.txt> <ms> <ms> 1 setup <tab> <row> [<top>]
+//   party-preview <out-prefix> <party.txt> <ms> <ms> 1 host <row> | typing <controller> | updating | notice <text>
 // writes <out-prefix>-0000.bmp and on, the spin that far in; players draws
 // the players screen, each seat's controller (-1: not signed in) given.
 #define _CRT_SECURE_NO_WARNINGS
@@ -106,6 +108,12 @@ int main(int argc, char** argv) {
         }
         s.asking=atoi(argv[8]); s.choosing=atoi(argv[9]); s.leaveIn=atoi(argv[10]);
     }
+    strcpy(s.version,"v1.1.0-dev  c9c9b76");
+    if(!strcmp(mode,"setup") && argc>8) { s.setup=true; s.setupTab=atoi(argv[7]); s.setupRow=atoi(argv[8]); s.setupTop=argc>9 ? atoi(argv[9]) : 0; }
+    if(!strcmp(mode,"host") && argc>7) s.hostRow=atoi(argv[7]);
+    if(!strcmp(mode,"typing") && argc>7) s.typing=atoi(argv[7]);
+    if(!strcmp(mode,"updating")) s.updating=true;
+    if(!strcmp(mode,"notice") && argc>7) { snprintf(s.notice,sizeof(s.notice),"%s",argv[7]); s.noticeGood=true; }
     double from=atof(argv[3]), to=argc>4 ? atof(argv[4]) : from, every=argc>5 ? atof(argv[5]) : 1;
     if(every<=0) every=1;
     int frame=0;

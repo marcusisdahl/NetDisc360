@@ -6062,7 +6062,8 @@ std::vector<std::string> Fields(const std::string& text) {
 
 // A change to the party from a console's party screen (NetDiscParty.xex,
 // PartyEditAsk): text is a command and its fields, tab-separated. Anyone
-// joins (join <name>: on the guest list and here) or leaves (leave <name>).
+// joins (join <name>: on the guest list and here) or leaves (leave <name>);
+// add <name> is the Gamemaster's join for someone else.
 // The rest is the Gamemaster's, or anyone's while there is none, or while
 // the Gamemaster's console doesn't show the party: gamemaster <address>
 // (the party starts with it), here <name> <1|0>, console <address> <1|0>
@@ -6077,7 +6078,7 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
     std::string error;
     web::Value change=Field(web::Value::Object);
     if(what=="reopen") { ReopenWheel(peer); said="Updating the party app."; return ""; }
-    if(what=="join" || what=="leave") {
+    if(what=="join" || what=="leave" || what=="add") {
         std::string name;
         if(f.size()<2 || !CleanName(f[1],1,GuestNameMost,"Your name",name,error)) return error.empty() ? "Type a name." : error;
         std::string listed=GuestNamed(p,name);
@@ -6089,9 +6090,10 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
             return "";
         }
         if(listed.empty() && p.guests.size()>=PartyGuestsMost) return "The guest list is full ("+Number(PartyGuestsMost)+" names).";
+        if(what=="add" && !(p.gamemaster.empty() || p.gamemaster==peer || !ShowsWheel(p.gamemaster))) return "Only the Gamemaster's console adds players; join with A.";
         Put(change,"guests",GuestsValue(p,listed.empty() ? name : listed,true));
         if(!ChangeParty(change,error)) return error;
-        { std::lock_guard<std::mutex> hold(PartyLock); JoinedOn[Lower(listed.empty() ? name : listed)]=peer; }
+        if(what=="join") { std::lock_guard<std::mutex> hold(PartyLock); JoinedOn[Lower(listed.empty() ? name : listed)]=peer; }
         Log("%s joined the LAN party on %s.",(listed.empty() ? name : listed).c_str(),peer.c_str());
         MakeProfilesSoon(AutoMakeDelaySeconds);
         said=listed.empty() ? "Welcome, "+name+"!" : "Welcome back, "+listed+"!";

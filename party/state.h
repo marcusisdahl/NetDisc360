@@ -5,7 +5,8 @@
 // are here, the teams drawn and the raffle wheel's latest spin. Plain C++
 // with fixed sizes, shared by the Xbox build and tests/party_preview.cpp.
 namespace party {
-enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32, NoteBytes = 200 };
+enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32, NoteBytes = 200,
+       GuestsMost = 64, KnownMost = 16, PaletteMost = 8 };
 typedef char Name[NameBytes];
 
 // A turn of the wheel: from where the turn before left it to to degrees
@@ -16,6 +17,17 @@ struct Seat { char address[AddressBytes]; Name console; int count; Name names[Pe
 // A guest of this console's seats who signed in here already (PartySignIn):
 // the seat, the controller (0-3) and the profile's gamertag.
 struct SignedIn { int seat, controller; char gamertag[GamertagBytes]; };
+
+// A colour a team can have (the server's TeamPalette): its name ("Red"),
+// its fill, a brighter one for text on the dark screen, and whether text on
+// the fill is dark.
+struct Colour { char name[16]; unsigned fill, bright; bool ink; };
+// A guest on the list (kept from party to party): here at this one, their
+// gamerscore (-1: not read yet), and whether they joined on this console.
+struct Guest { Name name; bool here; int gamerscore; bool joinedHere; };
+// A console NetDisc360 knows: what it does now ("wheel", "aurora", "game"
+// or "off"), and whether it's one of the party's.
+struct Known { char address[AddressBytes]; Name name; char state[KindBytes]; bool inParty; };
 
 struct State {
     bool valid;                     // A party was read.
@@ -45,7 +57,17 @@ struct State {
     // asked), done of total, the guest whose profile comes now, and a note
     // (who has no profile yet, or what went wrong).
     char profiles[KindBytes + 4]; int profilesDone, profilesTotal; Name profilesNow; char profilesNote[NoteBytes];
+    // The server's build (NETDISC_BUILD_STAMP, the commit, the version), and
+    // whether this app should make way for the newer one it has (update).
+    unsigned serverBuild; char serverCommit[16]; char serverVersion[24]; bool update;
+    // The colours a team can have, and each team's (an index into palette).
+    int paletteCount; Colour palette[PaletteMost];
+    int teamColour[TeamsMost];
+    int guestCount; Guest guests[GuestsMost];
+    int knownCount; Known known[KnownMost];
 };
+// Team t's colour, with Red, Blue, Green and Yellow when the server doesn't say.
+Colour TeamColourOf(const State& s, int t);
 
 // Reads the server's text into state; false (state.valid false) if it isn't one.
 bool Parse(const char* text, unsigned length, State& state);

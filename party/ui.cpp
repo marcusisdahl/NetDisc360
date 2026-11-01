@@ -17,9 +17,10 @@
 #endif
 
 namespace party {
-Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1), copying(false) {
+Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1), copying(false), noticeGood(false),
+                   setup(false), setupTab(TabPlayers), setupRow(0), setupTop(0), hostRow(0), typing(-1), updating(false) {
     memset(&state,0,sizeof(state));
-    server[0]=notice[0]=0;
+    server[0]=notice[0]=version[0]=0;
     for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; }
 }
 
@@ -32,10 +33,22 @@ static const double AfterMs=30000;
 static ImU32 Hex(unsigned int rgb, int alpha=255) { return IM_COL32((rgb>>16)&255,(rgb>>8)&255,rgb&255,alpha); }
 static const unsigned int Background=0x0F1725,Card=0x192537,Raised=0x223349,White=0xE2EBF4,Muted=0x8FA6BA,Dim=0x51667A,
     Green=0x3ED9BC,Error=0xFFAC8B,ErrorStrong=0xF0624D,Ink=0x1B1E22,ButtonA=0x5DC21E,ButtonB=0xE5413A,ButtonX=0x2E7FE0,ButtonY=0xF2C811;
-// The teams' colours: Red, Blue, Green and Yellow, as the dashboard's big screen has them.
-static const unsigned int TeamFill[TeamsMost]={0xE5483E,0x3F7FE6,0x2C9A2C,0xD9A400};
-static const unsigned int TeamText[TeamsMost]={0xFF6B61,0x6EA8FF,0x5FD35F,0xFFD23F};
-static const char* const TeamName[TeamsMost]={"Team Red","Team Blue","Team Green","Team Yellow"};
+// The teams' colours, as the party has them (TeamColourOf), set for each
+// frame: the fill, a brighter one for text, the name ("Team Red"), and
+// whether text on the fill is dark (TeamOn).
+static unsigned int TeamFill[TeamsMost], TeamText[TeamsMost];
+static char TeamName[TeamsMost][32];
+static bool TeamInk[TeamsMost];
+static void SetTeams(const State& s) {
+    for(int t=0;t<TeamsMost;++t) {
+        Colour c=TeamColourOf(s,t);
+        TeamFill[t]=c.fill; TeamText[t]=c.bright; TeamInk[t]=c.ink;
+        _snprintf_s(TeamName[t],sizeof(TeamName[t]),_TRUNCATE,"Team %s",c.name);
+    }
+}
+static unsigned TeamOn(int t);  // Text on team t's fill.
+
+static unsigned TeamOn(int t) { return TeamInk[t] ? Ink : 0xFFFFFF; }
 
 static unsigned Mix(unsigned a, unsigned b, float t) {
     unsigned out=0;
@@ -155,7 +168,7 @@ static void Wheel(ImVec2 c, float r, double angle, const Name* names, int count,
     }
     for(int k=0;k<count && count>1;++k) {
         int t=team[k];
-        ImU32 ink=t==-1 || t==3 ? Hex(Ink) : Hex(0xFFFFFF);
+        ImU32 ink=t==-1 ? Hex(Ink) : t>=0 ? Hex(TeamOn(t)) : Hex(0xFFFFFF);
         RadialText(Names,c,-Pi/2+turn+(k+0.5f)*w,r-26,r*0.66f,ink,names[k]);
     }
     // Pegs on the lines, the hub, and the pointer at the right.
@@ -288,11 +301,11 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
             Box(x,y,cw,56,Hex(TeamFill[t]),16);
             Box(x,y+40,cw,16,Hex(TeamFill[t]));
             List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(TeamFill[t]),16,0,3);
-            Text(Body,x+18,y+13,Hex(t==3 ? Ink : 0xFFFFFF),TeamName[t]);
+            Text(Body,x+18,y+13,Hex(TeamOn(t)),TeamName[t]);
         }
         if(asked) List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(Mix(Raised,0xFFFFFF,0.35f+0.45f*pulse)),16,0,5);
         _snprintf_s(text,sizeof(text),_TRUNCATE,"P%d",i+1);
-        TextRight(Body,x+cw-18,y+13,Hex(t>=0 ? (t==3 ? Ink : 0xFFFFFF) : Muted,t>=0 ? 200 : 255),text);
+        TextRight(Body,x+cw-18,y+13,Hex(t>=0 ? TeamOn(t) : Muted,t>=0 ? 200 : 255),text);
         Ring(ImVec2(cx,y+130),52,p.controller,signedIn ? ButtonA : Dim,signedIn ? 1.f : 0.f);
         TextCentred(Heading,cx,y+204,cw-28,Hex(White),mine.names[i]);
         if(signedIn) {
@@ -337,6 +350,193 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
     if(screen.state.profilesNote[0]) TextCentred(Small,(Left+Right)/2.f,py+42,Right-Left,Hex(!strcmp(screen.state.profiles,"failed") ? Error : Muted),screen.state.profilesNote);
 }
 
+int SetupRows(const State& s, int tab) {
+    if(tab==TabPlayers) return 1+s.guestCount;
+    if(tab==TabTeams) return 1+(s.teams>=2 && s.teams<=TeamsMost ? s.teams : 2);
+    return 1+s.knownCount;
+}
+int HostChoices(const State& s, int* out) {
+    int n=0;
+    // This console first, then the others that are on.
+    for(int i=0;i<s.knownCount;++i) if(!strcmp(s.known[i].address,s.address)) out[n++]=i;
+    for(int i=0;i<s.knownCount;++i) if(strcmp(s.known[i].address,s.address) && strcmp(s.known[i].state,"off")) out[n++]=i;
+    return n;
+}
+static const char* StateText(const char* state) {
+    return !strcmp(state,"wheel") ? "In the party" : !strcmp(state,"aurora") ? "In Aurora" : !strcmp(state,"game") ? "In a game" : "Off";
+}
+// A tick box: ticked or not, highlighted when its row is picked.
+static void Tick(float x, float y, bool on, bool picked) {
+    Box(x,y,30,30,Hex(on ? Green : Raised),7);
+    if(!on) Box(x+3,y+3,24,24,Hex(picked ? Raised : Card),5);
+    if(on) {
+        List->AddLine(ImVec2(x+7,y+16),ImVec2(x+13,y+22),Hex(Ink),4);
+        List->AddLine(ImVec2(x+13,y+22),ImVec2(x+24,y+9),Hex(Ink),4);
+    }
+}
+// A small arrow (dir -1 left, 1 right) for a value that changes with left and right.
+static void Arrow(float x, float y, int dir, unsigned colour) {
+    if(dir<0) List->AddTriangleFilled(ImVec2(x+10,y),ImVec2(x+10,y+20),ImVec2(x,y+10),Hex(colour));
+    else List->AddTriangleFilled(ImVec2(x,y),ImVec2(x,y+20),ImVec2(x+10,y+10),Hex(colour));
+}
+// A shoulder or Start button's label, as a rounded tag. Returns the next x.
+static float Tag(float x, float y, const char* name, const char* label) {
+    float w=Width(Small,name)+20;
+    Box(x,y+3,w,28,Hex(Raised),8);
+    Text(Small,x+10,y+6,Hex(White),name);
+    Text(Body,x+w+10,y+1,Hex(White),label);
+    return x+w+10+Width(Body,label)+36;
+}
+
+// While there's no Gamemaster: the consoles that are on, to choose one.
+static void DrawHostChoice(const Screen& screen, float px, float py, float pw) {
+    const State& s=screen.state;
+    char text[160];
+    int choices[KnownMost];
+    int n=HostChoices(s,choices);
+    Text(Heading,px,py-8,Hex(White),"Who's the Gamemaster?");
+    TextFit(Body,px,py+40,pw,Hex(Muted),"Their Xbox sets up the party and spins the wheel.");
+    float y=py+96;
+    for(int r=0;r<n && r<7;++r) {
+        const Known& k=s.known[choices[r]];
+        const bool picked=r==screen.hostRow, mine=!strcmp(k.address,s.address);
+        Box(px,y,pw,58,Hex(picked ? Raised : Card),12);
+        if(picked) List->AddRect(ImVec2(px,y),ImVec2(px+pw,y+58),Hex(Mix(s.accent,0xFFFFFF,0.35f)),12,0,3);
+        Crown(px+20,y+18,24,Hex(picked ? 0xF2C811 : Dim));
+        TextFit(Heading,px+60,y+8,pw-300,Hex(White),k.name[0] ? k.name : k.address);
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"%s%s",mine ? "This Xbox  /  " : "",StateText(k.state));
+        TextRight(Small,px+pw-20,y+18,Hex(mine ? Green : Muted),text);
+        y+=68;
+    }
+    if(!n) TextFit(Body,px,y,pw,Hex(Muted),"No console is on yet.");
+}
+
+// The party's lobby: press A to join; who's here.
+static void DrawLobby(const Screen& screen, float px, float py, float pw) {
+    const State& s=screen.state;
+    char text[160];
+    const unsigned accent=s.accent;
+    // The join card.
+    Box(px,py,pw,150,Hex(Card),16);
+    Box(px,py,10,150,Hex(Mix(accent,0xFFFFFF,0.2f)),5);
+    const float pulse=0.5f+0.5f*sinf(float(screen.time)*4);
+    if(screen.typing>=0) {
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"Controller %d is typing a name",screen.typing+1);
+        TextFit(Heading,px+36,py+28,pw-72,Hex(White),text);
+        TextFit(Body,px+36,py+82,pw-72,Hex(Muted),"Your name or gamertag, as the others know you");
+    } else {
+        List->AddCircleFilled(ImVec2(px+58,py+56),24+3*pulse,Hex(ButtonA),32);
+        Text(Heading,px+58-Width(Heading,"A")/2,py+36,Hex(Background),"A");
+        TextFit(Heading,px+98,py+30,pw-130,Hex(White),"Press A to join the party");
+        TextFit(Body,px+98,py+82,pw-130,Hex(Muted),"On your own controller, then type your name");
+    }
+    // Who's here.
+    _snprintf_s(text,sizeof(text),_TRUNCATE,s.hereCount==1 ? "1 player here" : "%d players here",s.hereCount);
+    Text(Body,px,py+176,Hex(Muted),text);
+    if(s.gamemasterName[0]) {
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"Gamemaster: %s",s.gamemasterName);
+        float w=Width(Small,text);
+        Crown(px+pw-w-34,py+180,20,Hex(0xF2C811));
+        TextRight(Small,px+pw,py+180,Hex(Muted),text);
+    }
+    float gy=py+218, cw=(pw-16)/2;
+    int perColumn=int((Bottom-80-gy)/38);
+    if(perColumn<1) perColumn=1;
+    for(int i=0;i<s.hereCount && i<perColumn*2;++i) {
+        float x=px+(i/perColumn)*(cw+16), y=gy+(i%perColumn)*38;
+        if(i==perColumn*2-1 && s.hereCount>perColumn*2) {
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"and %d more",s.hereCount-i);
+            Text(Body,x,y,Hex(Muted),text);
+            break;
+        }
+        bool joinedHere=false;
+        for(int g=0;g<s.guestCount;++g) if(!strcmp(s.guests[g].name,s.here[i])) joinedHere=s.guests[g].joinedHere;
+        List->AddCircleFilled(ImVec2(x+8,y+17),6,Hex(joinedHere ? Green : Mix(accent,0xFFFFFF,0.4f)),12);
+        TextFit(Body,x+24,y+2,cw-24,Hex(White),s.here[i]);
+    }
+    if(!s.hereCount) TextFit(Body,px,gy,pw,Hex(Dim),"No one has joined yet.");
+}
+
+// The Gamemaster's setup, over the screen: Players, Teams and Consoles.
+static void DrawSetup(const Screen& screen) {
+    const State& s=screen.state;
+    char text[200];
+    const float x=Left, y=Top+92, w=Right-Left, h=Bottom-70-y;
+    Box(0,0,1280,720,Hex(Background,200));
+    Box(x,y,w,h,Hex(Card),18);
+    Text(Heading,x+32,y+22,Hex(White),"Set up the party");
+    // The tabs, LB and RB between them.
+    static const char* const tabs[TabsCount]={"Players","Teams","Consoles"};
+    float tx=x+w-32;
+    for(int t=TabsCount-1;t>=0;--t) {
+        float tw=Width(Body,tabs[t])+36;
+        tx-=tw;
+        const bool on=t==screen.setupTab;
+        Box(tx,y+24,tw,42,Hex(on ? Mix(s.accent,0x000000,0.1f) : Raised),21);
+        Text(Body,tx+18,y+31,Hex(on ? 0xFFFFFF : Muted),tabs[t]);
+        tx-=10;
+    }
+    Text(Small,tx-Width(Small,"LB / RB")-10,y+34,Hex(Dim),"LB / RB");
+    const int rows=SetupRows(s,screen.setupTab);
+    const float rowH=52, top=y+92;
+    for(int r=screen.setupTop;r<rows && r<screen.setupTop+SetupShown;++r) {
+        const float ry=top+(r-screen.setupTop)*(rowH+6);
+        const bool picked=r==screen.setupRow;
+        Box(x+24,ry,w-48,rowH,Hex(picked ? Raised : Mix(Card,Background,0.4f)),10);
+        if(picked) List->AddRect(ImVec2(x+24,ry),ImVec2(x+w-24,ry+rowH),Hex(Mix(s.accent,0xFFFFFF,0.35f)),10,0,3);
+        const float lx=x+48, ly=ry+12;
+        if(screen.setupTab==TabPlayers) {
+            if(r==0) {
+                List->AddCircleFilled(ImVec2(lx+15,ry+26),15,Hex(Green),24);
+                Box(lx+8,ry+24,14,4,Hex(Ink)); Box(lx+13,ry+19,4,14,Hex(Ink));
+                Text(Body,lx+46,ly,Hex(White),"Add a player");
+                TextRight(Small,x+w-48,ly+4,Hex(Muted),"A types a name");
+                continue;
+            }
+            const Guest& g=s.guests[r-1];
+            Tick(lx,ry+11,g.here,picked);
+            TextFit(Body,lx+46,ly,w-420,Hex(g.here ? White : Muted),g.name);
+            if(g.gamerscore>=0) { _snprintf_s(text,sizeof(text),_TRUNCATE,"%d G",g.gamerscore); TextRight(Body,x+w-48,ly,Hex(Muted),text); }
+            if(g.joinedHere) TextRight(Small,x+w-170,ly+4,Hex(Green),"joined here");
+        } else if(screen.setupTab==TabTeams) {
+            if(r==0) {
+                Text(Body,lx,ly,Hex(White),"Teams");
+                _snprintf_s(text,sizeof(text),_TRUNCATE,"%d",s.teams);
+                float vx=x+w-140;
+                Arrow(vx-40,ry+16,-1,picked ? White : Dim);
+                Text(Heading,vx-Width(Heading,text)/2+10,ry+4,Hex(White),text);
+                Arrow(vx+50,ry+16,1,picked ? White : Dim);
+                continue;
+            }
+            const int t=r-1;
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"Team %d",t+1);
+            Text(Body,lx,ly,Hex(White),text);
+            float sx=x+w-420;
+            Box(sx,ry+8,300,36,Hex(TeamFill[t]),18);
+            TextCentred(Body,sx+150,ly,280,Hex(TeamOn(t)),TeamName[t]);
+            Arrow(sx-30,ry+16,-1,picked ? White : Dim);
+            Arrow(sx+320,ry+16,1,picked ? White : Dim);
+        } else {
+            if(r==0) {
+                Box(lx,ry+11,30,30,Hex(ButtonA),15);
+                Text(Body,lx+46,ly,Hex(White),"Open the party on all consoles");
+                TextRight(Small,x+w-48,ly+4,Hex(Muted),"those in Aurora start it, and join");
+                continue;
+            }
+            const Known& k=s.known[r-1];
+            const bool master=s.gamemasterName[0] && !strcmp(k.name[0] ? k.name : k.address,s.gamemasterName);
+            Tick(lx,ry+11,k.inParty || master,picked);
+            if(master) Crown(lx+46,ry+14,22,Hex(0xF2C811));
+            TextFit(Body,lx+(master ? 80 : 46),ly,w-520,Hex(White),k.name[0] ? k.name : k.address);
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"%s%s",!strcmp(k.address,s.address) ? "This Xbox  /  " : "",StateText(k.state));
+            TextRight(Small,x+w-48,ly+4,Hex(!strcmp(k.state,"off") ? Dim : Muted),text);
+        }
+    }
+    // More above or below.
+    if(screen.setupTop>0) Text(Small,x+w/2-40,top-26,Hex(Dim),"More above");
+    if(screen.setupTop+SetupShown<rows) Text(Small,x+w/2-40,top+SetupShown*(rowH+6)-2,Hex(Dim),"More below");
+}
+
 void DrawUi(const Screen& screen) {
     const State& s=screen.state;
     ImGui::NewFrame();
@@ -346,6 +546,7 @@ void DrawUi(const Screen& screen) {
     List=ImGui::GetWindowDrawList();
     char text[256];
     const unsigned accent=s.valid ? s.accent : 0x107C10;
+    SetTeams(s);
 
     // Header: the party on the left, this console's name on the right.
     Box(Left,Top+6,6,40,Hex(Mix(accent,0xFFFFFF,0.25f)),3);
@@ -432,7 +633,7 @@ void DrawUi(const Screen& screen) {
             const int t=s.steps[step].team;
             const float age=float(screen.spinMs-StopMs(s,step)), pop=age<260 ? age/260 : 1.f, grow=(1-pop)*18;
             Box(px-grow,by-grow*0.4f,pw+grow*2,bh+grow*0.8f,Hex(TeamFill[t]),18);
-            const ImU32 ink=Hex(t==3 ? Ink : 0xFFFFFF);
+            const ImU32 ink=Hex(TeamOn(t));
             TextFit(Big,px+28,by+6,pw-56,ink,s.wheel[landed]);
             _snprintf_s(text,sizeof(text),_TRUNCATE,"joins %s!",TeamName[t]);
             TextFit(Heading,px+30,by+80-6,pw-60,ink,text);
@@ -464,28 +665,8 @@ void DrawUi(const Screen& screen) {
         const int columns=s.teamCount>2 ? 2 : s.teamCount, rows=(s.teamCount+1)/2;
         const float gap=12, cw=(pw-gap*(columns-1))/columns, ch=((Bottom-80)-ty-gap*(rows-1))/rows;
         if(ch>70) for(int k=0;k<s.teamCount;++k) TeamCard(px+(k%2)*(cw+gap),ty+(k/2)*(ch+gap),cw,ch,k,s.team[k],s.teamSize[k],true);
-    } else {
-        Box(px,py,pw,170,Hex(Card),14);
-        TextFit(Heading,px+32,py+28,pw-64,Hex(White),s.active ? "Waiting for the wheel" : "The LAN party starts soon");
-        if(s.gamemaster) TextFit(Body,px+32,py+88,pw-64,Hex(Muted),"Press A to spin for teams, X to pick one guest.");
-        else if(s.gamemasterName[0]) {
-            _snprintf_s(text,sizeof(text),_TRUNCATE,"The Gamemaster spins it, on %s.",s.gamemasterName);
-            TextFit(Body,px+32,py+88,pw-64,Hex(Muted),text);
-        } else TextFit(Body,px+32,py+88,pw-64,Hex(Muted),"It's spun from NetDisc360's dashboard.");
-        _snprintf_s(text,sizeof(text),_TRUNCATE,s.hereCount==1 ? "%d guest here" : "%d guests here",s.hereCount);
-        Text(Small,px,py+194,Hex(Muted),text);
-        // The guests in two columns.
-        float gy=py+232, cw=(pw-16)/2;
-        int perColumn=int((Bottom-80-gy)/34);
-        for(int i=0;i<s.hereCount && i<perColumn*2;++i) {
-            if(i==perColumn*2-1 && s.hereCount>perColumn*2) {
-                _snprintf_s(text,sizeof(text),_TRUNCATE,"and %d more",s.hereCount-i);
-                Text(Body,px+(i/perColumn)*(cw+16),gy+(i%perColumn)*34,Hex(Muted),text);
-                break;
-            }
-            TextFit(Body,px+(i/perColumn)*(cw+16),gy+(i%perColumn)*34,cw,Hex(White),s.here[i]);
-        }
-    }
+    } else if(!s.gamemasterName[0]) DrawHostChoice(screen,px,py,pw);
+    else DrawLobby(screen,px,py,pw);
 
     // Confetti over it all: a burst from the pointer at each stop, in the
     // team's colours, and a shower once the last one stopped.
@@ -508,12 +689,15 @@ void DrawUi(const Screen& screen) {
     }
     }
 
-    // A word back from the server on the Gamemaster's last spin.
+    // The Gamemaster's setup, over the rest.
+    if(screen.setup && s.valid) DrawSetup(screen);
+
+    // A word back from the server: on the last spin or change (a problem), or good news.
     if(screen.notice[0]) {
         float nw=Width(Small,screen.notice)+48; if(nw>Right-Left) nw=Right-Left;
         Box(Right-nw,Bottom-112,nw,40,Hex(Raised),10);
-        List->AddCircleFilled(ImVec2(Right-nw+20,Bottom-92),6,Hex(ErrorStrong),12);
-        TextFit(Small,Right-nw+36,Bottom-103,nw-48,Hex(Error),screen.notice);
+        List->AddCircleFilled(ImVec2(Right-nw+20,Bottom-92),6,Hex(screen.noticeGood ? Green : ErrorStrong),12);
+        TextFit(Small,Right-nw+36,Bottom-103,nw-48,Hex(screen.noticeGood ? White : Error),screen.notice);
     }
 
     // The guests' profiles on their way here (on the wheel; the players
@@ -536,29 +720,51 @@ void DrawUi(const Screen& screen) {
     // Footer: the buttons, and the server.
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
-    if(players) {
+    const bool turning=s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s);
+    if(screen.setup && s.valid) {
+        bx=Button(bx,Bottom-40,"A",ButtonA,screen.setupTab==TabTeams ? "Next" : screen.setupTab==TabPlayers && screen.setupRow>0 ? "Playing or not" : "Choose");
+        if(screen.setupTab==TabTeams) bx=Tag(bx,Bottom-40,"< >","Change");
+        if(screen.setupTab==TabConsoles && screen.setupRow>0) bx=Button(bx,Bottom-40,"Y",ButtonY,"Gamemaster");
+        bx=Button(bx,Bottom-40,"B",ButtonB,"Done");
+    } else if(players) {
         if(screen.asking>=0 && !screen.copying) bx=Button(bx,Bottom-40,"A",ButtonA,"Sign in");
         else if(screen.leaveIn>=0) bx=Button(bx,Bottom-40,"A",ButtonA,"Go now");
         bx=Button(bx,Bottom-40,"Y",ButtonY,"See the wheel");
+    } else if(s.valid && !s.gamemasterName[0]) {
+        bx=Button(bx,Bottom-40,"A",ButtonA,"Choose");
     } else {
-        if(s.valid && s.gamemaster && s.active) {
-            bx=Button(bx,Bottom-40,"A",ButtonA,"Spin for teams");
+        if(s.valid && !turning) bx=Button(bx,Bottom-40,"A",ButtonA,"Join");
+        if(s.valid && s.gamemaster && !turning) {
+            bx=Tag(bx,Bottom-40,"START","Spin");
             bx=Button(bx,Bottom-40,"X",ButtonX,"Pick one");
+            bx=Tag(bx,Bottom-40,"RB","Set up");
         }
-        if(seat && seat->count>0 && !(s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s))) bx=Button(bx,Bottom-40,"Y",ButtonY,"Sign in");
+        if(seat && seat->count>0 && !turning) bx=Button(bx,Bottom-40,"Y",ButtonY,"Sign in");
     }
     // Not while profiles are copied here: leaving would cut them off.
     if(screen.copying) {
         Spinner(bx+16,Bottom-24,10,screen.time,Muted);
         Text(Body,bx+38,Bottom-39,Hex(Muted),"Copying profiles, please wait");
         bx+=38+Width(Body,"Copying profiles, please wait")+32;
-    } else bx=Button(bx,Bottom-40,"B",ButtonB,"Back to Aurora");
+    } else if(!(screen.setup && s.valid)) bx=Button(bx,Bottom-40,"B",ButtonB,"Aurora");
     const char* where=screen.link==LinkConnected ? "Connected to NetDisc360 at %s" : screen.link==LinkLost ? "Lost NetDisc360 at %s, trying again" : screen.link==LinkWaiting ? "Waiting for the network" : "Looking for NetDisc360 %s";
     _snprintf_s(text,sizeof(text),_TRUNCATE,where,screen.server);
     float tw=Width(Small,text);
     if(Right-tw>bx) {
         TextRight(Small,Right,Bottom-36,Hex(Dim),text);
         List->AddCircleFilled(ImVec2(Right-tw-14,Bottom-25),5,Hex(screen.link==LinkConnected ? Green : screen.link==LinkLost ? ErrorStrong : Dim),16);
+    }
+
+    // This app's version and build, small, at the top right under the console's name.
+    if(screen.version[0]) TextRight(Small,Right,Top+74,Hex(Dim),screen.version);
+
+    // Making way for the server's newer app.
+    if(screen.updating) {
+        Box(0,0,1280,720,Hex(Background,220));
+        Box(340,250,600,200,Hex(Card),18);
+        Spinner(400,322,18,screen.time,Green);
+        Text(Heading,436,296,Hex(White),"Updating the party app");
+        TextFit(Body,436,350,480,Hex(Muted),"NetDisc360 has a newer one. Back in a moment.");
     }
 
     ImGui::End();
