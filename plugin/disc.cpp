@@ -100,7 +100,7 @@ typedef int (*SendCall)(DWORD caller,SOCKET s,const char* data,int length,int fl
 typedef int (*LastErrorCall)();
 typedef int (*WsaStartupCall)(DWORD caller,WORD version,void* data,DWORD versionFlags);
 typedef int (*XNetStartupCall)(DWORD caller,const void* parameters);
-typedef DWORD (*ConfigStatusCall)(DWORD caller,DWORD* status);
+typedef DWORD (*ConfigStatusCall)(DWORD caller,DWORD* status); // status: 16 words
 
 struct Calls {
     IoCreateDeviceCall IoCreateDevice; IoDeleteDeviceCall IoDeleteDevice; IoCompleteRequestCall IoCompleteRequest;
@@ -328,9 +328,12 @@ static bool NetworkUp() {
         Log("The network is started.");
         NetworkStarted=true;
     }
-    DWORD status=0;
-    bool up=!K.XnpGetConfigStatus(SystemCaller,&status) && (status&1);
-    if(!up && !ToldNoNetwork) { Log("The console's network isn't up yet (%X); waiting for it.",status); ToldNoNetwork=true; }
+    // XnpGetConfigStatus fills 64 bytes (NetISO.xex gave it 16 words); a
+    // single word here let it overwrite the worker's stack, which stopped
+    // the console at boot (xbdm caught the exception and halted the rest).
+    DWORD status[16]; memset(status,0,sizeof(status));
+    bool up=!K.XnpGetConfigStatus(SystemCaller,status) && (status[0]&1);
+    if(!up && !ToldNoNetwork) { Log("The console's network isn't up yet (%X); waiting for it.",status[0]); ToldNoNetwork=true; }
     else if(up && ToldNoNetwork) { Log("The console's network is up."); ToldNoNetwork=false; }
     return up;
 }
