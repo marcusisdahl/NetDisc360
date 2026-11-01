@@ -6,7 +6,9 @@
 #include "isvr.h"
 
 namespace nia {
-enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxFolders = 1024, PathMax = 320, IniMax = 4096 };
+// MaxGames: the most ISOs Sync makes folders for (a safety limit; libraries
+// of a few thousand are normal).
+enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxGames = 65536, PathMax = 320, IniMax = 4096 };
 
 #ifdef _XBOX
 const char PathSeparator = '\\';
@@ -77,6 +79,9 @@ struct DiscRoleInfo {
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
+// Called before each of the server's ISOs is looked at (done of total), so a
+// big first sync can show how far it has got.
+typedef void (*Progress)(int done, int total);
 // launcher is the tile launcher XEX (any copy; its execution info is
 // overwritten), each game folder's default.xex. boot, if not NULL, is the
 // helper XEX without execution info that they share, kept in root as
@@ -87,5 +92,5 @@ typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
 // and findRole about the disc_role and disc_label in its netiso.ini.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
-          FindInstall findInstall=NULL, FindRole findRole=NULL);
+          FindInstall findInstall=NULL, FindRole findRole=NULL, Progress progress=NULL);
 }

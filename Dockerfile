@@ -6,38 +6,52 @@
 #
 #   docker compose up -d      (see docker-compose.yml and the README)
 
-FROM debian:bookworm-slim AS build
+# The base image by digest, so a rebuild of a tag gives the same image;
+# Dependabot (.github/dependabot.yml) proposes the new digest when Debian
+# updates it.
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS build
 RUN apt-get update \
- && apt-get install -y --no-install-recommends g++ ca-certificates curl unzip \
+ && apt-get install -y --no-install-recommends g++ ca-certificates curl unzip python3 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
 COPY tests/posix_compat.h tests/
+# The dashboard page, made into server/web_page.h (it isn't kept in git).
+COPY web/ web/
+COPY tools/make_web.py tools/
+RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
         server/backup.cpp server/update.cpp server/auroradb.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
+# Tried when LAUNCHER_URL has none: the dev image asks for the dev launchers
+# first (the dev-launchers pre-release, see RELEASING.md), then the latest
+# release's.
+ARG LAUNCHER_FALLBACK_URL=
 # 1: fail the build without launchers (for the published image).
 ARG REQUIRE_LAUNCHER=0
 COPY docker/launcher/ /launcher/
 # unzip exits with 1 for a warning, such as the backslash paths of zips made
 # by Windows PowerShell 5.1, after extracting everything; only the files count.
-RUN if [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; then \
-        echo "Using the launchers in docker/launcher/."; \
-    elif curl -fsSL "$LAUNCHER_URL" -o /tmp/launcher.zip \
+RUN fetch() { [ -n "$1" ] && curl -fsSL "$1" -o /tmp/launcher.zip \
          && { unzip -jo /tmp/launcher.zip '*default.xex' '*boot.xex' -d /launcher || [ $? -eq 1 ]; } \
-         && [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; then \
+         && [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; }; \
+    if [ -f /launcher/default.xex ] && [ -f /launcher/boot.xex ]; then \
+        echo "Using the launchers in docker/launcher/."; \
+    elif fetch "$LAUNCHER_URL"; then \
         echo "Using the launchers from $LAUNCHER_URL."; \
+    elif fetch "$LAUNCHER_FALLBACK_URL"; then \
+        echo "Using the launchers from $LAUNCHER_FALLBACK_URL ($LAUNCHER_URL had none)."; \
     else \
         echo "WARNING: no launchers (none in $LAUNCHER_URL, or it didn't download). The server will only serve games, not add them to Aurora."; \
         rm -f /launcher/default.xex /launcher/boot.xex; \
         [ "$REQUIRE_LAUNCHER" != 1 ]; \
     fi
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tini tzdata \
  && rm -rf /var/lib/apt/lists/* \
