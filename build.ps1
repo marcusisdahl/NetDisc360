@@ -43,24 +43,26 @@ try {
     if ($LASTEXITCODE) { throw 'make_systemlink.py failed.' }
     & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
-    # NetIsoTiles.xex: the DashLaunch plugin that starts tiles from inside Aurora (plugin/main.cpp).
+    # NetDisc360.xex: the DashLaunch plugin, the console's disc drive for games
+    # from the server (plugin/disc.cpp, in NetISO.xex's place) that also
+    # handles tiles and disc swaps (plugin/main.cpp). NetIsoTiles.xex before.
     # It is linked at its system base (0x91380000), which the public imagexex
     # refuses, so its PE header is patched to a title base for imagexex and
     # tools/sysdll.py then moves the XEX back to the system base, as a system
     # DLL like NetISO.xex. The code itself is never relocated.
-    & $msbuild plugin\NetIsoTiles.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
+    & $msbuild plugin\NetDisc360.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Plugin compilation failed.' }
-    & python tools\sysdll.py pe-base build\xbox\NetIsoTiles.dll build\xbox\NetIsoTiles-title.dll 0x82000000
+    & python tools\sysdll.py pe-base build\xbox\NetDisc360.dll build\xbox\NetDisc360-title.dll 0x82000000
     if ($LASTEXITCODE) { throw 'sysdll.py pe-base failed.' }
-    & $imagexex.FullName /IN:build\xbox\NetIsoTiles-title.dll /OUT:build\xbox\NetIsoTiles-title.xex /CONFIG:plugin\xex.xml
-    if ($LASTEXITCODE) { throw 'imagexex failed for NetIsoTiles.' }
-    & python tools\sysdll.py xex build\xbox\NetIsoTiles-title.xex build\NetIsoTiles.xex 0x91380000
-    if ($LASTEXITCODE) { throw 'sysdll.py failed for NetIsoTiles.' }
+    & $imagexex.FullName /IN:build\xbox\NetDisc360-title.dll /OUT:build\xbox\NetDisc360-title.xex /CONFIG:plugin\xex.xml
+    if ($LASTEXITCODE) { throw 'imagexex failed for NetDisc360.xex.' }
+    & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91380000
+    if ($LASTEXITCODE) { throw 'sysdll.py failed for NetDisc360.xex.' }
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
-    Write-Host 'Built build\NetIsoTiles.xex. Add it as a DashLaunch plugin, next to NetISO.xex.'
+    Write-Host 'Built build\NetDisc360.xex. Add it as a DashLaunch plugin in place of NetIsoTiles.xex; it replaces NetISO.xex too.'
     Write-Host 'Built build\NetDisc360.exe. Start it: it opens its dashboard in your browser. NetDisc360.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }
