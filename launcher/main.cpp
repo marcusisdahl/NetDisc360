@@ -1392,17 +1392,30 @@ static bool ProfileJob() {
         ULONGLONG asked=nia::IniValue(job,key,given,sizeof(given)) && given[0] ? _strtoui64(given,NULL,16) : 0;
         if(!asked && ownXuid) asked=nia::NewOfflineXuid(like,profiles,listed);
         // With probe=, each way in turn until one works: as asked, then with
-        // zeroed tokens, then with xam picking the XUID.
+        // zeroed tokens, then with xam picking the XUID, then each of
+        // probe_flags= (hex, commas between) as flags, as asked.
         ULONGLONG xuid=0;
         DWORD code=0;
         char why[160]="";
         bool ok=false;
-        for(int way=0;way<(probe ? 3 : 1) && !ok;++way) {
+        static char flagList[256];
+        DWORD flags[24];
+        int flagCount=0;
+        if(nia::IniValue(job,"probe_flags",flagList,sizeof(flagList)))
+            for(char* at=flagList;*at && flagCount<24;) {
+                char* end=NULL;
+                DWORD f=strtoul(at,&end,16);
+                if(end==at) break;
+                flags[flagCount++]=f;
+                at=*end==',' ? end+1 : end;
+            }
+        for(int way=0;way<(probe ? 3+flagCount : 1) && !ok;++way) {
             nia::ProfileCall tried=call;
             tried.xuid=way==2 ? 0 : asked;
             if(way==1) tried.zeroTokens=true;
+            if(way>=3) tried.flags=flags[way-3];
             ok=nia::MakeProfile(gamertag,tried,xuid,code,why,sizeof(why),Wait);
-            Note("%s %s, way %d (XUID asked %016I64X%s%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",
+            Note("%s %s, way %d (flags %08lX, XUID asked %016I64X%s%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.flags,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",
                  tried.makeFolders && tried.xuid ? ", folders made first" : "",ok ? "" : why,ok ? "" : ".");
         }
         if(ok) {
