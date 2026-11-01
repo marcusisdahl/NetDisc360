@@ -1243,7 +1243,7 @@ class Dashboard(ServerTest):
                                     b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n"
                                     b"plugin4 = Hdd:\\Plugins\\NetDisc360.xex\r\n",
                  "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES",
-                 "Hdd1/Plugins/NetDisc360.xex": b"DRIVE"}
+                 "Hdd1/Plugins/NetDisc360.xex": b"DRIVE", "Hdd1/Plugins/NetDisc360.ini": b"read_kb=256\r\nserver = 10.0.0.7:4323\r\n"}
         for name, data in files.items():
             with open(os.path.join(xbox, name), "wb") as f:
                 f.write(data)
@@ -1263,9 +1263,13 @@ class Dashboard(ServerTest):
             self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
             self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())
             self.assertEqual([tiles["kind"], tiles["sha256"]], ["tiles", hashlib.sha256(b"TILES").hexdigest()])
+            # The plugin's server as it finds it: no NetDisc360.ini, so NetISO.xex.txt next to it.
+            self.assertEqual([tiles[k] for k in ("txt", "server", "serverFrom", "here")], [True, "10.0.0.99", "/Usb0/NetISO.xex.txt", False])
             self.assertEqual([gone["kind"], gone["found"]], ["other", False])
             # The plugin's name since it has its own disc drive, from the hard drive as on an RGH console.
             self.assertEqual([drive["slot"], drive["kind"], drive["found"], drive["sha256"]], [4, "tiles", True, hashlib.sha256(b"DRIVE").hexdigest()])
+            # server= in the NetDisc360.ini next to it, the port left off.
+            self.assertEqual([drive[k] for k in ("txt", "server", "serverFrom")], [True, "10.0.0.7", "/Hdd1/Plugins/NetDisc360.ini"])
             # A login typed in the wizard is tried before it's saved.
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
             self.assertEqual([r["ftp"], r["login"]], [True, False])
