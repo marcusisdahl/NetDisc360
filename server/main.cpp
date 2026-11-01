@@ -5975,12 +5975,18 @@ std::vector<Console*> WheelToOpen(const std::string& from, bool all) {
     Party p=CurrentParty();
     Options o=Current();
     std::vector<Console*> candidates, out;
+    // Only consoles that are on (one that's off, or never seen, can't open it).
     if(all) {
         std::vector<Console*> consoles=AllConsoles();
         std::lock_guard<std::mutex> hold(ConsoleLock);
         for(size_t i=0;i<consoles.size();++i)
             if(!consoles[i]->offline && (consoles[i]->answers || consoles[i]->connections>0)) candidates.push_back(consoles[i]);
-    } else for(size_t i=0;i<p.consoles.size();++i) { Console* c=ConsoleIfKnown(inet_addr(p.consoles[i].c_str())); if(c) candidates.push_back(c); }
+    } else {
+        std::vector<Console*> known;
+        for(size_t i=0;i<p.consoles.size();++i) { Console* c=ConsoleIfKnown(inet_addr(p.consoles[i].c_str())); if(c) known.push_back(c); }
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        for(size_t i=0;i<known.size();++i) if(!known[i]->offline && (known[i]->answers || known[i]->connections>0)) candidates.push_back(known[i]);
+    }
     std::vector<std::string> running(candidates.size());
     std::vector<std::thread> asks;
     for(size_t i=0;i<candidates.size();++i) {
@@ -6337,7 +6343,9 @@ std::string PartyText(unsigned long long version, const std::string& address) {
                 state=c.offline ? "off" : c.connections>0 && !c.mounted.empty() && !c.inAurora ? "game" : c.answers || c.connections>0 ? "aurora" : "off";
             }
             if(ShowsWheel(c.text)) state="wheel";
-            line("known",{c.text,nameOf(c.text),state,std::find(p.consoles.begin(),p.consoles.end(),std::string(c.text))!=p.consoles.end() ? "1" : "0"});
+            // Named as Aurora calls it, else by its address (to tell them apart).
+            std::map<std::string,std::string>::const_iterator n=names.find(c.text);
+            line("known",{c.text,n!=names.end() && !n->second.empty() ? n->second : std::string(c.text),state,std::find(p.consoles.begin(),p.consoles.end(),std::string(c.text))!=p.consoles.end() ? "1" : "0"});
         }
     }
     if(!p.spin.steps.empty()) {

@@ -19,6 +19,16 @@ int main(int argc, char** argv) {
            s.wheelCount, s.stepCount, s.teamCount, s.seatCount);
     const party::Seat* mine = party::MySeat(s);
     printf("mine %s|%d|%d\n", mine ? mine->console : "", mine ? mine->count : 0, mine && mine->count ? party::TeamOf(s, mine->names[0]) : -1);
+    printf("build %u|%s|%s|%d\n", s.serverBuild, s.serverCommit, s.serverVersion, s.update);
+    for (int t = 0; t < 4; ++t) {
+        party::Colour c = party::TeamColourOf(s, t);
+        printf("teamcolour %d %s|%06x|%06x|%d\n", t, c.name, c.fill, c.bright, c.ink);
+    }
+    printf("palette %d\n", s.paletteCount);
+    for (int i = 0; i < s.guestCount; ++i)
+        printf("guest %s|%d|%d|%d\n", s.guests[i].name, s.guests[i].here, s.guests[i].gamerscore, s.guests[i].joinedHere);
+    for (int i = 0; i < s.knownCount; ++i)
+        printf("known %s|%s|%s|%d\n", s.known[i].address, s.known[i].name, s.known[i].state, s.known[i].inParty);
     for (int i = 0; i < s.signedCount; ++i)
         printf("signin %d|%d|%s\n", s.signedIn[i].seat, s.signedIn[i].controller, s.signedIn[i].gamertag);
     for (int i = 1; i < argc; ++i) {

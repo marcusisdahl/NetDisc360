@@ -5,6 +5,8 @@
 #include "ui.h"
 #include "../third_party/imgui/imgui.h"
 #include "../third_party/fonts/roboto_medium.h"
+#include "../server/version.h"
+#include "../shared/build_id.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -201,6 +203,13 @@ static void Intro(double t) {
     #undef A
 }
 
+// This build, as every NetDisc360 program shows it ("v1.1.0-dev  c9c9b76").
+static const char* Version() {
+    static char text[48];
+    if(!text[0]) _snprintf_s(text,sizeof(text),_TRUNCATE,"v%s%s%s",NETDISC_VERSION,NETDISC_COMMIT[0] ? "  " : "",NETDISC_COMMIT);
+    return text;
+}
+
 void DrawLoadUi(const LoadScreen& s) {
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(ImVec2(1280,720));
@@ -281,10 +290,11 @@ void DrawLoadUi(const LoadScreen& s) {
         if(s.countdown>0) {
             _snprintf_s(text,sizeof(text),_TRUNCATE,"Back to Aurora in %d s",s.countdown);
             TextRight(Small,Right,Bottom-36,Hex(Dim),text);
-        }
+        } else TextRight(Small,Right,Bottom-36,Hex(Dim),Version());
     } else {
         Button(bx,Bottom-40,"B",ButtonB,"Cancel");
-        TextRight(Small,Right,Bottom-36,Hex(Dim),"The game starts by itself");
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"The game starts by itself   %s",Version());
+        TextRight(Small,Right,Bottom-36,Hex(Dim),text);
     }
 
     Intro(s.intro);

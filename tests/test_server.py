@@ -3036,6 +3036,20 @@ class Dashboard(ServerTest):
             ftp.server_close()
 
     PARTY_CONSOLES = ("--xbox", "10.10.1.41", "--xbox", "10.10.1.42", "--xbox", "10.10.1.43")
+    # The teams' colours (TeamPalette in server/party.cpp).
+    PALETTE = [{"name": n, "fill": "#" + f, "text": "#" + t, "bright": "#" + b, "ink": i} for n, f, t, b, i in (
+        ("Red", "e5483e", "b3261e", "ff6b61", False), ("Blue", "3f7fe6", "2559b0", "6ea8ff", False), ("Green", "2c9a2c", "0e6e0e", "5fd35f", False),
+        ("Yellow", "d9a400", "7f6200", "ffd23f", True), ("Orange", "f07c1e", "a8500c", "ffa257", False), ("Purple", "8e52d6", "6a35b0", "b98cff", False),
+        ("Pink", "e0509a", "b02a72", "ff8cc6", False), ("Teal", "149c9c", "0b6d6d", "4fd8d8", False))]
+
+    def party_now(self):
+        """The party in /api/state, without the guests' numbers and the team colours."""
+        party = self.json("GET", "/api/state")["party"]
+        for key in ("statsReading", "teamColours", "palette"):
+            del party[key]
+        for g in party["guests"]:
+            g.pop("stats", None)
+        return party
 
     def refused(self, path, cases):
         """Each (body, words) in cases is refused (400) with words in its error."""
@@ -3049,7 +3063,17 @@ class Dashboard(ServerTest):
         self.assertEqual(self.json("GET", "/api/state")["party"],
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
                                                                  "logo": False, "backgrounds": 0, "pictures": ""},
-                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}})
+                          "gamemaster": "", "consoles": [], "guests": [], "statsReading": False, "teams": 2, "teamColours": [0, 1, 2, 3], "palette": self.PALETTE,
+                          "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}})
+        # The teams' colours: 4 of the palette's 8, kept; one another team has swaps.
+        self.json("POST", "/api/party", {"teamColours": [5, 4, 7, 3]})
+        self.assertEqual(self.json("GET", "/api/state")["party"]["teamColours"], [5, 4, 7, 3])
+        self.json("POST", "/api/party", {"teamColours": [7]})
+        self.assertEqual(self.json("GET", "/api/state")["party"]["teamColours"], [7, 4, 5, 3])
+        self.refused("/api/party", [({"teamColours": [8]}, "colour is 0-7"), ({"teamColours": [0, 1, 2, 3, 4]}, "teamColours")])
+        self.restart(*self.PARTY_CONSOLES)
+        self.assertEqual(self.json("GET", "/api/state")["party"]["teamColours"], [7, 4, 5, 3])
+        self.json("POST", "/api/party", {"teamColours": [0, 1, 2, 3]})
         tricky = "Cid | 50%, ok; ="  # Every character the settings file's lists split at.
         self.json("POST", "/api/party", {"active": True, "name": " Bjørn's 40th ", "gamemaster": "10.10.1.42",
                                          "theme": {"preset": "birthday", "person": "Bjørn", "age": 40, "accent": "#FF8800", "accent2": "#1a1a1a"},
@@ -3063,7 +3087,7 @@ class Dashboard(ServerTest):
                  "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
-            self.assertEqual(self.json("GET", "/api/state")["party"], party)
+            self.assertEqual(self.party_now(), party)
             self.restart(*self.PARTY_CONSOLES)
         with open(self.config, encoding="utf-8") as f:
             saved = f.read()
@@ -3074,12 +3098,12 @@ class Dashboard(ServerTest):
         # who aren't on it go.
         name = self.json("POST", "/api/backup", {})["name"]
         self.json("POST", "/api/party", {"active": False})
-        self.assertEqual(self.json("GET", "/api/state")["party"]["guests"], [dict(g, here=False) for g in party["guests"]])
+        self.assertEqual(self.party_now()["guests"], [dict(g, here=False) for g in party["guests"]])
         self.json("POST", "/api/party", {"guests": [{"name": "Ann", "here": True}, {"name": "Dee"}]})
-        changed = self.json("GET", "/api/state")["party"]
+        changed = self.party_now()
         self.assertEqual((changed["guests"], changed["together"], changed["apart"]), ([{"name": "Ann", "here": True}, {"name": "Dee", "here": False}], [], []))
         self.json("POST", "/api/restore", {"name": name})
-        self.assertEqual(self.json("GET", "/api/state")["party"], party)
+        self.assertEqual(self.party_now(), party)
         # What isn't right is refused, and changes nothing.
         self.refused("/api/party", [
             ([], "JSON object"),
@@ -3115,7 +3139,7 @@ class Dashboard(ServerTest):
             ({"apart": [["Ann", "ANN"]]}, "Ann can't be kept apart from themselves."),
             ({"together": [["Ann", "Bjørn"]], "apart": [["Bjørn", "Ann"]]}, "can't be kept together and apart at once."),
         ])
-        self.assertEqual(self.json("GET", "/api/state")["party"], party)
+        self.assertEqual(self.party_now(), party)
         self.assertNotIn("Fake:", json.dumps(self.json("GET", "/api/log?after=0")))
 
     def party_text(self, address, version=0, wait_ms=0):
@@ -3236,7 +3260,8 @@ class Dashboard(ServerTest):
         self.json("POST", "/api/party", {"guests": [{"name": "Ann", "here": True}]})
         self.refused("/api/party/spin", [({"kind": "pick"}, "Tick at least two guests who are here")])
         self.json("POST", "/api/party", {"active": False})
-        self.assertIn("hasn't started", self.spin_ask("127.0.0.2", 2))
+        # The Gamemaster's console starts the party again to spin; no one's here yet.
+        self.assertIn("No one is here yet", self.spin_ask("127.0.0.2", 2))
 
     def sign_in(self, address, seat, controller, gamertag=b"", xuid=0, out=False):
         """NetDiscParty.xex saying who signed in (PartySignIn): its answer."""
@@ -3245,6 +3270,75 @@ class Dashboard(ServerTest):
             conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5049, index, xuid, len(gamertag)) + gamertag)
             size = struct.unpack(">I", exact(conn, 4))[0]
             return exact(conn, size).decode("utf-8")
+
+    def edit_ask(self, address, text):
+        """A change to the party from a console's party screen (PartyEditAsk): its answer."""
+        data = text.encode("utf-8")
+        with connect_from(address, self.port) as conn:
+            conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5045, 0, 0, len(data)) + data)
+            size = struct.unpack(">I", exact(conn, 4))[0]
+            return exact(conn, size).decode("utf-8")
+
+    def test_party_from_the_console(self):
+        self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
+        # No Gamemaster yet: the app shows the server's build, the palette and the consoles to choose from.
+        _, lines = self.party_text("127.0.0.2")
+        build = lines["build"][0]
+        self.assertEqual((len(build), build[3]), (4, "0"))
+        self.assertTrue(build[0].isdigit() and build[2].startswith("1."), build)
+        self.assertEqual(lines["palette"], [[str(i), c["name"], c["fill"], c["bright"], "1" if c["ink"] else "0"] for i, c in enumerate(self.PALETTE)])
+        self.assertEqual(lines["teamcolours"], [["0", "1", "2", "3"]])
+        self.assertNotIn("gamemaster", lines)
+        self.assertIn(["127.0.0.2", "127.0.0.2", "wheel", "0"], lines["known"])
+        # Anyone joins by typing a name; another console (not the Gamemaster's) can't set the party up.
+        self.assertEqual(self.edit_ask("127.0.0.2", "gamemaster\t127.0.0.2"), "ok\t127.0.0.2 is the Gamemaster.\n")
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual((party["active"], party["gamemaster"], party["consoles"]), (True, "127.0.0.2", ["127.0.0.2"]))
+        self.party_text("127.0.0.3")
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\t Ann "), "ok\tWelcome, Ann!\n")
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\tann"), "ok\tWelcome back, Ann!\n")
+        self.assertEqual(self.edit_ask("127.0.0.3", "add\tBob"), "error\tOnly the Gamemaster's console adds players; join with A.\n")
+        self.assertEqual(self.edit_ask("127.0.0.3", "teams\t3"), "error\tOnly the Gamemaster's console sets up the party.\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "add\tBob"), "ok\tWelcome, Bob!\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "add\tCid"), "ok\tWelcome, Cid!\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "here\tCid\t0"), "ok\t\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "teams\t3"), "ok\t\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "teams\t5"), "error\tDraw 2, 3 or 4 teams.\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "colour\t0\t6"), "ok\t\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "colour\t1\t6"), "ok\t\n")  # Team 1 had pink: they swap.
+        self.assertEqual(self.edit_ask("127.0.0.2", "colour\t0\t8"), "error\tThat isn't a team's colour.\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "console\t127.0.0.3\t1"), "ok\t\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "console\t127.0.0.2\t0"), "error\tThe Gamemaster's console is always in the party.\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "dance"), "error\tNetDisc360 doesn't know that change (dance); is it older than this app?\n")
+        self.assertEqual(self.edit_ask("127.0.0.1", "join\tEve"), "error\tThis isn't one of NetDisc360's Xboxes.\n")
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual([(g["name"], g["here"]) for g in party["guests"]], [("Ann", True), ("Bob", True), ("Cid", False)])
+        self.assertEqual((party["teams"], party["teamColours"], party["consoles"]), (3, [1, 6, 2, 3], ["127.0.0.2", "127.0.0.3"]))
+        # Each console sees the guest list (with who joined on it) and the team colours.
+        _, lines = self.party_text("127.0.0.3")
+        self.assertEqual(lines["guest"], [["1", "Ann", "-1", "1"], ["1", "Bob", "-1", "0"], ["0", "Cid", "-1", "0"]])
+        self.assertEqual((lines["teamcolours"], lines["teams"]), ([["1", "6", "2", "3"]], [["3"]]))
+        self.assertEqual(lines["gamemaster"], [["Console 1", "127.0.0.2"]])
+        # NetDiscParty.xex reads it so (party/state.cpp).
+        text, _ = self.party_text("127.0.0.3")
+        read = subprocess.run([build_party_parse()], input=text.encode("utf-8"), stdout=subprocess.PIPE, check=True).stdout.decode("utf-8").splitlines()
+        self.assertIn("build %s|%s|%s|0" % tuple(build[:3]), read)
+        self.assertEqual([l for l in read if l.startswith(("teamcolour ", "palette ", "guest "))],
+                         ["teamcolour 0 Blue|3f7fe6|6ea8ff|0", "teamcolour 1 Pink|e0509a|ff8cc6|0", "teamcolour 2 Green|2c9a2c|5fd35f|0", "teamcolour 3 Yellow|d9a400|ffd23f|1",
+                          "palette 8", "guest Ann|1|-1|1", "guest Bob|1|-1|0", "guest Cid|0|-1|0"])
+        self.assertIn("known 127.0.0.3|127.0.0.3|wheel|1", read)
+        # Leaving keeps the name on the list for the next LAN.
+        self.assertEqual(self.edit_ask("127.0.0.3", "leave\tBob"), "ok\tBob left the party.\n")
+        self.assertEqual([(g["name"], g["here"]) for g in self.json("GET", "/api/state")["party"]["guests"]], [("Ann", True), ("Bob", False), ("Cid", False)])
+        # Open on all: every console that shows the party already, so none opens; the gamerscores are read in the background.
+        self.assertEqual(self.json("POST", "/api/party/open", {}), {"ok": True, "opened": 0})
+        self.assertEqual(self.edit_ask("127.0.0.2", "openall"), "ok\tEvery console that's on shows the party already.\n")
+        self.assertTrue(self.json("POST", "/api/party/stats", {})["ok"])
+        for _ in range(50):
+            if not self.json("GET", "/api/state")["party"]["statsReading"]:
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.json("GET", "/api/state")["party"]["statsReading"])
 
     def test_wheel_for_consoles_and_sign_in(self):
         self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
@@ -3375,7 +3469,9 @@ class Dashboard(ServerTest):
         self.json("POST", "/api/party", {"active": True})
         party = self.json("GET", "/api/state")["party"]
         self.assertEqual((party["round"], party["drawn"], party["last"]), (0, None, []))
-        self.assertEqual(party["guests"], [{"name": n, "here": False} for n in here])
+        self.assertEqual([{"name": g["name"], "here": g["here"]} for g in party["guests"]], [{"name": n, "here": False} for n in here])
+        # Each guest's numbers stay: two parties started, nothing read or played.
+        self.assertEqual({g["name"]: (g["stats"]["parties"], g["stats"]["gamerscore"], g["stats"]["playSeconds"]) for g in party["guests"]}, {n: (0 if n == "Jon" else 1, -1, 0) for n in here})
         self.assertEqual((party["teams"], party["consoles"]), (2, ["10.10.1.42", "10.10.1.41", "10.10.1.43"]))
         self.restart(*self.PARTY_CONSOLES)
         self.assertEqual(self.json("GET", "/api/state")["party"], party)

@@ -504,10 +504,11 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 /* LAN party: the theme's colours (set by the page) apply inside .party and .screen only */
 :root { --team1: #d13438; --team1-text: #b3261e; --team2: #2f6fd6; --team2-text: #2559b0; --team3: #107c10; --team3-text: #0e6e0e; --team4: #e3b505; --team4-text: #7f6200; }
 :root[data-theme="dark"] { --team1: #f0675c; --team1-text: #f88a80; --team2: #6fa1ff; --team2-text: #8fb6ff; --team3: #5cc35c; --team3-text: #7dd37d; --team4: #f2c811; --team4-text: #f2c811; }
-.t1 { --team: var(--team1); --team-text: var(--team1-text); }
-.t2 { --team: var(--team2); --team-text: var(--team2-text); }
-.t3 { --team: var(--team3); --team-text: var(--team3-text); }
-.t4 { --team: var(--team4); --team-text: var(--team4-text); }
+:root { --team1-fill: #e5483e; --team1-bright: #ff6b61; --team1-ink: #fff; --team2-fill: #3f7fe6; --team2-bright: #6ea8ff; --team2-ink: #fff; --team3-fill: #2c9a2c; --team3-bright: #5fd35f; --team3-ink: #fff; --team4-fill: #d9a400; --team4-bright: #ffd23f; --team4-ink: #1b1e22; }
+.t1 { --team: var(--team1); --team-text: var(--team1-text); --team-fill: var(--team1-fill); --team-bright: var(--team1-bright); --team-ink: var(--team1-ink); }
+.t2 { --team: var(--team2); --team-text: var(--team2-text); --team-fill: var(--team2-fill); --team-bright: var(--team2-bright); --team-ink: var(--team2-ink); }
+.t3 { --team: var(--team3); --team-text: var(--team3-text); --team-fill: var(--team3-fill); --team-bright: var(--team3-bright); --team-ink: var(--team3-ink); }
+.t4 { --team: var(--team4); --team-text: var(--team4-text); --team-fill: var(--team4-fill); --team-bright: var(--team4-bright); --team-ink: var(--team4-ink); }
 .party-card { overflow: hidden; }
 .party > .party-card { margin-bottom: 16px; }
 .party-banner { position: relative; overflow: hidden; display: flex; align-items: center; gap: 16px; padding: 22px; min-height: 112px; color: #fff; background: linear-gradient(120deg, var(--deep1), var(--deep2)); }
@@ -544,7 +545,99 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .pic.logo img { object-fit: contain; padding: 4px; }
 .pic .remove { position: absolute; top: 3px; right: 3px; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; background: rgba(0,0,0,.62); color: #fff; display: grid; place-items: center; cursor: pointer; }
 .pic .remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.party-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.party-grid { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.step-n { width: 24px; height: 24px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); line-height: 1; font-size: 12.5px; font-weight: 750; }
+.party-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.fact { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; align-items: baseline; padding: 12px 16px; min-width: 0; }
+.fact + .fact { border-left: 1px solid var(--line); }
+.fact > .i { color: var(--faint); align-self: center; grid-row: span 2; }
+.fact b, .fact .g { font-size: 20px; font-weight: 720; letter-spacing: -.01em; line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact > span:last-child { grid-column: 2; font-size: 12px; color: var(--muted); line-height: 1.3; }
+.fact.big { background: var(--accent-soft); }
+.fact.big > .i { color: var(--accent-text); }
+.fact.big .g { color: var(--accent-text); }
+.fact.big .g b { font-size: inherit; }
+.fact .g small { font-size: 13px; font-weight: 650; }
+.fact .count { display: inline-block; transition: transform .2s; }
+.fact .count.bump { animation: bump 1.2s ease-out; }
+@keyframes bump { 0%, 70% { color: var(--good); } }
+.players-card .card-foot { background: var(--field); border-radius: 0 0 12px 12px; }
+.players { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.player { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 8px 8px 12px; min-width: 0; }
+.player + .player { border-top: 1px solid var(--line); }
+.player:not(.here) .gp-pic, .player:not(.here) .who b { opacity: .55; }
+.player.here { background: var(--accent-soft); }
+.here-tick { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: var(--panel); color: transparent; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.here-tick .i { width: 15px; height: 15px; stroke-width: 3; }
+.here-tick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.here-tick:hover { border-color: var(--accent); }
+.here-tick:focus-visible, .player .x:focus-visible, .swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gp-pic.blank { display: grid; place-items: center; font-weight: 700; font-size: 13px; color: var(--muted); }
+.player .who { display: flex; flex-direction: column; min-width: 0; }
+.player .who b { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player .who .tag { color: var(--muted); font-weight: 500; }
+.player .who .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.player .who .sub .dot { width: 6px; height: 6px; box-shadow: none; }
+.player-stats { display: grid; grid-template-columns: 92px 74px 44px; gap: 6px; text-align: right; }
+.stat { display: flex; flex-direction: column; min-width: 0; }
+.stat b { font-weight: 680; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat small { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.stat .earned { margin-left: 5px; font-size: 11.5px; color: var(--good); font-weight: 700; }
+.player .x { width: 28px; height: 28px; border: 0; background: transparent; color: var(--faint); border-radius: 7px; cursor: pointer; display: grid; place-items: center; }
+.player .x:hover { color: var(--bad); background: var(--bad-soft); }
+.players-empty { display: flex; gap: 12px; align-items: center; padding: 14px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); }
+.players-empty p { margin: 0; font-size: 13px; }
+.players-empty .i { flex: none; color: var(--faint); }
+.gp-tools { margin-top: 0; }
+.score-what { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
+.scores { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.scores li { display: grid; grid-template-columns: 26px minmax(0, 7em) minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.scores .rank { display: grid; place-items: center; font-weight: 700; color: var(--muted); font-size: 13px; }
+.scores .top1 .rank { color: #c99a06; } .scores .top2 .rank { color: #8a96a3; } .scores .top3 .rank { color: #b26b36; }
+.scores .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scores .bar { height: 10px; border-radius: 99px; background: var(--hover); overflow: hidden; }
+.scores .bar span { display: block; height: 100%; border-radius: 99px; background: var(--accent); transition: width .6s ease-out; }
+.scores .top1 .bar span { background: linear-gradient(90deg, var(--accent), #e3b505); }
+.scores b { font-variant-numeric: tabular-nums; font-size: 13.5px; }
+.bests { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 14px; }
+.bests:empty { display: none; }
+.best { display: flex; flex-direction: column; padding: 10px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line); min-width: 0; }
+.best .muted { font-size: 12px; }
+.best b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.best span:last-child { font-size: 13px; color: var(--muted); }
+.team-colours { display: grid; gap: 6px; margin: -4px 0 14px; }
+.tc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tc-name { display: inline-flex; align-items: center; gap: 6px; min-width: 104px; font-size: 13px; font-weight: 650; color: var(--team-text); }
+.tc-name .dot { background: var(--team); }
+.swatches { display: flex; gap: 5px; flex-wrap: wrap; }
+.swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--panel); background: var(--c); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; padding: 0; }
+.swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--text); }
+.swatch:hover:not(:disabled) { transform: scale(1.12); }
+.party-rules { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 4px; }
+.party-rules summary { display: flex; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; list-style: none; }
+.party-rules summary::-webkit-details-marker { display: none; }
+.party-rules summary .muted { font-size: 13px; }
+.party-rules summary .chev { margin-left: auto; color: var(--faint); transition: transform .2s; }
+.party-rules[open] summary .chev { transform: rotate(180deg); }
+.party-rules > div { padding: 6px 0 2px; }
+.party-start .party-buttons { margin-top: 12px; }
+@media (max-width: 1400px) and (min-width: 641px) {
+  .party-facts { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .fact { grid-column: span 2; }
+  .fact:nth-child(n+4) { grid-column: span 3; border-top: 1px solid var(--line); }
+  .fact:nth-child(4) { border-left: 0; }
+}
+@media (max-width: 640px) {
+  .party-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .party-facts .fact { border-left: 0; border-top: 1px solid var(--line); }
+  .party-facts .fact:nth-child(even) { border-left: 1px solid var(--line); }
+  .party-facts .fact:first-child, .party-facts .fact:nth-child(2) { border-top: 0; }
+  .fact.big { grid-column: 1 / -1; order: -1; border-left: 0 !important; }
+  .player { grid-template-columns: auto auto minmax(0, 1fr) auto; row-gap: 6px; }
+  .player-stats { grid-column: 3 / -1; grid-row: 2; justify-content: start; grid-template-columns: repeat(3, auto); gap: 16px; text-align: left; }
+  .player .x { grid-column: 4; grid-row: 1; }
+  .scores li { grid-template-columns: 22px minmax(0, 6em) minmax(0, 1fr) auto; gap: 8px; }
+}
 .party .card-head { flex-wrap: wrap; row-gap: 4px; }
 .party .card-head h2 { white-space: nowrap; }
 .pc-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -611,12 +704,11 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 @keyframes reveal { from { opacity: 0; transform: translateY(6px) scale(.97); } }
 .wheel-box { display: flex; justify-content: center; margin: 4px 0 14px; }
 canvas.wheel { width: min(100%, 380px); aspect-ratio: 1; display: block; }
-.wheel-callout { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: -4px 0 14px; padding: 12px 16px; border-radius: 14px; background: var(--team, var(--accent)); color: #fff; text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
+.wheel-callout { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: -4px 0 14px; padding: 12px 16px; border-radius: 14px; background: var(--team-fill, var(--accent)); color: var(--team-ink, #fff); text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
 .wheel-callout b { font-size: 30px; line-height: 1.1; overflow-wrap: anywhere; }
 .wheel-callout span { font-weight: 650; font-size: 17px; }
 .wheel-callout.waiting { background: var(--field); color: var(--muted); border: 1px dashed var(--line-strong); animation: none; }
 .wheel-callout.ready { color: var(--good); border-style: solid; }
-.wheel-callout.t4 { color: #1b1e22; }
 @keyframes callout-pop { from { transform: scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .wheel-callout { animation: none; } }
 .wheel-pick { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px; text-align: center; }
@@ -713,7 +805,7 @@ body.on-screen { overflow: hidden; }
 .screen-team ul, .screen-names { list-style: none; margin: 0; padding: 0; }
 .screen-team li { font-size: clamp(20px, 2.15vw, 50px); font-weight: 750; line-height: 1.3; overflow-wrap: anywhere; }
 .screen-team .where { margin-top: .7em; font-size: .78em; opacity: .85; display: flex; align-items: center; gap: .4em; }
-.screen .t1 { --team: #ff6b61; } .screen .t2 { --team: #6ea8ff; } .screen .t3 { --team: #5fd35f; } .screen .t4 { --team: #ffd23f; }
+.screen :is(.t1, .t2, .t3, .t4) { --team: var(--team-bright); }
 .screen-waiting h2 { margin: 0 0 .5em; font-size: 1.5em; }
 .screen-waiting p { margin: .8em 0 0; opacity: .85; }
 .screen-names { display: flex; flex-wrap: wrap; gap: .45em; }
@@ -728,11 +820,10 @@ body.on-screen { overflow: hidden; }
 .screen-teams.stacked { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9em), 1fr)); }
 .screen-picked p { margin: 0; opacity: .85; }
 .screen-side { display: grid; gap: clamp(10px, 1.6vh, 20px); align-content: center; }
-.screen-callout { padding: .5em .8em; border-radius: .5em; background: var(--team-c, rgba(255,255,255,.12)); text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
+.screen-callout { padding: .5em .8em; border-radius: .5em; background: var(--team-fill, rgba(255,255,255,.12)); color: var(--team-ink, inherit); text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
 .screen-callout b { display: block; font-size: 2.6em; line-height: 1.05; overflow-wrap: anywhere; }
 .screen-callout span { font-size: 1.3em; font-weight: 650; }
 .screen-callout.waiting { animation: none; opacity: .85; }
-.screen-callout.t1 { --team-c: #e5483e; } .screen-callout.t2 { --team-c: #3f7fe6; } .screen-callout.t3 { --team-c: #2c9a2c; } .screen-callout.t4 { --team-c: #d9a400; color: #1b1e22; }
 .screen-picked h2 { margin: .2em 0 0; font-size: 3em; line-height: 1.05; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .screen-spin { grid-template-columns: 1fr; justify-items: center; } .screen-wheel canvas.wheel { width: min(86vw, 60vh); } }
 .screen-console { background: rgba(0,0,0,.34); border-radius: clamp(10px, 1vw, 22px); padding: clamp(12px, 1.2vw, 26px); border-left: clamp(5px, .45vw, 10px) solid var(--team, rgba(255,255,255,.4)); min-width: 0; }
@@ -880,14 +971,6 @@ a.console:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .nav .nav-sub .dot { width: 7px; height: 7px; box-shadow: none; }
 
 /* The LAN party's Start on all, at its top */
-.start-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; align-items: start; }
-.start-body > * { grid-column: 1; }
-.start-body > .party-buttons { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; justify-content: flex-end; max-width: 330px; }
-.start-body .start-pick { max-width: 560px; }
-@media (max-width: 1100px) {
-  .start-body { display: block; }
-  .start-body > .party-buttons { margin-top: 14px; max-width: none; justify-content: flex-start; }
-}
 @media (max-width: 860px) {
   .console-grid { grid-template-columns: minmax(0, 1fr); }
   .con-head .actions { width: 100%; }
@@ -1121,6 +1204,7 @@ async function refresh() {
   try {
     const asked = performance.now();
     S = await api('state');
+    if (S.party) teamStyles(S.party);
     noteSpin(S.party && S.party.spin, (asked + performance.now()) / 2);
     failed = 0;
     const said = store('restarted');
@@ -2447,7 +2531,34 @@ async function missingArt(address, button) {
 // with the System Link games, and the big screen (#party/screen) for a TV.
 // The theme's colours apply on this page and the big screen only.
 
-const Teams = [['Red', 't1'], ['Blue', 't2'], ['Green', 't3'], ['Yellow', 't4']];
+// The teams' colours: the party picks 4 of the palette's 8 (Party.teamColours
+// and TeamPalette in server/party.h). Each team's look: its name ("Red"), its
+// class (t1-t4, for the CSS), and its colours: fill (the wheel, a callout),
+// text (on a light page), bright (on a dark one) and ink (text on its fill).
+const TeamPaletteDefault = [
+  { name: 'Red', fill: '#e5483e', text: '#b3261e', bright: '#ff6b61', ink: false }, { name: 'Blue', fill: '#3f7fe6', text: '#2559b0', bright: '#6ea8ff', ink: false },
+  { name: 'Green', fill: '#2c9a2c', text: '#0e6e0e', bright: '#5fd35f', ink: false }, { name: 'Yellow', fill: '#d9a400', text: '#7f6200', bright: '#ffd23f', ink: true }];
+function teamLook(i, p) {
+  p = p || teamLook.party || (S && S.party) || {};
+  const palette = p.palette && p.palette.length ? p.palette : TeamPaletteDefault, at = p.teamColours && p.teamColours.length > i ? p.teamColours[i] : i;
+  const c = palette[at] || TeamPaletteDefault[i % 4];
+  return { name: c.name, cls: 't' + (i + 1), fill: c.fill, text: c.text, bright: c.bright, ink: c.ink ? '#1b1e22' : '#ffffff' };
+}
+const teamName = (i, p) => 'Team ' + teamLook(i, p).name;
+// The party's team colours as CSS variables (--team1 … --team4, with -text,
+// -fill, -bright and -ink), for this page and the big screen, in both themes.
+function teamStyles(p) {
+  const key = JSON.stringify([p.teamColours, p.palette && p.palette.length]);
+  if (teamStyles.key === key) return;
+  teamStyles.key = key;
+  let el = document.getElementById('team-colours');
+  if (!el) { el = document.createElement('style'); el.id = 'team-colours'; document.head.appendChild(el); }
+  const vars = dark => [0, 1, 2, 3].map(i => {
+    const t = teamLook(i, p), n = i + 1;
+    return '--team' + n + ':' + (dark ? t.bright : t.fill) + ';--team' + n + '-text:' + (dark ? t.bright : t.text) + ';--team' + n + '-fill:' + t.fill + ';--team' + n + '-bright:' + t.bright + ';--team' + n + '-ink:' + t.ink + ';';
+  }).join('');
+  el.textContent = ':root{' + vars(false) + '}:root[data-theme="dark"]{' + vars(true) + '}';
+}
 const PartyPresets = {
   classic: { name: 'Classic', icon: 'party-popper', help: 'Your two colours', accent: '#107c10', accent2: '#ffffff' },
   birthday: { name: 'Birthday', icon: 'cake', help: 'Whose, and how old', accent: '#db2777', accent2: '#f59e0b' },
@@ -2609,32 +2720,38 @@ Pages.party = root => {
   wrap.append(header('LAN party', 'Teams, seats and one game on every console.', tabs,
     h('a.btn', { href: '#party/screen', title: 'The party for a TV or a projector: its teams, seats and games' }, ic('tv', 'sm'), 'Big screen')), main, links);
   root.append(wrap);
-  const banner = livePart(h('div.party-banner')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
+  const banner = livePart(h('div.party-banner')), facts = livePart(h('div.party-facts')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
-  const profiles = livePart(h('div'));
-  const parts = [banner, form, consoles, guests, profiles, rules, raffle, seats, start, results];
-  const guestCount = h('span.sub');
+  const profiles = livePart(h('div')), scores = livePart(h('div'));
+  const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results];
+  const guestCount = h('span.sub'), rulesCount = h('span.muted');
   const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
-  const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
-  const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
+  const typed = h('input.input', { placeholder: 'Add players: names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
+  // A card; step numbers the party's order (consoles, players, teams, seats, play).
+  const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', typeof icon === 'number' ? h('span.step-n', { 'aria-hidden': 'true' }, String(icon)) : ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
   seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
-  // The banner over the Party and Theme tabs; the theme's settings on the Theme tab.
-  const themeBody = h('div.card-body.hidden', form.el), top = h('div.card.party-card', banner.el, themeBody);
+  // The banner and the party's numbers over the Party and Theme tabs; the theme's settings on the Theme tab.
+  const themeBody = h('div.card-body.hidden', form.el), top = h('div.card.party-card', banner.el, facts.el, themeBody);
   wrap.insertBefore(top, main);
-  const startCard = card('play', 'Start on all', h('span.sub', 'one game on every party console'), null, start.el, results.el);
+  const openAll = h('button.btn.small', { 'data-focus': 'open-all', title: 'Starts NetDisc360 Party on every console that’s on (copied there first when it’s missing): each shows the party, and players join it from their controller',
+    onclick: e => openEverywhere(e.currentTarget) }, ic('monitor-play', 'sm'), 'Open on all consoles');
+  const startCard = card(5, 'Play', h('span.sub', 'one game on every party console'), null, start.el, results.el);
   startCard.classList.add('party-start');
-  main.append(startCard,
+  main.append(
     h('div.party-grid',
       h('div.stack',
-        card('monitor', 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), null, consoles.el),
-        card('users', 'Guests', guestCount, [h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here')],
-          h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
+        card(1, 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), openAll, consoles.el),
+        h('div.card.players-card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '2'), h('h2', 'Players'), guestCount,
+          h('div.right', h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here'))),
+          h('div.card-body', h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
             h('button.btn.ghost', { title: 'The names typed take the place of the guest list kept from before', onclick: () => addGuests(true) }, ic('list', 'sm'), 'New list')), guests.el),
-        card('user', 'Guest profiles', h('span.sub', 'an Xbox profile for each guest, on every console'), null, profiles.el),
-        card('link', 'Rules', h('span.sub', 'for the team raffle'), null, rules.el)),
+          h('div.card-foot', profiles.el)),
+        card('trophy', 'Scoreboard', h('span.sub', 'gamerscore and play time'), null, scores.el)),
       h('div.stack',
-        card('dices', 'Team raffle', null, null, raffle.el),
-        card('armchair', 'Seats', h('span.sub', 'teammates on one console, up to 4'), null, seats.el))));
+        h('div.card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '3'), h('h2', 'Teams')), h('div.card-body', raffle.el,
+          h('details.party-rules', h('summary', ic('link', 'sm'), h('b', 'Rules'), rulesCount, ic('chevron-down', 'sm chev')), rules.el))),
+        card(4, 'Seats', h('span.sub', 'teammates on one console, up to 4'), null, seats.el),
+        startCard)));
   const systemLink = systemLinkTab(links);
 
   // Changes to the party go to the server one at a time, in order, so quick
@@ -2697,10 +2814,54 @@ Pages.party = root => {
       pics.backgrounds[0] ? h('img.photo', { src: pics.backgrounds[0], alt: '' }) : null, h('span.ring'), h('span.ring.b'),
       pics.logo ? h('div.logo-plate', h('img', { src: pics.logo, alt: 'Logo' })) : null,
       h('div.text', h('h2', partyTitle(p)), partyLine(p) ? h('p.line', partyLine(p)) : null,
-        h('p.facts-line', PartyPresets[t.preset].name + ' theme · ' + (p.guests.length ? here + ' of ' + plural(p.guests.length, 'guest') + ' here' : 'no guests yet') + ' · ' + plural(p.consoles.length, 'console') +
-          (p.round ? ' · ' + plural(p.round, 'round') + ' played' : ''))),
+        h('p.facts-line', PartyPresets[t.preset].name + ' theme' + (p.active ? '' : ' · starts when you turn it on'))),
       h('label.party-live', h('span', p.active ? 'LAN party on' : 'Start the party'), h('span.switch', live, h('span'))),
     ];
+  }
+
+  // The party's numbers under the banner: who's here, the consoles, the
+  // rounds, the gamerscore earned tonight (counting up) and the play time.
+  let earnedShown = null;
+  function partyNumbers(p) {
+    const here = p.guests.filter(g => g.here), stats = here.map(g => g.stats).filter(Boolean);
+    const sum = k => stats.reduce((n, x) => n + (x[k] || 0), 0);
+    return { here: here.length, earned: sum('earned'), gamerscore: sum('gamerscore'), play: sum('playSeconds'), read: stats.length };
+  }
+  function drawFacts(p) {
+    const n = partyNumbers(p), on = p.consoles.filter(ip => { const c = S.consoles.find(x => x.address === ip); return c && consoleOn(c); }).length;
+    const tile = (icon, value, label, extra) => h('div.fact' + (extra || ''), ic(icon, 'sm'), h('b', value), h('span', label));
+    const counter = h('b.count', (earnedShown === null ? n.earned : earnedShown).toLocaleString());
+    countUp(counter, n.earned);
+    return [
+      tile('users', n.here + (p.guests.length ? ' / ' + p.guests.length : ''), 'players here'),
+      tile('monitor', on + ' / ' + p.consoles.length, 'party consoles on'),
+      tile('dices', String(p.round), p.round === 1 ? 'round played' : 'rounds played'),
+      h('div.fact.big', ic('trophy', 'sm'), h('span.g', '+', counter, h('small', ' G')), h('span', p.active ? 'gamerscore earned tonight' : 'gamerscore earned (party not on)')),
+      tile('clock', n.play ? duration(n.play) : '0 min', 'played by those here, all LANs'),
+    ];
+  }
+  // The gamerscore counter counts up to its new value.
+  function countUp(el, to) {
+    const from = earnedShown === null ? to : earnedShown;
+    earnedShown = to;
+    if (from === to || matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = to.toLocaleString(); return; }
+    const start = performance.now(), lasts = 1200;
+    (function step(now) {
+      const f = Math.min(1, (now - start) / lasts), v = Math.round(from + (to - from) * (1 - Math.pow(1 - f, 3)));
+      el.textContent = v.toLocaleString();
+      if (f < 1 && el.isConnected) requestAnimationFrame(step);
+    })(start);
+    el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 1300);
+  }
+  async function openEverywhere(button) {
+    button.disabled = true;
+    try {
+      await queue;
+      const r = await api('party/open', {});
+      toast(r.opened ? 'NetDisc360 Party opens on ' + plural(r.opened, 'console') + ': players join from their controller' : 'NetDisc360 Party is open on every console that’s on');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+    finally { button.disabled = false; }
   }
 
   function drawForm(p, pics) {
@@ -2774,8 +2935,9 @@ Pages.party = root => {
         h('label.pick', h('input', { type: 'checkbox', checked: on, disabled: gm, 'data-focus': 'in-' + ip, title: gm ? 'The Gamemaster console is always in the party' : null,
           onchange: e => edit({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
         h('span.what', h('b', nameOf(ip)), nameOf(ip) !== ip ? h('span.muted', ' ' + ip) : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
+        (S.party.wheelOn || []).includes(ip) ? h('span.pill.info', { title: 'NetDisc360 Party is open on it' }, ic('ferris-wheel', 'sm'), 'Party app') : null,
         h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster'));
-    })), h('p.hint', 'The Gamemaster console is the host’s: it’s seated first and starts first. Tick every console that plays.')];
+    })), h('p.hint', 'Tick every console that plays; the Gamemaster’s is the host’s, seated first. Open on all consoles lets the players join from their own controller, and the Gamemaster run the party from there.')];
   }
 
   // The guests: kept for the next party, ticked when they're here. The names
@@ -2806,13 +2968,39 @@ Pages.party = root => {
   }
   const setGuests = list => edit({ guests: list });
   const everyone = here => setGuests(shownParty().guests.map(g => ({ name: g.name, here })));
+  const profileOf = name => prof && prof.profiles ? prof.profiles.find(x => sameName(x.name, name)) : null;
+  const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => [...w][0].toUpperCase()).join('');
+  // A guest's profile in a few words: on which consoles, or kept on this PC.
+  function profileSaid(g, ips) {
+    const pr = profileOf(g.name);
+    if (!pr || !pr.xuid) return { dot: 'off', text: g.here ? 'Profile in a moment' : 'No profile yet' };
+    const away = ips.filter(ip => !pr.on.includes(ip));
+    if (!pr.on.length) return { dot: 'off', text: pr.best ? 'Profile kept on this PC' : 'Profile on no console' };
+    if (!away.length) return { dot: 'good', text: 'Profile on every console' };
+    return { dot: 'warn', text: 'Profile on ' + ips.filter(ip => pr.on.includes(ip)).map(nameOf).join(', ') + '; not yet on ' + away.map(nameOf).join(', ') };
+  }
   function drawGuests(p) {
-    if (!p.guests.length) return h('p.muted', { style: { margin: 0 } }, 'No guests yet. Type their names above; they’re kept for the next party.');
-    return [h('div.chips', p.guests.map(g => h('span.chip' + (g.here ? '.here' : ''),
-      h('button', { type: 'button', 'aria-pressed': String(g.here), 'data-focus': 'guest-' + g.name, title: g.here ? 'Here' : 'Not here yet',
-        onclick: () => setGuests(p.guests.map(x => x === g ? { name: x.name, here: !x.here } : x)) }, h('span.tick', g.here ? ic('check', 'sm') : null), h('span.chip-name', g.name)),
-      h('button.x', { type: 'button', title: 'Take off the guest list', 'aria-label': 'Take ' + g.name + ' off the guest list', onclick: () => setGuests(p.guests.filter(x => x !== g)) }, ic('x', 'sm'))))),
-    h('p.hint', 'Tap a name to tick who’s here. The list is kept for the next party.')];
+    if (!p.guests.length) return h('div.players-empty', ic('users'), h('p', 'No players yet. Type their names above, or let them join from a console (Open on all consoles). The list is kept for the next LAN.'));
+    const ips = profileConsoles(p);
+    const stat = (value, label, title, extra) => h('span.stat', { title }, h('b', value, extra), h('small', label));
+    return [h('div.players', { role: 'list' }, p.guests.map(g => {
+      const pr = profileOf(g.name), st = g.stats, said = profileSaid(g, ips);
+      const tag = pr && pr.gamertag && pr.gamertag !== g.name ? pr.gamertag : '';
+      const toggle = () => setGuests(p.guests.map(x => x === g ? { name: x.name, here: !x.here } : { name: x.name, here: x.here }));
+      return h('div.player' + (g.here ? '.here' : ''), { role: 'listitem' },
+        h('button.here-tick', { type: 'button', 'aria-pressed': String(g.here), 'data-focus': 'guest-' + g.name, title: g.here ? 'Here: plays tonight (tap if not)' : 'Not here: tap when they play tonight',
+          'aria-label': g.name + (g.here ? ', here' : ', not here'), onclick: toggle }, ic('check', 'sm')),
+        pr && pr.gamertag ? guestPicture(pr.gamertag) : h('span.gp-pic.blank', { 'aria-hidden': 'true' }, initials(g.name)),
+        h('div.who', h('b', g.name, tag ? h('span.tag', ' · ' + tag) : null),
+          h('span.sub', { title: said.text + (st && st.lastGame ? '. Last played ' + st.lastGame : '') }, h('span.dot.' + said.dot), said.text + (st && st.lastGame ? ' · last played ' + st.lastGame : ''))),
+        h('div.player-stats',
+          stat(st && st.readAt ? st.gamerscore.toLocaleString() : '–', 'gamerscore', st && st.readAt ? 'Read ' + ago(st.readAt) + (st.achievements ? '; ' + plural(st.achievements, 'achievement') : '') : 'Not read yet',
+            st && st.earned ? h('span.earned', '+' + st.earned.toLocaleString()) : null),
+          stat(st && st.playSeconds ? duration(st.playSeconds) : '–', 'played', st && st.plays ? plural(st.plays, 'game') + ' at the LANs' : 'Nothing played at a LAN yet'),
+          stat(st && st.parties ? String(st.parties) : '0', st && st.parties === 1 ? 'LAN' : 'LANs', st && st.lastParty ? 'Last at a LAN ' + ago(st.lastParty) : 'No LAN yet')),
+        h('button.x', { type: 'button', title: 'Take off the list', 'aria-label': 'Take ' + g.name + ' off the list', onclick: e => { e.stopPropagation(); setGuests(p.guests.filter(x => x !== g)); } }, ic('x', 'sm')));
+    })),
+    h('p.hint', 'Tick who plays tonight. Everyone stays on the list for the next LAN, with their gamerscore, play time and LANs; no one has to join again.')];
   }
 
   // Guest profiles: one console makes each guest's profile, the server
@@ -2843,33 +3031,52 @@ Pages.party = root => {
     known.then(url => { img.src = url; }, () => { delete guestPictures[tag]; });
     return img;
   }
+  async function readScores(button) {
+    button.disabled = true;
+    try { await api('party/stats', {}); toast('Reading the gamerscores from the consoles'); await refresh(); }
+    catch (e) { toast(e.message, true); button.disabled = false; }
+  }
+  // Under the players: the profiles' work, and its buttons.
   function drawProfiles(p) {
-    if (!prof) return h('p.muted', { style: { margin: 0 } }, 'Looking…');
+    if (!prof) return h('p.muted', { style: { margin: 0 } }, 'Looking for the guest profiles…');
     if (prof.error) return h('p.muted', { style: { margin: 0 } }, prof.error);
-    const w = prof.work || {}, list = prof.profiles || [], ips = profileConsoles(p);
-    const onConsoles = list.filter(g => g.on.length);
-    const rows = list.length ? h('div.gp-list', list.map(g => {
-      const on = ips.filter(ip => g.on.includes(ip)), away = ips.filter(ip => !g.on.includes(ip));
-      const kept = g.best ? 'a copy is kept on this PC' + (g.best.gamerscore >= 0 ? ' (' + g.best.gamerscore.toLocaleString() + ' G)' : '') : '';
-      let text;
-      if (!g.xuid) text = 'Not made yet';
-      else if (!g.guest) text = g.on.length ? 'Not on the guest list any more: remove it from the consoles' : 'Not on the guest list; ' + (kept || 'nothing kept');
-      else if (!g.on.length) text = kept ? 'Removed from the consoles; ' + kept + ' and goes back with Make profiles' : 'On no console now';
-      else if (!away.length) text = 'On every console';
-      else text = 'On ' + on.map(nameOf).join(', ') + '; not yet on ' + away.map(nameOf).join(', ');
-      const ready = g.xuid && g.on.length && !away.length;
-      return h('div.gp' + (ready ? '.ready' : ''), g.gamertag ? guestPicture(g.gamertag) : ic('user', 'sm'),
-        h('div.grow', h('b', g.name + (g.gamertag && g.gamertag !== g.name ? ' · ' + g.gamertag : '')), h('span.sub', text)),
-        g.xuid ? h('div.gp-on', ips.map(ip => h('span.pill' + (g.on.includes(ip) ? '.good' : ''), { title: g.on.includes(ip) ? 'On ' + nameOf(ip) : 'Not on ' + nameOf(ip) }, nameOf(ip)))) : null);
-    })) : h('p.muted', { style: { margin: 0 } }, 'Add guests above: each gets a profile with their name on every console.');
+    const w = prof.work || {}, list = prof.profiles || [];
+    const onConsoles = list.filter(g => g.on.length), strays = onConsoles.filter(g => !g.guest);
     const work = w.running ? h('div.gp-work', ic('loader-circle', 'sm spin'), h('span', w.step || (w.what === 'remove' ? 'Removing the guest profiles…' : 'Making the guest profiles…')))
       : w.error ? h('div.gp-work.bad', ic('circle-alert', 'sm'), h('span', (w.result ? w.result + ' ' : '') + w.error))
       : w.result ? h('div.gp-work', ic('info', 'sm'), h('span', w.result)) : null;
-    return [rows, work,
+    const reading = S.party.statsReading;
+    return [
       h('div.gp-tools',
-        h('button.btn.primary', { disabled: w.running || !p.guests.length, title: 'A profile for each guest on the list, on every party console; a kept one goes back', onclick: () => profileWork('make', null, 'Making the guest profiles') }, ic('user-plus', 'sm'), 'Make profiles'),
-        h('button.btn.danger.ghost', { disabled: w.running || !onConsoles.length, onclick: () => removeProfiles() }, ic('trash-2', 'sm'), 'Remove from consoles')),
-      h('p.hint', 'One console makes them (Aurora is away for a few seconds), then they’re copied to the others. Only profiles NetDisc360 made are ever removed.')];
+        h('button.btn.small', { disabled: w.running || !p.guests.length, title: 'A profile for each player on the list, on every party console; a kept one goes back (it happens by itself too, a few seconds after a name is added)',
+          onclick: () => profileWork('make', null, 'Making the guest profiles') }, ic('user-plus', 'sm'), 'Make profiles'),
+        h('button.btn.small', { disabled: reading || !onConsoles.length, title: 'Reads each player’s gamerscore from the consoles their profile is on (it happens by itself when a game ends)',
+          onclick: e => readScores(e.currentTarget) }, ic(reading ? 'loader-circle' : 'refresh-cw', reading ? 'sm spin' : 'sm'), reading ? 'Reading…' : 'Read gamerscore'),
+        h('button.btn.small.danger.ghost', { disabled: w.running || !onConsoles.length, onclick: () => removeProfiles() }, ic('trash-2', 'sm'), 'Remove from consoles')),
+      work,
+      strays.length ? h('p.hint', 'Also on the consoles, not on the list: ' + strays.map(g => g.gamertag || g.name).join(', ') + '. Remove from consoles takes them off too.') : null,
+      h('p.hint', 'Each player gets an Xbox profile with their name on every party console. One console makes it (Aurora is away for a few seconds), then it’s copied to the others. Only profiles NetDisc360 made are ever removed, and a copy is kept on this PC.')];
+  }
+
+  // The scoreboard: the players by gamerscore (earned tonight, while the party
+  // is on and someone earned some), and who played the most and came the most.
+  function drawScores(p) {
+    const all = p.guests.filter(g => g.stats && (g.stats.readAt || g.stats.playSeconds || g.stats.parties));
+    // While the party is on, those here; otherwise everyone on the list.
+    const rows = p.active && all.some(g => g.here) ? all.filter(g => g.here) : all;
+    if (!rows.length) return h('div.players-empty', ic('trophy'), h('p', 'The scores show here once the players’ profiles are read: when a game ends, or with Read gamerscore under Players.'));
+    const tonight = p.active && rows.some(g => g.stats.earned > 0);
+    const value = g => tonight ? g.stats.earned : g.stats.gamerscore;
+    const ranked = rows.filter(g => g.stats.readAt).sort((a, b) => value(b) - value(a) || a.name.localeCompare(b.name)), top = Math.max(1, ...ranked.map(value));
+    const best = (k, say) => { const g = rows.slice().sort((a, b) => (b.stats[k] || 0) - (a.stats[k] || 0))[0]; return g && g.stats[k] ? h('div.best', h('span.muted', say), h('b', g.name), h('span', k === 'playSeconds' ? duration(g.stats[k]) : plural(g.stats[k], 'LAN'))) : null; };
+    return [
+      h('p.score-what', tonight ? 'Gamerscore earned tonight' : 'Gamerscore'),
+      ranked.length ? h('ol.scores', ranked.slice(0, 10).map((g, i) => h('li' + (i < 3 ? '.top' + (i + 1) : ''),
+        h('span.rank', i < 3 ? ic('medal', 'sm') : String(i + 1)), h('span.name', g.name),
+        h('span.bar', h('span', { style: { width: Math.max(2, value(g) / top * 100) + '%' } })),
+        h('b', (tonight ? '+' : '') + value(g).toLocaleString() + ' G')))) : h('p.muted', 'No gamerscore read yet.'),
+      h('div.bests', best('playSeconds', 'Played the most'), best('parties', 'At the most LANs')),
+    ];
   }
   async function removeProfiles() {
     if (!(await confirmBox('Remove the guest profiles?', [h('p', { style: { marginTop: 0 } }, 'Each guest profile is copied to this PC first, with its achievements and game saves, then removed from the consoles. ' +
@@ -2899,7 +3106,7 @@ Pages.party = root => {
 
   // The team raffle: 2, 3 or 4 teams of those here, in the teams' colours.
   function teamBox(i, names, where) {
-    return h('div.team.' + Teams[i][1], { style: reveal ? { animationDelay: i * 90 + 'ms' } : null }, h('h3', h('span.dot'), 'Team ' + Teams[i][0]),
+    return h('div.team.' + teamLook(i).cls, { style: reveal ? { animationDelay: i * 90 + 'ms' } : null }, h('h3', h('span.dot'), teamName(i)),
       h('ul', names.map(n => h('li', n))), where && where.length ? h('div.where', ic('monitor', 'sm'), where.join(', ')) : null);
   }
   // The wheel while it turns (and a while after): the teams fill as it
@@ -2927,7 +3134,7 @@ Pages.party = root => {
   // turns, who's next; once it's done, the teams are ready.
   function wheelCallout(sp, got, turning) {
     const at = spinAt(sp, spinNow(sp)), last = got.length ? got[got.length - 1] : null;
-    if (last && at.stopped && sp.kind === 'teams') return h('div.wheel-callout.' + Teams[last.team][1], h('b', last.name), h('span', 'joins Team ' + Teams[last.team][0] + '!'));
+    if (last && at.stopped && sp.kind === 'teams') return h('div.wheel-callout.' + teamLook(last.team).cls, h('b', last.name), h('span', 'joins ' + teamName(last.team) + '!'));
     if (sp.kind !== 'teams') return null;
     return h('div.wheel-callout.waiting' + (turning ? '' : '.ready'), h('span', turning ? (got.length ? 'Who’s next?' : 'Who’s first?') : 'The teams are ready!'));
   }
@@ -3013,10 +3220,29 @@ Pages.party = root => {
     return [
       h('div.raffle-bar', h('div.segmented', { role: 'group', 'aria-label': 'How many teams' }, [2, 3, 4].map(k => h('button', { class: k === n ? 'on' : '', 'aria-pressed': String(k === n), 'data-focus': 'teams-' + k,
         disabled: shuffling, onclick: () => { if (k !== n) edit({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
+      drawColours(p),
       grid,
       d && d.note && !shuffling ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
       raffleButtons(p, shuffling, d),
     ];
+  }
+  // Each team's colour: one of the palette's 8; one another team has swaps.
+  function drawColours(p) {
+    const palette = p.palette && p.palette.length ? p.palette : TeamPaletteDefault, cols = p.teamColours && p.teamColours.length ? p.teamColours : [0, 1, 2, 3];
+    return h('div.team-colours', Array.from({ length: p.teams }, (_, t) => h('div.tc-row.' + teamLook(t, p).cls,
+      h('span.tc-name', h('span.dot'), teamName(t, p)),
+      h('div.swatches', { role: 'radiogroup', 'aria-label': 'Team ' + (t + 1) + '’s colour' }, palette.map((c, k) => {
+        const other = cols.indexOf(k), mine = cols[t] === k;
+        return h('button.swatch', { type: 'button', role: 'radio', 'aria-checked': String(mine), 'data-focus': 'colour-' + t + '-' + k, disabled: shuffling, style: { '--c': c.fill },
+          title: c.name + (other >= 0 && other < p.teams && !mine ? ' (swaps with ' + teamName(other, p) + ')' : ''), 'aria-label': c.name, onclick: () => pickColour(t, k) });
+      })))));
+  }
+  function pickColour(t, k) {
+    const p = shownParty(), cols = (p.teamColours && p.teamColours.length ? p.teamColours : [0, 1, 2, 3]).slice(), other = cols.indexOf(k);
+    if (other === t) return;
+    if (other >= 0) cols[other] = cols[t];
+    cols[t] = k;
+    edit({ teamColours: cols });
   }
   async function drawTeams() {
     await queue;  // The guests ticked just before, say.
@@ -3062,7 +3288,7 @@ Pages.party = root => {
       const on = !!pick && pick.ip === at.ip && pick.i === at.i, t = name ? teamOf(name) : -1;
       const signed = at.ip && name && (signedIn[at.ip] || [])[at.i];
       const where = at.ip ? 'seat ' + (at.i + 1) + ' on ' + nameOf(at.ip) : 'not seated';
-      return h('button.slot' + (name ? '' : '.empty') + (t >= 0 ? '.' + Teams[t][1] : ''), { type: 'button', 'aria-pressed': String(on), 'data-focus': 'slot-' + at.ip + '-' + at.i,
+      return h('button.slot' + (name ? '' : '.empty') + (t >= 0 ? '.' + teamLook(t).cls : ''), { type: 'button', 'aria-pressed': String(on), 'data-focus': 'slot-' + at.ip + '-' + at.i,
         'aria-label': (name || 'Empty') + ', ' + where + (pick && !on ? ': swap with ' + (picked || 'the empty seat') : ''), onclick: () => tap(at) },
         name ? [h('span.dot'), h('span.n', name), signed ? h('span.signed', { title: 'Signed in on controller ' + signed.controller + (signed.gamertag ? ' as ' + signed.gamertag : '') }, ic('gamepad-2', 'sm'), signed.controller) : null]
           : h('span.n', at.ip ? 'Empty seat' : 'Not playing'));
@@ -3215,21 +3441,27 @@ Pages.party = root => {
     const p = shownParty(), dark = document.documentElement.dataset.theme === 'dark';
     const look = JSON.stringify([p.theme.accent, p.theme.accent2, dark]);
     if (look !== colours && !previewing) { colours = look; setColours(wrap, partyColours(p.theme, dark)); }
+    teamLook.party = p;
+    teamStyles(p);
     for (const b of tabs.children) { b.classList.toggle('on', b.dataset.tab === tab); b.setAttribute('aria-pressed', String(b.dataset.tab === tab)); }
     const pics = partyPictures(p.theme, update);
     if (screen) screen.update();
     if (tab === 'systemlink') { systemLink.update(); return; }
     const here = guestsHere(p), statuses = p.consoles.concat(S.consoles.map(c => c.address)).map(ip => partyConsole(ip).text);
     fill(guestCount, p.guests.length ? here.length + ' of ' + p.guests.length + ' here' : 'kept for the next party');
-    banner.show(JSON.stringify([p.active, p.name, p.theme, pics.key, p.guests, p.consoles.length, p.round, p.gamemaster]), () => drawBanner(p, pics));
+    banner.show(JSON.stringify([p.active, p.name, p.theme, pics.key, p.gamemaster]), () => drawBanner(p, pics));
+    facts.show(JSON.stringify([p.active, p.guests, p.consoles, p.round, statuses]), () => drawFacts(p));
+    fill(rulesCount, p.together.length + p.apart.length ? String(p.together.length + p.apart.length) : 'keep two together, or apart');
     form.show(JSON.stringify([p.name, p.theme, pics.key, S.settings.saved]), () => drawForm(p, pics));
-    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses]), () => drawConsoles(p));
-    guests.show(JSON.stringify(p.guests), () => drawGuests(p));
-    profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), S.consoles.map(c => c.address + '=' + c.name)]), () => drawProfiles(p));
+    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses, S.party.wheelOn]), () => drawConsoles(p));
+    const named = S.consoles.map(c => c.address + '=' + c.name);
+    guests.show(JSON.stringify([p.guests, prof && prof.profiles, profileConsoles(p), named]), () => drawGuests(p));
+    profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), named, S.party.statsReading]), () => drawProfiles(p));
+    scores.show(JSON.stringify([p.active, p.guests]), () => drawScores(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
-    raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
+    raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
     start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
@@ -3340,7 +3572,7 @@ function raffleWheel(colours, onStep) {
       const font = Math.min(W * 0.05, r * w * 0.55, W * 0.075);
       ctx.font = '700 ' + font + 'px ' + getComputedStyle(canvas).fontFamily;
       ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = t === undefined || t === 3 ? c.ink : '#fff';  // Dark on yellow.
+      ctx.fillStyle = t === undefined ? c.ink : t >= 0 ? c.teamInk[t] : '#fff';  // Dark on yellow.
       let label = name;
       const room = r * 0.72;
       while (label.length > 1 && ctx.measureText(label).width > room) label = label.slice(0, -2) + '…';
@@ -3407,7 +3639,7 @@ function wheelColours(el, onDark) {
   const p1 = v('--p1') || '#107c10', deep = v('--deep1') || '#0b3d0b';
   return {
     wheel: [mix(p1, '#ffffff', onDark ? 0.82 : 0.86), mix(p1, '#ffffff', onDark ? 0.62 : 0.68), mix(p1, '#ffffff', 0.74)],
-    teams: onDark ? ['#e5483e', '#3f7fe6', '#2c9a2c', '#d9a400'] : [v('--team1') || '#d13438', v('--team2') || '#2f6fd6', v('--team3') || '#107c10', v('--team4') || '#e3b505'],
+    teams: [0, 1, 2, 3].map(i => teamLook(i).fill), teamInk: [0, 1, 2, 3].map(i => teamLook(i).ink),
     pick: deep, ink: '#1b1e22', rim: deep,
   };
 }
@@ -3466,10 +3698,10 @@ function bigScreen(parent) {
         if (sp.kind === 'teams') {
           const teams = Array.from({ length: sp.teams }, () => []);
           for (const g of got) teams[g.team].push(g.name);
-          side = h('div.screen-teams.stacked', teams.map((team, i) => h('div.screen-team.' + Teams[i][1], h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))))));
+          side = h('div.screen-teams.stacked', teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls, h('h2', teamName(i)), h('ul', team.map(n => h('li', n))))));
         } else side = h('div.screen-picked', h('p', sp.title || (spinDone(sp) ? 'The wheel picked' : 'Who will it be?')), got.length ? h('h2', got[0].name) : null);
         const wait = spinWait(sp), at = spinAt(sp, spinNow(sp)), last = got.length ? got[got.length - 1] : null;
-        const callout = sp.kind === 'teams' ? (last && at.stopped ? h('div.screen-callout.' + Teams[last.team][1], h('b', last.name), h('span', 'joins Team ' + Teams[last.team][0] + '!'))
+        const callout = sp.kind === 'teams' ? (last && at.stopped ? h('div.screen-callout.' + teamLook(last.team).cls, h('b', last.name), h('span', 'joins ' + teamName(last.team) + '!'))
           : h('div.screen-callout.waiting', h('span', spinDone(sp) ? 'The teams are ready!' : got.length ? 'Who’s next?' : 'Who’s first?'))) : null;
         return h('div.screen-spin', h('div.screen-wheel', wheel.el, wait ? h('div.screen-wait', h('small', 'Turns in'), h('b', wait)) : null), h('div.screen-side', callout, side));
       };
@@ -3477,13 +3709,13 @@ function bigScreen(parent) {
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,
           h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), time),
         p.active ? null : h('div.screen-soon', 'The LAN party starts soon'),
-        sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + Teams[i][1],
-          h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
+        sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls,
+          h('h2', teamName(i)), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
           : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,
             h('p', 'The teams are drawn soon.')),
         p.consoles.length ? h('div.screen-consoles', p.consoles.map(ip => {
           const st = partyConsole(ip), names = d ? d.seats[ip] || [] : [], team = names.length ? d.teams.findIndex(t => t.includes(names[0])) : -1, gm = ip === p.gamemaster;
-          return h('div.screen-console' + (team >= 0 ? '.' + Teams[team][1] : ''),
+          return h('div.screen-console' + (team >= 0 ? '.' + teamLook(team).cls : ''),
             h('div.top', ic(gm ? 'crown' : 'monitor'), h('span', label(p, ip) + (gm ? ' · Gamemaster' : '')), h('span.ip', ip)),
             h('div.names', names.length ? names.join(', ') : 'No one seated'),
             h('div.now' + (st.c && st.c.playing ? '.playing' : ''), ic(st.c && st.c.playing ? 'play' : 'layout-grid'), now(st)));
