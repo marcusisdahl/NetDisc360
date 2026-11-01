@@ -42,6 +42,7 @@
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
 #include "ui.h"
+#include "profiles.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -1316,6 +1317,69 @@ static bool UseTileFolder(const char* folder) {
     return true;
 }
 
+// ---- Guest profiles ----
+
+// The LAN party's guest profiles (see ProfileJob in shared/helper.h): true
+// if the helper was started for that job, which is then done. The screen is
+// the loading screen's, with the profiles as its steps.
+static bool ProfileJob() {
+    static char job[2048];
+    char path[64],donePath[64];
+    sprintf_s(path,"game:\\%s",nia::ProfileJob);
+    sprintf_s(donePath,"game:\\%s",nia::ProfileDone);
+    if(!ReadText(path,job,sizeof(job))) return false;
+    // First, so a crash or a freeze in xam doesn't start it again.
+    if(!DeleteFile(path)) Note("Couldn't delete %s (%lu).",path,GetLastError());
+    char number[32]="";
+    nia::IniValue(job,"job",number,sizeof(number));
+    nia::ProfileCall call;
+    call.device=DWORD(IniNumber(job,"device",1));
+    char value[32];
+    call.flags=nia::IniValue(job,"flags",value,sizeof(value)) ? strtoul(value,NULL,0) : 0;
+    call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
+    static char names[nia::ProfileJobMost][nia::GamertagMost+1];
+    int count=0,slot[nia::ProfileJobMost];
+    for(int i=1;i<=nia::ProfileJobMost;++i) {
+        char key[16]; sprintf_s(key,"guest%d",i);
+        char name[64];
+        if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) continue;
+        strncpy_s(names[count],name,_TRUNCATE);
+        slot[count++]=i;
+    }
+    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX%s).",number[0] ? number : "?",count,call.device,call.flags,call.zeroTokens ? ", zeroed tokens" : "");
+    strcpy_s(Shown.game,"Guest profiles");
+    ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
+    ScreenStart();
+    ScreenDraw();
+    static char done[4096];
+    size_t used=0;
+    used+=sprintf_s(done+used,sizeof(done)-used,"job=%s\r\n",number);
+    int made=0;
+    for(int n=0;n<count;++n) {
+        ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Making %s (%d of %d)",names[n],n+1,count);
+        WCHAR gamertag[nia::GamertagMost+1];
+        size_t length=strlen(names[n]);
+        for(size_t k=0;k<=length;++k) gamertag[k]=WCHAR((unsigned char)names[n][k]);
+        ULONGLONG xuid=0;
+        char why[160];
+        if(nia::MakeProfile(gamertag,call,xuid,why,sizeof(why),Wait)) {
+            ++made;
+            Note("Made %s: %016I64X.",names[n],xuid);
+            used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",slot[n],xuid);
+        } else {
+            Note("Couldn't make %s: %s",names[n],why);
+            used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
+        }
+    }
+    HANDLE file=CreateFile(donePath,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    DWORD wrote=0;
+    if(file==INVALID_HANDLE_VALUE || !WriteFile(file,done,DWORD(used),&wrote,NULL) || wrote!=used) Note("Couldn't write %s (%lu).",donePath,GetLastError());
+    if(file!=INVALID_HANDLE_VALUE) CloseHandle(file);
+    ShowStep(nia::StepStart,1.0,made==count ? "Made %d of %d guest profiles" : "Made %d of %d guest profiles (see netiso.log)",made,count);
+    Wait(1500);
+    return true;
+}
+
 void __cdecl main() {
     InitializeCriticalSection(&LogLock);
     InitializeCriticalSection(&ShownLock);
@@ -1330,6 +1394,13 @@ void __cdecl main() {
     if(linked) Note("Started as the helper for %s.",folder);
     else if(folder[0]) Note("Started as the helper for %s, which couldn't be linked; using this folder's files.",folder);
     else if(helper) Note("Started as the helper.");
+    // Started from Aurora by the server for the guest profiles: back to Aurora.
+    if(!helper && ProfileJob()) {
+        CloseLog();
+        ScreenStop();
+        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+        return;
+    }
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];
