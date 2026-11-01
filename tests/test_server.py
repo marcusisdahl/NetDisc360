@@ -2537,6 +2537,7 @@ class Dashboard(ServerTest):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
         self.start()
+        self.state_when(lambda s: s["library"]["scanned"] and s["library"]["games"] == 2)  # The games are read just after the start.
         listed = self.json("GET", "/api/systemlink")
         ids = [g["titleId"] for g in listed["games"]]
         self.assertGreater(len(ids), 300)
