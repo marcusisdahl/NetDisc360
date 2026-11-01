@@ -373,6 +373,39 @@ def title_update_dbs(folder, updates, active, table_key=False):
     db.close()
 
 
+def spin_at(spin, ms):
+    """Where the wheel is ms into a spin, as SpinAngle (server/party.cpp) and
+    spinAt (web/index.html) work it out: (angle, step, stopped, stops so far)."""
+    angle, t, step, stopped = 0.0, ms - spin["leadMs"], -1, 1
+    for i, s in enumerate(spin["steps"]):
+        if i:
+            t -= spin["pauseMs"]
+        if t < 0:
+            break
+        step = i
+        if t < s["ms"]:
+            f = 1 - t / s["ms"]
+            angle += (s["to"] - angle) * (1 - f * f * f)
+            stopped = 0
+            break
+        angle = s["to"]
+        t -= s["ms"]
+    return angle, step, stopped, 0 if step < 0 else step + 1 if stopped else step
+
+
+PARTY_PARSE = os.path.join(ROOT, "build", "host", "party-parse")
+
+
+def build_party_parse():
+    """tests/party_parse.cpp with NetDiscParty.xex's party/state.cpp, built once."""
+    if not getattr(build_party_parse, "built", False):
+        os.makedirs(os.path.dirname(PARTY_PARSE), exist_ok=True)
+        subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-o", PARTY_PARSE, os.path.join(HERE, "party_parse.cpp"),
+                        os.path.join(ROOT, "party", "state.cpp")], check=True)
+        build_party_parse.built = True
+    return PARTY_PARSE
+
+
 def connect_from(address, port):
     """A connection to the server on port from address, once it listens."""
     deadline = time.time() + 10
@@ -2828,6 +2861,20 @@ class Dashboard(ServerTest):
         self.assertEqual(lines["team"], teams)
         self.assertEqual([s[:2] for s in lines["seat"]], [["127.0.0.2", "Console 1"], ["10.10.1.42", "Console 2"]])
         self.assertEqual(lines["round"], [["1", "0"]])
+        # NetDiscParty.xex reads the same (party/state.cpp), and turns its wheel as the server plans it.
+        moments = [0, 1499, 1500, 4000, 6699, 6700, 7000, 7799, 7800, 9000, spin["totalMs"] - 1, spin["totalMs"], spin["totalMs"] + 5000]
+        read = subprocess.run([build_party_parse()] + [str(m) for m in moments], input=text.encode("utf-8"), stdout=subprocess.PIPE, check=True).stdout.decode("utf-8")
+        self.assertIn("valid 1\nversion %s\nconsole Console 1|127.0.0.2|1\nparty 1|Wheel night|LAN party\n" % lines["version"][0][0], read)
+        self.assertIn("spin %d|teams|1500|1100|%d\nwheel 7\nsteps 7\nteams 3\nseats 2\n" % (spin["id"], spin["totalMs"]), read)
+        mine = [n for n in lines["seat"][0][2:]]
+        self.assertIn("mine Console 1|%d|%d\n" % (len(mine), team_of[mine[0]]), read)
+        for line in read.splitlines():
+            if not line.startswith("at "):
+                continue
+            _, ms, angle, step, stopped, done = line.split()
+            want = spin_at(spin, float(ms))
+            self.assertAlmostEqual(float(angle), want[0], places=2, msg=line)
+            self.assertEqual((int(step), int(stopped), int(done)), want[1:], line)
         version = int(lines["version"][0][0])
         # Waiting on a version it has: the answer comes once it changes, or when the wait ends.
         started = time.time()

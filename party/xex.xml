@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- As the launcher's (launcher/xex.xml): privilege 0, no forced reboot when
+     a disc tray opens, which NetDisc360.xex's disc swaps can do. -->
+<xex>
+  <privilege id="0"/>
+</xex>
