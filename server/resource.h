@@ -10,3 +10,7 @@
 #define IDR_ART_FASTFTP_GC 106
 #define IDR_ART_FASTFTP_BK 107
 #define IDR_ART_FASTFTP_GL 108
+// And for NetDiscParty.xex, the LAN party's raffle wheel (party/).
+#define IDR_ART_PARTY_GC 109
+#define IDR_ART_PARTY_BK 110
+#define IDR_ART_PARTY_GL 111
