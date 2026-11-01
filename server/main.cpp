@@ -3042,12 +3042,13 @@ bool ReadLaunchIni(FtpClient& ftp, LaunchIni& ini, bool listFirst) {
     return true;
 }
 
-// What a plugin in launch.ini is, by its file name: tiles (NetIsoTiles),
-// netiso, usbnet (a USB network adapter's driver: NetUsb360, or UsbNet360 and
-// CUsbEnet before it) or other.
+// What a plugin in launch.ini is, by its file name: tiles (NetDisc360.xex,
+// the disc drive too since it took over from NetISO.xex; NetIsoTiles.xex
+// before), netiso, usbnet (a USB network adapter's driver: NetUsb360, or
+// UsbNet360 and CUsbEnet before it) or other.
 const char* PluginKind(const std::string& name) {
     std::string lower=Lower(name);
-    return lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
+    return lower.find("netdisc360")!=std::string::npos || lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
          : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
 }
 
@@ -3067,14 +3068,60 @@ void NoteOwnAddresses() {
     if(changed) Save();
 }
 
+// The server NetDisc360.xex's drive connects to, read over FTP as the plugin
+// reads it: server= in the first NetDisc360.ini (or NetIsoTiles.ini, its old
+// name) of the plugin's folder and the roots of Usb0: and Hdd1:, else the
+// first line of NetISO.xex.txt next to the plugin or on those roots. from is
+// the file it came from, empty if none names one.
+std::string PluginServerOnConsole(FtpClient& ftp, const std::string& folder, std::string& from) {
+    std::vector<unsigned char> data;
+    std::vector<std::string> inis;
+    static const char* const names[]={"NetDisc360.ini","NetIsoTiles.ini"};
+    for(int n=0;n<2;++n) {
+        inis.push_back(folder+names[n]);
+        inis.push_back(std::string("/Usb0/")+names[n]);
+        inis.push_back(std::string("/Hdd1/")+names[n]);
+    }
+    from.clear();
+    for(size_t i=0;i<inis.size();++i) {
+        if(!ftp.Retrieve(inis[i].c_str(),data,64<<10)) { if(!ftp.Missing()) ftp.Close(); continue; }
+        // The plugin reads the first one there is, with or without server=.
+        std::string file(data.begin(),data.end());
+        for(size_t at=0;at<file.size();) {
+            size_t end=file.find('\n',at);
+            if(end==std::string::npos) end=file.size();
+            std::string line=Trim(file.substr(at,end-at));
+            at=end+1;
+            size_t equals=line.find('=');
+            if(equals==std::string::npos) continue;
+            std::string key=Trim(line.substr(0,equals));
+            for(size_t k=0;k<key.size();++k) key[k]=char(tolower((unsigned char)key[k]));
+            if(key!="server") continue;
+            std::string value=Trim(line.substr(equals+1));
+            from=inis[i];
+            return value.substr(0,value.find(':'));
+        }
+        break;
+    }
+    const std::string txts[]={folder+"NetISO.xex.txt","/Hdd1/netiso.xex.txt","/Usb0/netiso.xex.txt"};
+    for(size_t i=0;i<3;++i) {
+        if(!ftp.Retrieve(txts[i].c_str(),data,4096)) { if(!ftp.Missing()) ftp.Close(); continue; }
+        std::string text(data.begin(),data.end());
+        from=txts[i];
+        return Trim(text.substr(0,text.find_first_of("\r\n")));
+    }
+    return std::string();
+}
+
 // A router can give this computer a new address (after a restart, say), and
-// NetISO.xex.txt on the console still names the old one: NetISO finds no
-// server. Before a push the file is made to name this computer again when
-// the console has no NetISO connection here and sent nothing for a while,
-// the file names an address this computer had before but not now, no NetISO
-// server answers there, and this computer reaches the console from an
-// address on the console's own network (not Docker's). NetISO reads the file
-// as the console starts, so it needs a restart then.
+// the file on the console that names the server (NetDisc360.ini's server=
+// for NetDisc360.xex's drive, NetISO.xex.txt for NetISO.xex) still names the
+// old one: the console finds no server. Before a push the file is made to
+// name this computer again when the console has no connection here and sent
+// nothing for a while, the file names an address this computer had before
+// but not now, no NetISO server answers there, and this computer reaches the
+// console from an address on the console's own network (not Docker's). The
+// plugins read the file as the console starts, so it needs a restart then.
 const double FollowQuietSeconds = 600;
 void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
     long long seen=console.seenAt;
@@ -3085,44 +3132,72 @@ void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options
     LaunchIni ini;
     if(!ReadLaunchIni(ftp,ini,true)) return;
     char now[16]; AddressText(here,now,sizeof(now));
-    std::vector<std::string> current=PcAddresses();
+    std::vector<std::string> current=PcAddresses(), done;
     for(size_t i=0;i<ini.plugins.size();++i) {
         std::string plugin=FtpPath(ini.plugins[i].second);
-        if(plugin.empty() || strcmp(PluginKind(plugin.substr(plugin.rfind('/')+1)),"netiso")) continue;
-        std::string path=plugin+".txt", folder=path.substr(0,path.rfind('/')), name=path.substr(path.rfind('/')+1);
-        std::vector<FtpEntry> entries;
-        bool there=false;
-        if(!ftp.List(folder.empty() ? "/" : folder.c_str(),entries)) return;
-        for(size_t k=0;k<entries.size() && !there;++k) there=!entries[k].folder && !_stricmp(entries[k].name.c_str(),name.c_str());
+        if(plugin.empty()) continue;
+        const char* kind=PluginKind(plugin.substr(plugin.rfind('/')+1));
+        std::string path, old;
+        if(!strcmp(kind,"netiso")) {
+            path=plugin+".txt";
+            std::string folder=path.substr(0,path.rfind('/')), name=path.substr(path.rfind('/')+1);
+            std::vector<FtpEntry> entries;
+            bool there=false;
+            if(!ftp.List(folder.empty() ? "/" : folder.c_str(),entries)) return;
+            for(size_t k=0;k<entries.size() && !there;++k) there=!entries[k].folder && !_stricmp(entries[k].name.c_str(),name.c_str());
+            if(!there) continue;
+        }
+        else if(!strcmp(kind,"tiles")) {
+            PluginServerOnConsole(ftp,plugin.substr(0,plugin.rfind('/')+1),path);
+            if(path.empty()) continue;
+        }
+        else continue;
+        if(std::find(done.begin(),done.end(),Lower(path))!=done.end()) continue;
+        done.push_back(Lower(path));
         std::vector<unsigned char> data;
-        if(!there || !ftp.Retrieve(path.c_str(),data,4096)) return;
-        std::string text(data.begin(),data.end()), old=Trim(text);
+        if(!ftp.Retrieve(path.c_str(),data,64<<10)) { if(!ftp.Missing()) return; continue; }
+        std::string text(data.begin(),data.end()), file=path.substr(path.rfind('/')+1);
+        // Where the address is: NetISO.xex.txt's first line, or the value of
+        // an .ini's server= (an address, and maybe :port after it).
+        size_t at=0, end=text.find_first_of("\r\n");
+        if(Lower(file).find(".ini")!=std::string::npos) {
+            for(at=0;at<text.size();at=end+1) {
+                end=text.find('\n',at); if(end==std::string::npos) end=text.size();
+                size_t equals=text.find('=',at);
+                if(equals<end && Lower(Trim(text.substr(at,equals-at)))=="server") { at=equals+1; break; }
+            }
+            if(at>=text.size()) continue;
+        }
+        if(end==std::string::npos) end=text.size();
+        while(at<end && (text[at]==' ' || text[at]=='\t')) ++at;
+        size_t stop=text.find_first_of(": \t\r\n",at);
+        if(stop==std::string::npos || stop>end) stop=end;
+        old=text.substr(at,stop-at);
         DWORD before=inet_addr(old.c_str());
         bool had;
         { std::lock_guard<std::mutex> hold(SettingsLock); had=std::find(OwnAddresses.begin(),OwnAddresses.end(),old)!=OwnAddresses.end(); }
-        if(old==now || before==INADDR_NONE || !before || !had || std::find(current.begin(),current.end(),old)!=current.end()) return;
+        if(old==now || before==INADDR_NONE || !before || !had || std::find(current.begin(),current.end(),old)!=current.end()) continue;
         IsvrClient probe(3);
         if(probe.Connect(before,o.port,3) && probe.Ping()) {
-            if(s.followed!=old) XboxLog(console,"its NetISO.xex.txt names %s, an address this computer had, where a NetISO server answers now; it's left as it is.",old.c_str());
+            if(s.followed!=old) XboxLog(console,"its %s names %s, an address this computer had, where a NetISO server answers now; it's left as it is.",file.c_str(),old.c_str());
             s.followed=old;
-            return;
+            continue;
         }
-        size_t at=text.find(old);
-        std::string fixed=text.substr(0,at)+now+text.substr(at+old.size());
+        std::string fixed=text.substr(0,at)+now+text.substr(stop);
         if(!StoreChecked(ftp,path,fixed)) { XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error()); return; }
-        XboxLog(console,"its NetISO.xex.txt (%s) named %s, this computer's address before; it names %s now. Restart the Xbox so NetISO reads it.",path.c_str(),old.c_str(),now);
-        XboxEvent(console,EventWarning,std::string("Restart the Xbox: NetISO looks for this PC at its new address, ")+now);
+        XboxLog(console,"its %s (%s) named %s, this computer's address before; it names %s now. Restart the Xbox so it reads it.",file.c_str(),path.c_str(),old.c_str(),now);
+        XboxEvent(console,EventWarning,std::string("Restart the Xbox: it looks for this PC at its new address, ")+now);
 #ifdef _WIN32
-        if(InTray) Notify("Restart your Xbox",std::string("This PC's address changed to ")+now+". NetISO on "+console.text+" was told; restart the Xbox so it finds the games again.","#consoles");
+        if(InTray) Notify("Restart your Xbox",std::string("This PC's address changed to ")+now+". "+console.text+" was told; restart the Xbox so it finds the games again.","#consoles");
 #endif
-        return;
     }
 }
 
 // What the console has: Aurora's FTP login works, Aurora and the game folder
-// are where the settings say, and DashLaunch's launch.ini loads NetISO.xex
-// (with NetISO.xex.txt naming this computer) and NetIsoTiles.xex, each
-// file's SHA-256 for the dashboard to match with the releases.
+// are where the settings say, and DashLaunch's launch.ini loads NetDisc360.xex
+// (NetIsoTiles.xex before) and NetISO.xex if it's still used (with
+// NetISO.xex.txt naming this computer), each file's SHA-256 for the dashboard
+// to match with the releases.
 void CheckConsole(const web::Value& body, web::Reply& out) {
     Options o=Current();
     std::string text, user=o.ftpUser, password=o.ftpPassword;
@@ -3163,6 +3238,13 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
         if(!found && !ftp.Missing()) ftp.Close();
         j.Set("found",found);
         if(found) j.Set("size",(long long)data.size()).Set("sha256",web::Sha256Hex(std::string(data.begin(),data.end())));
+        // NetDisc360.xex's own drive: the server it connects to, found where
+        // the plugin looks (plugin/main.cpp, PluginServer).
+        if(found && !strcmp(kind,"tiles")) {
+            std::string folder=path.substr(0,path.rfind('/')+1), from, server=PluginServerOnConsole(ftp,folder,from);
+            j.Set("txt",!from.empty()).Set("server",server).Set("serverFrom",from)
+             .Set("here",!server.empty() && std::find(addresses.begin(),addresses.end(),server)!=addresses.end());
+        }
         // NetISO.xex.txt: the address of the server NetISO connects to.
         if(found && !strcmp(kind,"netiso")) {
             std::vector<unsigned char> txt;

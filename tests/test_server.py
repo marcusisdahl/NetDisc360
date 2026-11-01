@@ -1517,6 +1517,18 @@ print('lua ok')
         self.assertNotIn("NetISO.xex.txt (", out)
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
             self.assertEqual(f.read(), "127.0.0.8")
+        # NetDisc360.xex's own drive reads server= in NetDisc360.ini.
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetDisc360.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), "w", newline="") as f:
+            f.write("; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.9:4323\r\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetDisc360.ini (/Usb0/Plugins/NetDisc360.ini) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), newline="") as f:
+            self.assertEqual(f.read(), "; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.1:4323\r\n")
+        os.remove(os.path.join(usb, "Plugins", "NetDisc360.ini"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
         # And so is all of it when following is off.
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
             f.write("127.0.0.9")
@@ -1860,11 +1872,13 @@ class Dashboard(ServerTest):
 
     def test_finds_and_checks_a_console(self):
         xbox = os.path.join(self.tmp.name, "xbox")
-        for folder in ("Usb0", "Hdd1/Apps/Aurora"):
+        for folder in ("Usb0", "Hdd1/Apps/Aurora", "Hdd1/Plugins"):
             os.makedirs(os.path.join(xbox, folder))
         files = {"Usb0/launch.ini": b"[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n[Plugins]\r\n"
-                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n",
-                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES"}
+                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n"
+                                    b"plugin4 = Hdd:\\Plugins\\NetDisc360.xex\r\n",
+                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES",
+                 "Hdd1/Plugins/NetDisc360.xex": b"DRIVE", "Hdd1/Plugins/NetDisc360.ini": b"read_kb=256\r\nserver = 10.0.0.7:4323\r\n"}
         for name, data in files.items():
             with open(os.path.join(xbox, name), "wb") as f:
                 f.write(data)
@@ -1880,11 +1894,17 @@ class Dashboard(ServerTest):
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2"})
             self.assertEqual([r[k] for k in ("ftp", "login", "aurora", "gameFolder", "launchIni")], [True, True, True, False, "/Usb0/launch.ini"])
             self.assertEqual(r["default"], "Hdd:\\Apps\\Aurora\\Aurora.xex")
-            netiso, tiles, gone = r["plugins"]
+            netiso, tiles, gone, drive = r["plugins"]
             self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
             self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())
             self.assertEqual([tiles["kind"], tiles["sha256"]], ["tiles", hashlib.sha256(b"TILES").hexdigest()])
+            # The plugin's server as it finds it: no NetDisc360.ini, so NetISO.xex.txt next to it.
+            self.assertEqual([tiles[k] for k in ("txt", "server", "serverFrom", "here")], [True, "10.0.0.99", "/Usb0/NetISO.xex.txt", False])
             self.assertEqual([gone["kind"], gone["found"]], ["other", False])
+            # The plugin's name since it has its own disc drive, from the hard drive as on an RGH console.
+            self.assertEqual([drive["slot"], drive["kind"], drive["found"], drive["sha256"]], [4, "tiles", True, hashlib.sha256(b"DRIVE").hexdigest()])
+            # server= in the NetDisc360.ini next to it, the port left off.
+            self.assertEqual([drive[k] for k in ("txt", "server", "serverFrom")], [True, "10.0.0.7", "/Hdd1/Plugins/NetDisc360.ini"])
             # A login typed in the wizard is tried before it's saved.
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
             self.assertEqual([r["ftp"], r["login"]], [True, False])

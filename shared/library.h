@@ -71,7 +71,7 @@ typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 
 // What a disc is in its game's set, from the server's disc map (see
 // server/discmap.h). Sync writes it into the game folder's netiso.ini as
-// disc_role and disc_label, where the NetIsoTiles plugin reads it for its
+// disc_role and disc_label, where the NetDisc360 plugin reads it for its
 // disc swap notices.
 struct DiscRoleInfo {
     bool known;      // false: netiso.ini is left as it is.

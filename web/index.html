@@ -1013,7 +1013,7 @@ Pages.dashboard = root => {
       else copies.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
-        { done: S.consoles.some(c => c.seen > 0), t: 'Tell NetISO where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetISO.xex.txt'), ' next to NetISO.xex on your USB drive, with one line: ', h('code', S.addresses[0] || 'this computer\u2019s address'), '. Then restart the Xbox.'] },
+        { done: S.consoles.some(c => c.seen > 0), t: 'Tell the Xbox where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetDisc360.ini'), ' next to NetDisc360.xex on your USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || 'this computer\u2019s address')), '. Then restart the Xbox.'] },
         { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', 'Hdd1:\\NetISO'), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings/xbox' }, 'Settings'), ').'] },
       ];
       const all = steps.every(s => s.done);
@@ -1399,7 +1399,7 @@ function modal(title, build, narrow, closed) {
 // The newest release of NetDisc360 and of the console tools that go with it.
 // GitHub's /releases/latest always leads to the newest one; its API names it.
 const Releases = [
-  { repo: 'marcusisdahl/NetDisc360', name: 'NetDisc360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetIsoTiles.xex for the console.' },
+  { repo: 'marcusisdahl/NetDisc360', name: 'NetDisc360', icon: 'hard-drive', what: 'This server for Windows or Docker, and NetDisc360.xex for the console.' },
   { repo: 'marcusisdahl/FastFTP360', name: 'FastFTP360', icon: 'arrow-down-up', what: 'A fast FTP server app for the Xbox, to copy games and files to it.' },
   { repo: 'marcusisdahl/NetUsb360', name: 'NetUsb360', icon: 'plug', what: 'Gigabit USB network adapters on the Xbox, so games load faster. Our fork of CUsbEnet.' },
 ];
@@ -1452,7 +1452,7 @@ Pages.consoles = root => {
         if (actions.childNodes.length) $('.console-facts', card).appendChild(actions);
         return card;
       }) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
-        h('p', 'Make NetISO.xex.txt next to NetISO.xex on the console\u2019s USB drive, with this computer\u2019s address: ', h('code', S.addresses[0] || '?'), '. A console shows up here when it connects.'))));
+        h('p', 'Make NetDisc360.ini next to NetDisc360.xex on the console\u2019s USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || '?')), '. A console shows up here when it connects.'))));
     },
   };
 };
@@ -1848,7 +1848,7 @@ Pages.settings = root => {
       card('scroll-text', 'Aurora extras', null,
         row('Aurora scripts', ['Puts ', h('b', 'NetDisc360 Cleanup'), ' under Aurora\u2019s Utilities, which takes games whose tile is gone off Aurora\u2019s list, and the filter ', h('b', 'Hide PC games while NetDisc360 is off'), ' under Filters, User.'], toggle(st.auroraScripts, (v, i) => flip('auroraScripts', v, i))),
         row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i))),
-        row('Follow this PC\u2019s address', 'When your router gives this PC a new address, NetISO.xex.txt on the console is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
+        row('Follow this PC\u2019s address', 'When your router gives this PC a new address, the console\u2019s NetDisc360.ini (or NetISO.xex.txt) is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
         row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; the Consoles page turns a console off by hand too.',
           h('select.input', { style: { width: 'auto' }, onchange: e => save({ autoOffMinutes: Number(e.target.value) }, Number(e.target.value) ? 'Consoles turn off after their last game' : 'Consoles stay on') },
             [[0, 'Never'], [15, 'After 15 minutes'], [30, 'After 30 minutes'], [60, 'After 1 hour'], [120, 'After 2 hours']].concat([0, 15, 30, 60, 120].includes(st.autoOffMinutes) ? [] : [[st.autoOffMinutes, 'After ' + plural(st.autoOffMinutes, 'minute')]])
@@ -2337,9 +2337,12 @@ WizardParts.folders = body => {
   };
 };
 
-// Waits for nothing: the address NetISO.xex.txt names, as a file to save.
-function downloadNetIsoTxt(address) {
-  const a = h('a', { href: URL.createObjectURL(new Blob([address + '\r\n'], { type: 'text/plain' })), download: 'NetISO.xex.txt' });
+// Waits for nothing: a file to save that tells the Xbox this computer's
+// address: NetDisc360.ini for NetDisc360.xex's own drive, or NetISO.xex.txt
+// for NetISO.xex (NetDisc360.xex reads that one too).
+function downloadServerFile(address, netiso) {
+  const text = netiso ? address + '\r\n' : '; NetDisc360.xex: the computer NetDisc360 runs on.\r\nserver=' + address + '\r\n';
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/plain' })), download: netiso ? 'NetISO.xex.txt' : 'NetDisc360.ini' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -2348,18 +2351,19 @@ WizardParts.xbox = body => {
   const results = h('div.wz-found'), status = h('div'), find = h('button.btn', { onclick: () => findConsoles() }, ic('radar', 'sm'), 'Look again');
   const typed = h('input.input', { placeholder: '192.168.1.30', style: { maxWidth: '200px' }, onkeydown: e => { if (e.key === 'Enter') use(typed.value.trim()); } });
   let pick = S.addresses[0] || '';
-  const which = S.addresses.length > 1 ? h('select.input', { style: { width: 'auto' }, onchange: e => { pick = e.target.value; fill(code, pick); } }, S.addresses.map(a => h('option', { value: a }, a))) : null;
-  const code = h('code', pick || 'this computer\u2019s address');
+  const which = S.addresses.length > 1 ? h('select.input', { style: { width: 'auto' }, onchange: e => { pick = e.target.value; fill(code, 'server=' + pick); } }, S.addresses.map(a => h('option', { value: a }, a))) : null;
+  const code = h('code', 'server=' + (pick || 'this computer\u2019s address'));
   fill(body,
     wzHead('Find your Xbox', 'Turn the Xbox on and start Aurora with its FTP server on. NetDisc360 looks for it on your network.'),
     h('div.wz-box', h('div.wz-row', h('h3', 'Consoles on your network'), h('span.grow'), find), results,
       h('div.wz-row.wz-typed', h('span.muted', 'Not listed? Type its address:'), typed, h('button.btn.small', { onclick: () => use(typed.value.trim()) }, 'Use'))),
-    h('div.wz-box', h('h3', 'Tell NetISO where this computer is'),
-      h('p', 'Put a text file named ', h('code', 'NetISO.xex.txt'), ' next to ', h('code', 'NetISO.xex'), ' on the Xbox\u2019s USB drive, with this one line:'),
+    h('div.wz-box', h('h3', 'Tell the Xbox where this computer is'),
+      h('p', 'Put a text file named ', h('code', 'NetDisc360.ini'), ' next to ', h('code', 'NetDisc360.xex'), ' on the Xbox\u2019s USB drive, with this line (if the file is there already, add the line to it):'),
       h('div.wz-row', which, code,
-        navigator.clipboard ? h('button.btn.small', { onclick: () => navigator.clipboard.writeText(pick).then(() => toast('Copied')) }, ic('copy', 'sm'), 'Copy') : null,
-        h('button.btn.small', { disabled: !pick, onclick: () => downloadNetIsoTxt(pick) }, ic('download', 'sm'), 'Download NetISO.xex.txt')),
-      h('p.muted', { style: { marginBottom: 0 } }, 'Then restart the Xbox: DashLaunch loads its plugins only when it starts. Give this computer a fixed address in your router, so the file stays right.')),
+        navigator.clipboard ? h('button.btn.small', { onclick: () => navigator.clipboard.writeText('server=' + pick).then(() => toast('Copied')) }, ic('copy', 'sm'), 'Copy') : null,
+        h('button.btn.small', { disabled: !pick, onclick: () => downloadServerFile(pick, false) }, ic('download', 'sm'), 'Download NetDisc360.ini')),
+      h('p.muted', { style: { marginBottom: 0 } }, 'Then restart the Xbox: DashLaunch loads its plugins only when it starts. Give this computer a fixed address in your router, so the file stays right. Still using NetISO.xex? ',
+        h('a', { href: '#', onclick: e => { e.preventDefault(); if (pick) downloadServerFile(pick, true); } }, 'Download NetISO.xex.txt'), ' and put it next to NetISO.xex instead.')),
     status);
   async function findConsoles() {
     Wizard.finding = true; draw();
@@ -2391,7 +2395,7 @@ WizardParts.xbox = body => {
         const on = Wizard.console === f.address;
         return h('div.wz-console' + (on ? '.on' : ''), h('div.icon', ic('monitor')),
           h('div.grow', h('b', f.address), h('div.sub',
-            c && c.seen > 0 ? h('span.pill.good', h('span.dot.good'), 'NetISO connected') : null,
+            c && c.seen > 0 ? h('span.pill.good', h('span.dot.good'), 'Connected') : null,
             f.aurora ? h('span.pill.info', 'Aurora\u2019s FTP') : f.ftp ? h('span.pill.info', 'FTP') : null,
             f.xbdm ? h('span.pill.off', 'xbdm') : null,
             f.listed && !f.aurora && !(c && c.seen > 0) ? h('span.muted', 'Added before') : null)),
@@ -2400,8 +2404,8 @@ WizardParts.xbox = body => {
         h('div.muted', 'Is it on, in Aurora, with the FTP server turned on? ' + (isDocker() ? 'In Docker, the container needs host networking to see the network. ' : '') + 'You can also type its address below.'))) : null);
     const c = S.consoles.find(x => x.address === Wizard.console);
     fill(status, Wizard.console ? h('div.wz-status' + (c && c.seen > 0 ? '.good' : ''),
-      c && c.seen > 0 ? [ic('circle-check'), h('span', h('b', 'NetISO on ' + Wizard.console + ' is connected.'), ' It sees your games.')]
-        : [h('span.wz-wait', ic('loader-circle', 'spin')), h('span', 'Waiting for NetISO on ', h('b', Wizard.console), ' to connect. Restart the Xbox once NetISO.xex.txt is in place.')]) : null);
+      c && c.seen > 0 ? [ic('circle-check'), h('span', h('b', 'The Xbox at ' + Wizard.console + ' is connected.'), ' It sees your games.')]
+        : [h('span.wz-wait', ic('loader-circle', 'spin')), h('span', 'Waiting for the Xbox at ', h('b', Wizard.console), ' to connect. Restart it once NetDisc360.ini is in place.')]) : null);
   }
   if (!Wizard.found && !Wizard.finding) findConsoles(); else draw();
   return { update: draw };
@@ -2443,7 +2447,19 @@ function consoleChecks(r) {
   const where = r.launchIni.replace(/^\/(\w+)\//, '$1:\\');
   const plugin = kind => r.plugins.find(p => p.kind === kind);
   const netiso = plugin('netiso'), tiles = plugin('tiles'), usb = plugin('usbnet');
-  if (!netiso) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t loaded', ['Add it to the [Plugins] section of ', h('code', where), ', like ', h('code', 'plugin2 = Usb:\\NetISO.xex'), '.']));
+  // NetDisc360.xex has its own disc drive; NetISO.xex is only needed with the older NetIsoTiles.xex.
+  // With both, the first one DashLaunch loads is the drive: NetDisc360.xex stays off after NetISO.xex.
+  const ownDrive = tiles && /netdisc360/i.test(tiles.name);
+  if (!netiso && ownDrive) {
+    out.push(wzCheck('good', 'NetDisc360.xex is the disc drive', 'NetISO.xex isn\u2019t needed with it.'));
+    if (tiles.found) {
+      const file = (tiles.serverFrom || '').replace(/^\/(\w+)\//, '$1:\\').replace(/\//g, '\\');
+      if (!tiles.txt) out.push(wzCheck('warn', 'The Xbox doesn\u2019t know this computer', ['Download NetDisc360.ini on the step before and put it next to ', h('code', tiles.path), '.']));
+      else if (!tiles.here) out.push(wzCheck('warn', file + ' says ' + (tiles.server || 'nothing'), 'This computer is ' + (S.addresses.join(' or ') || 'somewhere else') + '. Download a new NetDisc360.ini on the step before.'));
+      else out.push(wzCheck('good', file + ' points to this computer', tiles.server));
+    }
+  }
+  else if (!netiso) out.push(wzCheck('bad', 'Neither NetDisc360.xex nor NetISO.xex is loaded', ['Add NetDisc360.xex to the [Plugins] section of ', h('code', where), ', like ', h('code', 'plugin1 = Usb:\\NetDisc360.xex'), '.']));
   else if (!netiso.found) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t where launch.ini says', h('code', netiso.path)));
   else {
     const known = NetIsoVersions[netiso.sha256];
@@ -2451,6 +2467,9 @@ function consoleChecks(r) {
     if (!netiso.txt) out.push(wzCheck('warn', 'NetISO.xex.txt is missing', 'Without it NetISO doesn\u2019t know this computer. Download it on the step before and put it next to NetISO.xex.'));
     else if (!netiso.here) out.push(wzCheck('warn', 'NetISO.xex.txt says ' + (netiso.server || 'nothing'), 'This computer is ' + (S.addresses.join(' or ') || 'somewhere else') + '. Download a new one on the step before.'));
     else out.push(wzCheck('good', 'NetISO.xex.txt points to this computer', netiso.server));
+    if (ownDrive) out.push(netiso.slot < tiles.slot
+      ? wzCheck('info', 'NetISO.xex is the disc drive', ['NetDisc360.xex has its own, faster one, which stays off while NetISO.xex loads first. Take the NetISO.xex line out of ', h('code', where), ' to use it.'])
+      : wzCheck('bad', 'NetISO.xex loads after NetDisc360.xex', ['Two disc drives don\u2019t mix. Take the NetISO.xex line out of ', h('code', where), '.']));
   }
   const release = (p, repo, names, title, missing, unknown) => {
     if (!p) { if (missing) out.push(missing); return; }
@@ -2463,13 +2482,13 @@ function consoleChecks(r) {
         : wzCheck('info', title + ' is plugin ' + p.slot, unknown || 'It isn\u2019t from a release on GitHub (a build of your own?).'));
     }).catch(() => line.replaceWith(wzCheck('info', title + ' is plugin ' + p.slot, 'GitHub didn\u2019t answer, so its version wasn\u2019t checked.')));
   };
-  release(tiles, 'marcusisdahl/NetDisc360', ['netisotiles.xex'], 'NetIsoTiles.xex',
-    wzCheck('warn', 'NetIsoTiles.xex isn\u2019t loaded', ['It keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
+  release(tiles, 'marcusisdahl/NetDisc360', ['netdisc360.xex', 'netisotiles.xex'], tiles ? tiles.name : 'NetDisc360.xex',
+    wzCheck('warn', 'NetDisc360.xex isn\u2019t loaded', ['It is the disc drive the games come from, keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
   release(usb, 'marcusisdahl/NetUsb360', ['netusb360.xex', 'netusb360-acksmall.xex', 'usbnet360.xex', 'usbnet360-acksmall.xex'], usb ? usb.name : '', null,
     ['Not a NetUsb360 release. ', h('a', { href: 'https://github.com/marcusisdahl/NetUsb360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'NetUsb360'), ' loads games faster with a gigabit USB adapter.']);
   if (r.plugins.length > 5) out.push(wzCheck('warn', 'launch.ini has ' + r.plugins.length + ' plugins', 'DashLaunch loads 5 at most.'));
   if (r.default && !/aurora/i.test(r.default)) out.push(wzCheck('info', 'The Xbox starts ' + r.default, 'Set Default in launch.ini to Aurora.xex to start straight in Aurora.'));
-  out.push(r.connected ? wzCheck('good', 'NetISO is connected to NetDisc360') : wzCheck('info', 'NetISO hasn\u2019t connected yet', 'Restart the Xbox after changing launch.ini or NetISO.xex.txt.'));
+  out.push(r.connected ? wzCheck('good', 'The Xbox is connected to NetDisc360') : wzCheck('info', 'The Xbox hasn\u2019t connected yet', 'Restart it after changing launch.ini, NetDisc360.ini or NetISO.xex.txt.'));
   return out;
 }
 
