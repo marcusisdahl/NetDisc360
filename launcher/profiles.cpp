@@ -41,6 +41,12 @@ typedef char EnumResultSize[sizeof(EnumResult)==0x188 ? 1 : -1];
 typedef DWORD (__stdcall* CreateEnumerator)(DWORD device, HANDLE* handle);
 typedef DWORD (__stdcall* Enumerate)(HANDLE handle, DWORD flags, EnumResult* result, void* overlapped);
 const DWORD LiveEnabled=0x20000000;
+// XamProfileCreate's flags for a new profile. With 0 it answered
+// ERROR_PATH_NOT_FOUND for the XUID it was given (it seems to look for an
+// existing profile then); with 1 it made one (seen on the console,
+// 2026-11-01), under an XUID of its own, whatever XUID it was given. It
+// turns XUID 0 down as an invalid argument (with flags 0; not tried with 1).
+const DWORD NewProfileFlag=1;
 // Seconds a creation may take before it counts as failed (the dashboard's
 // takes a moment: it writes the profile's package to the drive).
 const DWORD CreationMostMs=60000, CreationPollMs=100;
@@ -105,6 +111,7 @@ ProfileCall DefaultProfileCall(const ProfileInfo* profiles, int count) {
     ProfileCall call;
     memset(&call,0,sizeof(call));
     call.device=1;
+    call.flags=NewProfileFlag;
     call.cachedUserFlags=(DWORD(XGetLanguage())<<LanguageShift)&LanguageMask;
     // An offline one (not Live) first, else any.
     const ProfileInfo* like=NULL;
@@ -151,8 +158,9 @@ bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid
         else if(GetLastError()!=ERROR_ALREADY_EXISTS) sprintf_s(error,capacity,"Couldn't make %s (%lu).",folder,GetLastError());
     }
     if(!error[0]) made=MakeProfileWith(gamertag,length,call,xuid,code,error,capacity,wait);
-    // On a failure, the folders made here go again (if xam left them empty).
-    for(int depth=3;folders && !made && depth>=1;--depth)
+    // The folders made here go again (if xam left them empty) when it failed,
+    // or made it under an XUID of its own (seen on the console: it does).
+    for(int depth=3;folders && (!made || xuid!=call.xuid) && depth>=1;--depth)
         if(madeAt[depth]) { ProfileFolder(call.xuid,depth,folder,sizeof(folder)); RemoveDirectory(folder); }
     if(folders) LinkHdd(false);
     return made;

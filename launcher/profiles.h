@@ -36,9 +36,11 @@ int ListProfiles(ProfileInfo* out, int capacity);
 
 // How xam is called: device is the storage device to make it on (the one the
 // console's own profiles are on; 1 is its hard drive's usual number); flags
-// go to xam as they are; xuid is the offline XUID to give it (0: xam picks
-// one); reservedFlags and cachedUserFlags go into the account (an offline
-// profile's from the same console are what the dashboard writes);
+// go to xam as they are (1 makes a new profile); xuid is an offline XUID to
+// give it (xam answers an invalid argument for 0, and makes the profile
+// under an XUID of its own anyway); reservedFlags and cachedUserFlags go
+// into the account (an offline profile's from the same console are what the
+// dashboard writes);
 // zeroTokens hands xam zeroed payment and Live token records instead of none;
 // makeFolders makes the XUID's folders on the hard drive first
 // (Content\<XUID>\FFFE07D1\00010000), without which xam answers
@@ -49,8 +51,8 @@ struct ProfileCall {
     DWORD reservedFlags, cachedUserFlags;
     bool zeroTokens, makeFolders;
 };
-// The call for this console: its first offline profile's device and account
-// flags (the console's language when it has none), xam's own XUID.
+// The call for this console: flags 1, its first offline profile's device and
+// account flags (the console's language when it has none), no XUID yet.
 ProfileCall DefaultProfileCall(const ProfileInfo* profiles, int count);
 // A new offline XUID like those the console gives (E000, 16 random bits, then
 // the low 32 bits of like: the console's own), one no profile in profiles has.

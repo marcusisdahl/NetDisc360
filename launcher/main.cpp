@@ -1356,9 +1356,10 @@ static bool ProfileJob() {
     if(nia::IniValue(job,"cached",value,sizeof(value)) && value[0]) call.cachedUserFlags=strtoul(value,NULL,0);
     call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
     // xam turns down XUID 0 as an invalid argument (seen on the console), so
-    // each gets an offline XUID like the console's own, with its folders made.
+    // each is asked with an offline XUID like the console's own (xam then
+    // makes it under one of its own).
     bool ownXuid=IniNumber(job,"own_xuid",1)!=0, probe=IniNumber(job,"probe",0)!=0;
-    call.makeFolders=IniNumber(job,"make_folders",1)!=0;
+    call.makeFolders=IniNumber(job,"make_folders",0)!=0;
     ULONGLONG like=0;
     for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
     static char names[nia::ProfileJobMost][nia::GamertagMost+1];
