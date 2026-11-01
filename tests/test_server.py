@@ -204,16 +204,34 @@ class ServerTest(unittest.TestCase):
             self.server.stdout.close()
         self.tmp.cleanup()
 
-    def start(self, *extra):
+    def ports(self):
+        """The port options for one start, picked fresh each time."""
         self.port = free_port()
-        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + list(extra),
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            line = self.server.stdout.readline()
-            if "Listening on port" in line:
-                return
-        self.fail("server didn't start")
+        return ["--port", str(self.port)]
+
+    def start(self, *extra):
+        # A port free_port() found can be taken by something else before the
+        # server binds it; the server then says so and stops, and the test
+        # starts it again on other ports instead of failing.
+        for attempt in range(3):
+            self.server = subprocess.Popen([SERVER, self.isos, "--no-push", "--web-port", "0"] + self.ports() + list(extra),
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            seen = []
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                line = self.server.stdout.readline()
+                if not line and self.server.poll() is not None:
+                    break
+                seen.append(line)
+                if "Listening on port" in line:
+                    return
+            self.server.kill()
+            self.server.wait()
+            self.server.stdout.close()
+            if attempt < 2 and any("Can't listen on port" in line for line in seen):
+                continue
+            self.server = None
+            self.fail("server didn't start:\n" + "".join(seen[-30:]))
 
     def add_iso(self, name, media_id, title_id, folder=None):
         path = os.path.join(folder or self.isos, name)
@@ -1030,9 +1048,12 @@ class Dashboard(ServerTest):
         super().setUp()
         self.config = os.path.join(self.tmp.name, "netdisc.ini")
 
-    def start(self, *extra):
+    def ports(self):
         self.web = free_port()
-        super().start("--web-port", str(self.web), "--config", self.config, *extra)
+        return super().ports() + ["--web-port", str(self.web)]
+
+    def start(self, *extra):
+        super().start("--config", self.config, *extra)
 
     def restart(self, *extra):
         self.server.kill()
