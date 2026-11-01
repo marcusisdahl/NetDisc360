@@ -196,6 +196,89 @@ bool MakeProfileWith(const WCHAR* gamertag, size_t length, const ProfileCall& ca
     return true;
 }
 
+namespace {
+enum { OrdinalProfileOpen=0x237, OrdinalProfileClose=0x238, OrdinalSetThumbnailInternal=0x272 };
+typedef DWORD (__stdcall* ProfileOpen)(ULONGLONG xuid, const char* root, DWORD flags, void* contentData);
+typedef DWORD (__stdcall* ProfileClose)(const char* root);
+typedef DWORD (__stdcall* SetThumbnailInternal)(void* contentData, const void* buffer, DWORD size);
+// The profile's drive while its picture is written.
+const char PictureRoot[]="NdPic";
+// XCONTENT_DATA (0x134 bytes) and what XamProfileOpen adds to it
+// (XCONTENT_DATA_AGGREGATE, 0x148: XUID, Title ID) and what xam's own calls
+// take (XCONTENT_DATA_INTERNAL, 0x1D8: category, XUID, Title ID, licence,
+// size, time, title name), as xenia has them. Bigger than needed, zeroed.
+const DWORD ContentProfile=0x00010000, DashboardTitle=0xFFFE07D1;
+struct ContentData { BYTE bytes[0x200]; };
+DWORD Get32(const BYTE* at) { return (DWORD(at[0])<<24)|(DWORD(at[1])<<16)|(DWORD(at[2])<<8)|at[3]; }
+void Set32(BYTE* at, DWORD v) { at[0]=BYTE(v>>24); at[1]=BYTE(v>>16); at[2]=BYTE(v>>8); at[3]=BYTE(v); }
+void Set64(BYTE* at, ULONGLONG v) { Set32(at,DWORD(v>>32)); Set32(at+4,DWORD(v)); }
+
+bool WriteWhole(const char* path, const void* data, DWORD size, DWORD& code) {
+    HANDLE file=CreateFile(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) { code=GetLastError(); return false; }
+    DWORD wrote=0;
+    bool ok=WriteFile(file,data,size,&wrote,NULL) && wrote==size;
+    code=ok ? 0 : GetLastError();
+    if(!CloseHandle(file) && ok) { ok=false; code=GetLastError(); }
+    return ok;
+}
+}
+
+bool SetProfilePicture(ULONGLONG xuid, const ProfilePicture& picture, char* how, size_t capacity) {
+    how[0]=0;
+    ProfileOpen open=(ProfileOpen)Xam(OrdinalProfileOpen);
+    ProfileClose close=(ProfileClose)Xam(OrdinalProfileClose);
+    if(!open || !close) { sprintf_s(how,capacity,"xam has no XamProfileOpen or XamProfileClose."); return false; }
+    if(!picture.big || !picture.bigSize) { sprintf_s(how,capacity,"there's no picture."); return false; }
+    static ContentData opened;
+    size_t used=0;
+    bool written=false;
+    DWORD usedFlags=0;
+    for(int i=0;i<picture.openFlagCount && !written;++i) {
+        DWORD flags=picture.openFlags[i];
+        memset(&opened,0,sizeof(opened));
+        DWORD result=open(xuid,PictureRoot,flags,&opened);
+        if(result!=ERROR_SUCCESS) { used+=sprintf_s(how+used,capacity-used,"XamProfileOpen with flags %lX: %08lX; ",flags,result); continue; }
+        char path[64];
+        DWORD code=0;
+        sprintf_s(path,"%s:\\tile_64.png",PictureRoot);
+        written=WriteWhole(path,picture.big,picture.bigSize,code);
+        if(written && picture.small && picture.smallSize) {
+            sprintf_s(path,"%s:\\tile_32.png",PictureRoot);
+            written=WriteWhole(path,picture.small,picture.smallSize,code);
+        }
+        DWORD closed=close(PictureRoot);
+        if(!written) used+=sprintf_s(how+used,capacity-used,"opened with flags %lX but couldn't write %s (%lu); ",flags,path,code);
+        if(closed!=ERROR_SUCCESS) {
+            used+=sprintf_s(how+used,capacity-used,"XamProfileClose: %08lX; ",closed);
+            written=false;
+        }
+        if(written) usedFlags=flags;
+    }
+    if(!written) {
+        if(used>=2) how[used-2]=0;
+        return false;
+    }
+    used+=sprintf_s(how+used,capacity-used,"wrote tile_64.png (%lu bytes)%s with XamProfileOpen flags %lX",picture.bigSize,picture.small && picture.smallSize ? " and tile_32.png" : "",usedFlags);
+    if(picture.thumbnail) {
+        SetThumbnailInternal thumbnail=(SetThumbnailInternal)Xam(OrdinalSetThumbnailInternal);
+        // The profile's package as xam's content calls know it: what
+        // XamProfileOpen gave back, with what it left out filled in.
+        static ContentData content;
+        memset(&content,0,sizeof(content));
+        memcpy(content.bytes,opened.bytes,0x134);
+        if(!Get32(content.bytes)) Set32(content.bytes,1);
+        if(!Get32(content.bytes+4)) Set32(content.bytes+4,ContentProfile);
+        if(!content.bytes[0x108]) sprintf_s((char*)content.bytes+0x108,0x2A,"%016I64X",xuid);
+        Set64(content.bytes+0x138,xuid);
+        DWORD title=Get32(opened.bytes+0x13C);
+        Set32(content.bytes+0x140,title ? title : DashboardTitle);
+        DWORD result=thumbnail ? thumbnail(&content,picture.big,picture.bigSize) : DWORD(-1);
+        used+=sprintf_s(how+used,capacity-used,"; package thumbnail: %08lX (device %lu, type %08lX, file %.16s)",result,Get32(content.bytes),Get32(content.bytes+4),(const char*)content.bytes+0x108);
+    }
+    return true;
+}
+
 bool HasProfile(ULONGLONG xuid, WCHAR* gamertag) {
     if(gamertag) gamertag[0]=0;
     FindAccount find=(FindAccount)Xam(OrdinalFindAccount);

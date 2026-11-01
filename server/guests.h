@@ -20,6 +20,7 @@
 // file.
 #include "config.h"
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -48,8 +49,16 @@ std::string GuestGamertag(const std::string& name, const std::vector<std::string
 bool OfflineXuid(const std::string& text, std::string& xuid);
 
 // The helper's job for gamertags (guest1= the first), and what it wrote back.
-std::string ProfileJobText(const std::string& job, const std::vector<std::string>& gamertags);
-struct ProfileJobDone { std::string job; std::map<int,std::string> xuids, errors; };  // By N of guestN.
+// pictures: each gets a gamer picture, ProfilePictureFile(N, 64) and
+// (N, 32), which go beside the job (picture.h makes them). extra: more
+// lines for the job, as they are.
+std::string ProfilePictureFile(int n, int size);
+std::string ProfileJobText(const std::string& job, const std::vector<std::string>& gamertags, bool pictures = false, const std::string& extra = "");
+struct ProfileJobDone {  // By N of guestN.
+    std::string job;
+    std::map<int,std::string> xuids, errors, pictureErrors;
+    std::set<int> pictures;
+};
 bool ReadProfileDone(const std::string& text, ProfileJobDone& done);
 
 // Where a profile is on a console, as Aurora's FTP server has it.

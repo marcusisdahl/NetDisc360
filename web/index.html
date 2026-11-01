@@ -564,7 +564,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .gp-list { display: flex; flex-direction: column; gap: 6px; }
 .gp { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; min-width: 0; }
 .gp > .i { color: var(--muted); flex: none; }
-.gp.ready > .i { color: var(--good); }
+.gp-pic { width: 36px; height: 36px; border-radius: 6px; flex: none; display: block; background: var(--hover); }
 .gp .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .gp b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gp .sub { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
@@ -575,7 +575,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .gp-work { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .gp-work .i { flex: none; margin-top: 2px; }
 .gp-work.bad { color: var(--bad); }
-@media (max-width: 560px) { .gp { flex-wrap: wrap; } .gp-on { max-width: none; justify-content: flex-start; margin-left: 28px; } }
+@media (max-width: 560px) { .gp { flex-wrap: wrap; } .gp-on { max-width: none; justify-content: flex-start; margin-left: 48px; } }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); color: var(--text); }
 .chip > button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 4px 0 6px; font-weight: 550; border-radius: 99px; min-width: 0; }
@@ -2789,6 +2789,15 @@ Pages.party = root => {
     loadProfiles();
   }
   function profileConsoles(p) { return p.consoles.length ? p.consoles : S.consoles.map(c => c.address); }
+  // The gamer picture a guest's profile gets on the consoles (initials on a
+  // colour), fetched once per gamertag.
+  const guestPictures = {};
+  function guestPicture(tag) {
+    const img = h('img.gp-pic', { alt: '', width: 36, height: 36, title: 'Its gamer picture on the consoles' });
+    const known = guestPictures[tag] || (guestPictures[tag] = fetchImage('party/profiles/picture?gamertag=' + encodeURIComponent(tag)));
+    known.then(url => { img.src = url; }, () => { delete guestPictures[tag]; });
+    return img;
+  }
   function drawProfiles(p) {
     if (!prof) return h('p.muted', { style: { margin: 0 } }, 'Looking…');
     if (prof.error) return h('p.muted', { style: { margin: 0 } }, prof.error);
@@ -2804,7 +2813,7 @@ Pages.party = root => {
       else if (!away.length) text = 'On every console';
       else text = 'On ' + on.map(nameOf).join(', ') + '; not yet on ' + away.map(nameOf).join(', ');
       const ready = g.xuid && g.on.length && !away.length;
-      return h('div.gp' + (ready ? '.ready' : ''), ic(ready ? 'circle-check' : 'user', 'sm'),
+      return h('div.gp' + (ready ? '.ready' : ''), g.gamertag ? guestPicture(g.gamertag) : ic('user', 'sm'),
         h('div.grow', h('b', g.name + (g.gamertag && g.gamertag !== g.name ? ' · ' + g.gamertag : '')), h('span.sub', text)),
         g.xuid ? h('div.gp-on', ips.map(ip => h('span.pill' + (g.on.includes(ip) ? '.good' : ''), { title: g.on.includes(ip) ? 'On ' + nameOf(ip) : 'Not on ' + nameOf(ip) }, nameOf(ip)))) : null);
     })) : h('p.muted', { style: { margin: 0 } }, 'Add guests above: each gets a profile with their name on every console.');

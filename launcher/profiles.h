@@ -67,4 +67,24 @@ bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid
 // Whether this console has the profile xuid; its gamertag in gamertag
 // (GamertagMost + 1 characters), if given.
 bool HasProfile(ULONGLONG xuid, WCHAR* gamertag);
+
+// A gamer picture for a profile: PNGs, as the console keeps them in the
+// profile's package (tile_64.png, 64 by 64, and tile_32.png, 32 by 32, as
+// xenia's notes have it). The profile is opened as a drive with
+// XamProfileOpen (0x237), the files written and the drive closed with
+// XamProfileClose (0x238), which has xam sign the package again with the
+// console's keys. openFlags: XamProfileOpen's flags to try in turn until the
+// files can be written (what they mean isn't known; 3 is "open an existing
+// one" for content). thumbnail: the package's thumbnail (what the Storage
+// screen shows) gets the big picture too, with
+// XamContentSetThumbnailInternal (0x272).
+struct ProfilePicture {
+    const void* big; DWORD bigSize;
+    const void* small; DWORD smallSize;
+    const DWORD* openFlags; int openFlagCount;
+    bool thumbnail;
+};
+// Puts picture on the profile xuid. how gets what was done, or why not, in
+// a sentence (for the log).
+bool SetProfilePicture(ULONGLONG xuid, const ProfilePicture& picture, char* how, size_t capacity);
 }

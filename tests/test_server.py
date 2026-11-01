@@ -29,6 +29,7 @@ import time
 import unittest
 import urllib.parse
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -59,7 +60,7 @@ def build_server():
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/system.cpp", "server/auroradb.cpp",
-                                               "server/party.cpp", "server/guests.cpp", "server/systemlink.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -2067,11 +2068,12 @@ print('lua ok')
             os.makedirs(os.path.join(root, "Hdd1", "Content", "0000000000000000"))
         aurora = AuroraWeb()
         aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
-        made = []
+        made, pictures = [], []
 
         def package(gamertag):
             name = gamertag.encode("utf-16-be")
-            return b"CON " + bytes(0x411 - 4) + name + bytes(0xA000 - 0x411 - len(name))
+            # Bytes above 0x7F too, as a real (signed) package has.
+            return b"CON " + bytes(range(256)) + bytes(0x411 - 4 - 256) + name + bytes(0xA000 - 0x411 - len(name))
 
         def helper(path, exe):
             # The helper as the console runs it: the job in its folder, a
@@ -2084,6 +2086,15 @@ print('lua ok')
             for key in sorted(k for k in job if k.startswith("guest")):
                 xuid = "E000%04X5EEDF00D" % (0x100 + len(made))
                 made.append((job[key], xuid))
+                # Its gamer picture beside the job: the PNGs, 64 and 32 pixels square.
+                n = key[5:]
+                for name, size in ((job["picture" + n], 64), (job["picture_small" + n], 32)):
+                    with open(os.path.join(folder, name), "rb") as f:
+                        png = f.read()
+                    pictures.append((job[key], name, png[:8], struct.unpack(">II", png[16:24])))
+                    self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                    self.assertEqual(struct.unpack(">II", png[16:24]), (size, size))
+                answer += "picture" + n + "=ok\r\n" if n == "1" else "picture_error" + n + "=XamProfileOpen with flags 3: 80070057\r\n"
                 content = os.path.join(other, "Hdd1", "Content", xuid)
                 os.makedirs(os.path.join(content, "FFFE07D1", "00010000"))
                 os.makedirs(os.path.join(content, "4D5307E6", "00000001"))
@@ -2129,6 +2140,19 @@ print('lua ok')
                 with open(os.path.join(self.xbox, "Hdd1", "Content", xuid, "4D5307E6", "00000001", "save"), "rb") as f:
                     self.assertEqual(f.read(), b"halo save " + xuid.encode())
             self.assertFalse(os.path.exists(os.path.join(other, "Hdd1", "NetISO", "NetDisc360", "profiles.done")))
+            # The pictures went with the job and are gone again; one the helper
+            # couldn't give is only noted (the profile is made all the same).
+            self.assertEqual([(g, f) for g, f, _, _ in pictures], [("Stale Ovrebo", "guest1.png"), ("Stale Ovrebo", "guest1_32.png"), ("Kristoffer H", "guest2.png"), ("Kristoffer H", "guest2_32.png")])
+            self.assertEqual([f for f in os.listdir(os.path.join(other, "Hdd1", "NetISO", "NetDisc360")) if f.endswith(".png")], [])
+            # The page shows each guest's picture.
+            status, response, png = self.call("GET", "/api/party/profiles/picture?gamertag=Stale%20Ovrebo")
+            self.assertEqual((status, response.getheader("Content-Type"), png[:8], struct.unpack(">II", png[16:24])), (200, "image/png", b"\x89PNG\r\n\x1a\n", (64, 64)))
+            idat = png.index(b"IDAT")
+            pixels = zlib.decompress(png[idat + 4:idat + 4 + struct.unpack(">I", png[idat - 4:idat])[0]])
+            self.assertEqual(len(pixels), 64 * (64 * 3 + 1))  # 8-bit RGB rows, each with its filter byte.
+            self.assertGreater(len(set(pixels[1 + 64 * 3 * 32:64 * 3 * 33])), 2)  # The letters across the middle.
+            self.assertEqual(self.call("GET", "/api/party/profiles/picture?gamertag=Stale%20Ovrebo", page=False)[0], 403)
+            self.assertEqual(self.call("GET", "/api/party/profiles/picture?gamertag=")[0], 400)
             # Asked again: they're there, nothing to make.
             self.json("POST", "/api/party/profiles", {"action": "make"})
             finished()

@@ -315,10 +315,16 @@ bool OfflineXuid(const std::string& text, std::string& xuid) {
     return true;
 }
 
-std::string ProfileJobText(const std::string& job, const std::vector<std::string>& gamertags) {
+std::string ProfilePictureFile(int n, int size) { return "guest"+Number(n)+(size==32 ? "_32" : "")+".png"; }
+
+std::string ProfileJobText(const std::string& job, const std::vector<std::string>& gamertags, bool pictures, const std::string& extra) {
     std::string out="; Made by NetDisc360: the LAN party's guest profiles for the helper to make.\r\njob="+job+"\r\n";
-    for(size_t i=0;i<gamertags.size();++i) out+="guest"+Number((long long)i+1)+"="+OneLine(gamertags[i])+"\r\n";
-    return out;
+    for(size_t i=0;i<gamertags.size();++i) {
+        std::string n=Number((long long)i+1);
+        out+="guest"+n+"="+OneLine(gamertags[i])+"\r\n";
+        if(pictures) out+="picture"+n+"="+ProfilePictureFile(int(i)+1,64)+"\r\npicture_small"+n+"="+ProfilePictureFile(int(i)+1,32)+"\r\n";
+    }
+    return out+extra;
 }
 
 bool ReadProfileDone(const std::string& text, ProfileJobDone& done) {
@@ -327,6 +333,15 @@ bool ReadProfileDone(const std::string& text, ProfileJobDone& done) {
     if(!lines.count("job")) return false;
     done.job=lines["job"];
     for(std::map<std::string,std::string>::const_iterator i=lines.begin();i!=lines.end();++i) {
+        bool picture=!i->first.compare(0,7,"picture"), pictureError=!i->first.compare(0,13,"picture_error");
+        if(picture) {
+            size_t at=pictureError ? 13 : 7;
+            int n=atoi(i->first.c_str()+at);
+            if(n<1 || Number(n)!=i->first.substr(at)) continue;
+            if(pictureError || i->second!="ok") done.pictureErrors[n]=i->second.empty() ? std::string("The helper couldn't give it its picture.") : i->second;
+            else done.pictures.insert(n);
+            continue;
+        }
         bool guest=!i->first.compare(0,5,"guest"), error=!i->first.compare(0,5,"error");
         if(!guest && !error) continue;
         int n=atoi(i->first.c_str()+5);
@@ -337,6 +352,7 @@ bool ReadProfileDone(const std::string& text, ProfileJobDone& done) {
         else done.errors[n]="The helper gave no XUID for it ("+i->second+").";
     }
     for(std::map<int,std::string>::const_iterator i=done.xuids.begin();i!=done.xuids.end();++i) done.errors.erase(i->first);
+    for(std::set<int>::const_iterator i=done.pictures.begin();i!=done.pictures.end();++i) done.pictureErrors.erase(*i);
     return true;
 }
 

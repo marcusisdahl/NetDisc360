@@ -296,6 +296,16 @@ static bool ReadText(const char* path,char* text,DWORD capacity) {
     return ok!=FALSE;
 }
 
+// Whole small file; its size, or -1.
+static int ReadBytes(const char* path,void* data,DWORD capacity) {
+    HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return -1;
+    DWORD size=GetFileSize(file,NULL), done=0;
+    BOOL ok=size!=INVALID_FILE_SIZE && size<=capacity && ReadFile(file,data,size,&done,NULL) && done==size;
+    CloseHandle(file);
+    return ok ? int(done) : -1;
+}
+
 // ---- Game launcher ----
 
 struct Settings { char iso[MAX_PATH]; DWORD titleId,mediaId; };
@@ -1331,11 +1341,47 @@ static void NoteProfiles(const nia::ProfileInfo* profiles,int count) {
     }
 }
 
+// Guest N's picture (pictureN= and picture_smallN=, PNG files beside the
+// job) on profile xuid, if the job has one; pictureN=ok or
+// picture_errorN=<why> in done. True if it's there now.
+static bool Picture(const char* job,int n,ULONGLONG xuid,const DWORD* openFlags,int openFlagCount,bool thumbnail,char* done,size_t& used,size_t capacity) {
+    char key[24],name[64],path[96];
+    sprintf_s(key,"picture%d",n);
+    if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) return false;
+    static BYTE big[64*1024],small[32*1024];
+    char why[400]="";
+    int bigSize=-1,smallSize=0;
+    if(strchr(name,'\\') || strchr(name,':') || strstr(name,"..")) sprintf_s(why,"%s isn't a file name.",name);
+    else {
+        sprintf_s(path,"game:\\%s",name);
+        bigSize=ReadBytes(path,big,sizeof(big));
+        if(bigSize<=0) sprintf_s(why,"couldn't read %s.",path);
+        sprintf_s(key,"picture_small%d",n);
+        if(bigSize>0 && nia::IniValue(job,key,name,sizeof(name)) && name[0] && !strchr(name,'\\') && !strchr(name,':') && !strstr(name,"..")) {
+            sprintf_s(path,"game:\\%s",name);
+            smallSize=ReadBytes(path,small,sizeof(small));
+            if(smallSize<=0) { smallSize=0; Note("Couldn't read %s; the big picture only.",path); }
+        }
+    }
+    bool ok=false;
+    if(bigSize>0) {
+        nia::ProfilePicture picture={big,DWORD(bigSize),smallSize ? small : NULL,DWORD(smallSize),openFlags,openFlagCount,thumbnail};
+        ok=nia::SetProfilePicture(xuid,picture,why,sizeof(why));
+        Note("%s %016I64X's picture: %s.",ok ? "Gave" : "Couldn't give",xuid,why);
+    } else Note("Couldn't give %016I64X its picture: %s",xuid,why);
+    if(ok) used+=sprintf_s(done+used,capacity-used,"picture%d=ok\r\n",n);
+    else {
+        for(char* c=why;*c;++c) if(*c=='\r' || *c=='\n') *c=' ';
+        used+=sprintf_s(done+used,capacity-used,"picture_error%d=%.240s\r\n",n,why);
+    }
+    return ok;
+}
+
 // The LAN party's guest profiles (see ProfileJob in shared/helper.h): true
 // if the helper was started for that job, which is then done. The screen is
 // the loading screen's, with the profiles as its steps.
 static bool ProfileJob() {
-    static char job[2048];
+    static char job[4096];
     char path[64],donePath[64];
     sprintf_s(path,"game:\\%s",nia::ProfileJob);
     sprintf_s(donePath,"game:\\%s",nia::ProfileDone);
@@ -1362,27 +1408,56 @@ static bool ProfileJob() {
     call.makeFolders=IniNumber(job,"make_folders",0)!=0;
     ULONGLONG like=0;
     for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
+    // guestN= a profile to make; profileN= one there already (its XUID),
+    // for its picture only.
     static char names[nia::ProfileJobMost][nia::GamertagMost+1];
     int count=0,slot[nia::ProfileJobMost];
+    ULONGLONG existing[nia::ProfileJobMost];
     for(int i=1;i<=nia::ProfileJobMost;++i) {
         char key[16]; sprintf_s(key,"guest%d",i);
         char name[64];
-        if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) continue;
+        existing[count]=0;
+        if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) {
+            sprintf_s(key,"profile%d",i);
+            if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0] || !(existing[count]=_strtoui64(name,NULL,16))) continue;
+        }
         strncpy_s(names[count],name,_TRUNCATE);
         slot[count++]=i;
     }
-    Note("Guest profiles, job %s: %d to make (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s%s).",number[0] ? number : "?",count,
+    // The pictures' ways in (see SetProfilePicture): open_flags= (hex, commas
+    // between), thumbnail=.
+    DWORD openFlags[8]={3,4,0};
+    int openFlagCount=3;
+    static char openList[64];
+    if(nia::IniValue(job,"open_flags",openList,sizeof(openList)) && openList[0]) {
+        openFlagCount=0;
+        for(char* at=openList;*at && openFlagCount<8;) {
+            char* end=NULL;
+            DWORD f=strtoul(at,&end,16);
+            if(end==at) break;
+            openFlags[openFlagCount++]=f;
+            at=*end==',' ? end+1 : end;
+        }
+    }
+    bool thumbnail=IniNumber(job,"thumbnail",0)!=0;
+    Note("Guest profiles, job %s: %d in it (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s%s).",number[0] ? number : "?",count,
          call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",
          call.makeFolders ? ", folders made first" : "",probe ? ", trying other ways too" : "");
+    Note("Pictures: XamProfileOpen flags %lX%s, %s.",openFlagCount ? openFlags[0] : 0,openFlagCount>1 ? " then others" : "",thumbnail ? "package thumbnail too" : "no package thumbnail");
     strcpy_s(Shown.game,"Guest profiles");
     ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
     ScreenStart();
     ScreenDraw();
-    static char done[4096];
+    static char done[8192];
     size_t used=0;
     used+=sprintf_s(done+used,sizeof(done)-used,"job=%s\r\n",number);
     int made=0;
     for(int n=0;n<count;++n) {
+        if(existing[n]) {
+            ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Giving a profile its picture (%d of %d)",n+1,count);
+            if(Picture(job,slot[n],existing[n],openFlags,openFlagCount,thumbnail,done,used,sizeof(done))) ++made;
+            continue;
+        }
         ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Making %s (%d of %d)",names[n],n+1,count);
         WCHAR gamertag[nia::GamertagMost+1];
         size_t length=strlen(names[n]);
@@ -1423,6 +1498,7 @@ static bool ProfileJob() {
             ++made;
             Note("Made %s: %016I64X.",names[n],xuid);
             used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",slot[n],xuid);
+            Picture(job,slot[n],xuid,openFlags,openFlagCount,thumbnail,done,used,sizeof(done));
         } else used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
     }
     HANDLE file=CreateFile(donePath,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);

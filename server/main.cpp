@@ -19,6 +19,7 @@
 #include "discs.h"
 #include "ftp.h"
 #include "guests.h"
+#include "picture.h"
 #include "installed.h"
 #include "party.h"
 #include "system.h"
@@ -1496,8 +1497,9 @@ std::string Lines(const char* text, bool crlf) {
 // leaves the file cut short, which for Aurora's own script would break it.
 bool StoreChecked(FtpClient& ftp, const std::string& path, const std::string& data) {
     std::vector<unsigned char> back;
+    // As bytes: a char above 0x7F isn't equal to the same unsigned char.
     return ftp.Store(path.c_str(),data.data(),data.size()) && ftp.Retrieve(path.c_str(),back,data.size()+1) &&
-           back.size()==data.size() && std::equal(back.begin(),back.end(),data.begin());
+           back.size()==data.size() && (data.empty() || !memcmp(&back[0],data.data(),data.size()));
 }
 
 void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Options& o) {
@@ -5689,6 +5691,15 @@ void PartyAssetFile(const web::Request& r, web::Reply& out) {
     out.type=PictureType(file);
 }
 
+// GET /api/party/profiles/picture?gamertag=...&size=64 (or 32): the gamer
+// picture a guest profile with that gamertag gets (picture.h).
+void GuestPictureFile(const web::Request& r, web::Reply& out) {
+    std::string tag=r.Param("gamertag");
+    if(tag.empty() || tag.size()>GamertagLongest) { out.Error(400,"Which gamertag?"); return; }
+    out.body=GamerPicturePng(tag,r.Param("size")=="32" ? 32 : 64);
+    out.type="image/png";
+}
+
 // The LAN party's guest profiles (see guests.h) --------------------------------
 
 // What the guest profile work is doing, for the page: one piece of work at a time.
@@ -5825,7 +5836,11 @@ bool RunProfileJob(Console& c, const Options& o, const std::vector<std::string>&
         if(!ftp.Open()) { error=std::string("Aurora's FTP server doesn't answer (it does while Aurora is on screen): ")+ftp.Error(); return false; }
         if(!FtpHas(ftp,folder,HelperXex)) { error="NetDisc360's helper isn't on it yet ("+DashPath(folder+"/"+HelperXex)+"): it's written while the console is in Aurora."; return false; }
         ftp.Delete((folder+"/"+ProfileDone).c_str());
-        if(!StoreChecked(ftp,folder+"/"+ProfileJob,ProfileJobText(job,gamertags))) { error=std::string("Couldn't write the job: ")+ftp.Error(); return false; }
+        // Each guest's gamer picture (picture.h) beside the job.
+        for(size_t i=0;i<gamertags.size();++i)
+            for(int size=64;size>=32;size-=32)
+                if(!StoreChecked(ftp,folder+"/"+ProfilePictureFile(int(i)+1,size),GamerPicturePng(gamertags[i],size))) { error=std::string("Couldn't write the gamer pictures: ")+ftp.Error(); return false; }
+        if(!StoreChecked(ftp,folder+"/"+ProfileJob,ProfileJobText(job,gamertags,true))) { error=std::string("Couldn't write the job: ")+ftp.Error(); return false; }
         ftp.Close();
     }
     AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
@@ -5847,6 +5862,8 @@ bool RunProfileJob(Console& c, const Options& o, const std::vector<std::string>&
         }
         text.assign(data.begin(),data.end());
         ftp.Delete((folder+"/"+ProfileDone).c_str());
+        for(size_t i=0;i<gamertags.size();++i)
+            for(int size=64;size>=32;size-=32) ftp.Delete((folder+"/"+ProfilePictureFile(int(i)+1,size)).c_str());
         break;
     }
     if(!ReadProfileDone(text,done) || done.job!=job) { error="The helper's answer isn't this job's."; return false; }
@@ -5971,6 +5988,8 @@ void MakeGuestProfiles(std::vector<std::string> names) {
                 if(!done.xuids.count(slot)) { failed.push_back(p.name+": "+(done.errors.count(slot) ? done.errors[slot] : std::string("the helper said nothing about it."))); continue; }
                 p.xuid=done.xuids[slot]; p.made=(long long)time(NULL); p.madeOn=maker->text; p.on.assign(1,maker->text);
                 XboxLog(*maker,"made the guest profile %s (%s) for %s.",p.gamertag.c_str(),p.xuid.c_str(),p.name.c_str());
+                // Without its picture it's a profile all the same.
+                if(done.pictureErrors.count(slot)) XboxLog(*maker,"couldn't give %s its gamer picture: %s",p.gamertag.c_str(),done.pictureErrors[slot].c_str());
                 KeepGuestProfile(p);
             }
         }
@@ -6444,6 +6463,7 @@ void Api(const web::Request& r, web::Reply& out) {
     }
     else if(r.method=="GET" && r.path=="/api/party/asset") PartyAssetFile(r,out);
     else if(r.method=="GET" && r.path=="/api/party/profiles") GuestProfilesJson(out);
+    else if(r.method=="GET" && r.path=="/api/party/profiles/picture") GuestPictureFile(r,out);
     else if(r.method=="POST" && r.path=="/api/party/profiles") GuestProfilesChange(body,out);
     else if(r.method=="GET" && r.path=="/api/systemlink") SystemLinkList(out);
     else if(r.method=="GET" && r.path=="/api/titleupdates") TitleUpdatesList(out);
