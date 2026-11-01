@@ -21,11 +21,9 @@ enum { Version = 1, NameBytes = 256, DefaultPort = 4323 };
 
 // CTL_CODE(0x8360, 0x800 + n, METHOD_NEITHER, FILE_ANY_ACCESS): the input
 // and output buffers are the caller's own.
-enum Control {
-    ControlStatus = 0x83602003,  // out: Status
-    ControlMount  = 0x83602007,  // in: MountRequest; out: DWORD ticket
-    ControlEject  = 0x8360200B   // out: DWORD ticket
-};
+static const DWORD ControlStatus=0x83602003;  // out: Status
+static const DWORD ControlMount =0x83602007;  // in: MountRequest; out: DWORD ticket
+static const DWORD ControlEject =0x8360200B;  // out: DWORD ticket
 
 struct MountRequest {
     DWORD version;          // Version

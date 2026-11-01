@@ -539,11 +539,11 @@ typedef LONG (*DriveCloseCall)(HANDLE handle);
 static DriveOpenCall DriveOpen=NULL;
 static DriveControlCall DriveControl=NULL;
 static DriveCloseCall DriveClose=NULL;
-static HANDLE Drive=NULL;
+static HANDLE DriveHandle=NULL;
 // Opens the drive's device; false (with the kernel's status) when it isn't
 // there: the plugin isn't loaded, is an older one, or its drive is off.
 static bool OpenDrive(LONG& status) {
-    if(Drive) { status=0; return true; }
+    if(DriveHandle) { status=0; return true; }
     if(!DriveOpen) {
         HANDLE kernel=NULL; void* open=NULL; void* control=NULL; void* close=NULL;
         // xboxkrnl.exe: NtOpenFile 223, NtDeviceIoControlFile 217, NtClose 207.
@@ -563,18 +563,18 @@ static bool OpenDrive(LONG& status) {
         DriveAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
         DriveIo io={0,0};
         // SYNCHRONIZE | FILE_READ_DATA, shared; FILE_SYNCHRONOUS_IO_NONALERT.
-        status=DriveOpen(&Drive,0x100001,&attributes,&io,FILE_SHARE_READ|FILE_SHARE_WRITE,0x20);
+        status=DriveOpen(&DriveHandle,0x100001,&attributes,&io,FILE_SHARE_READ|FILE_SHARE_WRITE,0x20);
         if(status>=0) return true;
-        Drive=NULL;
+        DriveHandle=NULL;
     }
     return false;
 }
 static void CloseDrive() {
-    if(Drive) { DriveClose(Drive); Drive=NULL; }
+    if(DriveHandle) { DriveClose(DriveHandle); DriveHandle=NULL; }
 }
 static LONG AskDrive(DWORD code,void* in,DWORD inLength,void* out,DWORD outLength) {
     DriveIo io={0,0};
-    return DriveControl(Drive,NULL,NULL,NULL,&io,code,in,inLength,out,outLength);
+    return DriveControl(DriveHandle,NULL,NULL,NULL,&io,code,in,inLength,out,outLength);
 }
 static bool DriveState(netdisc::Status& status) {
     memset(&status,0,sizeof(status));
