@@ -132,6 +132,12 @@ int Stopped(const State& s, double ms) {
     return step<0 ? 0 : still ? step+1 : step;
 }
 
+int StopMs(const State& s, int i) {
+    int at=s.leadMs;
+    for(int k=0;k<=i && k<s.stepCount;++k) at+=s.steps[k].ms+(k ? s.pauseMs : 0);
+    return at;
+}
+
 const Seat* MySeat(const State& s) {
     for(int i=0;i<s.seatCount;++i) if(!strcmp(s.seats[i].address,s.address)) return &s.seats[i];
     return NULL;

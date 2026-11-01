@@ -52,6 +52,8 @@ int SpinMs(const State& s);
 double SpinAngle(const State& s, double ms, int* step, bool* stopped);
 // How many guests the wheel has stopped on ms into the spin.
 int Stopped(const State& s, double ms);
+// When the wheel stops for step i, in milliseconds into the spin.
+int StopMs(const State& s, int i);
 // This console's seat ("" address: none), and the team its first guest is on (-1: none).
 const Seat* MySeat(const State& s);
 int TeamOf(const State& s, const char* name);

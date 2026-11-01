@@ -594,6 +594,14 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 @keyframes reveal { from { opacity: 0; transform: translateY(6px) scale(.97); } }
 .wheel-box { display: flex; justify-content: center; margin: 4px 0 14px; }
 canvas.wheel { width: min(100%, 380px); aspect-ratio: 1; display: block; }
+.wheel-callout { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: -4px 0 14px; padding: 12px 16px; border-radius: 14px; background: var(--team, var(--accent)); color: #fff; text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
+.wheel-callout b { font-size: 30px; line-height: 1.1; overflow-wrap: anywhere; }
+.wheel-callout span { font-weight: 650; font-size: 17px; }
+.wheel-callout.waiting { background: var(--field); color: var(--muted); border: 1px dashed var(--line-strong); animation: none; }
+.wheel-callout.ready { color: var(--good); border-style: solid; }
+.wheel-callout.t4 { color: #1b1e22; }
+@keyframes callout-pop { from { transform: scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .wheel-callout { animation: none; } }
 .wheel-pick { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px; text-align: center; }
 .wheel-pick b { font-size: 26px; color: var(--accent-text); overflow-wrap: anywhere; }
 .raffle-empty { padding: 18px; border: 1px dashed var(--line-strong); border-radius: 10px; text-align: center; color: var(--muted); }
@@ -700,6 +708,12 @@ body.on-screen { overflow: hidden; }
 .screen-wait b { font-size: 14vh; line-height: 1; text-shadow: 0 4px 24px rgba(0,0,0,.6); }
 .screen-teams.stacked { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9em), 1fr)); }
 .screen-picked p { margin: 0; opacity: .85; }
+.screen-side { display: grid; gap: clamp(10px, 1.6vh, 20px); align-content: center; }
+.screen-callout { padding: .5em .8em; border-radius: .5em; background: var(--team-c, rgba(255,255,255,.12)); text-align: center; animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
+.screen-callout b { display: block; font-size: 2.6em; line-height: 1.05; overflow-wrap: anywhere; }
+.screen-callout span { font-size: 1.3em; font-weight: 650; }
+.screen-callout.waiting { animation: none; opacity: .85; }
+.screen-callout.t1 { --team-c: #e5483e; } .screen-callout.t2 { --team-c: #3f7fe6; } .screen-callout.t3 { --team-c: #2c9a2c; } .screen-callout.t4 { --team-c: #d9a400; color: #1b1e22; }
 .screen-picked h2 { margin: .2em 0 0; font-size: 3em; line-height: 1.05; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .screen-spin { grid-template-columns: 1fr; justify-items: center; } .screen-wheel canvas.wheel { width: min(86vw, 60vh); } }
 .screen-console { background: rgba(0,0,0,.34); border-radius: clamp(10px, 1vw, 22px); padding: clamp(12px, 1.2vw, 26px); border-left: clamp(5px, .45vw, 10px) solid var(--team, rgba(255,255,255,.4)); min-width: 0; }
@@ -2788,10 +2802,18 @@ Pages.party = root => {
     const status = wait ? 'The consoles open the wheel: it turns in ' + wait + ' s' : turning ? (sp.kind === 'teams' ? 'Spinning: ' + got.length + ' of ' + sp.wheel.length + ' on a team' : 'Spinning…') : sp.kind === 'teams' ? 'Round ' + (p.round + (S.party.drawn && S.party.drawn.kept ? 0 : 1)) + ': keep these, or spin again' : 'Picked';
     return [
       h('div.raffle-bar', h('span.muted', { 'aria-live': 'polite' }, status)),
-      h('div.wheel-box', wheel.el), result,
+      h('div.wheel-box', wheel.el), wheelCallout(sp, got, turning), result,
       !turning && d && d.note && sp.kind === 'teams' ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
       raffleButtons(p, turning, sp.kind === 'teams' && !turning ? d : null),
     ];
+  }
+  // The guest the wheel just stopped on, big in their team's colour; while it
+  // turns, who's next; once it's done, the teams are ready.
+  function wheelCallout(sp, got, turning) {
+    const at = spinAt(sp, spinNow(sp)), last = got.length ? got[got.length - 1] : null;
+    if (last && at.stopped && sp.kind === 'teams') return h('div.wheel-callout.' + Teams[last.team][1], h('b', last.name), h('span', 'joins Team ' + Teams[last.team][0] + '!'));
+    if (sp.kind !== 'teams') return null;
+    return h('div.wheel-callout.waiting' + (turning ? '' : '.ready'), h('span', turning ? (got.length ? 'Who’s next?' : 'Who’s first?') : 'The teams are ready!'));
   }
   function raffleButtons(p, busy, d) {
     const here = guestsHere(p), n = p.teams;
@@ -3080,7 +3102,7 @@ Pages.party = root => {
     guests.show(JSON.stringify(p.guests), () => drawGuests(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
-    const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp)] : null;
+    const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
     raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn]), () => drawSeats(p));
     start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
@@ -3159,8 +3181,17 @@ function raffleWheel(colours, onStep) {
     if (size && canvas.width !== Math.round(size * ratio)) { canvas.width = canvas.height = Math.round(size * ratio); }
     const ctx = canvas.getContext('2d'), c = colours(), ms = spinNow(spin), at = spinAt(spin, ms);
     const done = spinPicked(spin, ms);
-    if (done.length !== picked) { picked = done.length; if (onStep) onStep(); }
-    const W = canvas.width, r = W / 2 - W * 0.04, cx = W / 2, cy = W / 2 + W * 0.02, n = spin.wheel.length, w = 2 * Math.PI / n;
+    const W = canvas.width, r = W / 2 - W * 0.04, cx = W / 2 - W * 0.02, cy = W / 2, n = spin.wheel.length, w = 2 * Math.PI / n;
+    if (done.length !== picked) {
+      // A stop seen as it happens (not one long past): confetti from the pointer, in its team's colour; a shower after the last.
+      if (picked >= 0 && done.length > picked && ms - spinStopMs(spin, done.length - 1) < 1500) {
+        const last = done[done.length - 1], box = canvas.getBoundingClientRect(), c0 = colours();
+        confetti(box.left + box.width * (cx + r) / W, box.top + box.height / 2, last.team >= 0 ? [c0.teams[last.team], '#ffffff'] : [c0.pick, '#ffd23f', '#ffffff'], 70);
+        if (done.length === spin.steps.length) setTimeout(() => confetti(0, 0, spin.kind === 'teams' ? c0.teams.slice(0, spin.teams).concat('#ffffff') : ['#ffd23f', c0.pick, '#ffffff'], 180, true), 350);
+      }
+      picked = done.length;
+      if (onStep) onStep();
+    }
     ctx.clearRect(0, 0, W, W);
     const rot = at.angle * Math.PI / 180;
     // Its rim and shadow.
@@ -3189,15 +3220,15 @@ function raffleWheel(colours, onStep) {
       ctx.fillText(label, r - W * 0.035, 0);
       ctx.restore();
     }
-    // Pegs on the lines, the hub, and the pointer at the top.
+    // Pegs on the lines, the hub, and the pointer at the right, where the name it stops on reads level.
     for (let k = 0; k < n; k++) {
       const a = -Math.PI / 2 + rot + k * w;
       ctx.beginPath(); ctx.arc(cx + Math.cos(a) * (r + W * 0.002), cy + Math.sin(a) * (r + W * 0.002), W * 0.009, 0, 2 * Math.PI); ctx.fillStyle = '#fff'; ctx.fill();
     }
     ctx.beginPath(); ctx.arc(cx, cy, r * 0.16, 0, 2 * Math.PI); ctx.fillStyle = c.rim; ctx.fill();
     ctx.beginPath(); ctx.arc(cx, cy, r * 0.11, 0, 2 * Math.PI); ctx.fillStyle = '#fff'; ctx.fill();
-    const tip = cy - r + W * 0.045;
-    ctx.beginPath(); ctx.moveTo(cx, tip); ctx.lineTo(cx - W * 0.04, cy - r - W * 0.05); ctx.lineTo(cx + W * 0.04, cy - r - W * 0.05); ctx.closePath();
+    const tip = cx + r - W * 0.045;
+    ctx.beginPath(); ctx.moveTo(tip, cy); ctx.lineTo(cx + r + W * 0.05, cy - W * 0.04); ctx.lineTo(cx + r + W * 0.05, cy + W * 0.04); ctx.closePath();
     ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.4)'; ctx.shadowBlur = W * 0.012; ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
     ctx.strokeStyle = c.rim; ctx.lineWidth = W * 0.006; ctx.stroke();
     if (spinLive(spin)) frame = requestAnimationFrame(draw);
@@ -3210,6 +3241,38 @@ function raffleWheel(colours, onStep) {
       if (!frame) frame = requestAnimationFrame(draw);
     },
   };
+}
+// When the wheel stops for step i, in ms into the spin (as StopMs in party/state.cpp).
+function spinStopMs(spin, i) {
+  let at = spin.leadMs;
+  for (let k = 0; k <= i && k < spin.steps.length; k++) at += spin.steps[k].ms + (k ? spin.pauseMs : 0);
+  return at;
+}
+// Confetti over the page for a moment: a burst from (x, y), or (shower) falling from the top.
+function confetti(x, y, colours, count, shower) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const canvas = h('canvas', { 'aria-hidden': 'true', style: { position: 'fixed', inset: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: 60 } });
+  document.body.appendChild(canvas);
+  const ratio = window.devicePixelRatio || 1, W = innerWidth, H = innerHeight;
+  canvas.width = W * ratio; canvas.height = H * ratio;
+  const ctx = canvas.getContext('2d'), lasts = shower ? 4200 : 2300, start = performance.now();
+  ctx.scale(ratio, ratio);
+  const bits = Array.from({ length: count }, (_, i) => {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.6, v = 260 + Math.random() * 520;
+    return shower ? { x: Math.random() * W, y: -30 - Math.random() * H * 0.4, vx: 0, vy: 170 + Math.random() * 150, g: 0, sway: Math.random() * 6, spin: Math.random() * 6, turn: (Math.random() - 0.5) * 12, c: colours[i % colours.length], w: 8 + Math.random() * 6 }
+      : { x, y, vx: Math.cos(a) * v * 0.85, vy: Math.sin(a) * v, g: 820, sway: 0, spin: Math.random() * 6, turn: (Math.random() - 0.5) * 14, c: colours[i % colours.length], w: 8 + Math.random() * 6 };
+  });
+  (function frame(now) {
+    const t = (now - start) / 1000;
+    if (t * 1000 >= lasts || !canvas.isConnected) { canvas.remove(); return; }
+    ctx.clearRect(0, 0, W, H);
+    ctx.globalAlpha = t * 1000 > lasts - 600 ? (lasts - t * 1000) / 600 : 1;
+    for (const b of bits) {
+      const px = b.x + b.vx * t + (b.sway ? Math.sin(t * 2.5 + b.sway) * 28 : 0), py = b.y + b.vy * t + 0.5 * b.g * t * t;
+      ctx.save(); ctx.translate(px, py); ctx.rotate(b.spin + t * b.turn); ctx.fillStyle = b.c; ctx.fillRect(-b.w, -b.w * 0.4, b.w * 2, b.w * 0.8); ctx.restore();
+    }
+    requestAnimationFrame(frame);
+  })(start);
 }
 // The theme's wheel colours, from the element its CSS variables are set on.
 function wheelColours(el, onDark) {
@@ -3264,7 +3327,7 @@ function bigScreen(parent) {
       }
       fill(time, new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }), p.round || (p.drawn && p.drawn.teams.length) ? h('small', 'Round ' + (p.round + (p.drawn && p.drawn.teams.length && !p.drawn.kept ? 1 : 0))) : null);
       const got = sp ? spinPicked(sp, spinNow(sp)) : [];
-      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp), spinWait(sp)]]);
+      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp), spinWait(sp), spinAt(sp, spinNow(sp)).stopped]]);
       if (key === drawn) return;
       drawn = key;
       const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p);
@@ -3278,8 +3341,10 @@ function bigScreen(parent) {
           for (const g of got) teams[g.team].push(g.name);
           side = h('div.screen-teams.stacked', teams.map((team, i) => h('div.screen-team.' + Teams[i][1], h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))))));
         } else side = h('div.screen-picked', h('p', sp.title || (spinDone(sp) ? 'The wheel picked' : 'Who will it be?')), got.length ? h('h2', got[0].name) : null);
-        const wait = spinWait(sp);
-        return h('div.screen-spin', h('div.screen-wheel', wheel.el, wait ? h('div.screen-wait', h('small', 'Turns in'), h('b', wait)) : null), side);
+        const wait = spinWait(sp), at = spinAt(sp, spinNow(sp)), last = got.length ? got[got.length - 1] : null;
+        const callout = sp.kind === 'teams' ? (last && at.stopped ? h('div.screen-callout.' + Teams[last.team][1], h('b', last.name), h('span', 'joins Team ' + Teams[last.team][0] + '!'))
+          : h('div.screen-callout.waiting', h('span', spinDone(sp) ? 'The teams are ready!' : got.length ? 'Who’s next?' : 'Who’s first?'))) : null;
+        return h('div.screen-spin', h('div.screen-wheel', wheel.el, wait ? h('div.screen-wait', h('small', 'Turns in'), h('b', wait)) : null), h('div.screen-side', callout, side));
       };
       fill(body,
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,

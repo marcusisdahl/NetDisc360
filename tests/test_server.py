@@ -2805,7 +2805,7 @@ class Dashboard(ServerTest):
         before = 0
         for step in spin["steps"]:
             self.assertGreater(step["to"], before + 360)  # A whole turn at least.
-            under = (-step["to"]) % 360 / width
+            under = (90 - step["to"]) % 360 / width  # The pointer is at the right.
             self.assertGreater(under, step["segment"] + 0.19)
             self.assertLess(under, step["segment"] + 0.81)
             before = step["to"]
@@ -2822,7 +2822,7 @@ class Dashboard(ServerTest):
         self.assertEqual(self.spin_ask("127.0.0.2", 2), "ok\n")
         spin = self.json("GET", "/api/state")["party"]["spin"]
         self.assertEqual((spin["kind"], sorted(spin["wheel"]), len(spin["steps"]), spin["steps"][0]["team"]), ("pick", sorted(here), 1, -1))
-        self.assertEqual((spin["leadMs"], spin["pauseMs"], spin["totalMs"]), (1500, 1100, 1500 + spin["steps"][0]["ms"]))
+        self.assertEqual((spin["leadMs"], spin["pauseMs"], spin["totalMs"]), (1500, 2500, 1500 + spin["steps"][0]["ms"]))
         self.assertTrue(0 <= spin["elapsed"] < 5000, spin["elapsed"])
         self.check_landings(spin)
         self.assertIsNone(self.json("GET", "/api/state")["party"]["drawn"])  # A pick draws no teams.
@@ -2847,7 +2847,7 @@ class Dashboard(ServerTest):
         self.assertEqual([sorted(t) for t in picked], [sorted(t) for t in teams])
         self.assertEqual([s["team"] for s in spin["steps"]], [0, 1, 2, 0, 1, 2, 0])
         self.assertEqual(sorted(spin["wheel"][s["segment"]] for s in spin["steps"]), sorted(here))
-        self.assertEqual([s["ms"] for s in spin["steps"]], [5200] + [2800] * 6)
+        self.assertEqual([s["ms"] for s in spin["steps"]], [7500] + [4000] * 6)
         self.check_landings(spin)
         team_of = {n: i for i, t in enumerate(teams) for n in t}
         self.assertEqual(team_of["Ann"], team_of["Bob"])
@@ -2858,16 +2858,16 @@ class Dashboard(ServerTest):
         self.assertEqual(lines["party"], [["1", "Wheel night", "LAN party", "classic"]])
         self.assertEqual(lines["here"], [here])
         self.assertEqual(lines["wheel"], [spin["wheel"]])
-        self.assertEqual(lines["spin"][0][:2] + lines["spin"][0][3:], [str(spin["id"]), "teams", "1500", "1100", ""])
+        self.assertEqual(lines["spin"][0][:2] + lines["spin"][0][3:], [str(spin["id"]), "teams", "1500", "2500", ""])
         self.assertEqual([[int(s[0]), int(s[1]), float(s[2]), int(s[3])] for s in lines["step"]], [[s["segment"], s["team"], s["to"], s["ms"]] for s in spin["steps"]])
         self.assertEqual(lines["team"], teams)
         self.assertEqual([s[:2] for s in lines["seat"]], [["127.0.0.2", "Console 1"], ["10.10.1.42", "Console 2"]])
         self.assertEqual(lines["round"], [["1", "0"]])
         # NetDiscParty.xex reads the same (party/state.cpp), and turns its wheel as the server plans it.
-        moments = [0, 1499, 1500, 4000, 6699, 6700, 7000, 7799, 7800, 9000, spin["totalMs"] - 1, spin["totalMs"], spin["totalMs"] + 5000]
+        moments = [0, 1499, 1500, 4000, 8999, 9000, 10000, 11499, 11500, 13000, spin["totalMs"] - 1, spin["totalMs"], spin["totalMs"] + 5000]
         read = subprocess.run([build_party_parse()] + [str(m) for m in moments], input=text.encode("utf-8"), stdout=subprocess.PIPE, check=True).stdout.decode("utf-8")
         self.assertIn("valid 1\nversion %s\nconsole Console 1|127.0.0.2|1\nparty 1|Wheel night|LAN party\n" % lines["version"][0][0], read)
-        self.assertIn("spin %d|teams|1500|1100|%d\nwheel 7\nsteps 7\nteams 3\nseats 2\n" % (spin["id"], spin["totalMs"]), read)
+        self.assertIn("spin %d|teams|1500|2500|%d\nwheel 7\nsteps 7\nteams 3\nseats 2\n" % (spin["id"], spin["totalMs"]), read)
         mine = [n for n in lines["seat"][0][2:]]
         self.assertIn("mine Console 1|%d|%d\n" % (len(mine), team_of[mine[0]]), read)
         for line in read.splitlines():

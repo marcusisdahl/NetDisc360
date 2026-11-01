@@ -38,12 +38,13 @@ struct PartyGuest { std::string name; bool here; };
 // screen and NetDiscParty.xex on each console all show the same wheel at
 // the same time: each is told how far into the spin it is now.
 //
-// The wheel's names are its segments, clockwise from the pointer at the top
-// when the wheel hasn't turned. A step turns the wheel clockwise from where
+// The wheel's names are its segments, clockwise from the wheel's top when it
+// hasn't turned; the pointer is at the right (3 o'clock), so the name it
+// stops on reads level. A step turns the wheel clockwise from where
 // the step before left it (0 degrees at first) to to degrees, in ms
 // milliseconds, easing out as 1-(1-t)^3, and stops on segment, whose guest
-// joins team (-1 for a pick). Then the wheel rests for pauseMs before the
-// next step. The first step starts leadMs after the spin was asked for, so
+// joins team (-1 for a pick). Then the wheel rests for pauseMs (each screen
+// celebrates the guest it stopped on) before the next step. The first step starts leadMs after the spin was asked for, so
 // every screen hears of it before it moves.
 struct SpinStep { int segment; int team; double to; int ms; };
 struct Spin {
@@ -57,7 +58,7 @@ struct Spin {
     Spin() : id(0), teams(0), leadMs(0), pauseMs(0), at(0) {}
     int TotalMs() const;             // From the ask to the last stop.
 };
-enum { SpinLeadMs = 1500, SpinPauseMs = 1100, SpinFirstMs = 5200, SpinTitleMost = 64 };
+enum { SpinLeadMs = 1500, SpinPauseMs = 2500, SpinFirstMs = 7500, SpinTitleMost = 64 };
 
 struct Party {
     bool active;

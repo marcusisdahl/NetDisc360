@@ -2,8 +2,9 @@
 // NetDiscParty.xex's screen (see ui.h), laid out for a 1280x720 back buffer
 // inside the title-safe area, in the launcher's colours and font. The wheel
 // is drawn as the dashboard draws it (raffleWheel in web/index.html): the
-// guests' names round it, clockwise from the pointer at the top, each
-// segment taking its team's colour once the wheel stopped on it.
+// guests' names round it, clockwise from the wheel's top, the pointer at the
+// right where the name it stops on reads level, each segment taking its
+// team's colour once the wheel stopped on it, with confetti at each stop.
 #include "ui.h"
 #include "../third_party/imgui/imgui.h"
 #include "../third_party/fonts/roboto_medium_latin.h"
@@ -157,18 +158,48 @@ static void Wheel(ImVec2 c, float r, double angle, const Name* names, int count,
         ImU32 ink=t==-1 || t==3 ? Hex(Ink) : Hex(0xFFFFFF);
         RadialText(Names,c,-Pi/2+turn+(k+0.5f)*w,r-26,r*0.66f,ink,names[k]);
     }
-    // Pegs on the lines, the hub, and the pointer at the top.
+    // Pegs on the lines, the hub, and the pointer at the right.
     for(int k=0;k<count && count>1;++k) {
         float a=-Pi/2+turn+k*w;
         List->AddCircleFilled(ImVec2(c.x+(r+1)*cosf(a),c.y+(r+1)*sinf(a)),5,Hex(0xFFFFFF),12);
     }
     List->AddCircleFilled(c,r*0.16f,Hex(rim),48);
     List->AddCircleFilled(c,r*0.11f,Hex(0xFFFFFF),48);
-    const float tip=c.y-r+30, top=c.y-r-28;
-    List->AddTriangleFilled(ImVec2(c.x-24,top+4),ImVec2(c.x+24,top+4),ImVec2(c.x,tip+4),Hex(0x000000,90));
-    List->AddTriangleFilled(ImVec2(c.x-24,top),ImVec2(c.x+24,top),ImVec2(c.x,tip),Hex(0xFFFFFF));
-    List->AddTriangle(ImVec2(c.x-24,top),ImVec2(c.x+24,top),ImVec2(c.x,tip),Hex(rim),3);
+    const float tip=c.x+r-30, back=c.x+r+30;
+    List->AddTriangleFilled(ImVec2(back,c.y-24+4),ImVec2(back,c.y+24+4),ImVec2(tip,c.y+4),Hex(0x000000,90));
+    List->AddTriangleFilled(ImVec2(back,c.y-24),ImVec2(back,c.y+24),ImVec2(tip,c.y),Hex(0xFFFFFF));
+    List->AddTriangle(ImVec2(back,c.y-24),ImVec2(back,c.y+24),ImVec2(tip,c.y),Hex(rim),3);
 }
+
+// Confetti, ms after the moment it was thrown, from nothing to gone in
+// lastMs: from (x, y) in a burst, or (fromTop) falling across the screen.
+// The same seed throws the same pieces, so every frame (and every console)
+// draws them where the time says, with nothing kept between frames.
+static unsigned Random(unsigned& state) { state^=state<<13; state^=state>>17; state^=state<<5; return state; }
+static float Unit(unsigned& state) { return float(Random(state)%10000)/9999.0f; }
+static void Confetti(float x, float y, double ms, double lastMs, int count, unsigned seed, const unsigned* colours, int colourCount, bool fromTop) {
+    if(ms<0 || ms>=lastMs || colourCount<1) return;
+    const float t=float(ms/1000.0), fade=ms>lastMs-600 ? float((lastMs-ms)/600) : 1.f;
+    for(int i=0;i<count;++i) {
+        unsigned state=seed*2654435761u^unsigned(i+1)*40503u; if(!state) state=1;
+        Random(state); Random(state);
+        float px, py;
+        if(fromTop) {
+            px=Left+Unit(state)*(Right-Left); py=-30-Unit(state)*260;
+            px+=sinf(t*2.5f+Unit(state)*6)*28; py+=t*(170+Unit(state)*150);
+        } else {
+            float a=-Pi/2+(Unit(state)-0.5f)*2.6f, speed=260+Unit(state)*520;
+            px=x+cosf(a)*speed*t*0.85f; py=y+sinf(a)*speed*t+0.5f*820*t*t;
+        }
+        float spin=Unit(state)*6.3f+t*(Unit(state)-0.5f)*14, w=9+Unit(state)*6, h=4+Unit(state)*3;
+        float cs=cosf(spin), sn=sinf(spin);
+        ImVec2 corner[4];
+        static const float sx[4]={-1,1,1,-1}, sy[4]={-1,-1,1,1};
+        for(int k=0;k<4;++k) corner[k]=ImVec2(px+sx[k]*w*cs-sy[k]*h*sn,py+sx[k]*w*sn+sy[k]*h*cs);
+        List->AddQuadFilled(corner[0],corner[1],corner[2],corner[3],Hex(colours[i%colourCount],int(255*fade)));
+    }
+}
+static const double BurstMs=2300, PartyMs=4500;
 
 // A team's card: its colour on top, its name and who is on it.
 static void TeamCard(float x, float y, float w, float h, int t, const Name* names, int count, bool small) {
@@ -235,13 +266,16 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
         const int t=TeamOf(s,mine.names[i]);
         const bool asked=screen.asking==i, signedIn=p.controller>=0;
         Box(x,y,cw,ch,Hex(asked ? Raised : Card),16);
-        if(asked) List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(Mix(Raised,0xFFFFFF,0.35f+0.45f*pulse)),16,0,4);
+        // The team's colour across the top, its name in it, and round the card.
         if(t>=0) {
-            Box(x,y,cw,12,Hex(TeamFill[t]),6);
-            Text(Small,x+20,y+26,Hex(TeamText[t]),TeamName[t]);
+            Box(x,y,cw,56,Hex(TeamFill[t]),16);
+            Box(x,y+40,cw,16,Hex(TeamFill[t]));
+            List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(TeamFill[t]),16,0,3);
+            Text(Body,x+18,y+13,Hex(t==3 ? Ink : 0xFFFFFF),TeamName[t]);
         }
-        _snprintf_s(text,sizeof(text),_TRUNCATE,"Player %d",i+1);
-        TextRight(Small,x+cw-20,y+26,Hex(Muted),text);
+        if(asked) List->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),Hex(Mix(Raised,0xFFFFFF,0.35f+0.45f*pulse)),16,0,5);
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"P%d",i+1);
+        TextRight(Body,x+cw-18,y+13,Hex(t>=0 ? (t==3 ? Ink : 0xFFFFFF) : Muted,t>=0 ? 200 : 255),text);
         Ring(ImVec2(cx,y+130),52,p.controller,signedIn ? ButtonA : Dim,signedIn ? 1.f : 0.f);
         TextCentred(Heading,cx,y+204,cw-28,Hex(White),mine.names[i]);
         if(signedIn) {
@@ -364,18 +398,26 @@ void DrawUi(const Screen& screen) {
         else if(turning) _snprintf_s(text,sizeof(text),_TRUNCATE,"Spinning: %d of %d on a team",stopped,s.stepCount);
         else _snprintf_s(text,sizeof(text),_TRUNCATE,"Round %d: the teams are drawn",s.round>0 ? s.round : 1);
         Text(Body,px,py-6,Hex(Muted),text);
-        const int columns=teams>2 ? 2 : teams, rows=(teams+1)/2;
-        const float gap=16, cw=(pw-gap*(columns-1))/columns, top=py+38, ch=((Bottom-140)-top-gap*(rows-1))/rows;
-        for(int t=0;t<teams;++t) TeamCard(px+(t%2)*(cw+gap),top+(t/2)*(ch+gap),cw,ch,t,filled[t],sizes[t],rows>1);
-        // The guest just stopped on, under the wheel's pointer.
+        // The guest just stopped on, big in their team's colour, popping in;
+        // while it turns, who's next; once all are drawn, the teams are ready.
+        const float by=py+36, bh=124;
         if(step>=0 && landed>=0 && s.steps[step].team>=0) {
-            int t=s.steps[step].team;
-            _snprintf_s(text,sizeof(text),_TRUNCATE,"%s  >  %s",s.wheel[landed],TeamName[t]);
-            float tw=Width(Body,text)+40, tx=px, ty=Bottom-124;
-            if(tw>pw) tw=pw;
-            Box(tx,ty,tw,44,Hex(TeamFill[t]),22);
-            Text(Body,tx+20,ty+8,Hex(t==3 ? Ink : 0xFFFFFF),text);
+            const int t=s.steps[step].team;
+            const float age=float(screen.spinMs-StopMs(s,step)), pop=age<260 ? age/260 : 1.f, grow=(1-pop)*18;
+            Box(px-grow,by-grow*0.4f,pw+grow*2,bh+grow*0.8f,Hex(TeamFill[t]),18);
+            const ImU32 ink=Hex(t==3 ? Ink : 0xFFFFFF);
+            TextFit(Big,px+28,by+6,pw-56,ink,s.wheel[landed]);
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"joins %s!",TeamName[t]);
+            TextFit(Heading,px+30,by+80-6,pw-60,ink,text);
+        } else {
+            Box(px,by,pw,bh,Hex(Card),18);
+            List->AddRect(ImVec2(px,by),ImVec2(px+pw,by+bh),Hex(Raised),18,0,2);
+            if(turning) TextCentred(Heading,px+pw/2,by+bh/2-22,pw-48,Hex(Muted),stopped ? "Who's next?" : "Who's first?");
+            else TextCentred(Heading,px+pw/2,by+bh/2-22,pw-48,Hex(Green),"The teams are ready!");
         }
+        const int columns=teams>2 ? 2 : teams, rows=(teams+1)/2;
+        const float gap=16, cw=(pw-gap*(columns-1))/columns, top=by+bh+18, ch=((Bottom-74)-top-gap*(rows-1))/rows;
+        for(int t=0;t<teams;++t) TeamCard(px+(t%2)*(cw+gap),top+(t/2)*(ch+gap),cw,ch,t,filled[t],sizes[t],rows>1);
     } else if(s.round>0 && s.teamCount>0) {
         // Who plays on this console, and every team.
         const Seat* mine=MySeat(s);
@@ -418,6 +460,25 @@ void DrawUi(const Screen& screen) {
         }
     }
 
+    // Confetti over it all: a burst from the pointer at each stop, in the
+    // team's colours, and a shower once the last one stopped.
+    if(spin && live) {
+        const ImVec2 pointer(centre.x+radius+20,centre.y);
+        for(int i=0;i<stopped;++i) {
+            int t=s.steps[i].team;
+            unsigned colours[3]={t>=0 ? TeamFill[t] : Mix(accent,0xFFFFFF,0.3f),0xFFFFFF,t>=0 ? TeamText[t] : 0xF2C811};
+            Confetti(pointer.x,pointer.y,screen.spinMs-StopMs(s,i),BurstMs,46,s.spinId*31u+unsigned(i),colours,3,false);
+        }
+        if(stopped==s.stepCount) {
+            unsigned colours[6]={TeamFill[0],TeamFill[1],TeamFill[2],TeamFill[3],0xFFFFFF,Mix(accent,0xFFFFFF,0.3f)};
+            int count=!strcmp(s.kind,"pick") ? 6 : s.teams>=2 && s.teams<=TeamsMost ? s.teams : 4;
+            if(!strcmp(s.kind,"pick")) { colours[0]=0xF2C811; colours[1]=Mix(accent,0xFFFFFF,0.3f); colours[2]=0xFFFFFF; count=3; }
+            unsigned shown[6]; int n=0;
+            for(int k=0;k<count;++k) shown[n++]=colours[k];
+            shown[n++]=0xFFFFFF;
+            Confetti(0,0,screen.spinMs-StopMs(s,s.stepCount-1),PartyMs,150,s.spinId*7u+99u,shown,n,true);
+        }
+    }
     }
 
     // A word back from the server on the Gamemaster's last spin.

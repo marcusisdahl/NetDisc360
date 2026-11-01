@@ -514,8 +514,9 @@ namespace {
 SpinStep StepTo(const Spin& spin, double from, int segment, int team, int turns, int ms, std::mt19937& random) {
     double width=360.0/double(spin.wheel.size());
     double inside=0.2+0.6*double(random()%1000)/999.0;
-    // The wheel's point under the pointer is -angle (clockwise from the top).
-    double wanted=fmod(-(segment+inside)*width,360.0);
+    // The pointer is at the right (3 o'clock), where a name reads level: the
+    // wheel's point under it is 90-angle (clockwise from the wheel's top).
+    double wanted=fmod(90.0-(segment+inside)*width,360.0);
     if(wanted<0) wanted+=360;
     double now=fmod(from,360.0), ahead=wanted-now;
     if(ahead<0) ahead+=360;
@@ -542,7 +543,7 @@ void PlanTeamSpin(const std::vector<Team>& teams, unsigned seed, Spin& out) {
     for(size_t i=0;i<picks.size();++i) out.wheel.push_back(picks[i].first);
     Shuffle(out.wheel,random);
     // The first turn is the long one; then quicker, the more there are.
-    int each=picks.size()<=6 ? 3400 : picks.size()<=12 ? 2800 : 2200;
+    int each=picks.size()<=6 ? 4800 : picks.size()<=12 ? 4000 : 3200;
     double at=0;
     for(size_t i=0;i<picks.size();++i) {
         int segment=int(std::find(out.wheel.begin(),out.wheel.end(),picks[i].first)-out.wheel.begin());
@@ -561,7 +562,7 @@ void PlanPickSpin(const std::vector<std::string>& people, size_t picked, const s
     Shuffle(out.wheel,random);
     int segment=int(std::find(out.wheel.begin(),out.wheel.end(),chosen)-out.wheel.begin());
     if(out.wheel.empty()) return;
-    out.steps.push_back(StepTo(out,0,segment,-1,6,6500,random));
+    out.steps.push_back(StepTo(out,0,segment,-1,6,8500,random));
 }
 
 double SpinAngle(const Spin& spin, double ms, int* step, bool* stopped) {
