@@ -572,7 +572,7 @@ static void FindOwnFolder(HANDLE module) {
     const WCHAR* name=*(const WCHAR* const*)(entry+0x28);
     if(!bytes || !name || !MmIsAddressValid((void*)name) || !MmIsAddressValid((void*)((const BYTE*)name+bytes-1))) return;
     char path[MAX_PATH]; size_t length=0;
-    for(size_t i=0;i<bytes/2 && length+1<sizeof(path);++i) path[length++]=name[i]>0 && name[i]<128 ? char(name[i]) : '?';
+    for(size_t i=0;i<size_t(bytes/2) && length+1<sizeof(path);++i) path[length++]=name[i]>0 && name[i]<128 ? char(name[i]) : '?';
     path[length]=0;
     char* slash=strrchr(path,'\\');
     if(!slash || path[0]!='\\' || strchr(path,'?')) return; // Only a kernel path, like \Device\Mass0\NetDisc360.xex.
