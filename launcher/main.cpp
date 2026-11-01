@@ -1029,12 +1029,29 @@ static LocalChoice AskLocalCopy(const char* game,const char* local) {
 // Starts the installed copy as Aurora starts it from its own tile. True to
 // play from the server instead, when that didn't start and the player
 // pressed X.
+// A Games on Demand package isn't an XEX: XLaunchNewImage on it went to the
+// Xbox dashboard (seen on the console). xam's XamContentLaunchImageFromFileInternal
+// (ordinal 599) mounts the package and starts the XEX in it, as for a game
+// bought on Xbox Live; it too returns only when the start failed.
+typedef DWORD (__stdcall* LaunchFromPackage)(const char* path,const char* xex);
+static const DWORD LaunchFromPackageOrdinal=599;
 static bool StartLocal(const char* local) {
     char device[MAX_PATH]; DevicePath(local,device,sizeof(device));
     ClearLaunchData();
     ScreenStop();
-    Note("Starting %s",device);
-    Launch(device);
+    if(strstr(local,"\\Content\\")) {
+        HANDLE xam=NULL; void* address=NULL;
+        if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,LaunchFromPackageOrdinal,&address)>=0 && address) {
+            Note("Starting %s from the Games on Demand package %s",DiscXexName,device);
+            CloseLog();
+            DWORD result=LaunchFromPackage(address)(device,DiscXexName);
+            OpenLog(false);
+            Note("XamContentLaunchImageFromFileInternal returned %08X (%lu).",result,GetLastError());
+        } else Note("xam has no XamContentLaunchImageFromFileInternal.");
+    } else {
+        Note("Starting %s",device);
+        Launch(device);
+    }
     char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting %s failed (error %lu).",local,GetLastError());
     Fail(nia::StepStart,true,"The copy on this Xbox didn't start",line,"Start it from its own tile in Aurora, or play it from the PC.");
     bool network=ShowCard(false,"Back to Aurora","Play from the PC")==XINPUT_GAMEPAD_X;
