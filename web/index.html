@@ -253,10 +253,10 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
   position: relative; aspect-ratio: 0.705; border-radius: 9px; overflow: hidden; background: var(--hover);
   border: 1px solid var(--line); box-shadow: var(--shadow);
 }
-.cover img { position: absolute; top: 0; height: 100%; opacity: 0; transition: opacity .2s; }
-.cover img.box { right: 0; width: auto; }
-.cover img.front { left: 0; width: 100%; object-fit: cover; }
-.cover img.ready { opacity: 1; }
+.cover img, .thumb img { position: absolute; top: 0; height: 100%; opacity: 0; transition: opacity .2s; }
+.cover img.box, .thumb img.box { right: 0; width: auto; }
+.cover img.front, .thumb img.front { left: 0; width: 100%; object-fit: cover; }
+.cover img.ready, .thumb img.ready { opacity: 1; }
 .cover .art {
   position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px;
   background: linear-gradient(160deg, var(--a1), var(--a2)); color: #fff;
@@ -266,15 +266,6 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .cover .tag { position: absolute; left: 8px; top: 8px; z-index: 1; }
 .cover .now { position: absolute; left: 8px; bottom: 8px; right: 8px; z-index: 1; }
 .cover .now .pill { background: var(--play); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 100%; overflow: hidden; }
-.cover .start {
-  position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 38px; height: 38px; border-radius: 50%; border: 0; padding: 0;
-  display: grid; place-items: center; background: var(--accent); color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.35);
-  cursor: pointer; opacity: 0; transform: scale(.9); transition: opacity .15s, transform .15s;
-}
-.game:hover .cover .start, .game:focus-within .cover .start { opacity: 1; transform: none; }
-.cover .start:focus-visible { opacity: 1; outline: 2px solid #fff; outline-offset: 2px; }
-@media (hover: none) { .cover .start { opacity: 1; transform: none; } }
-.cover .now ~ .start { bottom: 40px; }
 .cover .tag { display: flex; gap: 4px; flex-wrap: wrap; }
 .kind.warn { background: var(--warn); color: var(--panel); }
 .console-live { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
@@ -302,7 +293,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .table .path { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .table .num { text-align: right; white-space: nowrap; }
 .thumb { width: 34px; height: 48px; border-radius: 5px; position: relative; overflow: hidden; background: var(--hover); flex: none; border: 1px solid var(--line); }
-.thumb .art { padding: 0; }
+.thumb .art { position: absolute; inset: 0; padding: 0; background: linear-gradient(160deg, var(--a1), var(--a2)); }
 .thumb .art .t, .thumb .art .ring { display: none; }
 .cell-name { display: flex; gap: 12px; align-items: center; font-weight: 600; }
 .kind-text { font-size: 12px; font-weight: 650; color: var(--muted); }
@@ -517,6 +508,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .t3 { --team: var(--team3); --team-text: var(--team3-text); }
 .t4 { --team: var(--team4); --team-text: var(--team4-text); }
 .party-card { overflow: hidden; }
+.party > .party-card { margin-bottom: 16px; }
 .party-banner { position: relative; overflow: hidden; display: flex; align-items: center; gap: 16px; padding: 22px; min-height: 112px; color: #fff; background: linear-gradient(120deg, var(--deep1), var(--deep2)); }
 .party-banner .ring { position: absolute; border-radius: 50%; border: 18px solid var(--p2); opacity: .22; pointer-events: none; width: 230px; height: 230px; right: -70px; top: -100px; }
 .party-banner .ring.b { width: 120px; height: 120px; right: 150px; top: auto; bottom: -76px; border-width: 12px; opacity: .14; }
@@ -724,6 +716,136 @@ body.on-screen { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .teams.reveal .team { animation: none; }
   .screen-bg img { transition: none; }
+}
+
+/* Play buttons and menus */
+.btn.play-btn { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); min-width: 0; }
+.btn.play-btn:hover { background: var(--accent); color: var(--on-accent); }
+.btn.play-btn span { overflow: hidden; text-overflow: ellipsis; }
+.btn.play-btn.block { display: flex; width: 100%; margin-top: auto; }
+.covers .game { display: flex; flex-direction: column; }
+.covers .game .meta { margin-bottom: 8px; }
+.play-col { width: 1%; text-align: right; white-space: nowrap; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.menu { position: absolute; z-index: 70; min-width: 230px; max-width: min(340px, calc(100vw - 16px)); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-pop); padding: 6px; }
+.menu-head { padding: 6px 10px 6px; font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: none; text-align: left; cursor: pointer; color: var(--text); font: inherit; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--hover); outline: none; }
+.menu-item .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.menu-item b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item .sub { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item > .i { color: var(--muted); }
+.menu-item.danger, .menu-item.danger > .i { color: var(--bad); }
+.menu-item.muted b { color: var(--muted); font-weight: 550; }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.dot.off { background: var(--faint); }
+
+/* A game's details: where it plays first */
+.detail-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.play-on-head { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+.play-on-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.play-console { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); cursor: pointer; text-align: left; font: inherit; }
+.play-console:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.play-console:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.play-console:disabled { opacity: .6; cursor: default; }
+.play-console.off { background: var(--panel); color: var(--text); border-color: var(--line-strong); }
+.play-console.off:hover { background: var(--hover); }
+.play-console .pc-icon { width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 255, 255, .2); display: grid; place-items: center; flex: none; }
+.play-console.off .pc-icon { background: var(--hover); color: var(--muted); }
+.play-console .grow { display: flex; flex-direction: column; min-width: 0; }
+.play-console b { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.play-console .sub { font-size: 12px; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.play-on.none { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 10px; background: var(--hover); color: var(--muted); font-size: 13px; }
+.play-on.none .i { margin-top: 2px; }
+
+/* Consoles: the list, and each one's page */
+.console-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
+a.console { color: inherit; text-decoration: none !important; cursor: pointer; transition: border-color .12s; }
+a.console:hover { border-color: var(--accent); }
+a.console:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.console-foot { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.console-foot .stat { display: inline-flex; align-items: center; gap: 5px; }
+.console-foot b { color: var(--text); font-weight: 600; }
+.console-foot .open { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; color: var(--accent-text); font-weight: 600; }
+.back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 550; font-size: 13px; margin: -6px 0 12px; }
+.back:hover { color: var(--text); text-decoration: none; }
+.con-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.con-icon { width: 54px; height: 54px; border-radius: 14px; display: grid; place-items: center; background: var(--hover); color: var(--muted); flex: none; }
+.con-icon .i { width: 26px; height: 26px; }
+.con-icon.on { background: var(--good-soft); color: var(--good); }
+.con-icon.playing { background: var(--play-soft); color: var(--play); }
+.con-title { flex: 1 1 260px; min-width: 0; }
+.con-title h1 { font-size: 24px; font-weight: 650; letter-spacing: -.02em; margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.con-title h1 .ip { font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+.con-title p { margin: 3px 0 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.con-title p b { color: var(--text); font-weight: 600; }
+.con-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.con-tabs { margin-bottom: 18px; max-width: 100%; overflow-x: auto; }
+.segmented a { border: 0; background: transparent; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--muted); font-weight: 550; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; text-decoration: none !important; }
+.segmented a:hover { color: var(--text); }
+.segmented a.on { background: var(--accent-soft); color: var(--accent-text); }
+.chart-wrap.small { height: 170px; }
+.con-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.con-facts .fact .v { white-space: normal; overflow-wrap: anywhere; }
+.badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.badges:empty { display: none; }
+.badges .pill { height: 20px; font-size: 11.5px; padding: 0 7px; gap: 4px; }
+.badges .pill .i { width: 12px; height: 12px; }
+.pill.tiny { height: 18px; padding: 0 7px; font-size: 11px; margin-left: 8px; vertical-align: 1px; }
+.btn.icon.small { width: 28px; }
+
+/* Set up this console */
+.plug-list { display: flex; flex-direction: column; gap: 6px; }
+.plug { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; min-width: 0; }
+.plug .n { width: 26px; height: 26px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+.plug .grow { flex: 1; min-width: 0; }
+.plug .grow b { font-weight: 600; }
+.plug .grow .sub { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.plug.empty { border-style: dashed; color: var(--faint); }
+.plug.empty .n { background: var(--hover); color: var(--faint); }
+.plug .tools { display: flex; gap: 2px; flex: none; }
+.more-plugins { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.plan { margin-top: 16px; }
+.plan h3 { font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
+.plan h3:first-child { margin-top: 0; }
+.ini-text { max-height: 340px; overflow: auto; margin: 0; padding: 10px 12px; background: var(--field); border: 1px solid var(--line); border-radius: 8px; font: 12.5px/1.55 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; white-space: pre; }
+.ini-text span { display: block; }
+.ini-text .add { background: var(--good-soft); color: var(--good); }
+.ini-text .del { background: var(--bad-soft); color: var(--bad); }
+.copies-list { margin: 0; padding-left: 18px; font-size: 13px; }
+.copies-list li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* Play a game */
+.pick-list { display: flex; flex-direction: column; gap: 4px; max-height: min(60vh, 520px); overflow: auto; margin: 0 -6px; padding: 0 6px; }
+.pick-game { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 10px; border: 1px solid transparent; border-radius: 9px; background: none; text-align: left; cursor: pointer; color: var(--text); font: inherit; }
+.pick-game:hover, .pick-game:focus-visible { background: var(--hover); border-color: var(--line); outline: none; }
+.pick-game .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pick-game b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-game .sub { color: var(--muted); font-size: 12.5px; }
+.pick-game > .i { color: var(--accent-text); }
+
+/* The consoles under Consoles in the sidebar */
+.nav-sub { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 19px; padding-left: 10px; border-left: 1px solid var(--line); }
+.nav-sub:empty { display: none; }
+.nav .nav-sub a { gap: 9px; padding: 5px 8px; font-size: 13px; font-weight: 500; min-width: 0; }
+.nav .nav-sub a span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav .nav-sub .dot { width: 7px; height: 7px; box-shadow: none; }
+
+/* The LAN party's Start on all, at its top */
+.start-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; align-items: start; }
+.start-body > * { grid-column: 1; }
+.start-body > .party-buttons { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; justify-content: flex-end; max-width: 330px; }
+.start-body .start-pick { max-width: 560px; }
+@media (max-width: 1100px) {
+  .start-body { display: block; }
+  .start-body > .party-buttons { margin-top: 14px; max-width: none; justify-content: flex-start; }
+}
+@media (max-width: 860px) {
+  .console-grid { grid-template-columns: minmax(0, 1fr); }
+  .con-head .actions { width: 100%; }
+  .con-facts { grid-template-columns: minmax(0, 1fr); }
+  .plug { flex-wrap: wrap; }
+  .plug .tools { margin-left: 38px; }
 }
 
 @media (max-width: 1100px) {
@@ -955,7 +1077,7 @@ async function refresh() {
     if (said) { store('restarted', ''); toast(said); }
     // Where the server can't ask GitHub (Docker), this browser does, for the "New" in the sidebar.
     if (!U && !S.update.checks && S.settings.updateCheck && !refresh.asked) { refresh.asked = true; loadUpdate(false).then(() => updateFrame()).catch(() => {}); }
-    if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || page === 'party' || !G.games.length)) {
+    if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || page === 'party' || page === 'consoles' || !G.games.length)) {
       const g = await api('games');
       if (g.version !== G.version) { G = g; if (view && view.games) view.games(); }
     }
@@ -983,7 +1105,7 @@ function playing() {
 
 // The frame: sidebar, top bar on small screens, and the page.
 function frame() {
-  const nav = Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon), h('span', label), h('span.count')));
+  const nav = Nav.map(([id, label, icon]) => [h('a', { href: '#' + id, 'data-page': id }, ic(icon), h('span', label), h('span.count')), id === 'consoles' ? h('div.nav-sub#nav-consoles') : null]);
   fill($('#app'),
     h('aside.side',
       h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
@@ -1012,9 +1134,9 @@ function updateFrame(problem) {
   const bar = $('#offline');
   if (bar) { bar.classList.toggle('hidden', !problem); if (problem) fill($('span', bar), problem); }
   if (!S) return;
-  const online = S.consoles.filter(c => c.connections > 0).length;
+  const online = S.consoles.filter(consoleOn).length, playingNow = S.consoles.filter(c => c.playing).length;
   const counts = { games: S.library.games, consoles: S.consoles.length ? online + '/' + S.consoles.length : '', folders: S.folders.length };
-  for (const a of document.querySelectorAll('.nav a')) {
+  for (const a of document.querySelectorAll('.nav a[data-page]')) {
     const n = counts[a.dataset.page];
     const tus = S.titleUpdates ? S.titleUpdates.mismatches : 0;
     if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
@@ -1023,10 +1145,26 @@ function updateFrame(problem) {
     else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else fill($('.count', a), n === undefined || n === '' ? '' : n);
   }
+  consoleLinks();
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
-  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc360';
+  document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (playingNow ? '\u25b6 ' : '') + 'NetDisc360';
+}
+
+// The consoles under Consoles in the sidebar (up to 8), each to its own page.
+function consoleLinks() {
+  const box = $('#nav-consoles');
+  if (!box || !S) return;
+  const list = S.consoles.length <= 8 ? S.consoles.slice().sort((a, b) => cName(a).localeCompare(cName(b), undefined, { numeric: true, sensitivity: 'base' })) : [];
+  const key = JSON.stringify(list.map(c => [c.address, cName(c), consoleStatus(c).dot]));
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    fill(box, list.map(c => h('a', { href: consoleHref(c.address), 'data-console': c.address, title: c.name ? c.name + ' (' + c.address + ')' : c.address },
+      h('span.dot.' + (consoleStatus(c).dot || 'off')), h('span', cName(c)))));
+  }
+  const at = location.hash.match(/^#consoles\/([^/]+)/), open = at ? decodeURIComponent(at[1]) : '';
+  for (const a of box.children) { a.classList.toggle('on', a.dataset.console === open); a.setAttribute('aria-current', a.dataset.console === open ? 'page' : 'false'); }
 }
 
 function route() {
@@ -1034,6 +1172,7 @@ function route() {
   const id = (location.hash.slice(1) || 'dashboard').split('/')[0];
   const next = Pages[id] ? id : 'dashboard';
   for (const a of document.querySelectorAll('[data-page]')) a.classList.toggle('on', a.dataset.page === next);
+  consoleLinks();
   const shown = $('.topbar a.on');
   if (shown && shown.parentNode.scrollWidth > shown.parentNode.clientWidth) shown.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (next === page && view) { if (view.route) view.route(); return; }
@@ -1180,27 +1319,30 @@ function pingText(c) {
 // Settings, Console Name), or its address while that isn't known.
 const cName = c => c.name || c.address;
 const nameOf = ip => { const c = S && S.consoles.find(x => x.address === ip); return c ? cName(c) : ip; };
-function consoleCard(c, index, wide) {
+// The server's text, with the consoles' names for their addresses.
+function named(text) {
+  for (const c of S ? S.consoles : []) if (c.name) text = text.replace(new RegExp('(^|[^\\d.])' + c.address.replace(/\./g, '\\.') + '(?!\\d)', 'g'), '$1' + c.name);
+  return text;
+}
+function consoleCard(c, index, foot) {
   const st = consoleStatus(c);
   const now = c.rate.length ? c.rate[c.rate.length - 1] : 0;
   const canvas = h('canvas');
-  const card = h('div.console' + (st.cls ? '.' + st.cls : ''),
+  const card = h('a.console' + (st.cls ? '.' + st.cls : ''), { href: consoleHref(c.address), 'aria-label': cName(c) + ', ' + st.text },
     h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
     h('div.name', h('span', { title: c.name ? c.name + ' (' + c.address + ')' : c.address }, cName(c), c.name ? h('span.ip', c.address) : null), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
     h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
-    h('div.what', c.mounted ? [c.playing ? 'Playing ' : 'Last played ', h('b', c.mounted)] : c.connections > 0 ? 'In Aurora, no disc mounted' : c.answers ? 'On; NetISO hasn\u2019t connected yet' : 'Nothing mounted'));
-  if (wide) {
-    const [ftp, tone] = ftpText(c), [ping, pingTone] = pingText(c);
-    card.classList.add('console-wide');
-    card.appendChild(h('div.console-facts',
-      fact('Sent since start', bytes(c.sent)),
-      fact('Ping', ping, pingTone),
-      fact('Aurora\u2019s FTP', ftp, tone),
-      fact('Game folders updated', c.synced ? ago(c.synced) : c.push && S.settings.push ? 'Not yet' : '\u2014'),
-      fact('Last connected', c.connections > 0 ? 'Now' : c.seen ? ago(c.seen) : 'Not yet')));
-    // Its last five events, newest first.
-    if (c.events && c.events.length) card.appendChild(h('div.console-events', h('h3', 'Recent activity'),
-      h('ul.events', c.events.slice().reverse().map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))))));
+    h('div.what', consoleWhat(c)));
+  if (foot) {
+    const l = liveStatus(c, () => { if (page === 'consoles' && view && view.update) view.update(); }), d = l && l.data;
+    const [ping] = pingText(c), [ftp] = ftpText(c), t = d && d.temperature;
+    const signed = d && Array.isArray(d.profiles) ? d.profiles.filter(p => p.signedin).map(p => p.gamertag) : [];
+    card.appendChild(h('div.console-foot',
+      h('span.stat', { title: 'Ping' }, ic('radar', 'sm'), h('b', ping)),
+      h('span.stat', { title: 'Aurora\u2019s FTP server' }, ic('folder-sync', 'sm'), 'FTP ', h('b', ftp.toLowerCase())),
+      t && typeof t.cpu === 'number' ? h('span.stat', { title: 'Processor temperature' }, ic('thermometer', 'sm'), h('b', Math.round(t.cpu) + (t.celsius === false ? '\u00b0F' : '\u00b0C'))) : null,
+      signed.length ? h('span.stat', { title: 'Signed in' }, ic('user', 'sm'), h('b', signed.join(', '))) : null,
+      h('span.open', 'Open', ic('chevron-right', 'sm'))));
   }
   requestAnimationFrame(() => { if (canvas.isConnected) spark(canvas, c.rate, seriesColor(index)); });
   return card;
@@ -1215,7 +1357,7 @@ Pages.dashboard = root => {
   const open = h('div'), news = h('div'), copies = h('div'), updates = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
   const consoles = h('div.consoles'), events = h('ul.events');
   root.append(
-    header('Dashboard', null),
+    header('Dashboard', null, h('button.btn.primary', { onclick: () => pickGame(null) }, ic('play', 'sm'), 'Play a game')),
     h('div.stack', open, news, copies, updates, setup, tiles,
       h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
         h('div.card-body', chartWrap, legend)),
@@ -1260,11 +1402,11 @@ Pages.dashboard = root => {
         h('div', h('h2', all ? 'All set! Your games are on their way to Aurora.' : 'Get started'), h('p.lead', all ? 'New games you put in your folders show up in Aurora by themselves.' : 'Three steps, and your games show up in Aurora like installed games.')),
         h('div', h('button.btn' + (all ? '.primary' : '.ghost') + '.small', { onclick: () => save({ setupDone: true }, 'Setup steps hidden') }, all ? 'Done' : 'Hide')),
         h('div.steps', steps.map((s, i) => h('div.step' + (s.done ? '.done' : ''), h('div.n', s.done ? ic('check', 'sm') : String(i + 1)), h('div.t', s.t), h('div.d', s.d), s.done ? null : s.a)))));
-      const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.playing);
+      const online = S.consoles.filter(consoleOn), playingNow = S.consoles.filter(c => c.playing);
       const missing = S.folders.filter(f => !f.found || f.emptied).length;
       fill(tiles,
         tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
-        tile('monitor', 'Consoles connected', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
+        tile('monitor', 'Consoles on', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
         tile('gauge', 'Streaming now', rate(S.totals.rate), 'peak ' + rate(S.totals.peak)),
         tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
       const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
@@ -1274,7 +1416,7 @@ Pages.dashboard = root => {
       fill(consoles, sorted.length ? sorted.map(x => consoleCard(x.c, x.i)) :
         h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to ', h('code', (S.addresses[0] || 'this computer') + ':' + S.ports.netiso), '.')));
       const recent = S.events.slice(-12).reverse();
-      fill(events, recent.length ? recent.map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))) : h('li.muted', 'Nothing yet.'));
+      fill(events, recent.length ? recent.map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', named(e.text)), h('span.when', clock(e.time)))) : h('li.muted', 'Nothing yet.'));
     },
   };
 };
@@ -1308,7 +1450,7 @@ Pages.games = root => {
     };
     games.sort(sorts[sort] || byName);
     const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers'),
-      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join() + '/' + !!g.tuMismatch), S ? S.consoles.map(c => c.address + (c.playing ? '+' : '')) : []]);
+      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join() + '/' + !!g.tuMismatch), S ? S.consoles.map(c => c.address + '=' + c.name + (c.playing ? '+' + c.mounted : '') + (consoleOn(c) ? '' : '-')) : []]);
     if (key === drawn) return;
     drawn = key;
     const total = G.games.reduce((n, g) => n + g.size, 0);
@@ -1325,24 +1467,23 @@ Pages.games = root => {
         c.append(h('div.tag', h('span.kind', KindNames[g.kind]), g.incomplete ? h('span.kind.warn', { title: 'Cut off: a download or copy that stopped' }, 'Incomplete') : null,
           g.tuMismatch ? h('span.kind.warn', { title: 'Different Title Updates: the consoles run different title updates of it' }, 'Different TUs') : null));
         if (on) c.append(h('div.now', { title: 'Playing on ' + on.join(', ') }, h('span.pill', ic('play', 'sm'), on.length > 1 ? plural(on.length, 'console') : on[0])));
-        const start = startButton(g, 'button.start');
-        if (start) c.append(start);
         return h('div.game', { tabindex: 0, onclick: () => details(g), onkeydown: e => { if (e.key === 'Enter') details(g); } }, c, h('div.name', { title: g.name }, g.name),
-          h('div.meta', (sort === 'recent' || sort === 'played') ? playedText(g, true) : [g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : '']));
+          h('div.meta', (sort === 'recent' || sort === 'played') ? playedText(g, true) : [g.sizeKnown ? bytes(g.size) : 'Counting\u2026', g.disc > 1 ? ' \u00b7 Disc ' + g.disc : '']), playButton(g, true));
       })));
     } else {
       fill(list, h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
-        h('thead', h('tr', h('th', 'Game'), h('th', 'Format'), h('th.hide-narrow', 'Title ID'), h('th.num', 'Size'), h('th.hide-narrow', 'Where'))),
+        h('thead', h('tr', h('th', 'Game'), h('th', 'Format'), h('th.hide-narrow', 'Title ID'), h('th.num', 'Size'), h('th.hide-narrow', 'Where'), h('th.play-col', h('span.sr', 'Play')))),
         h('tbody', games.map(g => {
           const on = now[g.name.toLowerCase()];
           return h('tr.click', { onclick: () => details(g) },
             h('td', h('div.cell-name', cover(g, true), h('div', { style: { flex: 1 } }, g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null,
               g.incomplete ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Incomplete')) : null,
-              g.tuMismatch ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Different Title Updates')) : null), startButton(g, 'button.btn.small'))),
+              g.tuMismatch ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Different Title Updates')) : null))),
             h('td', h('span.kind-text', KindNames[g.kind])),
             h('td.hide-narrow.mono', g.titleId || '\u2014'),
             h('td.num', g.sizeKnown ? bytes(g.size) : '\u2026'),
-            h('td.hide-narrow.path', g.path));
+            h('td.hide-narrow.path', g.path),
+            h('td.play-col', playButton(g)));
         })))));
     }
     // Games there more than once: the open ones first, above the list.
@@ -1415,54 +1556,95 @@ function playable(g) {
   return S ? S.consoles.filter(c => (g.tiles || []).includes(c.address) || (g.installedOn || []).includes(c.address)) : [];
 }
 
-// A Start button for a game a console has: one console starts it there,
-// several open its details to pick one.
-function startButton(g, tag) {
+// A game's Play button: it starts the game on the one console that has it,
+// or opens a menu of the consoles that do. block: the one under a cover.
+function playButton(g, block) {
   const consoles = playable(g);
   if (!consoles.length) return null;
-  const title = consoles.length === 1 ? 'Start on ' + consoles[0].address : 'Start on a console';
-  const round = tag.includes('.start');
-  return h(tag, { title, 'aria-label': title + ': ' + g.name, onclick: e => {
-    e.stopPropagation();
-    if (consoles.length === 1) playOn(g, consoles[0], e.currentTarget); else details(g);
-  }, onkeydown: e => e.stopPropagation() }, ic('play', 'sm'), round ? null : 'Start');
+  const one = consoles.length === 1 ? consoles[0] : null;
+  const title = one ? 'Start ' + g.name + ' on ' + cName(one) + (one.name ? ' (' + one.address + ')' : '') : 'Start ' + g.name + ' on a console';
+  return h('button.btn.small.play-btn' + (block ? '.block' : ''), { title, 'aria-label': title, 'aria-haspopup': one ? null : 'menu',
+    onclick: e => { e.stopPropagation(); if (one) playOn(g, one, e.currentTarget); else playMenu(g, e.currentTarget, consoles); },
+    onkeydown: e => e.stopPropagation() }, ic('play', 'sm'), h('span', one ? 'Play on ' + cName(one) : 'Play'), one ? null : ic('chevron-down', 'sm'));
 }
+function playMenu(g, anchor, consoles) {
+  openMenu(anchor, 'Play ' + g.name + ' on', consoles.map(c => {
+    const st = consoleStatus(c), on = consoleOn(c);
+    const here = c.playing && c.mounted.toLowerCase() === g.name.toLowerCase();
+    return { dot: st.dot || 'off', label: cName(c), sub: here ? 'Playing it now' : c.playing ? 'Playing ' + c.mounted : on ? st.text : 'Off', muted: !on, run: () => playOn(g, c, anchor) };
+  }));
+}
+
+// A small menu under a button: items {label, sub, icon or dot, danger, muted, run}.
+const Menu = { el: null, anchor: null };
+function openMenu(anchor, title, items) {
+  const again = Menu.anchor === anchor && Menu.el;
+  closeMenu();
+  if (again) return;  // A second tap on its button closes it.
+  const menu = h('div.menu', { role: 'menu', 'aria-label': title }, title ? h('div.menu-head', title) : null,
+    items.map(x => x === '-' ? h('div.menu-sep') : h('button.menu-item' + (x.danger ? '.danger' : '') + (x.muted ? '.muted' : ''), { role: 'menuitem', onclick: () => { const a = Menu.anchor; closeMenu(); if (a) a.focus(); x.run(); } },
+      x.dot ? h('span.dot.' + x.dot) : x.icon ? ic(x.icon, 'sm') : null, h('span.grow', h('b', x.label), x.sub ? h('span.sub', x.sub) : null))));
+  menu.addEventListener('keydown', e => {
+    const list = [...menu.querySelectorAll('.menu-item')], at = list.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); list[(at + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length].focus(); }
+    if (e.key === 'Tab') closeMenu();
+  });
+  document.body.appendChild(menu);
+  Menu.el = menu; Menu.anchor = anchor;
+  const r = anchor.getBoundingClientRect(), w = menu.offsetWidth, hgt = menu.offsetHeight;
+  menu.style.left = Math.max(8, Math.min(r.right - w > 8 && r.left + w > innerWidth - 8 ? r.right - w : r.left, innerWidth - w - 8)) + scrollX + 'px';
+  menu.style.top = (r.bottom + 6 + hgt > innerHeight - 8 && r.top - hgt - 6 > 8 ? r.top - hgt - 6 : r.bottom + 6) + scrollY + 'px';
+  const first = menu.querySelector('.menu-item');
+  if (first) first.focus();
+}
+function closeMenu() { if (Menu.el) Menu.el.remove(); Menu.el = null; Menu.anchor = null; }
+document.addEventListener('mousedown', e => { if (Menu.el && !Menu.el.contains(e.target) && !(Menu.anchor && Menu.anchor.contains(e.target))) closeMenu(); });
+document.addEventListener('keydown', e => { if (Menu.el && e.key === 'Escape') { e.stopPropagation(); const a = Menu.anchor; closeMenu(); if (a) a.focus(); } }, true);
+window.addEventListener('hashchange', closeMenu);
+window.addEventListener('resize', closeMenu);
 
 async function playOn(g, c, button) {
   if (c.playing && !(await confirmBox('Start ' + g.name + '?', [h('p', { style: { margin: 0 } }, cName(c) + ' is playing ', h('b', c.mounted), '. Starting ', h('b', g.name), ' quits it.')], 'Start ' + g.name))) return;
-  button.disabled = true;
+  if (button) button.disabled = true;
   try { await api('play', { game: g.name, console: c.address }); toast(g.name + ' is starting on ' + cName(c)); }
   catch (e) { toast(e.message, true); }
-  button.disabled = false;
+  if (button) button.disabled = false;
 }
 
 function details(g) {
   const on = playing()[g.name.toLowerCase()];
   const folder = S && S.folders[g.folder];
   const consoles = playable(g);
+  // First thing: where it can be started.
+  const play = consoles.length ? h('div.play-on', h('div.play-on-head', 'Play it on'),
+    h('div.play-on-list', consoles.map(c => {
+      const st = consoleStatus(c), here = c.playing && c.mounted.toLowerCase() === g.name.toLowerCase();
+      return h('button.play-console' + (consoleOn(c) ? '' : '.off'), { title: 'Start ' + g.name + ' on ' + cName(c) + ' (' + c.address + ')', onclick: e => playOn(g, c, e.currentTarget) },
+        h('span.pc-icon', ic('play', 'sm')), h('span.grow', h('b', cName(c)), h('span.sub', here ? 'Playing it now' : c.playing ? 'Playing ' + c.mounted : consoleOn(c) ? st.text : 'Off')));
+    })))
+    : h('div.play-on.none', ic('info', 'sm'), h('span', S && S.consoles.length ? 'None of your consoles has it in Aurora yet, so it can’t be started from here. NetDisc360 adds it over Aurora’s FTP server while Aurora is on screen.' : 'Once a console has connected, you can start it from here.'));
   modal(g.name, close => [
     h('div.modal-body', h('div.detail',
       h('div.detail-cover', cover(g)),
-      h('div.facts',
-        h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', god: 'Games on Demand package' }[g.kind] || g.kind),
-        h('div.k', 'Size'), h('div.v', g.sizeKnown ? bytes(g.size, 2) : 'Counting\u2026'),
-        h('div.k', 'Title ID'), h('div.v.mono', g.titleId || 'Not known'),
-        g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
-        h('div.k', 'Playing'), h('div.v', on ? on.join(', ') : 'Not now'),
-        h('div.k', 'Played'), h('div.v', playedText(g)),
-        g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
-        titleUpdateFacts(g),
-        g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.join(', ') + (g.tiles && g.tiles.length ? ' (its NetISO tile asks which copy to play)' : ' (no tile there: Aurora lists the installed copy)'))] : null,
-        h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
-        h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path),
-        consoles.length ? [h('div.k', 'Start on'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-          consoles.map(c => h('button.btn.small', { title: c.address, onclick: e => playOn(g, c, e.currentTarget) }, ic('play', 'sm'), cName(c))))] : null,
-        g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-          g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + a, onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? a : 'netiso.log')))] : null))),
+      h('div.detail-main', play,
+        h('div.facts',
+          h('div.k', 'Format'), h('div.v', { folder: 'Extracted game (folder)', iso: 'ISO disc image', god: 'Games on Demand package' }[g.kind] || g.kind),
+          h('div.k', 'Size'), h('div.v', g.sizeKnown ? bytes(g.size, 2) : 'Counting…'),
+          h('div.k', 'Title ID'), h('div.v.mono', g.titleId || 'Not known'),
+          g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
+          h('div.k', 'Playing'), h('div.v', on ? on.map(nameOf).join(', ') : 'Not now'),
+          h('div.k', 'Played'), h('div.v', playedText(g)),
+          g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
+          titleUpdateFacts(g),
+          g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.map(nameOf).join(', ') + (g.tiles && g.tiles.length ? ' (its NetISO tile asks which copy to play)' : ' (no tile there: Aurora lists the installed copy)'))] : null,
+          h('div.k', 'In folder'), h('div.v', folder ? folder.path : '—'),
+          h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path),
+          g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+            g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + nameOf(a), onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? nameOf(a) : 'netiso.log')))] : null)))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
-        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
+        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as “' + g.name + '” in Hdd1:\\NetISO.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
-      h('button.btn.primary', { onclick: close }, 'Close')),
+      h('button.btn', { onclick: close }, 'Close')),
   ]);
 }
 
@@ -1473,7 +1655,7 @@ function titleUpdateFacts(g) {
   if (!consoles.length) return null;
   return [h('div.k', 'Title updates'), h('div.v',
     g.tuMismatch ? h('div', { style: { marginBottom: '6px' } }, h('span.pill.warn', ic('triangle-alert', 'sm'), 'Different Title Updates')) : null,
-    h('div.tu-rows', consoles.map(ip => [h('span.mono', ip), h('span', tus[ip] || 'None')])),
+    h('div.tu-rows', consoles.map(ip => [h('span', nameOf(ip)), h('span', tus[ip] || 'None')])),
     g.tuMismatch ? h('div.muted', { style: { fontSize: '12.5px', marginTop: '6px' } }, 'Consoles on different title updates of a game usually can’t play it together over System Link. Use the same one on each, in Aurora.') : null)];
 }
 
@@ -1521,36 +1703,14 @@ function gameName(titleId) {
   const g = id && G.games.find(x => x.titleId === id);
   return g ? g.name : '';
 }
-function liveBlock(c, l) {
-  const d = l.data, stats = [];
-  if (d && d.temperature) {
-    const t = d.temperature, unit = t.celsius === false ? '\u00b0F' : '\u00b0C';
-    const deg = v => typeof v === 'number' ? Math.round(v) + unit : '\u2014';
-    stats.push(h('span.stat', { title: 'Temperatures: processor, graphics, memory' }, ic('thermometer', 'sm'), 'CPU ', h('b', deg(t.cpu)), ' GPU ', h('b', deg(t.gpu)), ' RAM ', h('b', deg(t.memory))));
-  }
-  if (d && Array.isArray(d.profiles)) {
-    const signed = d.profiles.filter(p => p.signedin);
-    stats.push(h('span.stat', ic('user', 'sm'), signed.length ? h('b', signed.map(p => p.gamertag).join(', ')) : 'No profile signed in'));
-  }
-  if (d && d.title && d.title.path) {
-    const path = d.title.path, aurora = /\\aurora\.xex$/i.test(path);
-    const name = aurora ? 'Aurora' : gameName(d.title.titleid) || path.split('\\').slice(-2, -1)[0] || path;
-    stats.push(h('span.stat', ic(aurora ? 'layout-grid' : 'gamepad-2', 'sm'), aurora ? 'In ' : 'Running ', h('b', name)));
-  }
-  if (!d && l.error) stats.push(h('span.stat', { title: l.error }, ic('info', 'sm'), 'Aurora\u2019s web server doesn\u2019t answer'));
-  else if (!d) stats.push(h('span.stat', ic('loader-circle', 'sm spin'), 'Asking Aurora\u2026'));
-  return h('div.console-live', stats, h('div.actions',
-    h('button.btn.small', { onclick: () => screenshots(c) }, ic('camera', 'sm'), 'Screenshots'),
-    h('button.btn.small', { onclick: e => power(c, 'aurora', e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Restart Aurora'),
-    h('button.btn.small', { onclick: e => power(c, 'off', e.currentTarget) }, ic('power', 'sm'), 'Turn off')));
-}
 async function power(c, action, button) {
   if (action === 'off' && !(await confirmBox('Turn off ' + cName(c) + '?', c.playing ? 'It\u2019s playing ' + c.mounted + '; the game ends.' : 'It turns off as with its power button.', 'Turn off', true))) return;
+  if (action === 'restart' && !(await confirmBox('Restart ' + cName(c) + '?', (c.playing ? 'It\u2019s playing ' + c.mounted + '; the game ends. ' : '') + 'It starts again as with its power button, and DashLaunch loads its plugins.', 'Restart it', true))) return;
   if (action === 'aurora' && c.playing && !(await confirmBox('Restart Aurora on ' + cName(c) + '?', 'It\u2019s playing ' + c.mounted + '; the game ends.', 'Restart Aurora', true))) return;
-  button.disabled = true;
-  try { await api('console/power', { address: c.address, action }); toast(action === 'off' ? cName(c) + ' is turning off' : 'Aurora is starting again on ' + cName(c)); Live[c.address] = null; }
+  if (button) button.disabled = true;
+  try { await api('console/power', { address: c.address, action }); toast(action === 'off' ? cName(c) + ' is turning off' : action === 'restart' ? cName(c) + ' is restarting' : 'Aurora is starting again on ' + cName(c)); Live[c.address] = null; }
   catch (e) { toast(e.message, true); }
-  button.disabled = false;
+  if (button) button.disabled = false;
 }
 
 // "This is <name> (<address>)" on the console's screen (JRPC2), to tell them apart.
@@ -1679,44 +1839,440 @@ function releases() {
 }
 
 // Consoles ------------------------------------------------------------------------
+// #consoles lists them; #consoles/<address>[/<tab>] is one console's own page:
+// what it does now, its games, its plugins (Set up this console) and its
+// settings.
 
+const consoleHref = (address, tab) => '#consoles/' + address + (tab && tab !== 'overview' ? '/' + tab : '');
 Pages.consoles = root => {
-  const list = h('div.consoles');
-  const which = h('div');
-  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.', h('button.btn', { onclick: setupCheck }, ic('scan', 'sm'), 'Check my setup')), h('div.stack', list, which));
-  let mounted = false, only;
+  let shown, part = null;
+  function route() {
+    const bits = location.hash.slice(1).split('/');
+    const address = bits[1] ? decodeURIComponent(bits[1]) : null;
+    if (part && address === shown) { if (part.route) part.route(bits[2]); return; }
+    if (part && part.leave) part.leave();
+    shown = address;
+    charts = [];
+    root.replaceChildren();
+    part = address ? consolePage(root, address, bits[2]) : consoleList(root);
+    if (S) part.update();
+    window.scrollTo(0, 0);
+  }
+  route();
+  return { update: () => part.update(), games: () => part.update(), route, leave: () => { if (part.leave) part.leave(); } };
+};
+
+function consoleList(root) {
+  const list = h('div.console-grid'), which = h('div');
+  root.append(header('Consoles', 'Every console that used this server. Open one for its games, its plugins and its settings.', h('button.btn', { onclick: setupCheck }, ic('scan', 'sm'), 'Check my setup')), h('div.stack', list, which));
+  let formed = false;
   function form() {
     const st = S.settings;
     const every = h('input', { type: 'radio', name: 'which', checked: !st.xboxes.length });
     const some = h('input', { type: 'radio', name: 'which', checked: st.xboxes.length > 0 });
-    only = h('input.input', { value: st.xboxes.join(', '), placeholder: '192.168.1.30, 192.168.1.31', oninput: () => { some.checked = true; } });
+    const only = h('input.input', { value: st.xboxes.join(', '), placeholder: '192.168.1.30, 192.168.1.31', oninput: () => { some.checked = true; } });
     fill(which, h('div.card', h('div.card-head', ic('folder-sync'), h('h2', 'Which consoles get your games in Aurora')),
       h('div.card-body', h('div.form',
         h('label.radio', every, h('div', h('div.title', 'Every console that connects'), h('div.help', 'Each console that uses this server gets a folder in Hdd1:\\NetISO for every game.'))),
-        h('label.radio', some, h('div', { style: { flex: 1 } }, h('div.title', 'Only these consoles'), h('div.help', 'IP addresses, separated by commas. Other consoles can still play, but their Aurora is left alone.'), h('div', { style: { marginTop: '8px' } }, only))),
+        h('label.radio', some, h('div', { style: { flex: 1 } }, h('div.title', 'Only these consoles'), h('div.help', 'IP addresses, separated by commas. Other consoles can still play, but their Aurora is left alone. Each console’s Settings tab has a switch for it too.'), h('div', { style: { marginTop: '8px' } }, only))),
         h('div.form-actions', h('button.btn.primary', { onclick: () => save({ xboxes: every.checked ? '' : only.value }) }, 'Save'))))));
   }
-  return {
+  let drawn = '';
+  const view = {
     update() {
-      if (!mounted) { form(); mounted = true; }
+      if (!formed) { form(); formed = true; }
+      // Made again only when something on it changed, so a hover or the focus stays.
+      for (const c of S.consoles) liveStatus(c, () => view.update());
+      const key = JSON.stringify(S.consoles.map(c => [c.address, c.name, consoleStatus(c).text, c.mounted, c.playing, c.connections, c.answers, c.offline, c.ftp, c.push, c.ping,
+        c.connections > 0 ? c.rate.slice(-60) : c.sent, ago(lastSeen(c)), Live[c.address] && Live[c.address].data]));
+      if (key === drawn) return;
+      drawn = key;
       const sorted = S.consoles.map((c, i) => ({ c, i })).sort((a, b) => (b.c.connections > 0) - (a.c.connections > 0) || lastSeen(b.c) - lastSeen(a.c));
-      fill(list, sorted.length ? sorted.map(x => {
-        const card = consoleCard(x.c, x.i, true);
-        const l = liveStatus(x.c, () => { if (page === 'consoles' && view && view.update) view.update(); });
-        if (l) card.insertBefore(liveBlock(x.c, l), $('.console-events', card));
-        const actions = h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px' } });
-        // Aurora's FTP server is up only while Aurora runs (1: it didn't answer).
-        if (x.c.ftp !== 1 && !x.c.playing) actions.appendChild(h('button.btn.small.ghost', { title: 'Find the games in Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(x.c.address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art'));
-        if (x.c.answers || x.c.connections > 0) actions.appendChild(h('button.btn.small.ghost', { title: 'Shows \u201cThis is ' + cName(x.c) + '\u201d on its screen, to tell the consoles apart', onclick: e => identify(x.c, e.currentTarget) }, ic('tv', 'sm'), 'Identify'));
-        if (x.c.connections === 0) actions.appendChild(
-          h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + cName(x.c))).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
-        if (actions.childNodes.length) $('.console-facts', card).appendChild(actions);
-        return card;
-      }) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
-        h('p', 'Make NetDisc360.ini next to NetDisc360.xex on the console\u2019s USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || '?')), '. A console shows up here when it connects.'))));
+      fill(list, sorted.length ? sorted.map(x => consoleCard(x.c, x.i, true)) : h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console has connected yet'),
+        h('p', 'Make NetDisc360.ini next to NetDisc360.xex on the console’s USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || '?')), '. A console shows up here when it connects.'))));
+    },
+  };
+  return view;
+}
+
+// What a console does now, in a few words.
+function consoleWhat(c) {
+  if (c.playing) return ['Playing ', h('b', c.mounted)];
+  if (c.connections > 0) return c.mounted ? ['In Aurora · last played ', h('b', c.mounted)] : 'In Aurora, no disc mounted';
+  if (c.answers) return 'On; NetISO hasn’t connected yet';
+  if (c.offline) return 'Offline: it stopped answering';
+  const seen = lastSeen(c);
+  return seen ? 'Off · last seen ' + ago(seen) : 'Not seen since NetDisc360 started';
+}
+const consoleOn = c => !c.offline && (c.answers || c.connections > 0);
+
+// The console's power menu: Aurora again, a restart, off.
+function powerMenu(c, anchor) {
+  openMenu(anchor, cName(c), [
+    { icon: 'rotate-ccw', label: 'Restart Aurora', sub: 'Back to Aurora’s game list', run: () => power(c, 'aurora', anchor) },
+    { icon: 'refresh-cw', label: 'Restart the console', sub: 'As with its power button; plugins load again', run: () => power(c, 'restart', anchor) },
+    { icon: 'power', label: 'Turn off', danger: true, run: () => power(c, 'off', anchor) },
+  ]);
+}
+
+const ConsoleTabs = [['overview', 'Overview', 'layout-dashboard'], ['games', 'Games', 'gamepad-2'], ['plugins', 'Plugins', 'plug'], ['settings', 'Settings', 'settings']];
+function consolePage(root, address, first) {
+  const head = h('div'), body = h('div');
+  const tabs = h('div.segmented.con-tabs', ConsoleTabs.map(([id, label, icon]) => h('a', { href: consoleHref(address, id), 'data-tab': id }, ic(icon, 'sm'), label)));
+  root.append(h('a.back', { href: '#consoles' }, ic('arrow-left', 'sm'), 'All consoles'), head, tabs, body);
+  let tab = null, part = null, drawn = '';
+  const find = () => S.consoles.find(c => c.address === address);
+  function show(t) {
+    t = ConsoleTabs.some(x => x[0] === t) ? t : 'overview';
+    if (t === tab) return;
+    tab = t;
+    for (const a of tabs.children) { a.classList.toggle('on', a.dataset.tab === tab); a.setAttribute('aria-current', a.dataset.tab === tab ? 'page' : 'false'); }
+    if (part && part.leave) part.leave();
+    charts = [];
+    body.replaceChildren();
+    part = ConsoleParts[tab](body, address);
+    if (S) update();
+  }
+  function update() {
+    const c = find();
+    if (!c) {
+      tabs.classList.add('hidden');
+      body.classList.add('hidden');
+      if (drawn !== 'gone') { drawn = 'gone'; fill(head, h('div.card', h('div.empty', ic('monitor'), h('h3', 'No console at ' + address), h('p', 'NetDisc360 doesn’t know a console there, or it was forgotten.'), h('a.btn', { href: '#consoles' }, 'All consoles')))); }
+      return;
+    }
+    tabs.classList.remove('hidden');
+    body.classList.remove('hidden');
+    const st = consoleStatus(c), l = liveStatus(c, update);
+    const key = JSON.stringify([c.name, st, c.playing, c.mounted, c.connections > 0, c.answers, c.offline, lastSeen(c) > 0 && ago(lastSeen(c))]);
+    if (key !== drawn) {
+      drawn = key;
+      const playBtn = h('button.btn.primary', { onclick: () => pickGame(c) }, ic('play', 'sm'), 'Play a game');
+      const powerBtn = h('button.btn', { 'aria-haspopup': 'menu', onclick: e => powerMenu(c, e.currentTarget) }, ic('power', 'sm'), 'Power', ic('chevron-down', 'sm'));
+      fill(head, h('div.con-head',
+        h('div.con-icon' + (st.cls ? '.' + st.cls : ''), ic(c.playing ? 'gamepad-2' : 'monitor')),
+        h('div.con-title', h('h1', cName(c), c.name ? h('span.ip', c.address) : null, h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+          h('p', consoleWhat(c))),
+        h('div.actions', playBtn,
+          h('button.btn', { title: 'Shows “This is ' + cName(c) + '” on its screen', disabled: !consoleOn(c), onclick: e => identify(c, e.currentTarget) }, ic('tv', 'sm'), 'Identify'),
+          h('button.btn', { disabled: !consoleOn(c), onclick: () => screenshots(c) }, ic('camera', 'sm'), 'Screenshots'),
+          powerBtn)));
+    }
+    if (part && part.update) part.update(c, l);
+  }
+  show(first);
+  return { update, route: show, leave: () => { if (part && part.leave) part.leave(); } };
+}
+
+const ConsoleParts = {};
+
+// Overview: now, its bandwidth, what it is, what happened.
+ConsoleParts.overview = (body, address) => {
+  const tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap.small'), facts = h('div.con-facts'), events = h('ul.events');
+  body.append(h('div.stack', tiles,
+    h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to it, last 2 minutes')), h('div.card-body', chartWrap)),
+    h('div.grid.two',
+      h('div.card', h('div.card-head', ic('info'), h('h2', 'About it')), h('div.card-body', facts)),
+      h('div.card', h('div.card-head', ic('history'), h('h2', 'Recent activity')), h('div.card-body', events)))));
+  const chart = bandwidthChart(chartWrap);
+  const tile = (icon, label, value, note, tone) => h('div.card.tile', h('div.label', ic(icon, 'sm'), label), h('div.value' + (tone ? '.' + tone : ''), value), h('div.note', note));
+  return {
+    update(c, l) {
+      const d = l && l.data, now = c.rate.length ? c.rate[c.rate.length - 1] : 0;
+      const [ping, pingTone] = pingText(c), [ftp] = ftpText(c);
+      const t = d && d.temperature, unit = t && t.celsius === false ? '°F' : '°C', deg = v => typeof v === 'number' ? Math.round(v) + unit : '—';
+      const signed = d && Array.isArray(d.profiles) ? d.profiles.filter(p => p.signedin).map(p => p.gamertag) : null;
+      const running = d && d.title && d.title.path ? (/\\aurora\.xex$/i.test(d.title.path) ? 'Aurora' : gameName(d.title.titleid) || d.title.path.split('\\').slice(-2, -1)[0]) : '';
+      fill(tiles,
+        tile(c.playing ? 'gamepad-2' : 'monitor', 'Now', c.playing ? c.mounted : running || consoleStatus(c).text, c.playing ? 'from this PC' : signed && signed.length ? signed.join(', ') + ' signed in' : signed ? 'no profile signed in' : ' '),
+        tile('gauge', 'Streaming', c.connections > 0 ? rate(now) : '—', bytes(c.sent) + ' sent in all'),
+        tile('radar', 'Ping', ping, 'Aurora’s FTP: ' + ftp.toLowerCase()),
+        tile('thermometer', 'Temperature', t ? deg(t.cpu) : '—', t ? 'GPU ' + deg(t.gpu) + ' · RAM ' + deg(t.memory) : l && l.error ? 'Aurora’s web server doesn’t answer' : consoleOn(c) ? 'asking Aurora…' : 'while it’s on'));
+      chart.set(c.rate.length ? [{ name: cName(c), values: c.rate, color: S.consoles.indexOf(c) }] : []);
+      const p = S.party || { consoles: [] };
+      fill(facts,
+        fact('Name on the Xbox', c.name || 'Not known yet'),
+        fact('Address', c.address),
+        fact('Signed in', signed ? (signed.length ? signed.join(', ') : 'Nobody') : '—'),
+        fact('Gets your games in Aurora', !c.push ? 'No (Settings tab)' : !S.settings.push ? 'Off in Settings' : c.synced ? 'Yes · updated ' + ago(c.synced) : 'Yes'),
+        fact('Last connected', c.connections > 0 ? 'Now' : c.seen ? ago(c.seen) : 'Not yet'),
+        fact('LAN party', p.gamemaster === c.address ? 'Gamemaster' : p.consoles.includes(c.address) ? 'In the party' : 'Not in it'));
+      fill(events, c.events && c.events.length ? c.events.slice().reverse().map(e => h('li', h('span.badge.k-' + e.kind, ic(EventIcons[e.kind] || 'info')), h('span.what', e.text), h('span.when', clock(e.time)))) : h('li.muted', 'Nothing since NetDisc360 started.'));
     },
   };
 };
+
+// Games: the ones in its Aurora (a tile) and installed on it, each to start there.
+ConsoleParts.games = (body, address) => {
+  let query = '', which = 'all', drawn = '';
+  const list = h('div'), note = h('div'), art = h('div.right');
+  const search = h('input.input', { type: 'search', placeholder: 'Search its games', oninput: e => { query = e.target.value.toLowerCase(); drawn = ''; view.update(); } });
+  const kinds = h('div.segmented', [['all', 'All'], ['tile', 'In Aurora from this PC'], ['installed', 'Installed on it']].map(([k, label]) =>
+    h('button', { 'data-k': k, class: k === which ? 'on' : '', onclick: () => { which = k; drawn = ''; view.update(); } }, label)));
+  body.append(h('div.stack', note, h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), kinds, art), list));
+  let c = null;
+  const view = {
+    update(console) {
+      if (console) c = console;
+      if (!c) return;
+      for (const b of kinds.children) b.classList.toggle('on', b.dataset.k === which);
+      const has = g => (g.tiles || []).includes(address), installed = g => (g.installedOn || []).includes(address);
+      const mine = G.games.filter(g => has(g) || installed(g));
+      const games = mine.filter(g => (which === 'all' || (which === 'tile' ? has(g) : installed(g))) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
+      const key = JSON.stringify([G.version, query, which, c.playing, c.mounted, c.push, S.settings.push, c.ftp, games.map(g => g.name + (g.titleUpdates || {})[address])]);
+      if (key === drawn) return;
+      drawn = key;
+      fill(note, !c.push ? h('div.notice', ic('info'), h('span', 'NetDisc360 doesn’t add games to ' + cName(c) + '’s Aurora: it isn’t one of the consoles to update.'), h('a.btn.small', { href: consoleHref(address, 'settings') }, 'Change it'))
+        : !S.settings.push ? h('div.notice', ic('info'), h('span', 'Adding games to Aurora is off in Settings.'), h('a.btn.small', { href: '#settings/xbox' }, 'Settings')) : null);
+      fill(art, c.ftp !== 1 && !c.playing ? h('button.btn.small', { title: 'Find the games in its Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art') : null);
+      if (!mine.length) { fill(list, h('div.card', h('div.empty', ic('gamepad-2'), h('h3', 'No games on it yet'), h('p', c.push && S.settings.push ? 'NetDisc360 adds your games to its Aurora over FTP while Aurora is on screen; they show up here then.' : 'Games installed on it show up here once its Aurora has been read.')))); return; }
+      if (!games.length) { fill(list, h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', 'Try another name, or All.')))); return; }
+      fill(list, h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
+        h('thead', h('tr', h('th', plural(games.length, 'game')), h('th.hide-narrow', 'Title update'), h('th.num.hide-narrow', 'Size'), h('th.play-col', h('span.sr', 'Play')))),
+        h('tbody', games.map(g => {
+          const now = c.playing && c.mounted.toLowerCase() === g.name.toLowerCase(), tus = g.titleUpdates || {};
+          return h('tr.click', { onclick: () => details(g) },
+            h('td', h('div.cell-name', cover(g, true), h('div', g.name, h('div.badges',
+              installed(g) ? h('span.pill.off', ic('hard-drive', 'sm'), 'Installed') : null,
+              has(g) ? h('span.pill.off', ic('network', 'sm'), 'From this PC') : null,
+              now ? h('span.pill.play', ic('play', 'sm'), 'Playing now') : null,
+              g.tuMismatch ? h('span.pill.warn', { title: 'The consoles run different title updates of it' }, ic('triangle-alert', 'sm'), 'Different TUs') : null)))),
+            h('td.hide-narrow', address in tus ? tus[address] || 'None' : h('span.faint', 'Not read yet')),
+            h('td.num.hide-narrow', g.sizeKnown ? bytes(g.size) : '…'),
+            h('td.play-col', h('button.btn.small.play-btn', { title: 'Start ' + g.name + ' on ' + cName(c), onclick: e => { e.stopPropagation(); playOn(g, c, e.currentTarget); } }, ic('play', 'sm'), 'Play')));
+        })))));
+    },
+  };
+  return view;
+};
+
+// Plugins: Set up this console. Its launch.ini's plugin lines become the
+// plugins chosen here (the standard set to start with); a plugin it lacks is
+// copied from the kit folder, launch.ini is backed up first, and a backup
+// can be put back.
+ConsoleParts.plugins = (body, address) => {
+  const now = h('div'), setup = h('div'), backups = h('div');
+  body.append(h('div.stack', now, setup, backups));
+  let info = null, chosen = null, plan = null, done = null, error = '', loading = false, c = null, shown = '';
+  const key = n => n.toLowerCase();
+  async function load() {
+    loading = true; error = ''; draw();
+    try {
+      info = await api('console/setup?address=' + encodeURIComponent(address));
+      if (!chosen) chosen = standard();
+      plan = null;
+    } catch (e) { error = e.message; }
+    loading = false; draw();
+  }
+  // Where each plugin would come from: the console (found), the kit folder, or nowhere.
+  function source(name) {
+    const there = info.plugins.find(p => key(p.name) === key(name));
+    if (there && there.found) return { from: 'console', text: 'On the console: ' + there.path };
+    if (info.kitFiles.some(f => key(f) === key(name))) return { from: 'kit', text: 'Copied from the kit folder' + (there ? ' (' + there.path + ' is missing)' : '') };
+    return { from: '', text: there ? 'Missing: ' + there.path + ', and not in the kit folder' : info.kit ? 'Not on the console, and not in the kit folder' : 'Not on the console; no kit folder set' };
+  }
+  const usable = name => source(name).from !== '';
+  function standard() { return info.set.filter(usable).slice(0, 5); }
+  const current = () => info.plugins.map(p => p.name).slice(0, 5);
+  function candidates() {
+    const all = [];
+    for (const n of info.set.concat(info.plugins.map(p => p.name), info.kitFiles)) if (!all.some(x => key(x) === key(n))) all.push(n);
+    return all;
+  }
+  function choose(list) { chosen = list; plan = null; done = null; draw(); }
+  async function preview(button) {
+    button.disabled = true;
+    try { plan = await api('console/setup', { address, plugins: chosen }); done = null; }
+    catch (e) { toast(e.message, true); }
+    button.disabled = false; draw();
+  }
+  async function apply(button) {
+    if (!(await confirmBox('Set up ' + cName(c) + '?', [h('p', { style: { marginTop: 0 } }, 'NetDisc360 backs up its launch.ini first (on the console and on this PC), ' + (plan.copies.length ? 'copies ' + plural(plan.copies.length, 'file') + ', ' : '') + 'and writes the new launch.ini.'),
+      h('p', { style: { marginBottom: 0 } }, 'DashLaunch loads plugins as the console starts, so restart it afterwards.')], 'Set it up'))) return;
+    button.disabled = true;
+    try {
+      done = await api('console/setup', { address, plugins: chosen, apply: true, base: plan.base });
+      toast(cName(c) + ' is set up; restart it to load its plugins');
+      info = Object.assign(info, done); plan = null;
+      await load();
+    } catch (e) {
+      toast(e.message, true);
+      if (e.status === 409) { plan = null; await load(); }
+    }
+    button.disabled = false; draw();
+  }
+  async function restore(name, button) {
+    if (!(await confirmBox('Put this launch.ini back?', [h('p', { style: { margin: 0 } }, 'Its launch.ini becomes the one from ', h('b', backupTime(name)), '. The one there now is backed up first. Restart the console afterwards.')], 'Put it back'))) return;
+    button.disabled = true;
+    try { await api('console/setup/restore', { address, backup: name }); toast('launch.ini put back on ' + cName(c) + '; restart it to load its plugins'); done = { restored: name }; chosen = null; await load(); }
+    catch (e) { toast(e.message, true); button.disabled = false; }
+  }
+  function backupTime(name) {
+    const m = name.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+    return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : name;
+  }
+  function showIni() {
+    modal('launch.ini on ' + cName(c), close => [
+      h('div.modal-body', h('div.muted', { style: { marginBottom: '8px' } }, info.launchIni), h('pre.ini-text', info.launchIniText || '(empty)')),
+      h('div.modal-foot', h('span.note'), h('button.btn.primary', { onclick: close }, 'Close')),
+    ]);
+  }
+  const move = (i, by) => { const list = chosen.slice(); const [x] = list.splice(i, 1); list.splice(i + by, 0, x); choose(list); };
+  function draw() {
+    if (!c) return;
+    const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub ? h('span.sub', sub) : null, right ? h('div.right', right) : null), h('div.card-body', content));
+    if (loading && !info) { fill(now, card('plug', 'Plugins', null, null, h('p.muted', { style: { margin: 0 } }, ic('loader-circle', 'sm spin'), ' Reading launch.ini over Aurora’s FTP…'))); setup.replaceChildren(); backups.replaceChildren(); return; }
+    if (error && !info) {
+      fill(now, card('plug', 'Plugins', null, null, h('div.empty', ic('plug'), h('h3', 'Couldn’t read its plugins'), h('p', error), h('button.btn', { onclick: load }, ic('refresh-cw', 'sm'), 'Try again'))));
+      setup.replaceChildren(); backups.replaceChildren(); return;
+    }
+    if (!info) return;
+    // What it loads now.
+    fill(now, card('plug', 'Plugins it loads now', info.launchIni ? h('span.mono', info.launchIni) : null,
+      [info.launchIniText ? h('button.btn.small.ghost', { onclick: showIni }, ic('file-text', 'sm'), 'launch.ini') : null, h('button.btn.small.ghost', { disabled: loading, onclick: load }, ic('refresh-cw', 'sm'), 'Read again')],
+      info.launchIni ? (info.plugins.length ? h('div.plug-list', info.plugins.map(p => h('div.plug', h('span.n', p.slot), h('div.grow', h('b', p.name), h('div.sub.mono', p.path)),
+        p.found ? h('span.pill.good', ic('check', 'sm'), 'There') : h('span.pill.warn', { title: 'launch.ini names it, but the file isn’t there' }, ic('triangle-alert', 'sm'), 'File missing'))))
+        : h('p.muted', { style: { margin: 0 } }, 'Its launch.ini loads no plugins.'))
+        : h('p.muted', { style: { margin: 0 } }, 'There’s no launch.ini on its USB drive or hard drive: DashLaunch isn’t set up on it, so NetDisc360 can’t set its plugins.'),
+      done && done.applied ? h('div.notice.info', { style: { marginTop: '14px' } }, ic('circle-check'), h('span', 'Set up. launch.ini was backed up as ', h('b', done.backup), '. Restart the console to load its plugins.'),
+        h('button.btn.small', { onclick: e => power(c, 'restart', e.currentTarget) }, ic('refresh-cw', 'sm'), 'Restart it')) : null,
+      done && done.restored ? h('div.notice.info', { style: { marginTop: '14px' } }, ic('circle-check'), h('span', 'launch.ini put back. Restart the console to load its plugins.'),
+        h('button.btn.small', { onclick: e => power(c, 'restart', e.currentTarget) }, ic('refresh-cw', 'sm'), 'Restart it')) : null));
+    if (!info.launchIni) { setup.replaceChildren(); backups.replaceChildren(); return; }
+    // Set it up.
+    const more = candidates().filter(n => !chosen.some(x => key(x) === key(n)));
+    const same = chosen.length === info.plugins.length && chosen.every((n, i) => key(n) === key(info.plugins[i].name));
+    const slots = [];
+    for (let i = 0; i < 5; i++) {
+      const n = chosen[i];
+      if (!n) { slots.push(h('div.plug.empty', h('span.n', i + 1), h('div.grow', 'Empty'))); continue; }
+      const s = source(n), inSet = info.set.some(x => key(x) === key(n));
+      slots.push(h('div.plug', h('span.n', i + 1), h('div.grow', h('b', n), inSet ? h('span.pill.info.tiny', 'Standard') : null, h('div.sub', s.text)),
+        h('div.tools',
+          h('button.btn.icon.small.ghost', { title: 'Up', 'aria-label': 'Move ' + n + ' up', disabled: i === 0, onclick: () => move(i, -1) }, ic('arrow-up', 'sm')),
+          h('button.btn.icon.small.ghost', { title: 'Down', 'aria-label': 'Move ' + n + ' down', disabled: i === chosen.length - 1, onclick: () => move(i, 1) }, ic('arrow-down', 'sm')),
+          h('button.btn.icon.small.ghost', { title: 'Leave it out', 'aria-label': 'Leave ' + n + ' out', onclick: () => choose(chosen.filter((_, k) => k !== i)) }, ic('x', 'sm')))));
+    }
+    const lines = plan ? diffLines((info.launchIniText || '').replace(/\r/g, '').split('\n'), plan.text.replace(/\r/g, '').split('\n')) : null;
+    fill(setup, card('settings', 'Set up this console', h('span.sub', 'DashLaunch loads up to 5 plugins'),
+      [h('button.btn.small.ghost', { title: 'The plugin set from Settings', onclick: () => choose(standard()) }, 'Standard set'), h('button.btn.small.ghost', { onclick: () => choose(current()) }, 'As it is')],
+      h('div.plug-list', slots),
+      more.length ? h('div.more-plugins', h('span.muted', 'Add:'), more.map(n => h('button.btn.small', { disabled: chosen.length >= 5 || !usable(n), title: source(n).text, onclick: () => choose(chosen.concat(n)) }, ic('plus', 'sm'), n))) : null,
+      h('p.hint', 'Plugins it lacks come from your kit folder', info.kit ? [': ', h('span.mono', info.kit)] : ', which isn’t set yet', ' (', h('a', { href: '#settings/xbox' }, 'Settings'), '). Each plugin’s settings file goes to the top of the drive and beside the plugin; none is overwritten, and a plugin left out isn’t deleted.'),
+      plan ? h('div.plan',
+        h('h3', 'launch.ini after'),
+        h('pre.ini-text', lines.map(l => h('span.' + l.t, (l.t === 'add' ? '+ ' : l.t === 'del' ? '− ' : '  ') + l.s))),
+        h('h3', 'Files it copies'),
+        plan.copies.length ? h('ul.copies-list', plan.copies.map(x => h('li', x))) : h('p.muted', { style: { margin: 0 } }, 'None: the console has them all.')) : null,
+      h('div.form-actions', { style: { marginTop: '16px' } },
+        plan ? [h('button.btn.primary', { disabled: same && !plan.copies.length, onclick: e => apply(e.currentTarget) }, ic('check', 'sm'), 'Set it up'), h('button.btn', { onclick: () => { plan = null; draw(); } }, 'Change it')]
+          : h('button.btn.primary', { disabled: loading, onclick: e => preview(e.currentTarget) }, 'Preview'),
+        same && plan && !plan.copies.length ? h('span.muted', 'It loads these already.') : null)));
+    // Backups.
+    fill(backups, info.backups.length ? card('archive', 'Backups of launch.ini', h('span.sub', 'beside it on the console'), null,
+      h('div.plug-list', info.backups.map(b => h('div.plug', h('span.n', ic('file-text', 'sm')), h('div.grow', h('b', backupTime(b)), h('div.sub.mono', b)),
+        h('button.btn.small', { onclick: e => restore(b, e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Put back'))))) : null);
+  }
+  return {
+    update(console) {
+      const first = !c;
+      c = console;
+      const k = JSON.stringify([consoleOn(c), c.playing]);
+      if (first) load();
+      else if (k !== shown) draw();
+      shown = k;
+    },
+  };
+};
+
+// The lines of a and b, as one list: kept, removed (del) and added (add).
+function diffLines(a, b) {
+  const n = a.length, m = b.length, len = [];
+  for (let i = n; i >= 0; i--) { len[i] = []; for (let j = m; j >= 0; j--) len[i][j] = i === n || j === m ? 0 : a[i] === b[j] ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1]); }
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { out.push({ t: 'same', s: a[i] }); i++; j++; }
+    else if (j < m && (i === n || len[i][j + 1] >= len[i + 1][j])) out.push({ t: 'add', s: b[j++] });
+    else out.push({ t: 'del', s: a[i++] });
+  }
+  while (out.length && out[out.length - 1].t === 'same' && out[out.length - 1].s === '') out.pop();
+  return out;
+}
+
+// Settings: whether it gets your games, the LAN party, forgetting it.
+ConsoleParts.settings = (body, address) => {
+  let drawn = '';
+  const view = {
+    update(c) {
+      const st = S.settings, p = S.party || { consoles: [], gamemaster: '' };
+      const key = JSON.stringify([c.name, c.push, st.push, st.xboxes, p.consoles, p.gamemaster, c.connections > 0, consoleOn(c)]);
+      if (key === drawn) return;
+      drawn = key;
+      const toggle = (checked, onchange, disabled) => h('label.switch', h('input', { type: 'checkbox', checked, disabled, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
+      const row = (title, help, control) => h('div.setting', h('div.text', h('div.title', title), help && h('div.help', help)), control);
+      const card = (icon, title, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title)), h('div.card-body', content));
+      const inParty = p.consoles.includes(address), gm = p.gamemaster === address;
+      fill(body, h('div.stack',
+        card('monitor', 'Its name',
+          row(c.name || 'No name known yet', ['NetDisc360 shows the name set on the Xbox: Settings, System, Console Settings, Console Name. Media Sharing must be on there too. ',
+            c.name ? 'Changed it? It shows here within a minute.' : 'Until it’s known, the console goes by its address.'],
+          h('button.btn', { disabled: !consoleOn(c), onclick: e => identify(c, e.currentTarget) }, ic('tv', 'sm'), 'Identify'))),
+        card('gamepad-2', 'Your games on it',
+          row('Add your games to its Aurora', !st.push ? 'Adding games to Aurora is off for every console, in Settings.' : 'A folder for every game in its Hdd1:\\NetISO, so they’re in its Aurora. Off: it can still play, but its Aurora is left alone.',
+            toggle(c.push, (v, input) => pushTo(c, v, input), !st.push)),
+          row('Settings for every console', 'Aurora’s logins, the plugin set and kit folder, turning consoles off after their last game, and more.', h('a.btn', { href: '#settings/xbox' }, 'Settings', ic('chevron-right', 'sm')))),
+        card('party-popper', 'LAN party',
+          row('In the party', gm ? 'It’s the Gamemaster console, so it’s always in the party.' : 'Its seats, Start on all and Turn off all include it.',
+            toggle(inParty || gm, v => partyEdit({ consoles: v ? p.consoles.concat(address) : p.consoles.filter(a => a !== address) }, v ? cName(c) + ' is in the party' : cName(c) + ' left the party'), gm)),
+          row('Gamemaster', 'The host’s console: it’s seated first and starts first.', gm ? h('span.pill.info', ic('crown', 'sm'), 'Gamemaster')
+            : h('button.btn', { onclick: () => partyEdit({ gamemaster: address, consoles: inParty ? p.consoles : p.consoles.concat(address) }, cName(c) + ' is the Gamemaster') }, ic('crown', 'sm'), 'Make it the Gamemaster'))),
+        c.connections > 0 ? null : card('trash-2', 'Forget it',
+          row('Forget this console', 'It leaves this dashboard until it connects again. Nothing on the console changes.',
+            h('button.btn.danger', { onclick: async () => {
+              if (!(await confirmBox('Forget ' + cName(c) + '?', 'It leaves this dashboard until it connects again.', 'Forget it', true))) return;
+              try { await api('forget', { address }); toast('Forgot ' + cName(c)); location.hash = '#consoles'; refresh(); } catch (e) { toast(e.message, true); }
+            } }, ic('trash-2', 'sm'), 'Forget')))));
+    },
+  };
+  return view;
+};
+
+// Whether a console gets the games in its Aurora: the list of consoles to
+// update with it or without it (an empty list is every console).
+async function pushTo(c, on, input) {
+  const all = S.consoles.map(x => x.address);
+  let list = S.settings.xboxes.length ? S.settings.xboxes.slice() : all.slice();
+  list = on ? (list.includes(c.address) ? list : list.concat(c.address)) : list.filter(a => a !== c.address);
+  if (!list.length) { toast('It’s the only console left: turn off Add games to Aurora in Settings instead.', true); input.checked = !on; return; }
+  if (!(await save({ xboxes: list.join(', ') }, on ? cName(c) + ' gets your games in Aurora' : cName(c) + '’s Aurora is left alone'))) input.checked = !on;
+}
+async function partyEdit(changes, said) {
+  try { await api('party', changes); await refresh(); toast(said); }
+  catch (e) { toast(e.message, true); refresh(); }
+}
+
+// Play a game: the games on console c (each starts there), or on any console
+// (each opens its details, to choose the console).
+function pickGame(c) {
+  const list = h('div.pick-list'), search = h('input.input', { type: 'search', placeholder: 'Search games', oninput: () => draw() });
+  const has = g => playable(g).some(x => !c || x.address === c.address);
+  const fresh = () => S.consoles.find(x => x.address === c.address) || c;  // S is new each second.
+  const games = G.games.filter(has).sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  let closeIt;
+  function draw() {
+    const q = search.value.toLowerCase(), shown = games.filter(g => !q || g.name.toLowerCase().includes(q));
+    fill(list, !games.length ? h('div.empty', ic('gamepad-2'), h('h3', 'No game to start yet'), h('p', c ? 'Games show up here once NetDisc360 has added them to ' + cName(c) + '’s Aurora, or they’re installed on it.' : 'Games show up here once NetDisc360 has added them to a console’s Aurora.'))
+      : !shown.length ? h('div.empty', ic('search'), h('h3', 'No games match'))
+      : shown.map(g => h('button.pick-game', { onclick: () => { closeIt(); if (c) playOn(g, fresh()); else details(g); } },
+        cover(g, true), h('span.grow', h('b', g.name), h('span.sub', g.plays ? 'Played ' + ago(g.lastPlayed) : KindNames[g.kind] + (g.sizeKnown ? ' · ' + bytes(g.size) : ''))), ic(c ? 'play' : 'chevron-right', 'sm'))));
+  }
+  closeIt = modal(c ? 'Play a game on ' + cName(c) : 'Play a game', close => [
+    h('div.modal-body', h('div.input-icon.search', { style: { marginBottom: '12px' } }, ic('search', 'sm'), search), list),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), c ? 'Most recently played first.' : 'Choose a game, then the console.'), h('button.btn', { onclick: close }, 'Close')),
+  ]);
+  draw();
+}
 
 // Check my setup: this computer, then each console, and a report of it all
 // that leaves out addresses, names and passwords, to share when asking for help.
@@ -1975,21 +2531,25 @@ function livePart(el) {
 Pages.party = root => {
   const wrap = h('div.party');
   let tab = 'party', screen = null, colours = '', previewing = false, shuffling = false, reveal = false, pick = null, chosen = store('party.game') || '', shown = null;
-  const tabs = h('div.segmented', [['party', 'Party', 'party-popper'], ['systemlink', 'System Link games', 'cable']].map(([id, label, icon]) =>
+  const tabs = h('div.segmented', [['party', 'Party', 'party-popper'], ['theme', 'Theme', 'palette'], ['systemlink', 'System Link games', 'cable']].map(([id, label, icon]) =>
     h('button', { 'data-tab': id, onclick: () => { location.hash = id === 'party' ? '#party' : '#party/' + id; } }, ic(icon, 'sm'), label)));
   const main = h('div.stack'), links = h('div');
-  wrap.append(header('LAN party', 'Teams, seats and the same game on every console, run by the Gamemaster.', tabs,
+  wrap.append(header('LAN party', 'Teams, seats and one game on every console.', tabs,
     h('a.btn', { href: '#party/screen', title: 'The party for a TV or a projector: its teams, seats and games' }, ic('tv', 'sm'), 'Big screen')), main, links);
   root.append(wrap);
   const banner = livePart(h('div.party-banner')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
-  const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div')), results = livePart(h('div'));
+  const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
   const parts = [banner, form, consoles, guests, rules, raffle, seats, start, results];
   const guestCount = h('span.sub');
   const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
   const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
   seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
-  main.append(
-    h('div.card.party-card', banner.el, h('div.card-body', form.el)),
+  // The banner over the Party and Theme tabs; the theme's settings on the Theme tab.
+  const themeBody = h('div.card-body.hidden', form.el), top = h('div.card.party-card', banner.el, themeBody);
+  wrap.insertBefore(top, main);
+  const startCard = card('play', 'Start on all', h('span.sub', 'one game on every party console'), null, start.el, results.el);
+  startCard.classList.add('party-start');
+  main.append(startCard,
     h('div.party-grid',
       h('div.stack',
         card('monitor', 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), null, consoles.el),
@@ -1999,8 +2559,7 @@ Pages.party = root => {
         card('link', 'Rules', h('span.sub', 'for the team raffle'), null, rules.el)),
       h('div.stack',
         card('dices', 'Team raffle', null, null, raffle.el),
-        card('armchair', 'Seats', h('span.sub', 'teammates on one console, up to 4'), null, seats.el),
-        card('play', 'Start on all', h('span.sub', 'one game on every party console'), null, start.el, results.el))));
+        card('armchair', 'Seats', h('span.sub', 'teammates on one console, up to 4'), null, seats.el))));
   const systemLink = systemLinkTab(links);
 
   // Changes to the party go to the server one at a time, in order, so quick
@@ -2330,11 +2889,11 @@ Pages.party = root => {
         g.systemLink ? h('span.pill.good', ic('cable', 'sm'), 'System Link') : h('span.pill.off', 'No System Link'),
         g.systemLink ? h('span.pill.info', g.perConsole ? plural(g.perConsole, 'player') + ' per console' : 'Players per console not known') : null,
         g.systemLink && g.total ? h('span.pill.info', g.total + ' in all') : null,
-        installed.length ? h('span.pill.off', { title: 'Started from the copy installed on it' }, ic('hard-drive', 'sm'), 'Installed on ' + installed.join(', ')) : null),
+        installed.length ? h('span.pill.off', { title: 'Started from the copy installed on it' }, ic('hard-drive', 'sm'), 'Installed on ' + installed.map(nameOf).join(', ')) : null),
       // Before starting (after, Start on all's answer says it, below).
       differ && !(shown && shown.game === g.name && shown.titleUpdates) ? h('div.party-warn', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
         h('p', 'These consoles run different title updates of ' + g.name + ', so they may not find each other over System Link.'),
-        h('ul', p.consoles.map(ip => h('li', h('span.mono', ip), h('span', ip in tus ? tus[ip] || 'None' : 'Not read yet')))))) : null,
+        h('ul', p.consoles.map(ip => h('li', h('span', nameOf(ip)), h('span', ip in tus ? tus[ip] || 'None' : 'Not read yet')))))) : null,
       crowded.length ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + plural(g.perConsole, 'player') + ' per console; ' +
         crowded.map((ip, i) => d.seats[ip].length + (i ? ' at ' : ' sit at ') + ip).join(', ') + '.')) : null,
       g.systemLink && g.total && here > g.total ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + g.total + ' in all over System Link; ' + here + ' guests are here.')) : null,
@@ -2417,8 +2976,10 @@ Pages.party = root => {
   }
   function route() {
     const sub = location.hash.split('/')[1] || '';
-    tab = sub === 'systemlink' ? 'systemlink' : 'party';
+    tab = sub === 'systemlink' || sub === 'theme' ? sub : 'party';
     main.classList.toggle('hidden', tab !== 'party');
+    top.classList.toggle('hidden', tab === 'systemlink');
+    themeBody.classList.toggle('hidden', tab !== 'theme');
     links.classList.toggle('hidden', tab !== 'systemlink');
     if (sub === 'screen') openScreen(); else closeScreen();
     update();
@@ -2628,13 +3189,17 @@ function removeFolder(path) {
 
 // The folder browser: folders on the computer that runs NetDisc360 (in
 // Docker, the container's: the folders mounted into it).
-function addFolder() {
+// A folder on this computer: a game folder to add, or (pick: {title, button,
+// start, choose(path)}) one for a setting.
+function addFolder(pick) {
+  if (!pick || pick instanceof Event) pick = null;
   let current = null;
   const places = h('div.places'), listing = h('div.listing'), status = h('span.note');
   const path = h('input.input', { placeholder: S && S.platform === 'windows' ? 'D:\\Games' : '/games', onkeydown: e => { if (e.key === 'Enter') go(path.value); } });
   const addButton = h('button.btn.primary', { disabled: true, onclick: async () => {
+    if (pick) { close(); pick.choose(current.path); return; }
     if (await save({ folders: S.folders.map(f => f.path).concat(current.path) }, 'Folder added')) close();
-  } }, ic('plus', 'sm'), 'Add this folder');
+  } }, ic(pick ? 'check' : 'plus', 'sm'), pick ? pick.button : 'Add this folder');
   async function go(where) {
     try {
       const b = await api('browse?path=' + encodeURIComponent(where || ''));
@@ -2643,16 +3208,17 @@ function addFolder() {
       fill(places, b.places.map(p => h('button', { onclick: () => go(p.path) }, ic(/^[A-Z]:$/.test(p.name) ? 'hard-drive' : p.name === 'Home' || p.name === 'Desktop' ? 'house' : 'folder', 'sm'), p.name)));
       fill(listing, b.parent || (b.path && S.platform === 'windows') ? h('button', { onclick: () => go(b.parent) }, ic('arrow-up', 'sm'), h('span.muted', 'Up')) : null,
         b.folders.length ? b.folders.map(f => h('button', { onclick: () => go(b.path ? (b.path.endsWith(b.separator) ? b.path + f : b.path + b.separator + f) : f) }, ic('folder', 'sm'), f.replace(/\\$/, ''))) : h('div.muted', { style: { padding: '8px' } }, 'No folders in here.'));
+      if (pick) { addButton.disabled = !b.path; fill(status, b.path ? '' : 'Pick a drive'); return; }
       const added = S.folders.some(f => f.path.toLowerCase() === b.path.toLowerCase());
       addButton.disabled = !b.path || added;
       fill(status, b.path ? (added ? [ic('check', 'sm'), 'Already one of your game folders'] : b.games ? [ic('gamepad-2', 'sm'), 'Has games'] : [ic('info', 'sm'), 'No games found right in here']) : 'Pick a drive');
     } catch (e) { toast(e.message, true); }
   }
-  const close = modal('Add a game folder', () => [
+  const close = modal(pick ? pick.title : 'Add a game folder', () => [
     h('div.modal-body', h('div.browser', places, h('div', h('div.crumbs', path, h('button.btn', { onclick: () => go(path.value) }, 'Go')), listing))),
     h('div.modal-foot', status, h('button.btn', { onclick: () => close() }, 'Cancel'), addButton),
   ]);
-  go(S && S.folders.length ? S.folders[S.folders.length - 1].path.replace(/[\\/][^\\/]*$/, '') || '' : '');
+  go(pick ? pick.start || '' : S && S.folders.length ? S.folders[S.folders.length - 1].path.replace(/[\\/][^\\/]*$/, '') || '' : '');
 }
 
 // Log ------------------------------------------------------------------------------
@@ -2678,7 +3244,7 @@ Pages.log = root => {
         const time = line.text.slice(0, 8), text = line.text.slice(9);
         const warn = /couldn't|can't|isn't|stopped|failed|not answering|more than once/i.test(text);
         const xbox = text.match(/^Xbox [\d.]+: /);
-        const d = h('div', h('span.t', time), xbox ? h('span.xbox', xbox[0]) : null, h('span' + (warn ? '.warn' : ''), xbox ? text.slice(xbox[0].length) : text));
+        const d = h('div', h('span.t', time), xbox ? h('span.xbox', { title: xbox[0].slice(5, -2) }, named(xbox[0])) : null, h('span' + (warn ? '.warn' : ''), xbox ? text.slice(xbox[0].length) : text));
         d.hidden = !matches(line.text);
         box.appendChild(d);
       }
@@ -2876,6 +3442,8 @@ Pages.settings = root => {
     const webUser = h('input.input', { value: st.auroraWebUser, autocomplete: 'off' });
     const webPassword = h('input.input', { type: 'password', placeholder: st.auroraWebPasswordSet ? 'Unchanged' : 'Password', autocomplete: 'new-password' });
     const webPort = h('input.input', { type: 'number', min: 1, max: 65535, value: st.auroraWebPort });
+    const pluginSet = h('input.input', { value: st.pluginSet, placeholder: 'NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex' });
+    const pluginKit = h('input.input.mono', { value: st.pluginKit, placeholder: S.platform === 'windows' ? 'C:\\Xbox\\Plugins' : '/plugins' });
     fill(body,
       head('Xbox & Aurora', 'How your games get into Aurora\u2019s game list on each console.'),
       card('gamepad-2', 'Your games in Aurora', null,
@@ -2892,12 +3460,18 @@ Pages.settings = root => {
         row('Aurora scripts', ['Puts ', h('b', 'NetDisc360 Cleanup'), ' under Aurora\u2019s Utilities, which takes games whose tile is gone off Aurora\u2019s list, and the filter ', h('b', 'Hide PC games while NetDisc360 is off'), ' under Filters, User.'], toggle(st.auroraScripts, (v, i) => flip('auroraScripts', v, i))),
         row('Tidy Aurora\u2019s game list as it starts', 'Takes the games whose NetDisc360 tile is gone off Aurora\u2019s list each time Aurora starts, as NetDisc360 Cleanup does but without asking. Only rows in Aurora\u2019s list change; no file is deleted. Needs Aurora scripts on.', toggle(st.tidyAurora, (v, i) => flip('tidyAurora', v, i), !st.auroraScripts)),
         row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i))),
-        row('Show each console\u2019s name when Aurora starts', 'A note on its screen, like \u201cThis is FABLE (192.168.1.42)\u201d, so you can tell the consoles apart. The name is the one set on the Xbox under Settings, System, Console Settings, Console Name, and Media Sharing must be on there. Needs JRPC2.xex as a DashLaunch plugin; the Consoles page has Identify for any time.', toggle(st.showName, (v, i) => flip('showName', v, i))),
+        row('Show each console\u2019s name when Aurora starts', 'A note on its screen, like \u201cThis is FABLE (192.168.1.42)\u201d, so you can tell the consoles apart. The name is the one set on the Xbox under Settings, System, Console Settings, Console Name, and Media Sharing must be on there. Needs JRPC2.xex as a DashLaunch plugin; each console\u2019s page has Identify for any time.', toggle(st.showName, (v, i) => flip('showName', v, i))),
         row('Follow this PC\u2019s address', 'When your router gives this PC a new address, NetISO.xex.txt on the console is changed to it. Restart the Xbox when the dashboard says so.', toggle(st.followAddress, (v, i) => flip('followAddress', v, i))),
-        row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; the Consoles page turns a console off by hand too.',
+        row('Turn a console off after its last game', 'When it has been back in Aurora this long after a game. Through the console\u2019s debug monitor, which runs where xbdm.xex is a DashLaunch plugin; each console\u2019s page turns it off or restarts it by hand too.',
           h('select.input', { style: { width: 'auto' }, onchange: e => save({ autoOffMinutes: Number(e.target.value) }, Number(e.target.value) ? 'Consoles turn off after their last game' : 'Consoles stay on') },
             [[0, 'Never'], [15, 'After 15 minutes'], [30, 'After 30 minutes'], [60, 'After 1 hour'], [120, 'After 2 hours']].concat([0, 15, 30, 60, 120].includes(st.autoOffMinutes) ? [] : [[st.autoOffMinutes, 'After ' + plural(st.autoOffMinutes, 'minute')]])
               .map(([v, l]) => h('option', { value: v, selected: v === st.autoOffMinutes }, l))))),
+      card('plug', 'Console plugins', 'for Set up this console, on each console\u2019s Plugins tab',
+        h('div.form',
+          h('label.field', h('span', 'Plugin set'), pluginSet, h('span.help', 'The DashLaunch plugins each console loads, in order, with commas between: 5 at most (plugin1 to plugin5 in launch.ini).')),
+          h('div.field', h('span', 'Kit folder'), h('div.crumbs', pluginKit, h('button.btn', { onclick: () => addFolder({ title: 'The kit folder', button: 'Use this folder', start: pluginKit.value, choose: path => { pluginKit.value = path; } }) }, ic('folder-open', 'sm'), 'Browse')),
+            h('span.help', 'A folder on this computer with the plugin files (NetISO.xex, xbdm.xex, JRPC2.xex and the rest), copied to a console that lacks them. NetDisc360 doesn\u2019t come with them: they aren\u2019t ours to share.')),
+          h('div.form-actions', h('button.btn', { onclick: () => save({ pluginSet: pluginSet.value, pluginKit: pluginKit.value }, 'Plugin settings saved') }, 'Save plugins')))),
       card('play', 'Aurora\u2019s web server', 'used to start games from this dashboard and to restart Aurora',
         h('div.form.cols',
           h('label.field', h('span', 'User name'), webUser),

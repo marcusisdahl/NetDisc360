@@ -283,8 +283,8 @@ class Xbdm(socketserver.ThreadingTCPServer):
                         self.wfile.write(b"200- bye\r\n")
                         return
                     outer.commands.append(command)
-                    if command == "shutdown":
-                        return  # the console powers off: xbdm closes without an answer
+                    if command in ("shutdown", "magicboot COLD"):
+                        return  # the console powers off or restarts: xbdm closes without an answer
                     self.wfile.write(b"407- unknown command\r\n")
 
         super().__init__((host, port), Handler)
@@ -1039,6 +1039,7 @@ class Push(ServerTest):
             self.assertIn("Usb:\\Plugins\\NetIsoTiles.ini, a copy of Usb:\\NetIsoTiles.ini", plan["copies"])
             self.assertIn("Usb:\\NetISO.xex.txt, a copy of Usb:\\Plugins\\NetISO.xex.txt", plan["copies"])
             self.assertIn("Usb:\\xbdm.ini, from " + kit, plan["copies"])
+            self.assertIn("Usb:\\Plugins\\JRPC2.xex, from " + kit, plan["copies"])
             self.assertEqual(read("launch.ini"), before)
             self.assertFalse(os.path.exists(os.path.join(plugins, "xbdm.xex")))
             # Rules: 5 at most, each from the console or the kit.
@@ -1124,6 +1125,10 @@ class Push(ServerTest):
             # Turned off through its debug monitor.
             self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
             self.assertEqual(xbdm.commands, ["shutdown"])
+            # Restarted the same way (a cold start: DashLaunch loads its plugins again).
+            self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "restart"})
+            self.assertEqual(xbdm.commands, ["shutdown", "magicboot COLD"])
+            self.assertEqual(self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "reboot"})[0], 400)
             xbdm.close()
             status, _, data = self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
             self.assertEqual(status, 400)

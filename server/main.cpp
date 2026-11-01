@@ -4611,20 +4611,29 @@ void Screenshots(const web::Request& r, const web::Value& body, web::Reply& out)
     if(!ok) out.Error(400,aurora.Error().empty() ? std::string("Aurora's answer wasn't a list.") : aurora.Error()+".");
 }
 
-// Turns a console off (its debug monitor), or starts Aurora again on it
-// (Aurora's web server), from a game too: action off or aurora.
+// Turns a console off or restarts it (its debug monitor), or starts Aurora
+// again on it (Aurora's web server), from a game too: action off, restart or
+// aurora. A restart is a cold one, as with the power button: DashLaunch loads
+// its plugins again.
 bool PowerOn(Console& console, const std::string& action, std::string& error) {
     Console* c=&console;
     Options o=Current();
     std::string why;
-    if((action=="off" || action=="aurora") && !SafeSoon(*c,PowerWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
+    if((action=="off" || action=="restart" || action=="aurora") && !SafeSoon(*c,PowerWaitMost,why)) { error="Not now: "+why+". Try again in a moment."; return false; }
     if(action=="off") {
         if(!Xbdm(c->address,o.xbdmPort,"shutdown",error)) { error="It can't be turned off from here: "+error+"."; return false; }
         XboxLog(*c,"turned off (asked on the dashboard).");
         XboxEvent(*c,EventXbox,"Turned off from the dashboard");
         return true;
     }
-    if(action!="aurora") { error="Send action off or aurora."; return false; }
+    if(action=="restart") {
+        if(!Xbdm(c->address,o.xbdmPort,"magicboot COLD",error)) { error="It can't be restarted from here: "+error+"."; return false; }
+        XboxLog(*c,"restarting (asked on the dashboard).");
+        XboxEvent(*c,EventXbox,"Restarted from the dashboard");
+        c->launchedAt=0;
+        return true;
+    }
+    if(action!="aurora") { error="Send action off, restart or aurora."; return false; }
     std::string folder=DevicePath(o.aurora);
     if(folder.empty()) { error="Aurora is restarted from the dashboard only when it's on the hard drive, and it's in "+o.aurora+"."; return false; }
     AuroraWeb aurora(c->address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,8);
@@ -4793,7 +4802,7 @@ bool PlanSetup(FtpClient& ftp, const Options& o, const std::vector<std::string>&
             if(!KitFile(o,name,data,PluginMost))
                 { error=name+" isn't on the console"+(o.pluginKit.empty() ? std::string(", and no folder with plugin files is chosen.") : ", nor in "+o.pluginKit+"."); return false; }
             plan.copies.push_back(std::make_pair(ftpPath,data));
-            plan.copied.push_back(name+" from "+o.pluginKit);
+            plan.copied.push_back(DashPath(ftpPath)+", from "+o.pluginKit);
             plan.paths.push_back(DashPath(ftpPath));
             plan.from.push_back("kit");
         }
