@@ -10,8 +10,8 @@
 // The calls, as xenia (xenia-canary, xam_profile.cc and xam.h) describes them:
 // XamProfileCreate (ordinal 0x230) starts the creation as a task and hands
 // back a creation record; XamProfileGetCreationStatus (0x234) answers
-// ERROR_IO_PENDING until the profile is made, then gives its offline XUID
-// (E000...) and frees the record. XamProfileFindAccount (0x235) reads a
+// E_PENDING (0x8000000A) until the profile is made, then gives its offline
+// XUID (E000...) and frees the record. XamProfileFindAccount (0x235) reads a
 // profile's account (its gamertag) by XUID.
 //
 // Kept apart from the helper's own code so the LAN party's console app can

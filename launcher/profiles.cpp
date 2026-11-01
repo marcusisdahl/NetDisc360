@@ -33,6 +33,10 @@ typedef DWORD (__stdcall* FindAccount)(ULONGLONG xuid, AccountInfo* account, DWO
 // Seconds a creation may take before it counts as failed (the dashboard's
 // takes a moment: it writes the profile's package to the drive).
 const DWORD CreationMostMs=60000, CreationPollMs=100;
+// What XamProfileGetCreationStatus answers while xam is still at it: E_PENDING
+// (seen on the console 2026-11-01, 0.16 s into a creation), not the
+// ERROR_IO_PENDING xenia's notes expect.
+const DWORD StillPending=0x8000000A;
 
 void* Xam(DWORD ordinal) {
     HANDLE xam=NULL; void* address=NULL;
@@ -72,8 +76,8 @@ bool MakeProfile(const WCHAR* gamertag, const ProfileCall& call, ULONGLONG& xuid
         ULONGLONG made=0;
         result=status(creation,&made);
         if(result==ERROR_SUCCESS) { xuid=made; break; }
-        if(result!=ERROR_IO_PENDING) { sprintf_s(error,capacity,"xam couldn't make it (XamProfileGetCreationStatus %08lX).",result); return false; }
-        if(GetTickCount()-start>CreationMostMs) { sprintf_s(error,capacity,"xam was still at it after %lu seconds.",CreationMostMs/1000); return false; }
+        if(result!=ERROR_IO_PENDING && result!=StillPending) { sprintf_s(error,capacity,"xam couldn't make it (XamProfileGetCreationStatus %08lX).",result); return false; }
+        if(GetTickCount()-start>CreationMostMs) { sprintf_s(error,capacity,"xam was still at it after %lu seconds (%08lX).",CreationMostMs/1000,result); return false; }
         Pause(wait,CreationPollMs);
     }
     if(!xuid) { sprintf_s(error,capacity,"xam made it but gave no XUID."); return false; }
