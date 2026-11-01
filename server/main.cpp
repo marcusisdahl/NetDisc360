@@ -3408,6 +3408,62 @@ void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options
 // (NetIsoTiles.xex before) and NetISO.xex if it's still used (with
 // NetISO.xex.txt naming this computer), each file's SHA-256 for the dashboard
 // to match with the releases.
+// Aurora's scan paths: settings.db's ScanPaths (Path under a drive, DeviceId,
+// Depth), each drive named by content.db's MountedDevices (DeviceId,
+// DeviceName: Hdd1, Usb0...), as FTP paths with their depth. False, with
+// why in error, if the databases couldn't be read.
+struct ScanPath { std::string path; int depth; };
+bool AuroraScanPaths(FtpClient& ftp, const Options& o, std::vector<ScanPath>& out, std::string& error) {
+    out.clear();
+    std::string folder=o.aurora+"/Data/Databases";
+    std::vector<FtpEntry> files;
+    // Listed first: a read of a file that isn't there can stall FtpDll's next one.
+    if(!ftp.List(folder.c_str(),files)) { error="Couldn't list "+folder+": "+ftp.Error(); return false; }
+    std::string settingsName, contentName;
+    for(size_t i=0;i<files.size();++i) {
+        if(!_stricmp(files[i].name.c_str(),"settings.db")) settingsName=files[i].name;
+        if(!_stricmp(files[i].name.c_str(),"content.db")) contentName=files[i].name;
+    }
+    if(settingsName.empty() || contentName.empty()) { error="Aurora's databases aren't in "+folder+"."; return false; }
+    std::vector<unsigned char> settings, content;
+    if(!ftp.Retrieve((folder+"/"+settingsName).c_str(),settings,64<<20) || !ftp.Retrieve((folder+"/"+contentName).c_str(),content,256<<20)) {
+        error=std::string("Couldn't read Aurora's databases: ")+ftp.Error(); return false;
+    }
+    auto text=[](const SqlValue& v) { return v.null ? std::string() : !v.text.empty() ? v.text : std::to_string(v.number); };
+    std::vector<std::vector<SqlValue> > devices, paths;
+    std::vector<std::string> columns;
+    columns.push_back("DeviceId"); columns.push_back("DeviceName");
+    if(!ReadSqlTable(content,"MountedDevices",columns,devices,error)) { error="content.db: "+error; return false; }
+    std::map<std::string,std::string> names;
+    for(size_t i=0;i<devices.size();++i) names[text(devices[i][0])]=text(devices[i][1]);
+    columns.clear(); columns.push_back("Path"); columns.push_back("DeviceId"); columns.push_back("Depth");
+    if(!ReadSqlTable(settings,"ScanPaths",columns,paths,error)) { error="settings.db: "+error; return false; }
+    for(size_t i=0;i<paths.size();++i) {
+        std::map<std::string,std::string>::const_iterator d=names.find(text(paths[i][1]));
+        if(d==names.end() || d->second.empty()) continue;
+        std::string relative=text(paths[i][0]);
+        for(size_t k=0;k<relative.size();++k) if(relative[k]=='\\') relative[k]='/';
+        while(!relative.empty() && relative[0]=='/') relative.erase(0,1);
+        while(!relative.empty() && relative.back()=='/') relative.pop_back();
+        ScanPath p;
+        p.path="/"+d->second+(relative.empty() ? std::string() : "/"+relative);
+        p.depth=paths[i][2].null ? 1 : std::max(1,int(paths[i][2].number));
+        out.push_back(p);
+    }
+    return true;
+}
+
+// Whether a scan path finds a game whose default.xex is in a folder of folder.
+bool ScansGamesIn(const std::vector<ScanPath>& paths, const std::string& folder) {
+    auto levels=[](const std::string& p) { int n=0; for(size_t i=0;i<p.size();++i) n+=p[i]=='/'; return n; };
+    for(size_t i=0;i<paths.size();++i) {
+        const std::string& p=paths[i].path;
+        bool inside=!_stricmp(p.c_str(),folder.c_str()) || (folder.size()>p.size() && !_strnicmp(folder.c_str(),p.c_str(),p.size()) && folder[p.size()]=='/');
+        if(inside && levels(folder)+1-levels(p)<=paths[i].depth) return true;
+    }
+    return false;
+}
+
 void CheckConsole(const web::Value& body, web::Reply& out) {
     Options o=Current();
     std::string text, user=o.ftpUser, password=o.ftpPassword;
@@ -3432,7 +3488,16 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
         out.body=j.Text();
         return;
     }
-    j.Set("login",true).Set("aurora",ftp.Exists(o.aurora.c_str())).Set("gameFolder",ftp.Exists(o.xboxFolder.c_str()));
+    bool aurora=ftp.Exists(o.aurora.c_str());
+    j.Set("login",true).Set("aurora",aurora).Set("gameFolder",ftp.Exists(o.xboxFolder.c_str()));
+    // Whether Aurora scans the game folders, and Hdd1:\Games (where Copy to Xbox puts original Xbox games).
+    std::vector<ScanPath> scans;
+    std::string scanError;
+    if(aurora && AuroraScanPaths(ftp,o,scans,scanError)) {
+        j.Key("scanPaths").Open('[');
+        for(size_t i=0;i<scans.size();++i) j.Open('{').Set("path",scans[i].path).Set("depth",scans[i].depth).Close('}');
+        j.Close(']').Set("scansGames",ScansGamesIn(scans,o.xboxFolder)).Set("scansHddGames",ScansGamesIn(scans,"/Hdd1/Games"));
+    } else if(aurora) j.Set("scanError",scanError);
     LaunchIni ini;
     ReadLaunchIni(ftp,ini,false);
     j.Set("launchIni",ini.path).Set("default",ini.defaultPath);

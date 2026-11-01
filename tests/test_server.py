@@ -1963,6 +1963,17 @@ class Dashboard(ServerTest):
         for name, data in files.items():
             with open(os.path.join(xbox, name), "wb") as f:
                 f.write(data)
+        # Aurora's scan paths: Hdd1:\Games two folders deep and a USB drive, not Hdd1:\NetISO.
+        databases = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data", "Databases")
+        os.makedirs(databases)
+        db = sqlite3.connect(os.path.join(databases, "content.db"))
+        db.execute("CREATE TABLE MountedDevices (Id INTEGER PRIMARY KEY AUTOINCREMENT, DeviceId TEXT, DeviceName TEXT, MountPoint TEXT)")
+        db.executemany("INSERT INTO MountedDevices (DeviceId, DeviceName) VALUES (?, ?)", [("A1B2", "Hdd1"), ("C3D4", "Usb0")])
+        db.commit(); db.close()
+        db = sqlite3.connect(os.path.join(databases, "settings.db"))
+        db.execute("CREATE TABLE ScanPaths (Id INTEGER PRIMARY KEY AUTOINCREMENT, Path TEXT, DeviceId TEXT, Depth INTEGER, ScriptData TEXT)")
+        db.executemany("INSERT INTO ScanPaths (Path, DeviceId, Depth) VALUES (?, ?, ?)", [("\\Games\\", "A1B2", 2), ("\\Apps", "C3D4", 1), ("\\Gone", "FFFF", 1)])
+        db.commit(); db.close()
         ftp_port = free_port()
         ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
@@ -1975,6 +1986,8 @@ class Dashboard(ServerTest):
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2"})
             self.assertEqual([r[k] for k in ("ftp", "login", "aurora", "gameFolder", "launchIni")], [True, True, True, False, "/Usb0/launch.ini"])
             self.assertEqual(r["default"], "Hdd:\\Apps\\Aurora\\Aurora.xex")
+            self.assertEqual(r["scanPaths"], [{"path": "/Hdd1/Games", "depth": 2}, {"path": "/Usb0/Apps", "depth": 1}])
+            self.assertEqual((r["scansGames"], r["scansHddGames"]), (False, True))
             netiso, tiles, gone, drive = r["plugins"]
             self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
             self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())

@@ -2740,6 +2740,12 @@ function consoleChecks(r) {
     : wzCheck('warn', 'Aurora isn\u2019t in ' + st.aurora, 'NetDisc360 can\u2019t add the Xbox 360 category rule there. Set Aurora\u2019s folder under Settings, Xbox & Aurora.'));
   const games = st.xboxFolder.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\');
   out.push(r.gameFolder ? wzCheck('good', games + ' is there') : wzCheck('info', games + ' isn\u2019t there yet', 'NetDisc360 makes it. Add it to Aurora\u2019s scan paths with depth 1.'));
+  if (r.scanPaths) {
+    out.push(r.scansGames ? wzCheck('good', 'Aurora scans ' + games, 'So it lists the games NetDisc360 adds.')
+      : wzCheck('bad', 'Aurora doesn\u2019t scan ' + games, ['Aurora won\u2019t list your PC games. In Aurora: Settings, Content, Scan paths, add ', h('code', games), ' with depth 1, then scan.',
+        r.scanPaths.length ? ' It scans ' + r.scanPaths.map(p => p.path.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\') + ' (depth ' + p.depth + ')').join(', ') + '.' : ' It scans nothing yet.']));
+    if (!r.scansHddGames) out.push(wzCheck('info', 'Aurora doesn\u2019t scan Hdd1:\\Games', 'Copy to Xbox puts original Xbox games there. Add it in Aurora (Settings, Content, Scan paths, depth 1) to see them.'));
+  } else if (r.scanError) out.push(wzCheck('info', 'Couldn\u2019t read Aurora\u2019s scan paths', r.scanError));
   if (!r.launchIni) {
     out.push(wzCheck('warn', 'No launch.ini found', 'DashLaunch reads it from the root of the USB drive or hard drive. The plugins couldn\u2019t be checked.'));
     return out;

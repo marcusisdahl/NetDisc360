@@ -663,10 +663,14 @@ DWORD HexName(const std::string& name, bool& ok) {
 bool PackageTarget(const unsigned char* head, size_t got, const std::string& folder, const std::string& type, DWORD& titleId, DWORD& contentType) {
     bool folderOk=false, typeOk=false;
     titleId=HexName(folder,folderOk); contentType=HexName(type,typeOk);
-    if(got>=0x364 && (!memcmp(head,"CON ",4) || !memcmp(head,"LIVE",4) || !memcmp(head,"PIRS",4))) {
+    // The disc's folders say where a package goes; only a placeholder folder
+    // (FFED2000, FFFFFFFF: Skyrim's, Fallout's, BioShock's bonus discs) or one
+    // that isn't a Title ID leaves it to the package's own header.
+    bool placeholder=!folderOk || !titleId || titleId==0xFFED2000 || titleId==0xFFFFFFFF;
+    if(placeholder && got>=0x364 && (!memcmp(head,"CON ",4) || !memcmp(head,"LIVE",4) || !memcmp(head,"PIRS",4))) {
         DWORD t=Big32(head+0x360), c=Big32(head+0x344);
         if(t) { titleId=t; folderOk=true; }
-        if(c) { contentType=c; typeOk=true; }
+        if(c && c<=0xFFFFF) { contentType=c; typeOk=true; }  // Content types run from 0x1 to 0xF0000.
     }
     if(!folderOk || !typeOk || !titleId) return false;
     if(titleId==0xFFED2000 || titleId==0xFFFFFFFF || (titleId>>16)==0xFFFE) return false;  // A placeholder it didn't say better, or the dashboard's.
