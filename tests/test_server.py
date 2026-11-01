@@ -1923,6 +1923,18 @@ print('lua ok')
         self.assertNotIn("NetISO.xex.txt (", out)
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
             self.assertEqual(f.read(), "127.0.0.8")
+        # NetDisc360.xex's own drive reads server= in NetDisc360.ini.
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetDisc360.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), "w", newline="") as f:
+            f.write("; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.9:4323\r\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetDisc360.ini (/Usb0/Plugins/NetDisc360.ini) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), newline="") as f:
+            self.assertEqual(f.read(), "; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.1:4323\r\n")
+        os.remove(os.path.join(usb, "Plugins", "NetDisc360.ini"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
         # And so is all of it when following is off.
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
             f.write("127.0.0.9")
