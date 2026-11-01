@@ -282,6 +282,53 @@ class Xbdm(socketserver.ThreadingTCPServer):
         self.server_close()
 
 
+class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
+    """XboxUnity's TitleUpdateInfo.php and TitleUpdate.php, from self.server.titles
+    ({Title ID: answer}) and self.server.files ({id: (name, bytes)})."""
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(url.query)
+        self.server.asked.append(self.path)
+        if url.path == "/Resources/Lib/TitleUpdateInfo.php":
+            body = json.dumps(self.server.titles.get(query.get("titleid", [""])[0], [])).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            # Chunked, as PHP sends it.
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for at in range(0, len(body), 100):
+                part = body[at:at + 100]
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
+            self.wfile.write(b"0\r\n\r\n")
+            return
+        if url.path == "/Resources/Lib/TitleUpdate.php" and query.get("tuid", [""])[0] in self.server.files:
+            name, data = self.server.files[query["tuid"][0]]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+
+def tu_package(title_id, media_id, name, size=0x3000):
+    """A title update package as the console keeps it: a LIVE header with its IDs."""
+    data = bytearray(b"LIVE" + bytes(size - 4))
+    struct.pack_into(">I", data, 0x344, 0xB0000)
+    struct.pack_into(">I", data, 0x354, media_id)
+    struct.pack_into(">I", data, 0x360, title_id)
+    encoded = name.encode("utf-16-be")
+    data[0x411:0x411 + len(encoded)] = encoded
+    data[-16:] = os.urandom(16)
+    return bytes(data)
+
+
 def god_header(media_id, title_id, disc=1):
     """A Games on Demand package's header file, as far as it names the game."""
     header = bytearray(0x400)
@@ -2128,6 +2175,112 @@ class Dashboard(ServerTest):
         finally:
             ftp.shutdown()
             ftp.server_close()
+
+    def test_puts_title_updates_on_consoles_from_xboxunity(self):
+        halo = self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        newest, older = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2"), tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 1", 0x2000)
+        cache_tu = os.urandom(5000)
+        unity = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnityHandler)
+        unity.asked = []
+        unity.titles = {
+            "4D5307E6": {"Type": 1, "MediaIDS": [
+                {"MediaID": "1A2B3C4D", "Updates": [
+                    {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(len(older)), "hash": hashlib.sha1(older).hexdigest()},
+                    {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(len(newest)), "hash": hashlib.sha1(newest).hexdigest().upper()}]},
+                {"MediaID": "99999999", "Updates": [{"TitleUpdateID": "120", "Version": "3", "Name": "Title Update 3"}]}]},
+            # The other shape: each update says its disc.
+            "4D530910": {"Type": 2, "Updates": [{"TitleUpdateID": "130", "Version": "4", "MediaID": "11112222", "Size": str(len(cache_tu))}]}}
+        unity.files = {"111": ("tu00000002_00000000", newest), "110": ("tu00000001_00000000", older), "130": ("TU_16L61V6_0000014000000.00000000000O9", cache_tu)}
+        threading.Thread(target=unity.serve_forever, daemon=True).start()
+        xbox = os.path.join(self.tmp.name, "xbox")
+        updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000")
+        os.makedirs(updates)
+        os.makedirs(os.path.join(xbox, "Hdd1", "Cache"))
+        # The console has Title Update 1, put there by Aurora.
+        with open(os.path.join(updates, "tu00000001_00000000"), "wb") as f:
+            f.write(older)
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port), "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
+            self.state_when(lambda s: s["library"]["games"] == 2 and s["consoles"])
+            self.state_when(lambda s: any(c.get("tiles") for c in s["consoles"]) or True)
+
+            def wait_queue():
+                return self.state_when(lambda s: s["installs"] and all(j["state"] not in ("queued", "copying") for j in s["installs"]), 60)["installs"]
+
+            found = self.json("GET", "/api/titleupdates?game=" + urllib.parse.quote("Halo 3"))
+            self.assertEqual([(u["id"], u["name"], u["onPc"]) for u in found["offers"]], [("111", "Title Update 2", False), ("110", "Title Update 1", False)])
+            self.assertEqual((found["titleId"], found["mediaId"], found["otherDiscs"]), ("4D5307E6", "1A2B3C4D", 1))
+            self.assertEqual(found["consoles"][0]["checked"], 0)
+            # A check of the console finds Title Update 1 by its size.
+            self.json("POST", "/api/titleupdates/check", {"address": "127.0.0.2"})
+            self.assertEqual(wait_queue()[-1]["state"], "done")
+            found = self.json("GET", "/api/titleupdates?game=Halo%203")
+            console = found["consoles"][0]
+            self.assertEqual((console["has"], console["hasName"], console["other"]), ("110", "Title Update 1", False))
+            self.assertEqual([f["title"] for f in console["files"]], ["Title Update 1"])
+            # The newest: downloaded here, put where Aurora puts it, the older one moved out of the way.
+            self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": "127.0.0.2"})
+            job = wait_queue()[-1]
+            self.assertEqual([job[k] for k in ("kind", "state", "label", "game")], ["update", "done", "Title Update 2", "Halo 3"], job["error"])
+            self.assertIn("Moved the older update", job["note"])
+            self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+            with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
+                self.assertEqual(f.read(), newest)
+            with open(os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360", "Title updates", "4D5307E6", "tu00000001_00000000"), "rb") as f:
+                self.assertEqual(f.read(), older)
+            kept = os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6", "111", "tu00000002_00000000")
+            with open(kept, "rb") as f:
+                self.assertEqual(f.read(), newest)
+            found = self.json("GET", "/api/titleupdates?game=Halo%203")
+            self.assertEqual(found["consoles"][0]["has"], "111")
+            self.assertTrue(found["offers"][0]["onPc"])
+            self.assertIn("Title Update 2 for Halo 3 is on the console", json.dumps(self.json("GET", "/api/state")["events"]))
+            # Again: there already, and not downloaded again.
+            asked = len(unity.asked)
+            self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": "127.0.0.2", "id": "111"})
+            self.assertEqual(wait_queue()[-1]["skipped"], 1)
+            self.assertFalse([a for a in unity.asked[asked:] if "TitleUpdate.php" in a])
+            # An update with an upper-case TU_ name goes in the Cache.
+            self.json("POST", "/api/titleupdates/install", {"game": "Forza 4", "address": "127.0.0.2"})
+            self.assertEqual(wait_queue()[-1]["state"], "done")
+            with open(os.path.join(xbox, "Hdd1", "Cache", "TU_16L61V6_0000014000000.00000000000O9"), "rb") as f:
+                self.assertEqual(f.read(), cache_tu)
+            # The whole library at once: looked up, then each console checked.
+            self.json("POST", "/api/titleupdates/scan", {})
+            scan = None
+            for _ in range(100):
+                scan = self.json("GET", "/api/titleupdates/all")
+                if not scan["scan"]["running"]:
+                    break
+                time.sleep(0.2)
+            wait_queue()
+            scan = self.json("GET", "/api/titleupdates/all")
+            self.assertEqual(scan["scan"]["found"], 2)
+            rows = {g["game"]: g for g in scan["games"]}
+            self.assertEqual(rows["Halo 3"]["newest"]["name"], "Title Update 2")
+            self.assertTrue(rows["Halo 3"]["consoles"][0]["newest"])
+            self.assertTrue(rows["Forza 4"]["consoles"][0]["newest"])
+            # Nothing older is left to update.
+            self.assertEqual(self.json("POST", "/api/titleupdates/install", {"everything": True})["queued"], 0)
+            # A file that isn't what XboxUnity says is refused.
+            unity.files["110"] = ("tu00000001_00000000", b"<html>busy</html>")
+            shutil.rmtree(os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6"), ignore_errors=True)
+            self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": "127.0.0.2", "id": "110"})
+            job = wait_queue()[-1]
+            self.assertEqual(job["state"], "failed")
+            self.assertIn("isn't the size it lists", job["error"])
+            self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+            # Unknown games and discs without updates say so.
+            self.assertEqual(self.call("GET", "/api/titleupdates?game=Nope")[0], 404)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+            unity.shutdown()
+            unity.server_close()
 
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash
