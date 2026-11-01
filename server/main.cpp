@@ -1356,8 +1356,6 @@ bool StartScan(const Console& console, FtpClient& ftp, const Options& o) {
 // <Title ID>_<row id>, holds its cover as GC<Title ID>.asset. Aurora keeps an
 // empty one (the 2048-byte header alone) when the lookup found nothing.
 const char AuroraContentDb[] = "/Data/Databases/content.db";
-const char GameDataFolder[] = "/Data/GameData";
-const size_t ArtPlaceholder = 2048;
 struct ArtlessTile { std::string folder, title; };
 
 // Aurora's Directory for a game folder: the game folder's path without its
@@ -2553,10 +2551,56 @@ std::string Trim(const std::string& text) {
     return a==std::string::npos ? std::string() : text.substr(a,b-a+1);
 }
 
+// The server NetDisc360.xex's drive connects to, read over FTP as the plugin
+// reads it: server= in the first NetDisc360.ini (or NetIsoTiles.ini, its old
+// name) of the plugin's folder and the roots of Usb0: and Hdd1:, else the
+// first line of NetISO.xex.txt next to the plugin or on those roots. from is
+// the file it came from, empty if none names one.
+std::string PluginServerOnConsole(FtpClient& ftp, const std::string& folder, std::string& from) {
+    std::vector<unsigned char> data;
+    std::vector<std::string> inis;
+    static const char* const names[]={"NetDisc360.ini","NetIsoTiles.ini"};
+    for(int n=0;n<2;++n) {
+        inis.push_back(folder+names[n]);
+        inis.push_back(std::string("/Usb0/")+names[n]);
+        inis.push_back(std::string("/Hdd1/")+names[n]);
+    }
+    from.clear();
+    for(size_t i=0;i<inis.size();++i) {
+        if(!ftp.Retrieve(inis[i].c_str(),data,64<<10)) { if(!ftp.Missing()) ftp.Close(); continue; }
+        // The plugin reads the first one there is, with or without server=.
+        std::string file(data.begin(),data.end());
+        for(size_t at=0;at<file.size();) {
+            size_t end=file.find('\n',at);
+            if(end==std::string::npos) end=file.size();
+            std::string line=Trim(file.substr(at,end-at));
+            at=end+1;
+            size_t equals=line.find('=');
+            if(equals==std::string::npos) continue;
+            std::string key=Trim(line.substr(0,equals));
+            for(size_t k=0;k<key.size();++k) key[k]=char(tolower((unsigned char)key[k]));
+            if(key!="server") continue;
+            std::string value=Trim(line.substr(equals+1));
+            from=inis[i];
+            return value.substr(0,value.find(':'));
+        }
+        break;
+    }
+    const std::string txts[]={folder+"NetISO.xex.txt","/Hdd1/netiso.xex.txt","/Usb0/netiso.xex.txt"};
+    for(size_t i=0;i<3;++i) {
+        if(!ftp.Retrieve(txts[i].c_str(),data,4096)) { if(!ftp.Missing()) ftp.Close(); continue; }
+        std::string text(data.begin(),data.end());
+        from=txts[i];
+        return Trim(text.substr(0,text.find_first_of("\r\n")));
+    }
+    return std::string();
+}
+
 // What the console has: Aurora's FTP login works, Aurora and the game folder
-// are where the settings say, and DashLaunch's launch.ini loads NetISO.xex
-// (with NetISO.xex.txt naming this computer) and NetIsoTiles.xex, each
-// file's SHA-256 for the dashboard to match with the releases.
+// are where the settings say, and DashLaunch's launch.ini loads NetDisc360.xex
+// (NetIsoTiles.xex before) and NetISO.xex if it's still used (with
+// NetISO.xex.txt naming this computer), each file's SHA-256 for the dashboard
+// to match with the releases.
 void CheckConsole(const web::Value& body, web::Reply& out) {
     Options o=Current();
     std::string text, user=o.ftpUser, password=o.ftpPassword;
@@ -2618,13 +2662,21 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
     for(size_t i=0;i<plugins.size();++i) {
         std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1), lower=name;
         for(size_t k=0;k<lower.size();++k) lower[k]=char(tolower((unsigned char)lower[k]));
-        const char* kind=lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
+        // NetDisc360.xex is the plugin's name since it became the disc drive too; NetIsoTiles.xex before.
+        const char* kind=lower.find("netdisc360")!=std::string::npos || lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
                        : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
         j.Open('{').Set("slot",plugins[i].first).Set("path",plugins[i].second).Set("name",name).Set("kind",kind);
         bool found=!path.empty() && ftp.Retrieve(path.c_str(),data,16<<20);
         if(!found && !ftp.Missing()) ftp.Close();
         j.Set("found",found);
         if(found) j.Set("size",(long long)data.size()).Set("sha256",web::Sha256Hex(std::string(data.begin(),data.end())));
+        // NetDisc360.xex's own drive: the server it connects to, found where
+        // the plugin looks (plugin/main.cpp, PluginServer).
+        if(found && !strcmp(kind,"tiles")) {
+            std::string folder=path.substr(0,path.rfind('/')+1), from, server=PluginServerOnConsole(ftp,folder,from);
+            j.Set("txt",!from.empty()).Set("server",server).Set("serverFrom",from)
+             .Set("here",!server.empty() && std::find(addresses.begin(),addresses.end(),server)!=addresses.end());
+        }
         // NetISO.xex.txt: the address of the server NetISO connects to.
         if(found && !strcmp(kind,"netiso")) {
             std::vector<unsigned char> txt;
