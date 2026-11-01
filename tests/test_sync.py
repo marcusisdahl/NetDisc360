@@ -104,6 +104,17 @@ class Sync(unittest.TestCase):
                     stored, computed = header_digest(right)
                     self.assertEqual(stored, computed, game)
 
+    def test_more_games_than_fixed_lists_held(self):
+        # Sync used to stop at 1,024 ISOs and 1,024 folders; libraries are bigger.
+        for i in range(1100):
+            self.add_iso("Game %04d.iso" % i, 0x1000 + i, 0x41000000 + i)
+        out = self.sync()
+        self.assertIn("The server has 1100 ISO(s).", out)
+        self.assertIn("added=1100", out)
+        self.assertEqual(len(os.listdir(self.games)), 1100)
+        out = self.sync()  # More folders than the first listing has room for.
+        self.assertIn("added=0 kept=1100 removed=0", out)
+
     def test_adds_new_isos_and_keeps_existing(self):
         self.add_iso("a.iso", 1, 0x11111111)
         self.assertIn("added=1", self.sync())

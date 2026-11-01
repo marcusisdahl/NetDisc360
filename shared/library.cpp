@@ -302,6 +302,30 @@ bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capac
     return Fail(error,capacity,"default.xex has no execution info");
 }
 
+// An array on the heap that grows; freed when it goes out of scope, so
+// Sync's many early returns don't leak. Big libraries don't fit fixed arrays
+// (thousands of games), and the Xbox build has little stack.
+template<class T> struct Grown {
+    T* items; int capacity;
+    Grown() : items(NULL), capacity(0) {}
+    ~Grown() { free(items); }
+    bool Reserve(int count) {
+        if(count<=capacity) return true;
+        int room=capacity ? capacity : 256;
+        while(room<count) room*=2;
+        T* more=static_cast<T*>(realloc(items,sizeof(T)*size_t(room)));
+        if(!more) return false;
+        items=more; capacity=room;
+        return true;
+    }
+    T& operator[](int i) { return items[i]; }
+private:
+    Grown(const Grown&);
+    Grown& operator=(const Grown&);
+};
+typedef char IsoName[IsvrNameBytes];
+typedef char FolderNameText[FolderNameMax+1];
+
 struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId, mediaId; bool game, keep;
                 char role[16], label[64], local[PathMax]; };  // disc_role, disc_label and local_copy in its netiso.ini.
 
@@ -429,20 +453,23 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall,
-          FindRole findRole, Wanted wanted, Placed placed) {
+          FindRole findRole, Wanted wanted, Placed placed, Progress progress) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
 
     // What the server has. Names come back in its order; an empty one ends the list.
-    static char isos[IsvrMaxIsos][IsvrNameBytes];
+    Grown<IsoName> isos;
     int isoCount=0;
-    for(;isoCount<IsvrMaxIsos;++isoCount) {
+    for(;;++isoCount) {
+        if(isoCount==MaxGames) { Say(note,"The server lists more than %d ISOs; using the first %d.",MaxGames,MaxGames); break; }
+        if(!isos.Reserve(isoCount+1)) { Say(note,"Out of memory."); return false; }
         if(!client.Name(isoCount,isos[isoCount])) { Say(note,"Listing the server's ISOs failed: %s",client.Error()); return false; }
         if(!isos[isoCount][0]) break;
     }
     Say(note,"The server has %d ISO(s).",isoCount);
-    static bool unwanted[IsvrMaxIsos];
+    Grown<bool> unwanted;
+    if(!unwanted.Reserve(isoCount+1)) { Say(note,"Out of memory."); return false; }
     for(int i=0;i<isoCount;++i) unwanted[i]=wanted && !wanted(isos[i]);
 
     // What is already here. A folder is a game folder when its netiso.ini names an ISO.
@@ -459,12 +486,22 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         else if(written>0) Say(note,"Put the helper the game folders share in %s.",helperPath);
         helperReady=written>=0;
     }
-    static char names[MaxFolders][FolderNameMax+1];
-    static Folder folders[MaxFolders];
-    int folderCount=storage.ListFolders(root,names,MaxFolders);
-    // Not knowing what is there, every game would look new and could be
-    // written over a folder of the same name.
-    if(folderCount<0) { Say(note,"Couldn't list %s (error %lu).",root,storage.LastError()); return false; }
+    // Listed again with more room until the listing fits, so no folder is
+    // missed: a missed one would look gone, and its game new.
+    Grown<FolderNameText> names;
+    Grown<Folder> folders;
+    int folderCount=-1;
+    for(int room=1024;;room*=2) {
+        if(!names.Reserve(room)) { Say(note,"Out of memory."); return false; }
+        folderCount=storage.ListFolders(root,names.items,room);
+        // Not knowing what is there, every game would look new and could be
+        // written over a folder of the same name.
+        if(folderCount<0) { Say(note,"Couldn't list %s (error %lu).",root,storage.LastError()); return false; }
+        if(folderCount<room) break;
+        if(room>=MaxGames*2) { Say(note,"%s has more than %d folders.",root,room); return false; }
+    }
+    // Every ISO could get a new folder.
+    if(!names.Reserve(folderCount+isoCount+1) || !folders.Reserve(folderCount+isoCount+1)) { Say(note,"Out of memory."); return false; }
     static char ini[IniMax+1];
     for(int i=0;i<folderCount;++i) {
         Folder& f=folders[i]; memset(&f,0,sizeof(f)); strcpy_s(f.name,names[i]);
@@ -487,6 +524,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     }
 
     for(int i=0;i<isoCount;++i) {
+        if(progress) progress(i,isoCount);
         if(unwanted[i]) { ++result.installed; continue; }
         bool have=false;
         for(int k=0;k<folderCount;++k) if(folders[k].game && !_stricmp(folders[k].iso,isos[i])) { folders[k].keep=true; have=true; }
@@ -531,9 +569,8 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
             if(!client.Connected()) return false;
             continue;
         }
-        if(folderCount>=MaxFolders) { Say(note,"Too many folders in %s.",root); return false; }
         Folder& f=folders[folderCount]; memset(&f,0,sizeof(f));
-        FolderName(isos[i],names,folderCount,f.name);
+        FolderName(isos[i],names.items,folderCount,f.name);
         strcpy_s(names[folderCount],f.name); strcpy_s(f.iso,isos[i]); f.game=f.keep=true; ++folderCount;
         f.titleId=Read32(info+12); f.mediaId=Read32(info);
         char folder[PathMax],path[PathMax]; Join(folder,root,f.name);
@@ -579,7 +616,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     }
 
     if(findInstall) for(int k=0;k<folderCount;++k)
-        if(folders[k].game && folders[k].keep) RefreshInstall(storage,root,folders,folderCount,folders[k],findInstall,note,result);
+        if(folders[k].game && folders[k].keep) RefreshInstall(storage,root,folders.items,folderCount,folders[k],findInstall,note,result);
     if(findRole) for(int k=0;k<folderCount;++k)
         if(folders[k].game && folders[k].keep) RefreshRole(storage,root,folders[k],findRole,note,result);
 

@@ -139,6 +139,7 @@ bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated 
 // Docker, the NETDISC_* variables), which the setup wizard shows as filled in.
 struct Preset { bool folders, xboxes, ftp; } Given;
 double StartedAt;
+std::atomic<long long> GameStarts(0);  // Mounts of a game by a console, for /metrics.
 // The command line's options, under the settings file's: what a restored
 // backup's settings go over (Reload).
 Options CommandLine;
@@ -481,6 +482,17 @@ std::vector<IsoFile> Isos() {
     return isos;
 }
 
+// A mount of a name that isn't in the latest list looks through the game
+// folders right away (a game copied in a moment ago starts at once), but at
+// most every 30 s: a tile whose game was removed shouldn't have every try
+// read a whole NAS library on the console's connection. Otherwise the next
+// scan finds it.
+std::atomic<long long> LookedForMissingAt(-1000000);
+bool MayLookNow() {
+    long long now=(long long)(Now()*1000), last=LookedForMissingAt;
+    return now-last>=30000 && LookedForMissingAt.compare_exchange_strong(last,now);
+}
+
 // The games WatchLoop found at its latest look at the folders, so a console
 // listing or mounting doesn't have them all read again (over a network, that
 // takes a while); the folders themselves before the first look.
@@ -490,6 +502,52 @@ std::vector<IsoFile> LatestGames() {
         if(GamesScanned) return GamesList;
     }
     return Isos();
+}
+
+// When the server first saw each game (by its served name), for Aurora's
+// "Recently added" filter. Kept in first-seen.txt beside the settings
+// ("<time()>\t<name>" lines); the games there when the file is first made
+// count as old (0), so only games added after that are new.
+std::mutex FirstSeenLock;
+std::map<std::string,long long> FirstSeen;  // Under FirstSeenLock.
+bool FirstSeenLoaded=false;
+std::string FirstSeenPath(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"first-seen.txt"; }
+void NoteFirstSeen(const std::vector<IsoFile>& isos) {
+    if(isos.empty()) return;
+    std::string path=FirstSeenPath(Current());
+    std::lock_guard<std::mutex> hold(FirstSeenLock);
+    bool fresh=false;
+    if(!FirstSeenLoaded) {
+        FirstSeenLoaded=true;
+        std::string text;
+        if(!path.empty() && config::ReadFile(path,text,16<<20)) {
+            for(size_t at=0;at<text.size();) {
+                size_t end=text.find('\n',at); if(end==std::string::npos) end=text.size();
+                std::string line=text.substr(at,end-at); at=end+1;
+                if(!line.empty() && line[line.size()-1]=='\r') line.erase(line.size()-1);
+                size_t tab=line.find('\t');
+                if(tab!=std::string::npos) FirstSeen[line.substr(tab+1)]=atoll(line.substr(0,tab).c_str());
+            }
+        } else fresh=true;
+    }
+    long long now=(long long)time(NULL);
+    bool changed=fresh;
+    for(size_t i=0;i<isos.size();++i)
+        if(!FirstSeen.count(isos[i].name)) { FirstSeen[isos[i].name]=fresh ? 0 : now; changed=true; }
+    if(!changed || path.empty()) return;
+    std::string text;
+    for(std::map<std::string,long long>::const_iterator f=FirstSeen.begin();f!=FirstSeen.end();++f) {
+        char number[24]; _snprintf_s(number,sizeof(number),_TRUNCATE,"%lld\t",f->second);
+        text+=number+f->first+"\n";
+    }
+    config::WriteFile(path,text,false);
+}
+// The games first seen in the last days, as names.
+std::set<std::string> SeenSince(long long since) {
+    std::set<std::string> out;
+    std::lock_guard<std::mutex> hold(FirstSeenLock);
+    for(std::map<std::string,long long>::const_iterator f=FirstSeen.begin();f!=FirstSeen.end();++f) if(f->second>=since) out.insert(f->first);
+    return out;
 }
 
 // What the push compares: an ISO that is still being copied keeps changing.
@@ -565,9 +623,12 @@ struct Console {
     // When its latest game ended (it was back in Aurora), in Now()
     // milliseconds; 0 once it turned off, or plays again (see AutoOff).
     std::atomic<long long> gameEndedAt;
+    // While its game folders are being brought up to date: of how many games
+    // (0: not now) Sync has looked at how many, for the dashboard.
+    mutable std::atomic<int> pushDone, pushTotal;
     explicit Console(DWORD at) : address(at), push(FromXbox(at)), seenAt(-1), connections(0), sent(0), ftp(0), synced(0), counted(0), hiddenAt(-2),
                                  inAurora(false), sentInAurora(0), probeAt(0), pingMs(-1), missed(0), answers(false), answered(false), offline(false), toldNoPings(false),
-                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), marked(false), gameTitle(0), gameSince(0), gameEndedAt(0) {
+                                 answeredAt(-1), offlineAt(0), pingAt(0), suspectAt(0), marked(false), gameTitle(0), gameSince(0), gameEndedAt(0), pushDone(0), pushTotal(0) {
         AddressText(at,text,sizeof(text));
         for(int i=0;i<RateSeconds;++i) { rate[i]=0; rateSecond[i]=-1; }
     }
@@ -1113,17 +1174,17 @@ private:
         }
         std::vector<IsoFile> isos=LatestGames();
         const IsoFile* found=Find(isos,name);
-        if(!found && !name.empty()) {  // Added since the latest look, perhaps.
+        if(!found && !name.empty() && MayLookNow()) {  // Added since the latest look, perhaps.
             isos=Isos();
             found=Find(isos,name);
             ScanSoon=true;
-        }
+        } else if(!found && !name.empty()) ScanSoon=true;
         if(!found) { Log("%s asked to mount \"%s\", which isn't here.",peer_,name.c_str()); return 0; }
         if(!iso_.Open(*found)) { Log("%s: couldn't open %s: %s.",peer_,found->path.c_str(),iso_.Note().c_str()); mounted_.clear(); Mounted(); return 0; }
         mounted_=found->name; mountedTitle_=found->titleId; pastEnd_=false;
         readSinceMount_=0; playPending_=console_!=NULL;
         Mounted();
-        if(console_) { console_->inAurora=false; console_->probeAt=(long long)((Now()+FirstProbeSeconds)*1000); }
+        if(console_) { console_->inAurora=false; console_->probeAt=(long long)((Now()+FirstProbeSeconds)*1000); ++GameStarts; }
         if(!quiet_) {
             if(found->kind==DiscIso) Log("%s: mounted %s.",peer_,found->name.c_str());
             else Log("%s: mounted %s (%s).",peer_,found->name.c_str(),iso_.Note().c_str());
@@ -1382,7 +1443,66 @@ std::string InstallFilter() {
         "end\r\n";
     return text;
 }
+// Aurora's "Recently added" filter (Filters, User): the games the server
+// first saw in the last RecentDays days (NoteFirstSeen), by Title ID and
+// Media ID like the install disc filter. Written with the game folders;
+// Aurora reads it when it starts.
+const char RecentFilterScript[] = "/User/Scripts/Content/Filters/NetDiscRecent.lua";
+const int RecentDays = 30;
+std::string RecentFilter() {
+    std::set<std::string> recent=SeenSince((long long)time(NULL)-RecentDays*86400LL);
+    std::map<DWORD,std::set<DWORD> > games;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size();++i) {
+            const IsoFile& g=GamesList[i];
+            if(g.titleId && g.mediaId && recent.count(g.name)) games[g.titleId].insert(g.mediaId);
+        }
+    }
+    char head[512];
+    _snprintf_s(head,sizeof(head),_TRUNCATE,
+        "-- Written by NetDisc360, which keeps it up to date: the games it first\r\n"
+        "-- saw in the last %d days, by Title ID and Media ID. Aurora reads it\r\n"
+        "-- when it starts.\r\n"
+        "NetDiscRecentGames = {\r\n",RecentDays);
+    std::string text=head;
+    for(std::map<DWORD,std::set<DWORD> >::const_iterator t=games.begin();t!=games.end();++t) {
+        char line[64]; _snprintf_s(line,sizeof(line),_TRUNCATE,"   [0x%08X] = {",t->first);
+        text+=line;
+        for(std::set<DWORD>::const_iterator m=t->second.begin();m!=t->second.end();++m) {
+            _snprintf_s(line,sizeof(line),_TRUNCATE," [0x%08X] = true,",*m);
+            text+=line;
+        }
+        text+=" },\r\n";
+    }
+    text+=
+        "}\r\n"
+        "\r\n"
+        "-- Aurora may hand IDs over as signed numbers.\r\n"
+        "local function NetDiscRecentId(id)\r\n"
+        "   if id ~= nil and id < 0 then return id + 4294967296 end\r\n"
+        "   return id\r\n"
+        "end\r\n"
+        "\r\n"
+        "GameListFilterCategories.User[\"Recently added\"] = function(Content)\r\n"
+        "   local discs = NetDiscRecentGames[NetDiscRecentId(Content.TitleId)]\r\n"
+        "   return discs ~= nil and discs[NetDiscRecentId(Content.MediaId)] == true\r\n"
+        "end\r\n";
+    return text;
+}
 int RefreshRemote(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& data);
+void EnsureFolder(FtpClient& ftp, const std::string& folder);
+void RefreshRecentFilter(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string text=RecentFilter();
+    std::string path=o.aurora+RecentFilterScript;
+    if(!ftp.Enters(o.aurora.c_str())) return;  // GuardFilter tells about that.
+    // An Aurora that has no user filters yet has no folder for them either.
+    const std::string script=RecentFilterScript;
+    for(size_t at=1;(at=script.find('/',at))!=std::string::npos;++at) EnsureFolder(ftp,o.aurora+script.substr(0,at));
+    int written=RefreshRemote(ftp,path,std::vector<unsigned char>(text.begin(),text.end()));
+    if(written>0) XboxLog(console,"wrote Aurora's \"Recently added\" filter (%s); Aurora shows the change after it restarts (Filters, User).",path.c_str());
+    else if(written<0) XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
+}
 void RefreshInstallFilter(const Console& console, FtpClient& ftp, const Options& o) {
     std::string text=InstallFilter();
     if(text.empty()) return;
@@ -1466,7 +1586,9 @@ void GuardAppArt(const Console& console, FtpClient& ftp, const Options& o) {
 // consoles' threads push one at a time.
 std::mutex SyncLock;
 const Console* Pushing;  // The console Sync is writing to, for PushNote (under SyncLock).
-void PushNote(const char* text) { XboxLog(*Pushing,"%s",text); }
+std::string LastPushNote;  // Sync's latest note, the likely reason it stopped (under SyncLock).
+void PushNote(const char* text) { LastPushNote=text; XboxLog(*Pushing,"%s",text); }
+void PushProgress(int done, int total) { Pushing->pushTotal=total; Pushing->pushDone=done; }
 
 // Writes data to path on the Xbox unless it already holds exactly that.
 // 1 if written, 0 if current, -1 on failure.
@@ -1581,10 +1703,11 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
     if(!client.Connect(htonl(0x7F000001),o.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
     FtpStorage storage(ftp);
     bool ok;
+    std::string reason;
     std::map<std::string,std::string> tiles;
     {
         std::lock_guard<std::mutex> hold(SyncLock);
-        Pushing=&console;
+        Pushing=&console; LastPushNote.clear();
         PushInstalled.clear();
         PushSkip=o.skipInstalled;
         for(size_t i=0;i<installed.size();++i) {
@@ -1593,7 +1716,9 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
         }
         PushTiles.clear();
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt);
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt,PushProgress);
+        console.pushTotal=0; console.pushDone=0;
+        reason=LastPushNote;
         tiles.swap(PushTiles);
     }
     if(ok) { std::lock_guard<std::mutex> hold(ConsoleLock); console.tiles.swap(tiles); }
@@ -1605,7 +1730,9 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
     if(ok && result.held && FoldersMissing) XboxLog(console,"%d game folder(s) have no game here; they stay until every game folder can be read again.",result.held);
     else if(ok && result.held) XboxLog(console,"%d game folder(s) have no game here yet; they're removed if that's still so %.0f s after the start or the last change of game folders.",result.held,o.removeWait);
     else if(!ok) {
-        XboxLog(console,"updating the game folders stopped: %s",ftp.Error()[0] ? ftp.Error() : "see above");
+        // The FTP error is the reason only when the connection went; else
+        // it can be an old one Sync got past (a missing file it deleted).
+        XboxLog(console,"updating the game folders stopped: %s",!ftp.Code() && ftp.Error()[0] ? ftp.Error() : !reason.empty() ? reason.c_str() : ftp.Error()[0] ? ftp.Error() : "see above");
         XboxEvent(console,EventWarning,"Updating the game folders stopped; the log says why",
                   std::string("Updating the game folders on ")+console.text+" stopped; the log says why");
     }
@@ -1905,7 +2032,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
-            if(o.filter) RefreshInstallFilter(console,ftp,o);
+            if(o.filter) { RefreshInstallFilter(console,ftp,o); RefreshRecentFilter(console,ftp,o); }
             if(o.auroraScripts) RefreshAuroraScripts(console,s,ftp,o);
             // Folders held while a game folder is missing wait for it to come
             // back, which changes the state (see WatchLoop).
@@ -2024,6 +2151,7 @@ void WatchLoop() {
                 for(size_t i=0;i<isos.size();++i) now.insert(isos[i].name);
                 if(tick) NoteChanges(names,now);
                 names.swap(now);
+                NoteFirstSeen(isos);
                 std::lock_guard<std::mutex> hold(GamesListLock);
                 GamesList=isos; ++GamesVersion; GamesScanned=true;
             }
@@ -2491,6 +2619,36 @@ void UpdateJson(web::Json& j, const Options& o, bool notes) {
     j.Close('}');
 }
 
+// The dashboard asks for its state every second; what it shows of the
+// network and the game folders changes rarely, so those are looked up at most
+// every few seconds (a NAS folder can take a while to answer).
+std::mutex StateCacheLock;
+std::vector<std::string> CachedAddresses;
+double AddressesAt=-1;
+std::map<std::string,std::pair<bool,double> > CachedFolders;  // Folder: found, when looked.
+std::vector<std::string> RecentPcAddresses() {
+    {
+        std::lock_guard<std::mutex> hold(StateCacheLock);
+        if(AddressesAt>=0 && Now()-AddressesAt<10) return CachedAddresses;
+    }
+    std::vector<std::string> fresh=PcAddresses();
+    std::lock_guard<std::mutex> hold(StateCacheLock);
+    CachedAddresses=fresh; AddressesAt=Now();
+    return fresh;
+}
+bool RecentlyFolder(const std::string& folder) {
+    {
+        std::lock_guard<std::mutex> hold(StateCacheLock);
+        std::map<std::string,std::pair<bool,double> >::iterator i=CachedFolders.find(folder);
+        if(i!=CachedFolders.end() && Now()-i->second.second<5) return i->second.first;
+    }
+    bool found=config::IsFolder(folder);
+    std::lock_guard<std::mutex> hold(StateCacheLock);
+    if(CachedFolders.size()>64) CachedFolders.clear();
+    CachedFolders[folder]=std::make_pair(found,Now());
+    return found;
+}
+
 void State(web::Reply& out) {
     Options o;
     std::vector<KnownConsole> known;
@@ -2505,7 +2663,7 @@ void State(web::Reply& out) {
     j.Set("tray",InTray).Set("time",(long long)time(NULL)).Set("uptime",Now()-StartedAt);
     j.Key("ports").Open('{').Set("netiso",o.port).Set("web",o.webPort).Close('}');
     j.Key("addresses").Open('[');
-    std::vector<std::string> addresses=PcAddresses();
+    std::vector<std::string> addresses=RecentPcAddresses();
     for(size_t i=0;i<addresses.size();++i) j.String(addresses[i]);
     j.Close(']');
 
@@ -2550,7 +2708,7 @@ void State(web::Reply& out) {
         for(size_t g=0;g<games.size();++g) if(Within(games[g].path,o.folders[i])) ++count;
         bool emptied;
         { std::lock_guard<std::mutex> hold(MissingLock); emptied=EmptiedFolders.count(o.folders[i])!=0; }
-        j.Open('{').Set("path",config::ToUtf8(o.folders[i])).Set("games",count).Set("found",config::IsFolder(o.folders[i])).Set("emptied",emptied).Close('}');
+        j.Open('{').Set("path",config::ToUtf8(o.folders[i])).Set("games",count).Set("found",RecentlyFolder(o.folders[i])).Set("emptied",emptied).Close('}');
     }
     j.Close(']');
 
@@ -2569,6 +2727,7 @@ void State(web::Reply& out) {
             if(c.hiddenAt!=-2 && at<=c.hiddenAt && !c.connections) continue;  // Forgotten.
             j.Open('{').Set("address",c.text).Set("connections",c.connections.load()).Set("sent",(unsigned long long)c.sent.load());
             j.Set("ftp",c.ftp.load()).Set("synced",c.synced.load()).Set("mounted",config::ToUtf8(WithoutIso(c.mounted))).Set("push",c.push.load());
+            if(c.pushTotal) j.Key("pushing").Open('{').Set("done",c.pushDone.load()).Set("total",c.pushTotal.load()).Close('}');
             j.Set("playing",c.connections>0 && !c.mounted.empty() && !c.inAurora).Set("inAurora",c.inAurora.load());
             bool answers=c.answers && !c.offline;  // Before pingMs: PingLoop sets pingMs first, so answers implies a ping time.
             j.Set("ping",c.pingMs.load()).Set("answers",answers).Set("offline",c.offline.load());
@@ -3317,6 +3476,98 @@ void ConsoleArt(const web::Value& body, web::Reply& out) {
     out.body=j.Text();
 }
 
+// How fast the network between this server and a console is: a test file
+// written to the console over Aurora's FTP (the direction games stream in)
+// and read back, then deleted. It measures the cable, the switch and the
+// console's network port or USB adapter together, so a slow link shows up
+// without starting a game. Not while it plays, or while its game folders are
+// being written.
+const int SpeedTestBytes = 32<<20;
+void SpeedTest(const web::Value& body, web::Reply& out) {
+    Options o=Current();
+    std::string text;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { out.Error(400,"Send the console's IPv4 address, like 192.168.1.30."); return; }
+    Console* console=ConsoleIfKnown(address);
+    if(!console) { out.Error(404,"No console with that address has used this server."); return; }
+    if(PlaysNow(*console)) { out.Error(409,"It's playing a game. Test once it's back in Aurora."); return; }
+    std::unique_lock<std::mutex> busy(SyncLock,std::try_to_lock);
+    if(!busy.owns_lock()) { out.Error(409,"A console's game folders are being written right now; try again in a moment."); return; }
+    FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
+    if(!ftp.Open()) { out.Error(502,std::string("Aurora doesn't answer: ")+ftp.Error()); return; }
+    std::string folder=o.xboxFolder+"/"+HelperFolder;
+    ftp.MakeFolder(o.xboxFolder.c_str()); ftp.MakeFolder(folder.c_str());
+    std::string path=folder+"/speed-test.tmp";
+    std::vector<unsigned char> data(SpeedTestBytes);
+    for(size_t i=0;i<data.size();++i) data[i]=(unsigned char)(i*2654435761u>>24);  // Not all zeros, should anything compress.
+    double started=Now();
+    bool sent=ftp.Store(path.c_str(),data.data(),data.size());
+    double up=Now()-started;
+    std::vector<unsigned char> back;
+    started=Now();
+    bool got=sent && ftp.Retrieve(path.c_str(),back,data.size()+1) && back.size()==data.size();
+    double down=Now()-started;
+    std::string error=sent && got ? std::string() : ftp.Error();
+    ftp.Delete(path.c_str());
+    ftp.Close();
+    if(!sent || !got) { out.Error(502,"The test file couldn't be "+std::string(sent ? "read back" : "written")+": "+error); return; }
+    double toXbox=data.size()/std::max(up,0.001), fromXbox=data.size()/std::max(down,0.001);
+    XboxLog(*console,"speed test: %.1f MB/s to the Xbox, %.1f MB/s back (%d MB each way over Aurora's FTP).",toXbox/1e6,fromXbox/1e6,SpeedTestBytes>>20);
+    web::Json j;
+    j.Open('{').Set("address",text).Set("toXbox",toXbox).Set("fromXbox",fromXbox).Set("bytes",SpeedTestBytes).Close('}');
+    out.body=j.Text();
+}
+
+// For Prometheus, Grafana or Home Assistant: /metrics (see web.cpp, which
+// asks for the dashboard's password, if it has one, as HTTP Basic auth or
+// the dashboard's login).
+std::string Label(const std::string& text) {
+    std::string out;
+    for(size_t i=0;i<text.size();++i) { if(text[i]=='\\' || text[i]=='"') out+='\\'; if(text[i]!='\n') out+=text[i]; }
+    return out;
+}
+void Metrics(web::Reply& out) {
+    std::string m;
+    char line[256];
+    auto add=[&](const char* name, const char* help, const char* type) {
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"# HELP %s %s\n# TYPE %s %s\n",name,help,name,type); m+=line;
+    };
+    add("netdisc_info","NetDisc360's version.","gauge");
+    m+="netdisc_info{version=\""+Label(NETDISC_VERSION)+"\"} 1\n";
+    add("netdisc_uptime_seconds","Seconds since the server started.","gauge");
+    _snprintf_s(line,sizeof(line),_TRUNCATE,"netdisc_uptime_seconds %.0f\n",Now()-StartedAt); m+=line;
+    size_t games;
+    { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList.size(); }
+    add("netdisc_games","Games served.","gauge");
+    _snprintf_s(line,sizeof(line),_TRUNCATE,"netdisc_games %u\n",unsigned(games)); m+=line;
+    add("netdisc_game_starts_total","Games started (mounted by a console) since the server started.","counter");
+    _snprintf_s(line,sizeof(line),_TRUNCATE,"netdisc_game_starts_total %lld\n",GameStarts.load()); m+=line;
+    std::vector<Console*> consoles=AllConsoles();
+    std::string up,connections,sent,rate,playing,ping;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        long long last=RateSecond;
+        for(size_t i=0;i<consoles.size();++i) {
+            const Console& c=*consoles[i];
+            std::string label=std::string("{console=\"")+c.text+"\"} ";
+            up+="netdisc_console_up"+label+(c.answers && !c.offline ? "1\n" : "0\n");
+            _snprintf_s(line,sizeof(line),_TRUNCATE,"%d\n",c.connections.load()); connections+="netdisc_console_connections"+label+line;
+            _snprintf_s(line,sizeof(line),_TRUNCATE,"%llu\n",(unsigned long long)c.sent.load()); sent+="netdisc_console_sent_bytes_total"+label+line;
+            _snprintf_s(line,sizeof(line),_TRUNCATE,"%.0f\n",c.RateAt(last)); rate+="netdisc_console_rate_bytes_per_second"+label+line;
+            playing+="netdisc_console_playing"+label+(c.connections>0 && !c.mounted.empty() && !c.inAurora ? "1\n" : "0\n");
+            if(c.answers && !c.offline) { _snprintf_s(line,sizeof(line),_TRUNCATE,"%d\n",c.pingMs.load()); ping+="netdisc_console_ping_ms"+label+line; }
+        }
+    }
+    add("netdisc_console_up","Whether the console answers pings.","gauge"); m+=up;
+    add("netdisc_console_connections","The console's NetISO connections.","gauge"); m+=connections;
+    add("netdisc_console_sent_bytes_total","Game data sent to the console since the server started.","counter"); m+=sent;
+    add("netdisc_console_rate_bytes_per_second","Game data sent to the console in the last second.","gauge"); m+=rate;
+    add("netdisc_console_playing","Whether the console is playing a game from the server.","gauge"); m+=playing;
+    add("netdisc_console_ping_ms","The console's latest ping time.","gauge"); m+=ping;
+    out.type="text/plain; version=0.0.4; charset=utf-8";
+    out.body=m;
+}
+
 // A whole number from low to high; false if it isn't there, and error if it isn't one.
 bool Whole(const web::Value& v, const char* key, int low, int high, int& out, std::string& error) {
     const web::Value* f=v.Get(key);
@@ -3789,6 +4040,13 @@ void InstallUpdate(bool automatic, std::string wanted) {
         Updates.stage="check";
     }
     ok=ok && update::CheckExe(exe,r,error);
+    // With an update key (version.h), the release's signature has to match too.
+    if(ok && update::Signed()) {
+        std::string signature;
+        if(r.sigUrl.empty()) { ok=false; error="Release "+r.tag+" has no NetDisc360.exe.sig, so it wasn't installed."; }
+        else if(o.releasesFile.empty() && !update::FromRepo(r.sigUrl)) { ok=false; error="Release "+r.tag+"'s signature isn't on "+NETDISC_REPO+"'s releases, so nothing was installed."; }
+        else ok=update::Fetch(r.sigUrl,signature,4096,NULL,error) && update::CheckSignature(exe,signature,error);
+    }
 #ifdef _WIN32
     if(ok && automatic && ConsolesBusy()) { ok=false; error="A console started a game; it installs later."; }
 #endif
@@ -4159,6 +4417,8 @@ void Api(const web::Request& r, web::Reply& out) {
 #endif
     }
     else if(r.method=="POST" && r.path=="/api/consoles/art") ConsoleArt(body,out);
+    else if(r.method=="POST" && r.path=="/api/consoles/speed") SpeedTest(body,out);
+    else if(r.method=="GET" && r.path=="/api/metrics") Metrics(out);
     else if(r.method=="POST" && r.path=="/api/consoles/add") {
         if(AddConsole(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
