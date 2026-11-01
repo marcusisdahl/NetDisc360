@@ -93,6 +93,11 @@ struct Options {
     // After the Xbox's FTP server comes back, the longest wait for the Xbox
     // to show it's online before game folders are written (see WatchLoop).
     double onlineWait, removeWait;
+    // How often the games installed on a console are looked at again, so one
+    // installed or deleted there (in Aurora, over FTP) gets or loses its tile.
+    // They're also looked at when Aurora starts or a game ends; this is for a
+    // change in Aurora without either, and is slow so FTP is left alone.
+    double installedEvery;
     double pingSeconds;  // How often each console is pinged to see it's still on (PingLoop); 0: never.
     // Backups of the settings (BackupLoop): every so many days (0: only by
     // hand), keeping the newest so many but those made by hand.
@@ -121,7 +126,7 @@ struct Options {
     int xbdmPort;        // The consoles' debug monitor (xbdm), which turns them off; --xbdm-port for the tests.
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
+                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort) {}
@@ -556,10 +561,12 @@ struct Console {
     // listed name of their disc (lower case), and the games installed on it.
     std::map<std::string,std::string> tiles;
     std::vector<InstalledGame> installed;
-    // Raised when it's back in Aurora (after a game, or turned on again):
-    // its push thread looks at what's installed on it again, and writes its
-    // game folders again if that changed, so a game installed since loses
-    // its tile (see PushTo).
+    // Raised when it's back in Aurora (after a game, or turned on again),
+    // and when its first NetISO connection comes (Aurora starting, its
+    // plugin listing the games): its push thread looks at what's installed
+    // on it again, and writes its game folders again if that changed, so a
+    // game installed since loses its tile and one deleted gets it back (see
+    // PushTo).
     std::atomic<bool> recheck;
     // The title updates its Aurora has (see LookTitleUpdates), under
     // ConsoleLock: as last read (time() then; 0: never), and why the latest
@@ -1088,7 +1095,9 @@ private:
         console_=ConsoleAt(address_,&added);
         if(!console_) return;
         console_->seenAt=(long long)(Now()*1000);
-        ++console_->connections;
+        // A first connection is Aurora (re)starting, its NetISO plugin listing
+        // the games: its installed games may have changed meanwhile.
+        if(++console_->connections==1) console_->recheck=true;
         {
             std::lock_guard<std::mutex> hold(ConsoleLock);
             console_->sockets.insert(socket_);
@@ -1838,7 +1847,7 @@ void RepairArt(const Console& console, FtpClient& ftp, const Options& o, std::ve
 // What a console's push thread knows about it.
 struct PushState {
     std::string pushed;  // The games when its folders were last written.
-    double nextProbe, probedAt, retryAt, scanAt, downSince, upSince;
+    double nextProbe, probedAt, retryAt, scanAt, downSince, upSince, installedAt;
     int scanTries;
     bool attempted, reachable, toldDown, toldWaiting;
     std::atomic<bool> everPushed;
@@ -1849,7 +1858,7 @@ struct PushState {
     bool installedChanged;       // What's installed changed since its folders were last written (see Console::recheck).
     bool restarted;              // Aurora was restarted for its filter once (see RefreshAuroraScripts).
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
-    PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), scanTries(0),
+    PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), installedAt(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
                   toldInstalled(false), installedChanged(false), restarted(false) {}
 };
@@ -2036,9 +2045,12 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     Options o=Current();
     bool pushDue=settled && (!s.everPushed || state!=s.pushed || s.installedChanged || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
-    // Back in Aurora (see Console::recheck): what's installed is looked at
-    // again (listings only, see installed.h), and the title updates.
-    bool recheck=console.recheck && s.everPushed && !pushDue && !o.pushOnce;
+    // Back in Aurora, or Aurora (re)started (see Console::recheck), and every
+    // installedEvery seconds besides: what's installed is looked at again
+    // (listings only, see installed.h), so a game installed or deleted on the
+    // console gets or loses its tile; back in Aurora also its title updates.
+    bool timed=s.everPushed && o.installedEvery>0 && Now()>=s.installedAt+o.installedEvery;
+    bool recheck=(console.recheck || timed) && s.everPushed && !pushDue && !o.pushOnce;
     bool online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=o.onlineWait;
     if(!(pushDue || scanDue || recheck) || Now()<s.nextProbe || !(!s.reachable || online || scanDue || recheck)) return;
     // Not while it plays a game: Aurora's FTP server isn't there to write
@@ -2075,8 +2087,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     bool lookUpdates=false;
     if(recheck) {
+        lookUpdates=console.recheck;
         console.recheck=false;
-        lookUpdates=true;
+        s.installedAt=Now();
         std::string before=s.installedSeen;
         std::vector<InstalledGame> found;
         LookInstalled(console,s,ftp,o,found);
@@ -2101,6 +2114,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(o.followAddress) FollowAddress(console,s,ftp,o);
         std::vector<InstalledGame> installed;
         LookInstalled(console,s,ftp,o,installed);
+        s.installedAt=Now();
         if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
             s.everPushed=true; s.pushed=state; s.installedChanged=false;
             console.recheck=false;  // The push looked at everything a recheck would.
@@ -5319,6 +5333,7 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
+        "  --installed-every <s>   how often each console's installed games are looked at again (300)\n"
         "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
         "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
@@ -5366,6 +5381,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--boot") o.bootPath=args[++i];
         else if(hasValue && a=="--online-wait") o.onlineWait=atof(args[++i].c_str());
         else if(hasValue && a=="--remove-wait") o.removeWait=atof(args[++i].c_str());
+        else if(hasValue && a=="--installed-every") o.installedEvery=atof(args[++i].c_str());
         else if(hasValue && a=="--ping") o.pingSeconds=atof(args[++i].c_str());
         else if(hasValue && a=="--config") o.configPath=config::ToUtf8(args[++i]);
         else if(hasValue && a=="--releases") o.releasesFile=config::ToUtf8(args[++i]);  // For the tests.
