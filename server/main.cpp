@@ -92,6 +92,8 @@ struct Options {
     double onlineWait, removeWait;
     // How often the games installed on a console are looked at again, so one
     // installed or deleted there (in Aurora, over FTP) gets or loses its tile.
+    // They're also looked at when Aurora starts or a game ends; this is for a
+    // change in Aurora without either, and is slow so FTP is left alone.
     double installedEvery;
     double pingSeconds;  // How often each console is pinged to see it's still on (PingLoop); 0: never.
     // Backups of the settings (BackupLoop): every so many days (0: only by
@@ -120,7 +122,7 @@ struct Options {
     int xbdmPort;        // The consoles' debug monitor (xbdm), which turns them off; --xbdm-port for the tests.
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
-                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(60), pingSeconds(30),
+                webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort) {}
@@ -542,7 +544,7 @@ struct Console {
     std::atomic<bool> inAurora;
     std::atomic<U64> sentInAurora;     // sent when it got back.
     std::atomic<long long> probeAt;    // When AuroraLoop next tries its FTP port, in Now() milliseconds.
-    std::atomic<bool> lookInstalled;   // Back in Aurora: its push thread looks at its installed games now.
+    std::atomic<bool> lookInstalled;   // Aurora started or is back: its push thread looks at its installed games now.
     // PingLoop's pings: the latest answer's round trip in ms (-1: none yet),
     // whether the latest ping was answered and any ever was, the misses in a
     // row, and offline: it answered before, then stopped (see PingLoop).
@@ -1014,7 +1016,9 @@ private:
         console_=ConsoleAt(address_,&added);
         if(!console_) return;
         console_->seenAt=(long long)(Now()*1000);
-        ++console_->connections;
+        // A first connection is Aurora (re)starting, its NetISO plugin listing
+        // the games: its installed games may have changed meanwhile.
+        if(++console_->connections==1) console_->lookInstalled=true;
         {
             std::lock_guard<std::mutex> hold(ConsoleLock);
             console_->sockets.insert(socket_);
@@ -1712,7 +1716,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         if(o.followAddress) FollowAddress(console,s,ftp,o);
         if(!o.skipInstalled) { std::lock_guard<std::mutex> hold(ConsoleLock); console.installed.clear(); }
         else if(!looked) { console.lookInstalled=false; LookInstalled(console,s,ftp,o,installed); s.installedAt=Now(); }
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
+        bool pushed=Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed);
+        console.lookInstalled=false;  // The push's own connections to this server aren't Aurora starting.
+        if(pushed) {
             s.everPushed=true; s.pushed=state;
             console.synced=(long long)time(NULL);
             if(o.filter) RefreshInstallFilter(console,ftp,o);
@@ -4027,7 +4033,7 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
-        "  --installed-every <s>   how often each console's installed games are looked at again (60)\n"
+        "  --installed-every <s>   how often each console's installed games are looked at again (300)\n"
         "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
         "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"

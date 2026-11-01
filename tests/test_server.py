@@ -1342,6 +1342,27 @@ class Push(ServerTest):
         self.assertIn("1 game is installed on it", out)
         self.assertIn("0 games are installed on it", out)
 
+    def test_installed_games_are_looked_at_when_aurora_starts(self):
+        # Aurora's NetISO plugin connecting (Aurora started again) is when
+        # they're looked at, long before the slow look now and then.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
+        server, port = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1000")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans or os.path.isdir(os.path.join(self.games, "NetDisc360")), 15))
+            time.sleep(2)
+            self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))
+            shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
+            time.sleep(3)
+            self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))  # Not looked at yet.
+            c = Client(port)
+            c.names()
+            self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "Halo 3")), 15))
+            c.close()
+        finally:
+            server.kill()
+            server.stdout.read()
+
     def test_writes_aurora_s_cleanup_script_and_online_filter(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
