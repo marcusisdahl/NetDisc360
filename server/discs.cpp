@@ -11,6 +11,8 @@
 #include <set>
 #ifndef _WIN32
 #include <dirent.h>
+#include <limits.h>
+#include <stdlib.h>
 #endif
 
 namespace nia {
@@ -59,6 +61,16 @@ double Seconds() { return double(clock())/CLOCKS_PER_SEC; }
 
 struct Entry { std::string name; bool folder; U64 size; long long modified; };
 
+#ifndef _WIN32
+// Whether the folder link points at folder itself or a folder it is in.
+bool LinksBack(const std::string& folder, const std::string& link) {
+    char here[PATH_MAX], there[PATH_MAX];
+    if(!realpath(folder.c_str(),here) || !realpath(link.c_str(),there)) return true;
+    std::string a=std::string(here)+"/", b=std::string(there)+"/";
+    return !a.compare(0,b.size(),b);
+}
+#endif
+
 bool List(const std::string& folder, std::vector<Entry>& out) {
     out.clear();
 #ifdef _WIN32
@@ -80,7 +92,11 @@ bool List(const std::string& folder, std::vector<Entry>& out) {
     DIR* dir=opendir(folder.c_str()); if(!dir) return false;
     while(struct dirent* d=readdir(dir)) {
         if(!strcmp(d->d_name,".") || !strcmp(d->d_name,"..")) continue;
-        struct stat st; if(lstat(Join(folder,d->d_name).c_str(),&st)) continue;
+        std::string path=Join(folder,d->d_name);
+        struct stat st; if(lstat(path.c_str(),&st)) continue;
+        // A link (a NAS share linked into the games folder) counts as what it
+        // points at, unless it's a folder this one is in, which would loop.
+        if(S_ISLNK(st.st_mode) && (stat(path.c_str(),&st) || (S_ISDIR(st.st_mode) && LinksBack(folder,path)))) continue;
         if(!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) continue;
         Entry e; e.name=d->d_name; e.folder=S_ISDIR(st.st_mode); e.size=e.folder ? 0 : U64(st.st_size); e.modified=(long long)st.st_mtime;
         out.push_back(e);

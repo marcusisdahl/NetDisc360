@@ -56,6 +56,8 @@ def build_server():
     if os.environ.get("NETDISC_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
+    # The dashboard page as the server builds it in (not kept in git).
+    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_web.py")], check=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp",
@@ -465,6 +467,20 @@ class Protocol(ServerTest):
         self.assertEqual(c.size(), (0, 2048))
         self.assertEqual(c.mount("\\nothing.iso\\Mount\\"), 0)
         self.assertEqual(c.mount("\\Mount\\"), 0)  # An empty name mounts nothing.
+        c.close()
+
+    def test_follows_linked_folders_but_not_loops(self):
+        elsewhere = os.path.join(self.tmp.name, "nas")
+        os.makedirs(elsewhere)
+        self.add_iso("Linked.iso", 1, 0x11111111, elsewhere)
+        os.symlink(elsewhere, os.path.join(self.isos, "share"))
+        os.symlink(self.isos, os.path.join(self.isos, "loop"))  # Back to itself.
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        os.symlink(self.add_iso("Other.iso", 2, 0x22222222, other), os.path.join(self.isos, "Also.iso"))
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Also.iso", "Linked.iso"])
         c.close()
 
     def test_new_isos_show_without_a_restart(self):
@@ -1372,10 +1388,24 @@ class Push(ServerTest):
         self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "NetDisc360"])
         # Only the package's header is read, and only its first bytes.
         self.assertNotIn("RETR 0123456789ABCDEF0123.data", self.ftp.log)
-        # Without it, they're back.
-        out = self.push(extra=["--no-installed"])
+        # Without it, they're back, and their launchers offer the installed copy.
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
         self.assertIn("2 added", out)
         self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "Halo 3", "NetDisc360", "Skate 3"])
+        def local_copy(game):
+            with open(os.path.join(self.games, game, "netiso.ini"), encoding="latin-1") as f:
+                return [line[len("local_copy="):] for line in f.read().splitlines() if line.startswith("local_copy=")]
+        self.assertEqual(local_copy("Halo 3"), ["Hdd1:\\Games\\Shooters\\Halo 3\\default.xex"])
+        self.assertEqual(local_copy("Skate 3"), ["Hdd1:\\Content\\0000000000000000\\454108E6\\00007000\\0123456789ABCDEF0123"])
+        self.assertEqual(local_copy("Gears"), [])
+        # An installed copy that goes is taken out again, the rest of the file kept.
+        shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games"))
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("Halo 3 is no longer installed on the console; took local_copy out of its netiso.ini.", out)
+        self.assertEqual(local_copy("Halo 3"), [])
+        with open(os.path.join(self.games, "Halo 3", "netiso.ini"), encoding="latin-1") as f:
+            self.assertIn("iso=Halo 3.iso", f.read())
+        self.assertEqual(len(local_copy("Skate 3")), 1)
 
     def test_writes_aurora_s_cleanup_script_and_online_filter(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
@@ -2168,9 +2198,13 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
         # With a password, any name for this computer works.
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie, headers={"Host": "netdisc.example.com"})[0], 200)
-        started = time.time()
+        # A wrong password: that address waits a second before it may try
+        # again (doubling with each one more), without holding others up.
         self.assertEqual(self.call("POST", "/api/login", {"password": "hunter2"})[0], 401)
-        self.assertGreaterEqual(time.time() - started, 0.9)
+        status, _, body = self.call("POST", "/api/login", {"password": "hunter2 x"})
+        self.assertEqual(status, 429)
+        self.assertIn("Try again in 1 s", json.loads(body)["error"])
+        time.sleep(1.1)
         status, response, _ = self.call("POST", "/api/login", {"password": "hunter2 x"})
         self.assertEqual(status, 200)
         self.assertTrue(response.getheader("Set-Cookie").startswith("netdisc_session="))
@@ -2193,6 +2227,63 @@ class Dashboard(ServerTest):
         end = str(int(time.time()) + 3600)
         forged = "netdisc_session=%s.%s" % (end, hmac.new(stored.encode(), end.encode(), hashlib.sha256).hexdigest())
         self.assertEqual(self.call("GET", "/api/state", cookie=forged)[0], 401)
+
+    def test_logging_out_ends_the_session(self):
+        self.start()
+        _, response, _ = self.call("POST", "/api/password", {"password": "hunter2"})
+        cookie = response.getheader("Set-Cookie").split(";")[0]
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
+        status, response, _ = self.call("POST", "/api/logout", {}, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("Max-Age=0", response.getheader("Set-Cookie"))
+        # A copy of the cookie doesn't work any more either.
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 401)
+        status, response, _ = self.call("POST", "/api/login", {"password": "hunter2"})
+        self.assertEqual(self.call("GET", "/api/state", cookie=response.getheader("Set-Cookie").split(";")[0])[0], 200)
+
+    def test_metrics_for_prometheus(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start("--xbox", "127.0.0.2")
+        client = Client.__new__(Client)  # As the console at 127.0.0.2.
+        client.conn = socket.create_connection(("127.0.0.1", self.port), timeout=10, source_address=("127.0.0.2", 0))
+        self.assertEqual(client.mount("Halo 3.iso"), 1)
+        client.close()
+        status, response, body = self.call("GET", "/metrics", page=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(response.getheader("Content-Type").startswith("text/plain"))
+        text = body.decode()
+        self.assertIn("netdisc_games 1\n", text)
+        self.assertIn("netdisc_game_starts_total 1\n", text)
+        self.assertIn('netdisc_console_connections{console="127.0.0.2"}', text)
+        # With a password: as HTTP Basic auth, any user name.
+        self.call("POST", "/api/password", {"password": "hunter2"})
+        status, response, _ = self.call("GET", "/metrics", page=False)
+        self.assertEqual(status, 401)
+        self.assertIn("Basic", response.getheader("WWW-Authenticate"))
+        good = {"Authorization": "Basic " + base64.b64encode(b"prometheus:hunter2").decode()}
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=good)[0], 200)
+        bad = {"Authorization": "Basic " + base64.b64encode(b"prometheus:guess").decode()}
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=bad)[0], 401)
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=good)[0], 429)  # It waits a second now.
+
+    def test_speed_test_over_aurora_ftp(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            result = self.json("POST", "/api/consoles/speed", {"address": "127.0.0.2"})
+            self.assertEqual(result["bytes"], 32 << 20)
+            self.assertGreater(result["toXbox"], 0)
+            self.assertGreater(result["fromXbox"], 0)
+            # The test file is gone again.
+            self.assertEqual(os.listdir(os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360")), [])
+            self.assertEqual(self.call("POST", "/api/consoles/speed", {"address": "127.0.0.3"})[0], 404)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
 
     def test_takes_the_password_from_the_environment(self):
         os.environ["NETDISC_WEB_PASSWORD"] = "from docker"

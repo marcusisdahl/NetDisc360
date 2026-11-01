@@ -2,9 +2,11 @@
 
 Puts web/icons.svg (the Lucide icons the page uses, as an SVG sprite) into
 web/index.html where it says <!--icons-->, gzips it and writes it as a byte
-array. Run it after changing the page:
+array. server/web_page.h isn't kept in git: every build makes it (build.ps1,
+the Visual Studio project, CI, the Dockerfile and the tests run this first),
+so pull requests that change the page don't conflict on it.
 
-    python tools/make_web.py              rebuilds server/web_page.h
+    python tools/make_web.py              (re)builds server/web_page.h
     python tools/make_web.py --check      fails if server/web_page.h is out of date
     python tools/make_web.py --icons <lucide-static>/icons
                                           also remakes web/icons.svg from the icons
