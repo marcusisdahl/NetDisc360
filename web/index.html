@@ -629,6 +629,8 @@ canvas.wheel { width: min(100%, 380px); aspect-ratio: 1; display: block; }
 .seat-box { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
 .seat-box.gm { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .seat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.seat-profiles { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.seat-profiles.bad { color: var(--bad); }
 .seat-head .sub { width: 100%; color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
 .slots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
 .slot { height: 38px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--field); color: var(--text); cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0 10px; font-weight: 600; text-align: left; min-width: 0; }
@@ -3031,7 +3033,7 @@ Pages.party = root => {
     const seated = new Set([].concat(...p.consoles.map(ip => placed[ip] || [])));
     const bench = guestsHere(p).filter(n => !seated.has(n));
     const picked = pick ? pickedName(p) : null;
-    const signedIn = S.party.signedIn || {}, wheelOn = S.party.wheelOn || [];
+    const signedIn = S.party.signedIn || {}, wheelOn = S.party.wheelOn || [], profilesTo = S.party.profilesTo || {};
     const slot = (at, name) => {
       const on = !!pick && pick.ip === at.ip && pick.i === at.i, t = name ? teamOf(name) : -1;
       const signed = at.ip && name && (signedIn[at.ip] || [])[at.i];
@@ -3047,12 +3049,21 @@ Pages.party = root => {
         return h('div.seat-box' + (gm ? '.gm' : ''),
           h('div.seat-head', ic('monitor', 'sm'), h('b', { title: ip }, nameOf(ip)), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null,
             wheelOn.includes(ip) ? h('span.pill', { title: 'NetDisc360 Party is open on it' }, ic('ferris-wheel', 'sm'), 'Wheel') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
-          h('div.slots', [0, 1, 2, 3].map(i => slot({ ip, i }, names[i]))));
+          h('div.slots', [0, 1, 2, 3].map(i => slot({ ip, i }, names[i]))), names.length ? seatProfiles(profilesTo[ip]) : null);
       })),
       bench.length || (pick && pick.ip && picked) ? h('div.bench', h('div.bench-head', h('b', 'Not seated'), h('span.muted', bench.length ? plural(bench.length, 'guest') + ' here without a seat' : 'Choose one to take off a seat')),
         h('div.slots', bench.map((n, i) => slot({ ip: '', i }, n)), pick && pick.ip && picked ? slot({ ip: '', i: bench.length }, null) : null)) : null,
       h('p.hint', pick ? 'Now choose who to swap with (Esc to cancel).' : 'To swap two people, choose one, then the other: on a console, or not seated.'),
     ];
+  }
+  // The seated guests' profiles on their way to the console (after a spin or a swap).
+  function seatProfiles(x) {
+    if (!x || (!x.total && !x.note)) return null;
+    if (x.state === 'copying') return h('p.seat-profiles', ic('loader-circle', 'sm spin'),
+      x.now ? 'Copying ' + x.now + '’s profile (' + Math.min(x.done + 1, x.total) + ' of ' + x.total + ')' : 'Getting ready to copy profiles');
+    const failed = x.state === 'failed';
+    return h('p.seat-profiles' + (failed ? '.bad' : ''), ic(failed ? 'circle-alert' : 'check', 'sm'),
+      (x.total ? (failed ? x.done + ' of ' + x.total + ' profiles on it' : plural(x.total, 'profile') + ' on it') : '') + (x.total && x.note ? '. ' : '') + (x.note || ''));
   }
   function seatGrid(p) {
     const placed = p.drawn ? p.drawn.seats : {}, grid = {};
@@ -3195,7 +3206,7 @@ Pages.party = root => {
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
     raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
-    seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn]), () => drawSeats(p));
+    seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
     start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
