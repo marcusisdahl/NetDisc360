@@ -117,8 +117,11 @@ OWN_ADDRESS = own_address()
 
 
 def free_port():
+    # Free on every address, as the server listens on all of them: a test's
+    # second console (127.0.0.2) leaves FTP data connections in TIME_WAIT on
+    # its own address, which a port free on 127.0.0.1 alone can be held by.
     with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind(("", 0))
         return s.getsockname()[1]
 
 
@@ -542,7 +545,7 @@ class Push(ServerTest):
         self.aurora = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Media", "Scripts", "Content")
         os.makedirs(self.aurora)
         self.games = os.path.join(self.xbox, "Hdd1", "NetISO")
-        self.ftp = aurora_ftp.Server(self.xbox)
+        self.ftp = aurora_ftp.Server(self.xbox, free_port())  # Free on 127.0.0.2 too (second_console).
         threading.Thread(target=self.ftp.serve_forever, daemon=True).start()
         self.launcher = os.path.join(self.tmp.name, "launcher.xex")
         with open(self.launcher, "wb") as f:
