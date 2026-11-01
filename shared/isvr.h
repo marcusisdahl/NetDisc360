@@ -6,7 +6,7 @@
 #include "platform.h"
 
 namespace nia {
-enum { IsvrPort = 4323, IsvrSector = 2048, IsvrNameBytes = 256, IsvrMaxIsos = 1024, IsvrMaxRead = 65536 };
+enum { IsvrPort = 4323, IsvrSector = 2048, IsvrNameBytes = 256, IsvrMaxRead = 65536 };
 
 DWORD Read32(const unsigned char* p);
 void Write32(unsigned char* p, DWORD value);

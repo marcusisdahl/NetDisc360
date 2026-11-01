@@ -87,7 +87,7 @@ static const char BootXex[]="game:\\boot.xex";
 // GetTickCount when the tile was pressed, for the timer at the top.
 static DWORD Started=0;
 static const char MountFolder[]="Mount";
-static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
+static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=16;
 // After the mount the plugin fakes a tray open and close on its own thread
 // (0.2 s apart), and the console then reads the new disc. The launcher used
 // to read the disc right away and every 0.5 s while that went on; the game
@@ -372,24 +372,31 @@ static bool DiscIsGame(const Settings& settings) {
 }
 
 static char Names[MaxNames][MAX_PATH];
-// Lists a NetIso folder. With the plugin, listing a "Mount" folder is what
-// mounts, and that listing is empty.
-static int ListFolder(const char* folder) {
+static int NamesKept=0;
+// Lists a NetIso folder and keeps only the entries named want or also (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed. With the plugin, listing a "Mount"
+// folder is what mounts, and that listing is empty. Only the kept names are
+// logged, not every game on every start.
+static int ListFolder(const char* folder,const char* want,const char* also=NULL) {
+    NamesKept=0;
     char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
     WIN32_FIND_DATA found;
     HANDLE find=FindFirstFile(pattern,&found);
     if(find==INVALID_HANDLE_VALUE) { Note("%s: nothing listed (error %lu)",pattern,GetLastError()); return 0; }
     int count=0;
     do {
-        if(count<MaxNames) strcpy_s(Names[count++],found.cFileName);
-        Note("  %s",found.cFileName);
+        ++count;
+        bool keep=(want && !_stricmp(found.cFileName,want)) || (also && !_stricmp(found.cFileName,also));
+        if(keep && NamesKept<MaxNames) { strcpy_s(Names[NamesKept++],found.cFileName); Note("  %s",found.cFileName); }
     } while(FindNextFile(find,&found));
     FindClose(find);
     Note("%s: %d entries",pattern,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 
@@ -406,12 +413,12 @@ static Found FindMountFolder(const Settings& settings,char* folder,size_t capaci
     for(int depth=0;depth<MaxDepth;++depth) {
         if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
         if(CancelAsked) return FoundStopped;
-        int count=ListFolder(folder);
+        int count=ListFolder(folder,settings.iso,MountFolder);
         // An empty root: the plugin couldn't reach the server.
         if(!depth && !count) return FoundNoRoot;
-        const char* next=FindName(count,settings.iso);
+        const char* next=FindName(settings.iso);
         if(next) sawIso=true;
-        else if((next=FindName(count,MountFolder))!=NULL) {
+        else if((next=FindName(MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
             if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return FoundStopped; }
             return FoundMount;
@@ -528,8 +535,8 @@ static const char NoServerEntry[]="No Server!";
 static bool WaitForNetIso() {
     const DWORD start=GetTickCount();
     for(;;) {
-        int count=ListFolder(IsoRoot);
-        if(!FindName(count,NoServerEntry)) return true;
+        ListFolder(IsoRoot,NoServerEntry);
+        if(!FindName(NoServerEntry)) return true;
         DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
         if(up>=BootSeconds && waited>=RetrySeconds*3) return false;
         ShowStep(nia::StepMount,0.12,"NetISO is still connecting to the server after the reboot... %lu s",waited);

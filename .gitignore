@@ -1,4 +1,7 @@
 build/
+# Made from web/index.html by tools/make_web.py during every build (CI, build.ps1,
+# the Visual Studio project, Docker, the tests), so pull requests don't conflict on it.
+server/web_page.h
 __pycache__/
 *.tlog
 

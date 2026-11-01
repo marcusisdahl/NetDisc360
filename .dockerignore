@@ -6,3 +6,5 @@
 !third_party/fonts/roboto_medium.h
 !docker/
 !art/aurora/*/*.asset
+!web/
+!tools/make_web.py

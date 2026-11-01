@@ -491,6 +491,7 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .wz-extras .setting:first-child { padding-top: 0; }
 .wz-wait { display: grid; }
 /* Login, toasts */
+.console-speed { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .login { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
 .login .card { width: min(380px, 100%); padding: 28px; }
 .login h1 { font-size: 20px; margin: 16px 0 4px; }
@@ -1381,7 +1382,7 @@ function consoleCard(c, index, foot) {
     h('div.icon', ic(st.cls === 'playing' ? 'gamepad-2' : 'monitor')),
     h('div.name', h('span', { title: c.name ? c.name + ' (' + c.address + ')' : c.address }, cName(c), c.name ? h('span.ip', c.address) : null), h('span.pill.' + (st.dot === 'play' ? 'play' : st.dot === 'good' ? 'good' : 'off'), st.dot ? h('span.dot.' + st.dot) : null, st.text)),
     h('div.rate', h('div.v', c.connections > 0 ? rate(now) : '\u2014'), c.connections > 0 ? canvas : h('div.s', bytes(c.sent) + ' sent')),
-    h('div.what', consoleWhat(c)));
+    h('div.what', c.pushing ? ['Adding games to Aurora: ', h('b', c.pushing.done.toLocaleString() + ' of ' + c.pushing.total.toLocaleString())] : consoleWhat(c)));
   if (foot) {
     const l = liveStatus(c, () => { if (page === 'consoles' && view && view.update) view.update(); }), d = l && l.data;
     const [ping] = pingText(c), [ftp] = ftpText(c), t = d && d.temperature;
@@ -1395,6 +1396,24 @@ function consoleCard(c, index, foot) {
   }
   requestAnimationFrame(() => { if (canvas.isConnected) spark(canvas, c.rate, seriesColor(index)); });
   return card;
+}
+const SpeedResults = {}, SpeedBusy = new Set();  // The latest speed test of each console, by address, and those testing now.
+// How fast the network to a console is, from a test file over Aurora's FTP: its button and result.
+function speedTest(c) {
+  const result = h('span.help', SpeedResults[c.address] || 'Writes a 32 MB test file to the console and reads it back, to show if the cable, adapter or Wi-Fi holds games back.');
+  const test = h('button.btn.small', { disabled: c.playing || c.ftp !== 2 || SpeedBusy.has(c.address), title: c.playing ? 'Not while it plays' : c.ftp !== 2 ? 'Aurora\u2019s FTP server has to answer' : '', onclick: async () => {
+    test.disabled = true; SpeedBusy.add(c.address);
+    result.textContent = SpeedResults[c.address] = 'Testing\u2026 (about 10 s)';
+    try {
+      const r = await api('consoles/speed', { address: c.address });
+      const mb = v => (v / 1e6).toFixed(1) + ' MB/s';
+      SpeedResults[c.address] = mb(r.toXbox) + ' to the Xbox, ' + mb(r.fromXbox) + ' back. Games need about 10 MB/s to start quickly; 25 or more is a gigabit adapter at full speed.';
+      result.textContent = SpeedResults[c.address];
+    } catch (e) { result.textContent = SpeedResults[c.address] = e.message; }
+    SpeedBusy.delete(c.address);
+    test.disabled = false;
+  } }, ic('gauge', 'sm'), 'Test network speed');
+  return h('div.console-speed', test, result);
 }
 function fact(k, v, tone) { return h('div.fact', h('div.k', k), h('div.v' + (tone ? '.' + tone : ''), v)); }
 
@@ -2017,9 +2036,9 @@ const ConsoleParts = {};
 
 // Overview: now, its bandwidth, what it is, what happened.
 ConsoleParts.overview = (body, address) => {
-  const tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap.small'), facts = h('div.con-facts'), events = h('ul.events');
+  const tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap.small'), facts = h('div.con-facts'), events = h('ul.events'), speed = h('div');
   body.append(h('div.stack', tiles,
-    h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to it, last 2 minutes')), h('div.card-body', chartWrap)),
+    h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to it, last 2 minutes')), h('div.card-body', chartWrap, speed)),
     h('div.grid.two',
       h('div.card', h('div.card-head', ic('info'), h('h2', 'About it')), h('div.card-body', facts)),
       h('div.card', h('div.card-head', ic('history'), h('h2', 'Recent activity')), h('div.card-body', events)))));
@@ -2038,6 +2057,7 @@ ConsoleParts.overview = (body, address) => {
         tile('radar', 'Ping', ping, 'Aurora’s FTP: ' + ftp.toLowerCase()),
         tile('thermometer', 'Temperature', t ? deg(t.cpu) : '—', t ? 'GPU ' + deg(t.gpu) + ' · RAM ' + deg(t.memory) : l && l.error ? 'Aurora’s web server doesn’t answer' : consoleOn(c) ? 'asking Aurora…' : 'while it’s on'));
       chart.set(c.rate.length ? [{ name: cName(c), values: c.rate, color: S.consoles.indexOf(c) }] : []);
+      if (!SpeedBusy.has(c.address)) fill(speed, speedTest(c));
       const p = S.party || { consoles: [] };
       fill(facts,
         fact('Name on the Xbox', c.name || 'Not known yet'),
@@ -3707,7 +3727,7 @@ async function browserCheck(force) {
   try {
     const r = await fetch(ReleasesApi, { referrerPolicy: 'no-referrer', headers: { Accept: 'application/vnd.github+json' } });
     if (!r.ok) throw new Error(r.status === 404 ? 'GitHub has no releases of NetDisc360 to show (404).' : r.status === 403 || r.status === 429 ? 'GitHub turned the check away for now (too many checks from this network). Try again later.' : 'GitHub answered with status ' + r.status + '.');
-    const list = (await r.json()).filter(x => !x.draft && x.tag_name && (pre || !x.prerelease));
+    const list = (await r.json()).filter(x => !x.draft && /^v?\d/i.test(x.tag_name || '') && (pre || !x.prerelease));
     info.checkedAt = Date.now() / 1000;
     list.sort((a, b) => versionCompare(b.tag_name, a.tag_name));
     if (!list.length) info.error = 'There are no releases on GitHub yet.';

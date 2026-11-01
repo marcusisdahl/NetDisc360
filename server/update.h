@@ -13,6 +13,7 @@ namespace update {
 struct Release {
     std::string tag, version, name, notes, page, published;  // version: the tag without its v.
     std::string exeUrl, exeDigest;  // Its NetDisc360.exe; digest "sha256:<hex>" when GitHub gives one.
+    std::string sigUrl;             // Its NetDisc360.exe.sig, the exe's signature (see version.h), if any.
     long long exeSize;
     bool prerelease;
     Release() : exeSize(0), prerelease(false) {}
@@ -40,6 +41,12 @@ bool Fetch(const std::string& url, std::string& body, long long limit, Progress 
 // Checks a downloaded NetDisc360.exe against its release: its size, its
 // SHA-256, and that it is a 64-bit Windows program.
 bool CheckExe(const std::string& data, const Release& r, std::string& error);
+// Whether this build checks a release's signature (NETDISC_UPDATE_KEY is set).
+bool Signed();
+// Checks a downloaded NetDisc360.exe against its signature, the text of the
+// release's NetDisc360.exe.sig (128 hex digits: ECDSA P-256 over the exe's
+// SHA-256, r then s), with NETDISC_UPDATE_KEY. Windows only.
+bool CheckSignature(const std::string& exe, const std::string& signature, std::string& error);
 // Whether url is a download from this project's releases on GitHub.
 bool FromRepo(const std::string& url);
 }
