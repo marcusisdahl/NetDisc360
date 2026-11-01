@@ -422,7 +422,8 @@ class ServerTest(unittest.TestCase):
 
     # The dashboard's API on port self.web.
     def call(self, method, path, body=None, page=True, cookie=None, headers=None):
-        """(status, response, data); an API call comes from the page unless page is False."""
+        """(status, response, data); an API call comes from the page unless page
+        is False. A body in bytes goes as it is (JSON that json.dumps can't make)."""
         sent = {"Host": "127.0.0.1:%d" % self.web}
         if page and path.startswith("/api/"):
             sent["X-NetDisc"] = "1"
@@ -431,7 +432,7 @@ class ServerTest(unittest.TestCase):
         if cookie:
             sent["Cookie"] = cookie
         sent.update(headers or {})
-        data = None if body is None else json.dumps(body)
+        data = None if body is None else body if isinstance(body, bytes) else json.dumps(body)
         deadline = time.time() + 10
         while True:  # The dashboard starts just after the NetISO port.
             conn = http.client.HTTPConnection("127.0.0.1", self.web, timeout=10)
@@ -1605,7 +1606,7 @@ print('lua ok')
                              [("127.0.0.2", True, "installed", ""), ("127.0.0.1", True, "tile", "")])
             self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0")])
             self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Skate 3", "default.xex", "0")])
-            self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.2": "none", "127.0.0.1": "none"}, "newest": ""})
+            self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.2": "none", "127.0.0.1": "none"}, "newest": "", "unread": []})
             # A console in a game: the page is told (409) and asks once, then it starts with confirm.
             aurora.running = "\\Device\\Harddisk0\\Partition1\\NetISO\\Skate 3\\default.xex"
             aurora.launched.clear()
@@ -1621,7 +1622,14 @@ print('lua ok')
             self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
             # They run different title updates: a warning in the answer.
             self.assertEqual(done["titleUpdates"], {"mismatch": True, "byConsole": {"127.0.0.2": "none", "127.0.0.1": "Title Update 8"},
-                                                    "newest": "Title Update 8"})
+                                                    "newest": "Title Update 8", "unread": []})
+            # Title Update 8 put to use on the second console in Aurora: Start
+            # on all looks at the title updates again before it starts.
+            title_update_dbs(os.path.join(other, "Hdd1", "Apps", "Aurora", "Data", "Databases"),
+                             [(1, 0x4D5307E6, 0x1A2B3C4D, 0, 8, "Title Update 8", "tu00000008_00000000")], [1])
+            done = self.json("POST", "/api/party/start", {"game": "Halo 3", "confirm": True})
+            self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.2": "Title Update 8", "127.0.0.1": "Title Update 8"},
+                                                    "newest": "Title Update 8", "unread": []})
             # One that doesn't answer fails alone; consoles can be named.
             aurora2.close()
             done = self.json("POST", "/api/party/start", {"game": "Halo 3", "consoles": ["127.0.0.1", "127.0.0.2"], "confirm": True})
@@ -1694,6 +1702,7 @@ print('lua ok')
         server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
         try:
             self.assertTrue(self.wait_for(lambda: all(c["read"] for c in self.json("GET", "/api/titleupdates")["consoles"]), 25))
+            first = time.time()  # After the databases' listing was first seen.
             listed = self.json("GET", "/api/titleupdates")
             consoles = {c["address"]: c for c in listed["consoles"]}
             self.assertEqual(sorted(consoles), ["127.0.0.1", "127.0.0.2"])
@@ -1723,24 +1732,39 @@ print('lua ok')
             library = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
             self.assertEqual(library["Halo 3"]["titleUpdates"], {"127.0.0.1": "Title Update 8"})
             self.json("POST", "/api/party", {"active": False})
-            # Back in Aurora, the databases are listed again, but read again
-            # only once they changed; never written.
+            # Title Update 8 put to use on the second console, its settings.db
+            # changed in place: as big as before, and as old in a listing,
+            # which gives the time to the minute. Back in Aurora, the
+            # databases are read again, as they were last read in the minute
+            # their listing was first seen: no mismatch any more.
             fetched = lambda: [line for line in ftp2.log if line in ("RETR content.db", "RETR settings.db")]
             self.assertEqual(fetched(), ["RETR content.db", "RETR settings.db"])
-            looked = ftp2.log.count("CWD /Hdd1/Apps/Aurora/Data/Databases")
-            self.json("POST", "/api/console/power", {"address": "127.0.0.2", "action": "aurora"})
-            self.assertTrue(self.wait_for(lambda: ftp2.log.count("CWD /Hdd1/Apps/Aurora/Data/Databases") > looked, 10))
-            time.sleep(1)
-            self.assertEqual(fetched(), ["RETR content.db", "RETR settings.db"])
-            # Title Update 8 put to use on the second console: no mismatch any more.
+            files = [os.path.join(databases2, name) for name in ("content.db", "settings.db")]
+            listed = [(os.path.getsize(f), os.stat(f).st_mtime) for f in files]
             title_update_dbs(databases2, [(1, 0x4D5307E6, 0x1A2B3C4D, 0, 8, "Title Update 8", "tu00000008_00000000"),
                                           (2, 0x454108E6, 0x5C087C2C, 0x10000, 2, "Title Update 2", "tu00000002_00000000")], [2, 1], table_key=True)
-            os.utime(os.path.join(databases2, "settings.db"), (time.time() - 3600, time.time() - 3600))
+            for f, (size, mtime) in zip(files, listed):
+                self.assertEqual(os.path.getsize(f), size)
+                os.utime(f, (mtime, mtime))
             version = self.json("GET", "/api/state")["library"]["version"]
             self.json("POST", "/api/console/power", {"address": "127.0.0.2", "action": "aurora"})
             self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["titleUpdates"]["mismatches"] == 0, 10))
             self.assertNotEqual(self.json("GET", "/api/state")["library"]["version"], version)  # The games' title updates changed.
-            self.assertIn("RETR settings.db", fetched()[2:])
+            self.assertEqual(fetched()[2:], ["RETR content.db", "RETR settings.db"])
+            # Once their listing is a minute old, the copies read then stay:
+            # back in Aurora, the databases are listed again, but read again
+            # only once they changed; never written.
+            def back_in_aurora():
+                looked = ftp2.log.count("CWD /Hdd1/Apps/Aurora/Data/Databases")
+                self.json("POST", "/api/console/power", {"address": "127.0.0.2", "action": "aurora"})
+                self.assertTrue(self.wait_for(lambda: ftp2.log.count("CWD /Hdd1/Apps/Aurora/Data/Databases") > looked, 10))
+                time.sleep(1)
+            time.sleep(max(0, first + 61 - time.time()))
+            back_in_aurora()
+            self.assertEqual(fetched()[4:], ["RETR content.db", "RETR settings.db"])
+            back_in_aurora()
+            self.assertEqual(len(fetched()), 6)
+            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"]["mismatches"], 0)
             self.assertFalse([line for line in ftp2.log + self.ftp.log if line.startswith("STOR") and "Databases" in line])
         finally:
             aurora.close()
@@ -1748,6 +1772,43 @@ print('lua ok')
             server.kill()
             out = server.communicate()[0]
         self.assertIn("Xbox 127.0.0.1: 3 title updates in Aurora, 2 in use.", out)
+
+    def test_compares_title_updates_without_writing_game_folders(self):
+        # With game folders not written, the party's consoles' title updates
+        # are still read: as the party starts, and before Start on all.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other, ftp2 = self.second_console()
+        databases2 = os.path.join(other, "Hdd1", "Apps", "Aurora", "Data", "Databases")
+        title_update_dbs(os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Data", "Databases"),
+                         [(5, 0x4D5307E6, 0x1A2B3C4D, 0, 8, "Title Update 8", "tu00000008_00000000")], [5])
+        title_update_dbs(databases2, [], [])
+        aurora = AuroraWeb()
+        aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
+        self.web = free_port()
+        server, _ = self.run_server("--no-push", "--xbox", "127.0.0.2", "--xbox", "127.0.0.3", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
+        try:
+            time.sleep(2)
+            self.assertEqual((self.logins(), self.logins(ftp2)), (0, 0))
+            self.assertFalse(any(c["read"] for c in self.json("GET", "/api/titleupdates")["consoles"]))
+            self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.2"]})
+            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["titleUpdates"]["mismatches"] == 1, 10))
+            # Title Update 8 put to use on the second console.
+            title_update_dbs(databases2, [(1, 0x4D5307E6, 0x1A2B3C4D, 0, 8, "Title Update 8", "tu00000008_00000000")], [1])
+            done = self.json("POST", "/api/party/start", {"game": "Halo 3"})
+            self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.1": "Title Update 8", "127.0.0.2": "Title Update 8"},
+                                                    "newest": "Title Update 8", "unread": []})
+            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"]["mismatches"], 0)
+            # One whose title updates were never read (its Aurora doesn't answer) is said to be left out.
+            done = self.json("POST", "/api/party/start", {"game": "Halo 3", "consoles": ["127.0.0.1", "127.0.0.3"]})
+            self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.1": "Title Update 8"}, "newest": "Title Update 8",
+                                                    "unread": ["127.0.0.3"]})
+            # Nothing was written.
+            self.assertFalse([line for line in self.ftp.log + ftp2.log if line.split(" ")[0] in ("STOR", "MKD", "DELE", "RNFR", "RMD")])
+        finally:
+            aurora.close()
+            aurora2.close()
+            server.kill()
+            server.communicate()
 
     def test_a_game_installed_later_loses_its_tile(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
@@ -1774,6 +1835,72 @@ print('lua ok')
             server.kill()
             out = server.communicate()[0]
         self.assertIn("what's installed on it changed; its game folders are written again.", out)
+
+    def test_a_game_installed_while_one_started_from_the_dashboard_ran_loses_its_tile(self):
+        # A copy installed on the console, started from the dashboard, isn't
+        # NetISO's: its return to Aurora shows by Aurora's FTP server, gone
+        # while the game runs. Back in Aurora, the console is looked at again.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
+        aurora = AuroraWeb()
+        self.web = free_port()
+        server, _ = self.run_server("--remove-wait", "0", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertTrue(os.path.isdir(os.path.join(self.games, "Skate 3")))
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Games\\Halo 3", "default.xex", "0")])
+            # The game runs, so Aurora's FTP server is gone; Skate 3 is installed meanwhile.
+            port = self.ftp.server_address[1]
+            self.ftp.shutdown()
+            self.ftp.server_close()
+            self.install("Games/Skate 3", 0x5C087C2C, 0x454108E6)
+            time.sleep(7)
+            self.assertTrue(os.path.isdir(os.path.join(self.games, "Skate 3")))
+            # Back in Aurora.
+            self.ftp = aurora_ftp.Server(self.xbox, port)
+            threading.Thread(target=self.ftp.serve_forever, daemon=True).start()
+            self.assertTrue(self.wait_for(lambda: not os.path.isdir(os.path.join(self.games, "Skate 3")), 40))
+        finally:
+            aurora.close()
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("Xbox 127.0.0.1: back in Aurora after the game started from the dashboard (its FTP server answers).", out)
+        self.assertIn("what's installed on it changed; its game folders are written again.", out)
+
+    def test_starts_the_tile_when_aurora_can_t_start_the_installed_copy(self):
+        # Aurora's web server starts games on the hard drive only: a copy
+        # installed on a USB drive leaves the start to the tile, and a copy on
+        # the hard drive goes before one there.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        for drive, name, media_id, title_id in (("Usb0", "Halo 3", 0x1A2B3C4D, 0x4D5307E6), ("Usb0", "Skate 3", 0x5C087C2C, 0x454108E6),
+                                                ("Hdd1", "Skate 3", 0x5C087C2C, 0x454108E6)):
+            path = os.path.join(self.xbox, drive, "Games", name)
+            os.makedirs(path)
+            with open(os.path.join(path, "default.xex"), "wb") as f:
+                f.write(xex(execution_info(media_id, title_id)))
+        aurora = AuroraWeb()
+        self.web = free_port()
+        server, _ = self.run_server("--no-installed", "--installed", "/Usb0/Games;/Hdd1/Games", "--web-port", str(self.web),
+                                    "--aurora-web-port", str(aurora.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual((games["Halo 3"]["tiles"], games["Halo 3"]["installedOn"]), (["127.0.0.1"], ["127.0.0.1"]))
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Skate 3", "console": "127.0.0.1"}), {"ok": True})
+            self.json("POST", "/api/party", {"gamemaster": "127.0.0.1"})
+            done = self.json("POST", "/api/party/start", {"game": "Halo 3"})
+            self.assertEqual([(r["address"], r["ok"], r["how"], r["error"]) for r in done["results"]], [("127.0.0.1", True, "tile", "")])
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0"),
+                                               ("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0"),
+                                               ("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+        finally:
+            aurora.close()
+            server.kill()
+            server.communicate()
 
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
@@ -2165,7 +2292,7 @@ class Dashboard(ServerTest):
         self.start(*self.PARTY_CONSOLES)
         self.assertEqual(self.json("GET", "/api/state")["party"],
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
-                                                                 "logo": False, "backgrounds": 0},
+                                                                 "logo": False, "backgrounds": 0, "pictures": ""},
                           "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": []})
         tricky = "Cid | 50%, ok; ="  # Every character the settings file's lists split at.
         self.json("POST", "/api/party", {"active": True, "name": " Bjørn's 40th ", "gamemaster": "10.10.1.42",
@@ -2174,7 +2301,7 @@ class Dashboard(ServerTest):
                                          "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann"}], "teams": 3,
                                          "together": [["BJØRN", tricky]], "apart": [["ann", "Bjørn"]]})
         party = {"active": True, "name": "Bjørn's 40th", "theme": {"preset": "birthday", "accent": "#ff8800", "accent2": "#1a1a1a", "person": "Bjørn", "age": 40,
-                                                                    "logo": False, "backgrounds": 0},
+                                                                    "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
                  "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": []}
@@ -2186,11 +2313,12 @@ class Dashboard(ServerTest):
             saved = f.read()
         self.assertIn("party_guest2=1|Cid %7C 50%25%2C ok%3B %3D\n", saved)
         self.assertIn("party_consoles=10.10.1.42, 10.10.1.41\n", saved)
-        # Kept in a backup. The guest list stays from one party to the next,
-        # until it's typed again; rules about guests who aren't on it go.
+        # Kept in a backup. The guest list stays from one party to the next
+        # (with no one here yet), until it's typed again; rules about guests
+        # who aren't on it go.
         name = self.json("POST", "/api/backup", {})["name"]
         self.json("POST", "/api/party", {"active": False})
-        self.assertEqual(self.json("GET", "/api/state")["party"]["guests"], party["guests"])
+        self.assertEqual(self.json("GET", "/api/state")["party"]["guests"], [dict(g, here=False) for g in party["guests"]])
         self.json("POST", "/api/party", {"guests": [{"name": "Ann", "here": True}, {"name": "Dee"}]})
         changed = self.json("GET", "/api/state")["party"]
         self.assertEqual((changed["guests"], changed["together"], changed["apart"]), ([{"name": "Ann", "here": True}, {"name": "Dee", "here": False}], [], []))
@@ -2219,12 +2347,20 @@ class Dashboard(ServerTest):
             ({"consoles": ["10.10.1.99"]}, "10.10.1.99 isn't a console NetDisc360 knows."),
             ({"consoles": "10.10.1.41"}, "consoles is a list of console addresses."),
             ({"gamemaster": "0.0.0.0"}, "isn't a console NetDisc360 knows."),
+            # A known console written another way than 10.10.1.42, which inet_addr takes too.
+            ({"consoles": ["10.10.1.42 x"]}, "isn't a console NetDisc360 knows."),
+            ({"consoles": ["10.10.1.42\tjunk"]}, "isn't a console NetDisc360 knows."),
+            ({"consoles": ["10.10.298"]}, "isn't a console NetDisc360 knows."),
+            ({"consoles": ["168427818"]}, "isn't a console NetDisc360 knows."),
+            ({"consoles": ["012.012.01.052"]}, "isn't a console NetDisc360 knows."),
+            ({"gamemaster": "10.10.1.42\n12:00:00 Fake: the dashboard's password was removed."}, "isn't a console NetDisc360 knows."),
             ({"together": [["Ann", "Zed"]]}, "Zed isn't on the guest list."),
             ({"together": [["Ann"]]}, "together is a list of pairs of guests' names."),
             ({"apart": [["Ann", "ANN"]]}, "Ann can't be kept apart from themselves."),
             ({"together": [["Ann", "Bjørn"]], "apart": [["Bjørn", "Ann"]]}, "can't be kept together and apart at once."),
         ])
         self.assertEqual(self.json("GET", "/api/state")["party"], party)
+        self.assertNotIn("Fake:", json.dumps(self.json("GET", "/api/log?after=0")))
 
     def test_raffle_follows_the_rules(self):
         self.start(*self.PARTY_CONSOLES)
@@ -2297,7 +2433,22 @@ class Dashboard(ServerTest):
             ({"seats": {"10.10.1.42": ["Ann"], "10.10.1.41": ["ANN"]}}, "Ann has two seats."),
             ({"seats": {"10.10.1.99": ["Ann"]}}, "10.10.1.99 isn't one of the party's consoles."),
             ({"seats": {"10.10.1.42": "Ann"}}, "a list of guests' names"),
+            # A console named twice can't seat more than four.
+            (b'{"seats": {"10.10.1.42": ["Ann", "Bob", "Cid", "Dee"], "10.10.1.42": ["Eve", "Fay", "Gus", "Hal"]}}', "10.10.1.42 is listed twice."),
         ])
+        self.assertEqual(list(self.json("GET", "/api/state")["party"]["drawn"]["seats"].items()),
+                         [("10.10.1.42", ["Cid"]), ("10.10.1.41", []), ("10.10.1.43", ["Ann", "Bob"])])
+        # A party that ends leaves the next one its guests, but no one here, and no rounds, teams or seats.
+        self.json("POST", "/api/party/raffle", {"teams": 2})
+        self.json("POST", "/api/party/keep", {})
+        self.json("POST", "/api/party", {"active": False})
+        self.json("POST", "/api/party", {"active": True})
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual((party["round"], party["drawn"], party["last"]), (0, None, []))
+        self.assertEqual(party["guests"], [{"name": n, "here": False} for n in here])
+        self.assertEqual((party["teams"], party["consoles"]), (2, ["10.10.1.42", "10.10.1.41", "10.10.1.43"]))
+        self.restart(*self.PARTY_CONSOLES)
+        self.assertEqual(self.json("GET", "/api/state")["party"], party)
 
     def test_keeps_the_party_s_pictures(self):
         self.start()
@@ -2329,9 +2480,19 @@ class Dashboard(ServerTest):
                       "kind=background&n=../../netdisc.ini", "kind=logo.jpg"):
             self.assertEqual(picture(query)[0], 404, query)
         self.assertEqual((self.json("GET", "/api/state")["party"]["theme"]["logo"], self.json("GET", "/api/state")["party"]["theme"]["backgrounds"]), (True, 3))
+        # The pictures' version changes with any of them, so another device
+        # (the big screen) loads them again, though there are as many.
+        version = lambda: self.json("GET", "/api/state")["party"]["theme"]["pictures"]
+        versions = [version()]
+        self.assertTrue(re.match(r"[0-9a-f]{8}$", versions[0]), versions)
         self.json("POST", "/api/party/asset/remove", {"kind": "background", "index": 1})
         self.assertEqual(picture("kind=background&n=1")[2], jpeg)
         self.assertEqual(json.loads(send("background", "image/png", png)[2]), {"ok": True, "index": 2})
+        versions.append(version())
+        self.assertEqual(send("logo", "image/jpeg", jpeg + b"J")[0], 200)  # logo.jpg again.
+        versions.append(version())
+        self.assertEqual(len(set(versions)), 3, versions)
+        self.assertEqual(version(), versions[-1])
         self.assertEqual(sorted(os.listdir(folder)), ["background1.webp", "background3.jpg", "background4.png", "logo.jpg"])
         # Anything else is refused.
         self.refused("/api/party/asset", [
@@ -2366,7 +2527,7 @@ class Dashboard(ServerTest):
         self.json("POST", "/api/party/asset/remove", {"kind": "logo"})
         self.assertEqual(os.listdir(folder), [])
         theme = self.json("GET", "/api/state")["party"]["theme"]
-        self.assertEqual((theme["logo"], theme["backgrounds"]), (False, 0))
+        self.assertEqual((theme["logo"], theme["backgrounds"], theme["pictures"]), (False, 0, ""))
 
     def test_the_system_link_list_is_sound(self):
         # The built-in table is the data's, as tools/make_systemlink.py makes it.
