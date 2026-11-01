@@ -16,7 +16,7 @@ COPY shared/ shared/
 COPY tests/posix_compat.h tests/
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
-        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/system.cpp \
+        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/system.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
@@ -46,6 +46,9 @@ RUN apt-get update \
  && mkdir /config && chown 1000:1000 /config
 COPY --from=build /netdisc /usr/local/bin/netdisc
 COPY --from=build /launcher/ /usr/local/share/netdisc/
+# Aurora's art for NetDisc360's own tile and FastFTP360 (server/main.cpp, LoadAppArt).
+COPY art/aurora/netdisc360/*.asset /usr/local/share/netdisc/aurora/netdisc360/
+COPY art/aurora/fastftp360/*.asset /usr/local/share/netdisc/aurora/fastftp360/
 COPY docker/entrypoint.sh /usr/local/bin/netdisc-entrypoint
 RUN chmod 0755 /usr/local/bin/netdisc-entrypoint
 USER netdisc

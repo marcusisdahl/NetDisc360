@@ -12,6 +12,7 @@
 #include "../shared/library.h"
 #include "app.h"
 #include "aurora.h"
+#include "auroradb.h"
 #include "backup.h"
 #include "config.h"
 #include "discmap.h"
@@ -1390,6 +1391,74 @@ void RefreshInstallFilter(const Console& console, FtpClient& ftp, const Options&
     else if(written<0) XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
 }
 
+// Aurora's art for NetDisc360 and FastFTP360 ---------------------------------
+
+// Aurora looks a title's cover up on XboxUnity by its Title ID, and XboxUnity
+// has no entry for these two homebrew apps (only its admins add homebrew
+// titles), so Aurora keeps empty placeholders for them in its GameData
+// folder: <Title ID>_<n>/GC (cover), BK (background) and GL (icon and banner)
+// .asset files of 2048 bytes. The server fills those in with the art from
+// art/aurora (see tools/aurora_asset.py). Art that is already there, whether
+// Aurora's or someone's own, is left alone.
+struct AppArt { DWORD titleId; const char* app; const char* folder; int ids[3]; std::vector<unsigned char> files[3]; };
+AppArt AppArts[] = {
+    {0xFFFF4E49,"NetDisc360","netdisc360",{IDR_ART_NETDISC_GC,IDR_ART_NETDISC_BK,IDR_ART_NETDISC_GL}},
+    {0xFFFF4646,"FastFTP360","fastftp360",{IDR_ART_FASTFTP_GC,IDR_ART_FASTFTP_BK,IDR_ART_FASTFTP_GL}},
+};
+const char* const ArtKinds[3] = {"GC","BK","GL"};
+const size_t ArtPlaceholder = 2048;  // An .asset file with no picture in it: the header alone.
+const char GameDataFolder[] = "/Data/GameData";
+
+bool BuiltIn(int id, std::vector<unsigned char>& out);
+bool LoadFile(const std::string& path, std::vector<unsigned char>& out);
+// From the exe's resources on Windows, or else from an aurora folder beside
+// the launcher given with --launcher (in the Docker image,
+// /usr/local/share/netdisc/aurora; see the Dockerfile).
+void LoadAppArt(const Options& o) {
+    std::string folder=o.launcherPath.substr(0,o.launcherPath.find_last_of("/\\")+1)+"aurora/";
+    for(size_t a=0;a<sizeof(AppArts)/sizeof(AppArts[0]);++a)
+        for(int k=0;k<3;++k) {
+            AppArt& art=AppArts[a];
+            char name[32]; _snprintf_s(name,sizeof(name),_TRUNCATE,"%s%08X.asset",ArtKinds[k],unsigned(art.titleId));
+            if(!BuiltIn(art.ids[k],art.files[k]) && !o.launcherPath.empty()) LoadFile(folder+art.folder+"/"+name,art.files[k]);
+        }
+}
+
+void GuardAppArt(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string root=o.aurora+GameDataFolder;
+    std::vector<FtpEntry> entries;
+    // Enters keeps the connection when the folder isn't there.
+    if(!ftp.Enters(root.c_str()) || !ftp.List(root.c_str(),entries)) return;  // Aurora keeps its folder elsewhere; GuardFilter says so.
+    for(size_t i=0;i<entries.size();++i) {
+        unsigned titleId=0, number=0;
+        char rest;
+        if(!entries[i].folder || sscanf(entries[i].name.c_str(),"%8X_%8X%c",&titleId,&number,&rest)!=2) continue;
+        for(size_t a=0;a<sizeof(AppArts)/sizeof(AppArts[0]);++a) {
+            const AppArt& art=AppArts[a];
+            if(art.titleId!=titleId) continue;
+            int written=0;
+            for(int k=0;k<3;++k) {
+                if(art.files[k].empty()) continue;
+                char name[32]; _snprintf_s(name,sizeof(name),_TRUNCATE,"/%s%08X.asset",ArtKinds[k],titleId);
+                std::string path=root+"/"+entries[i].name+name;
+                std::vector<unsigned char> old, back;
+                // Bigger than a placeholder (or unreadable): there's art already.
+                if(!ftp.Retrieve(path.c_str(),old,ArtPlaceholder) && !ftp.Missing()) continue;
+                const std::vector<unsigned char>& data=art.files[k];
+                if(ftp.Store(path.c_str(),data.data(),data.size()) && ftp.Retrieve(path.c_str(),back,data.size()+1) && back==data) ++written;
+                else {
+                    XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error());
+                    if(!old.empty()) ftp.Store(path.c_str(),old.data(),old.size());  // The placeholder back, rather than a cut-short file.
+                }
+            }
+            if(written) {
+                XboxLog(console,"wrote %s's cover art to Aurora (%s/%s). Restart Aurora to see it.",art.app,root.c_str(),entries[i].name.c_str());
+                XboxEvent(console,EventGood,std::string(art.app)+"'s cover art added to Aurora; restart Aurora to see it");
+            }
+        }
+    }
+}
+
 // Pushing the game folders ---------------------------------------------------
 
 // Sync keeps its lists in static buffers (it runs on the console too), so the
@@ -1548,6 +1617,125 @@ bool StartScan(const Console& console, FtpClient& ftp, const Options& o) {
     return ok;
 }
 
+// Tiles with no art ------------------------------------------------------------
+
+// Aurora looks a game up online (its name, cover and background) only once,
+// when a scan first adds its tile, and never tries again; a tile its own scan
+// adds while Aurora is starting gets no lookup at all (see WatchLoop). Such a
+// tile gets a fresh lookup when its folder is renamed and Aurora scans: Aurora
+// drops the old tile, with its GameData folder, and adds the game as new
+// (seen on the console with Banjo-Kazooie, 2026-10-17). That resets the
+// tile's own Aurora data, which for these tiles is little more than the
+// missing art.
+//
+// Which tiles have art is read from Aurora itself: its content database says
+// which row is which game folder, and the row's GameData folder,
+// <Title ID>_<row id>, holds its cover as GC<Title ID>.asset. Aurora keeps an
+// empty one (the 2048-byte header alone) when the lookup found nothing.
+const char AuroraContentDb[] = "/Data/Databases/content.db";
+struct ArtlessTile { std::string folder, title; };
+
+// Aurora's Directory for a game folder: the game folder's path without its
+// drive, with backslashes ("\NetISO\Halo 3" for /Hdd1/NetISO/Halo 3).
+std::string AuroraDirectory(const Options& o, const std::string& folder) {
+    std::string path=o.xboxFolder;
+    size_t drive=path.find('/',1);
+    path=(drive==std::string::npos ? std::string() : path.substr(drive))+"/"+folder;
+    std::replace(path.begin(),path.end(),'/','\\');
+    return path;
+}
+
+bool PlaysNow(const Console& console) {
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    return console.connections>0 && !console.mounted.empty() && !console.inAurora;
+}
+
+// The game folders on the console whose tile in Aurora has no cover, and
+// every folder there (for new names). False, with why in error, if Aurora
+// couldn't be asked.
+bool FindArtless(FtpClient& ftp, const Options& o, std::vector<FtpEntry>& folders, std::vector<ArtlessTile>& out, std::string& error) {
+    out.clear();
+    if(!ftp.List(o.xboxFolder.c_str(),folders)) { error=std::string("Couldn't open ")+o.xboxFolder+": "+ftp.Error(); return false; }
+    std::vector<unsigned char> db;
+    std::string dbPath=o.aurora+AuroraContentDb;
+    if(!ftp.Retrieve(dbPath.c_str(),db,size_t(256)<<20)) { error="Couldn't read Aurora's "+dbPath+": "+ftp.Error(); return false; }
+    std::vector<AuroraItem> items;
+    std::string why;
+    if(!ReadAuroraItems(db,items,why)) { error="Couldn't read Aurora's "+dbPath+": "+why; return false; }
+    std::string root=o.aurora+GameDataFolder;
+    std::vector<FtpEntry> data;
+    if(!ftp.List(root.c_str(),data)) {
+        if(ftp.Code()!=550) { error="Couldn't open "+root+": "+ftp.Error(); return false; }
+        data.clear();  // No GameData folder: no game has art yet.
+    }
+    std::set<std::string> withData;
+    for(size_t i=0;i<data.size();++i) if(data[i].folder) {
+        std::string name=data[i].name;
+        for(size_t k=0;k<name.size();++k) name[k]=char(toupper((unsigned char)name[k]));
+        withData.insert(name);
+    }
+    for(size_t f=0;f<folders.size();++f) {
+        const FtpEntry& folder=folders[f];
+        // NetDisc360's helper has no tile, and NetISO Sync's art isn't Aurora's to find.
+        if(!folder.folder || !_stricmp(folder.name.c_str(),HelperFolder) || !_stricmp(folder.name.c_str(),SyncFolder)) continue;
+        std::string directory=AuroraDirectory(o,folder.name);
+        const AuroraItem* item=NULL;
+        for(size_t i=0;i<items.size() && !item;++i) if(!_stricmp(items[i].directory.c_str(),directory.c_str())) item=&items[i];
+        if(!item || !item->titleId) continue;  // Not in Aurora yet: its first scan looks it up.
+        char id[24], cover[32];
+        _snprintf_s(id,sizeof(id),_TRUNCATE,"%08X_%08X",item->titleId,unsigned(item->id));
+        _snprintf_s(cover,sizeof(cover),_TRUNCATE,"GC%08X.asset",item->titleId);
+        bool art=false;
+        std::vector<FtpEntry> files;
+        if(withData.count(id)) {
+            if(!ftp.List((root+"/"+id).c_str(),files)) { error="Couldn't open "+root+"/"+id+": "+ftp.Error(); return false; }
+            for(size_t i=0;i<files.size() && !art;++i) art=!files[i].folder && !_stricmp(files[i].name.c_str(),cover) && files[i].size>ArtPlaceholder;
+        }
+        if(art) continue;
+        ArtlessTile tile; tile.folder=folder.name; tile.title=item->titleName.empty() ? folder.name : item->titleName;
+        out.push_back(tile);
+    }
+    return true;
+}
+
+// Renames each of the tiles' folders (all when only is empty, else those
+// named in it) and asks Aurora to scan, so it looks them up again. The new
+// name is the one Sync would give the game's disc with the old name taken:
+// the game's name with or without its tags, else with a number. Sync finds
+// a folder by the disc in its netiso.ini, so it keeps the new name.
+void RepairArt(const Console& console, FtpClient& ftp, const Options& o, std::vector<FtpEntry>& folders, const std::vector<ArtlessTile>& tiles,
+               const std::set<std::string>& only, std::vector<std::pair<std::string,std::string> >& renamed, std::string& error) {
+    std::lock_guard<std::mutex> hold(SyncLock);  // Not while Sync writes the folders.
+    std::vector<std::string> used;
+    for(size_t i=0;i<folders.size();++i) used.push_back(folders[i].name);
+    for(size_t t=0;t<tiles.size();++t) {
+        const std::string& old=tiles[t].folder;
+        if(!only.empty() && !only.count(old)) continue;
+        std::string base=o.xboxFolder+"/"+old;
+        std::vector<unsigned char> ini;
+        char iso[IsvrNameBytes]="";
+        if(ftp.Retrieve((base+"/netiso.ini").c_str(),ini,IniMax)) {
+            ini.push_back(0);
+            IniValue((const char*)ini.data(),"iso",iso,sizeof(iso));
+        } else if(!ftp.Missing()) { error=std::string("Couldn't read ")+base+"/netiso.ini: "+ftp.Error(); break; }
+        if(!iso[0]) _snprintf_s(iso,sizeof(iso),_TRUNCATE,"%s.iso",old.c_str());
+        std::vector<char> room((used.size()+1)*(FolderNameMax+1));
+        char (*taken)[FolderNameMax+1]=reinterpret_cast<char(*)[FolderNameMax+1]>(room.data());
+        int count=0;
+        for(size_t i=0;i<used.size();++i) if(used[i].size()<=FolderNameMax) strcpy_s(taken[size_t(count++)],FolderNameMax+1,used[i].c_str());
+        char name[FolderNameMax+1];
+        FolderName(iso,taken,count,name);
+        if(!ftp.Rename(base.c_str(),(o.xboxFolder+"/"+name).c_str())) { error="Couldn't rename "+base+": "+ftp.Error(); break; }
+        XboxLog(console,"renamed %s to %s, so Aurora looks %s up again.",base.c_str(),name,tiles[t].title.c_str());
+        used.push_back(name);
+        renamed.push_back(std::make_pair(old,std::string(name)));
+    }
+    if(renamed.empty()) return;
+    XboxEvent(console,EventInfo,"Fetching art again for "+Count(int(renamed.size()),"game","games"),
+              std::string("Fetching art again for ")+Count(int(renamed.size()),"game","games")+" on "+console.text);
+    if(!StartScan(console,ftp,o) && error.empty()) error="The folders were renamed, but Aurora didn't start a scan. Its next scan looks them up.";
+}
+
 // What a console's push thread knows about it.
 struct PushState {
     std::string pushed;  // The games when its folders were last written.
@@ -1682,6 +1870,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || o.onlineWait<=0;
     }
     if(o.filter && (back || pushDue)) GuardFilter(console,ftp,back,o);
+    if(back || pushDue) GuardAppArt(console,ftp,o);
     if(pushDue && !online && !s.toldWaiting) {
         XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",o.onlineWait);
         s.toldWaiting=true;
@@ -2890,7 +3079,8 @@ const double FollowQuietSeconds = 600;
 void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
     long long seen=console.seenAt;
     if(console.connections>0 || (seen>=0 && Now()*1000-seen<FollowQuietSeconds*1000)) return;
-    DWORD here=ftp.LocalAddress();
+    // A step before may have dropped the connection (a failed command does).
+    DWORD here=ftp.Open() ? ftp.LocalAddress() : 0;
     if(!here || (ntohl(here)^ntohl(console.address))>>8) return;
     LaunchIni ini;
     if(!ReadLaunchIni(ftp,ini,true)) return;
@@ -2988,6 +3178,43 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
     Console* known=ConsoleIfKnown(address);
     j.Set("connected",known && known->seenAt>=0).Close('}');
     ftp.Close();
+    out.body=j.Text();
+}
+
+// POST /api/consoles/art {address, repair, folders}: the console's tiles with
+// no art, and with repair, renames their folders (or those in folders) so
+// Aurora fetches it again.
+void ConsoleArt(const web::Value& body, web::Reply& out) {
+    Options o=Current();
+    std::string text;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { out.Error(400,"Send the console's IPv4 address, like 192.168.1.30."); return; }
+    bool repair=false;
+    Bool(body,"repair",repair);
+    std::set<std::string> only;
+    if(const web::Value* list=body.Get("folders"))
+        for(size_t i=0;i<list->items.size();++i) if(list->items[i].type==web::Value::String) only.insert(list->items[i].text);
+    Console* console=ConsoleIfKnown(address);
+    if(!console) { out.Error(404,"No console with that address has used this server."); return; }
+    if(PlaysNow(*console)) { out.Error(409,"It's playing a game. Aurora's FTP server is back once it's in Aurora again."); return; }
+    FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { out.Error(502,std::string("Aurora doesn't answer: ")+ftp.Error()); return; }
+    std::vector<FtpEntry> folders;
+    std::vector<ArtlessTile> tiles;
+    std::string error;
+    if(!FindArtless(ftp,o,folders,tiles,error)) { ftp.Close(); out.Error(502,error); return; }
+    std::vector<std::pair<std::string,std::string> > renamed;
+    if(repair) RepairArt(*console,ftp,o,folders,tiles,only,renamed,error);
+    else XboxLog(*console,"%s in Aurora without art.",Count(int(tiles.size()),"tile","tiles").c_str());
+    ftp.Close();
+    web::Json j;
+    j.Open('{').Set("address",text).Key("tiles").Open('[');
+    for(size_t i=0;i<tiles.size();++i) j.Open('{').Set("folder",tiles[i].folder).Set("title",tiles[i].title).Close('}');
+    j.Close(']').Key("renamed").Open('[');
+    for(size_t i=0;i<renamed.size();++i) j.Open('{').Set("from",renamed[i].first).Set("to",renamed[i].second).Close('}');
+    j.Close(']');
+    if(!error.empty()) j.Set("error",error);
+    j.Close('}');
     out.body=j.Text();
 }
 
@@ -3832,6 +4059,7 @@ void Api(const web::Request& r, web::Reply& out) {
         out.Error(400,"Only Windows has network categories.");
 #endif
     }
+    else if(r.method=="POST" && r.path=="/api/consoles/art") ConsoleArt(body,out);
     else if(r.method=="POST" && r.path=="/api/consoles/add") {
         if(AddConsole(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
@@ -4134,6 +4362,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         if(!CanPush && o.push) Log("This build has no launcher built in, so it won't update the Xbox (--launcher gives one).");
     }
     if(!CanPush) o.push=false;
+    LoadAppArt(o);
 #ifdef _WIN32
     if(!InTray) o.updateAuto=false;
 #else
