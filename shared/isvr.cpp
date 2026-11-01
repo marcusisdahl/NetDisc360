@@ -149,4 +149,15 @@ bool IsvrClient::Read(U64 offset, DWORD length, unsigned char* data) {
     Request(request,ReadData,0,offset,length);
     return SendAll(request,Header) && ReceiveAll(data,length);
 }
+bool IsvrClient::Text(int command, DWORD index, U64 offset, DWORD length, char* text, DWORD capacity, DWORD& size) {
+    unsigned char request[Header],reply[4];
+    size=0; text[0]=0;
+    Request(request,command,index,offset,length);
+    if(!SendAll(request,Header) || !ReceiveAll(reply,4)) return false;
+    DWORD count=Read32(reply);
+    if(count>=capacity) return Fail("A reply of %u bytes, more than %u",count,capacity-1);
+    if(count && !ReceiveAll(reinterpret_cast<unsigned char*>(text),count)) return false;
+    text[count]=0; size=count;
+    return true;
+}
 }

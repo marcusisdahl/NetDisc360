@@ -3,6 +3,7 @@
 #include "party.h"
 #include <algorithm>
 #include <ctype.h>
+#include <math.h>
 #include <random>
 #include <stdio.h>
 #include <stdlib.h>
@@ -496,5 +497,114 @@ void LoadParty(const config::File& f, Party& p) {
     p.note=f.Get("party_note");
     p.kept=f.Get("party_kept")=="1";
     TidyParty(p);
+}
+
+// The raffle wheel -----------------------------------------------------------
+
+int Spin::TotalMs() const {
+    int total=leadMs;
+    for(size_t i=0;i<steps.size();++i) total+=steps[i].ms+(i ? pauseMs : 0);
+    return total;
+}
+
+namespace {
+// A step to the next stop, turns whole turns and then on to segment of
+// the wheel, somewhere between a fifth and four fifths of the way across it
+// (never on a line between two names).
+SpinStep StepTo(const Spin& spin, double from, int segment, int team, int turns, int ms, std::mt19937& random) {
+    double width=360.0/double(spin.wheel.size());
+    double inside=0.2+0.6*double(random()%1000)/999.0;
+    // The wheel's point under the pointer is -angle (clockwise from the top).
+    double wanted=fmod(-(segment+inside)*width,360.0);
+    if(wanted<0) wanted+=360;
+    double now=fmod(from,360.0), ahead=wanted-now;
+    if(ahead<0) ahead+=360;
+    SpinStep step={segment,team,from+turns*360.0+ahead,ms};
+    // Three decimals, as the console's text sends it, so every screen stops at the same place.
+    step.to=floor(step.to*1000+0.5)/1000;
+    return step;
+}
+}
+
+void PlanTeamSpin(const std::vector<Team>& teams, unsigned seed, Spin& out) {
+    std::mt19937 random(seed^0x5EED5u);
+    out.kind="teams"; out.title.clear(); out.teams=int(teams.size());
+    out.leadMs=SpinLeadMs; out.pauseMs=SpinPauseMs;
+    out.wheel.clear(); out.steps.clear();
+    // Each team's members in an order of their own, then a team at a time.
+    std::vector<Team> order=teams;
+    size_t longest=0;
+    for(size_t t=0;t<order.size();++t) { Shuffle(order[t],random); longest=std::max(longest,order[t].size()); }
+    std::vector<std::pair<std::string,int> > picks;
+    for(size_t r=0;r<longest;++r)
+        for(size_t t=0;t<order.size();++t)
+            if(r<order[t].size()) picks.push_back(std::make_pair(order[t][r],int(t)));
+    for(size_t i=0;i<picks.size();++i) out.wheel.push_back(picks[i].first);
+    Shuffle(out.wheel,random);
+    // The first turn is the long one; then quicker, the more there are.
+    int each=picks.size()<=6 ? 3400 : picks.size()<=12 ? 2800 : 2200;
+    double at=0;
+    for(size_t i=0;i<picks.size();++i) {
+        int segment=int(std::find(out.wheel.begin(),out.wheel.end(),picks[i].first)-out.wheel.begin());
+        SpinStep step=StepTo(out,at,segment,picks[i].second,i ? 2 : 5,i ? each : int(SpinFirstMs),random);
+        out.steps.push_back(step);
+        at=step.to;
+    }
+}
+
+void PlanPickSpin(const std::vector<std::string>& people, size_t picked, const std::string& title, unsigned seed, Spin& out) {
+    std::mt19937 random(seed^0x9105u);
+    out.kind="pick"; out.title=title; out.teams=0;
+    out.leadMs=SpinLeadMs; out.pauseMs=SpinPauseMs;
+    out.wheel=people; out.steps.clear();
+    std::string chosen=picked<people.size() ? people[picked] : std::string();
+    Shuffle(out.wheel,random);
+    int segment=int(std::find(out.wheel.begin(),out.wheel.end(),chosen)-out.wheel.begin());
+    if(out.wheel.empty()) return;
+    out.steps.push_back(StepTo(out,0,segment,-1,6,6500,random));
+}
+
+double SpinAngle(const Spin& spin, double ms, int* step, bool* stopped) {
+    double angle=0, t=ms-spin.leadMs;
+    int at=-1;
+    bool still=true;
+    for(size_t i=0;i<spin.steps.size();++i) {
+        if(i) t-=spin.pauseMs;
+        if(t<0) break;
+        at=int(i);
+        const SpinStep& s=spin.steps[i];
+        if(t<s.ms) {
+            double f=1-t/s.ms;
+            angle+=(s.to-angle)*(1-f*f*f);
+            still=false;
+            break;
+        }
+        angle=s.to;
+        t-=s.ms;
+    }
+    if(step) *step=at;
+    if(stopped) *stopped=still;
+    return angle;
+}
+
+std::string PartyTitle(const Party& p) {
+    if(!p.name.empty()) return p.name;
+    return p.theme.preset=="birthday" && !p.theme.person.empty() ? p.theme.person+"\xE2\x80\x99s birthday" : std::string("LAN party");
+}
+
+std::string PartyLine(const Party& p) {
+    const PartyTheme& t=p.theme;
+    if(t.preset=="birthday") {
+        std::string age;
+        if(t.age>0) {
+            int tens=t.age%100, ones=t.age%10;
+            age=Number(t.age)+(tens>=11 && tens<=13 ? "th" : ones==1 ? "st" : ones==2 ? "nd" : ones==3 ? "rd" : "th");
+        }
+        if(!age.empty() && !t.person.empty()) return "Happy "+age+", "+t.person+"!";
+        if(!t.person.empty()) return "Happy birthday, "+t.person+"!";
+        return age.empty() ? "Happy birthday!" : "Happy "+age+" birthday!";
+    }
+    if(t.preset=="retro") return "Insert coin \xC2\xB7 Press Start";
+    return p.name.empty() ? std::string() : std::string("LAN party");
 }
 }

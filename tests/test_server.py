@@ -377,6 +377,39 @@ def title_update_dbs(folder, updates, active, table_key=False):
     db.close()
 
 
+def spin_at(spin, ms):
+    """Where the wheel is ms into a spin, as SpinAngle (server/party.cpp) and
+    spinAt (web/index.html) work it out: (angle, step, stopped, stops so far)."""
+    angle, t, step, stopped = 0.0, ms - spin["leadMs"], -1, 1
+    for i, s in enumerate(spin["steps"]):
+        if i:
+            t -= spin["pauseMs"]
+        if t < 0:
+            break
+        step = i
+        if t < s["ms"]:
+            f = 1 - t / s["ms"]
+            angle += (s["to"] - angle) * (1 - f * f * f)
+            stopped = 0
+            break
+        angle = s["to"]
+        t -= s["ms"]
+    return angle, step, stopped, 0 if step < 0 else step + 1 if stopped else step
+
+
+PARTY_PARSE = os.path.join(ROOT, "build", "host", "party-parse")
+
+
+def build_party_parse():
+    """tests/party_parse.cpp with NetDiscParty.xex's party/state.cpp, built once."""
+    if not getattr(build_party_parse, "built", False):
+        os.makedirs(os.path.dirname(PARTY_PARSE), exist_ok=True)
+        subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-o", PARTY_PARSE, os.path.join(HERE, "party_parse.cpp"),
+                        os.path.join(ROOT, "party", "state.cpp")], check=True)
+        build_party_parse.built = True
+    return PARTY_PARSE
+
+
 def connect_from(address, port):
     """A connection to the server on port from address, once it listens."""
     deadline = time.time() + 10
@@ -2788,7 +2821,7 @@ class Dashboard(ServerTest):
         self.assertEqual(self.json("GET", "/api/state")["party"],
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
                                                                  "logo": False, "backgrounds": 0, "pictures": ""},
-                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": []})
+                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None})
         tricky = "Cid | 50%, ok; ="  # Every character the settings file's lists split at.
         self.json("POST", "/api/party", {"active": True, "name": " Bjørn's 40th ", "gamemaster": "10.10.1.42",
                                          "theme": {"preset": "birthday", "person": "Bjørn", "age": 40, "accent": "#FF8800", "accent2": "#1a1a1a"},
@@ -2799,7 +2832,7 @@ class Dashboard(ServerTest):
                                                                     "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
-                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": []}
+                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
             self.assertEqual(self.json("GET", "/api/state")["party"], party)
@@ -2856,6 +2889,126 @@ class Dashboard(ServerTest):
         ])
         self.assertEqual(self.json("GET", "/api/state")["party"], party)
         self.assertNotIn("Fake:", json.dumps(self.json("GET", "/api/log?after=0")))
+
+    def party_text(self, address, version=0, wait_ms=0):
+        """The party as NetDiscParty.xex reads it (PartyWait), from address."""
+        with connect_from(address, self.port) as conn:
+            conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, version, wait_ms))
+            size = struct.unpack(">I", exact(conn, 4))[0]
+            text = exact(conn, size).decode("utf-8")
+        lines = {}
+        for line in text.splitlines():
+            key, *fields = line.split("\t")
+            lines.setdefault(key, []).append(fields)
+        return text, lines
+
+    def spin_ask(self, address, index, teams=0):
+        """The Gamemaster's console spinning the wheel (PartySpinAsk): its answer."""
+        with connect_from(address, self.port) as conn:
+            conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5053, index, 0, teams))
+            size = struct.unpack(">I", exact(conn, 4))[0]
+            return exact(conn, size).decode("utf-8")
+
+    def check_landings(self, spin):
+        """Each turn stops inside its own segment, clockwise, never on a line."""
+        width = 360 / len(spin["wheel"])
+        before = 0
+        for step in spin["steps"]:
+            self.assertGreater(step["to"], before + 360)  # A whole turn at least.
+            under = (-step["to"]) % 360 / width
+            self.assertGreater(under, step["segment"] + 0.19)
+            self.assertLess(under, step["segment"] + 0.81)
+            before = step["to"]
+
+    def test_raffle_wheel(self):
+        consoles = self.PARTY_CONSOLES + ("--xbox", "127.0.0.2")
+        self.start(*consoles)
+        here = ["Ann", "Bob", "Cid", "Dee", "Eve", "Fay", "Øyvind"]
+        self.json("POST", "/api/party", {"active": True, "name": "Wheel night", "gamemaster": "127.0.0.2", "consoles": ["10.10.1.42"], "teams": 2,
+                                         "guests": [{"name": n, "here": True} for n in here] + [{"name": "Kim"}], "together": [["Ann", "Bob"]]})
+        # The Gamemaster's console picks one guest; another console can't.
+        self.assertEqual(self.spin_ask("127.0.0.1", 2), "error\tThis isn't one of NetDisc360's Xboxes.\n")
+        self.assertEqual(self.spin_ask("127.0.0.2", 3), "error\tAsk for teams or one guest.\n")
+        self.assertEqual(self.spin_ask("127.0.0.2", 2), "ok\n")
+        spin = self.json("GET", "/api/state")["party"]["spin"]
+        self.assertEqual((spin["kind"], sorted(spin["wheel"]), len(spin["steps"]), spin["steps"][0]["team"]), ("pick", sorted(here), 1, -1))
+        self.assertEqual((spin["leadMs"], spin["pauseMs"], spin["totalMs"]), (1500, 1100, 1500 + spin["steps"][0]["ms"]))
+        self.assertTrue(0 <= spin["elapsed"] < 5000, spin["elapsed"])
+        self.check_landings(spin)
+        self.assertIsNone(self.json("GET", "/api/state")["party"]["drawn"])  # A pick draws no teams.
+        # One spin at a time, from either side.
+        self.refused("/api/party/spin", [({}, "The wheel is still turning.")])
+        self.assertEqual(self.spin_ask("127.0.0.2", 1), "error\tThe wheel is still turning.\n")
+        # A draw without the wheel ends it.
+        self.json("POST", "/api/party/raffle", {"seed": 1})
+        self.assertIsNone(self.json("GET", "/api/state")["party"]["spin"])
+        # Teams on the wheel: the same draw as the raffle's, a stop for each guest, each team's first, then each team's second.
+        drawn = self.json("POST", "/api/party/spin", {"teams": 3, "seed": 5})
+        self.assertEqual(self.json("POST", "/api/party/raffle", {"teams": 3, "seed": 5})["teams"], self.json("GET", "/api/state")["party"]["drawn"]["teams"])
+        spin = drawn["spin"]
+        self.assertEqual((spin["kind"], spin["teams"], sorted(spin["wheel"]), drawn["note"]), ("teams", 3, sorted(here), ""))
+        party = self.json("GET", "/api/state")["party"]
+        self.assertIsNone(party["spin"])  # The raffle just above replaced it.
+        drawn = self.json("POST", "/api/party/spin", {"teams": 3, "seed": 5})
+        spin, party = drawn["spin"], self.json("GET", "/api/state")["party"]
+        self.assertEqual(party["spin"]["id"], spin["id"])
+        teams = party["drawn"]["teams"]
+        picked = [[spin["wheel"][s["segment"]] for s in spin["steps"] if s["team"] == t] for t in range(3)]
+        self.assertEqual([sorted(t) for t in picked], [sorted(t) for t in teams])
+        self.assertEqual([s["team"] for s in spin["steps"]], [0, 1, 2, 0, 1, 2, 0])
+        self.assertEqual(sorted(spin["wheel"][s["segment"]] for s in spin["steps"]), sorted(here))
+        self.assertEqual([s["ms"] for s in spin["steps"]], [5200] + [2800] * 6)
+        self.check_landings(spin)
+        team_of = {n: i for i, t in enumerate(teams) for n in t}
+        self.assertEqual(team_of["Ann"], team_of["Bob"])
+        # What the console reads: its own name, the party, the wheel, the draw and the seats.
+        text, lines = self.party_text("127.0.0.2")
+        self.assertEqual(lines["netdisc-party"], [["1"]])
+        self.assertEqual(lines["console"], [["Console 1", "127.0.0.2", "1"]])
+        self.assertEqual(lines["party"], [["1", "Wheel night", "LAN party", "classic"]])
+        self.assertEqual(lines["here"], [here])
+        self.assertEqual(lines["wheel"], [spin["wheel"]])
+        self.assertEqual(lines["spin"][0][:2] + lines["spin"][0][3:], [str(spin["id"]), "teams", "1500", "1100", ""])
+        self.assertEqual([[int(s[0]), int(s[1]), float(s[2]), int(s[3])] for s in lines["step"]], [[s["segment"], s["team"], s["to"], s["ms"]] for s in spin["steps"]])
+        self.assertEqual(lines["team"], teams)
+        self.assertEqual([s[:2] for s in lines["seat"]], [["127.0.0.2", "Console 1"], ["10.10.1.42", "Console 2"]])
+        self.assertEqual(lines["round"], [["1", "0"]])
+        # NetDiscParty.xex reads the same (party/state.cpp), and turns its wheel as the server plans it.
+        moments = [0, 1499, 1500, 4000, 6699, 6700, 7000, 7799, 7800, 9000, spin["totalMs"] - 1, spin["totalMs"], spin["totalMs"] + 5000]
+        read = subprocess.run([build_party_parse()] + [str(m) for m in moments], input=text.encode("utf-8"), stdout=subprocess.PIPE, check=True).stdout.decode("utf-8")
+        self.assertIn("valid 1\nversion %s\nconsole Console 1|127.0.0.2|1\nparty 1|Wheel night|LAN party\n" % lines["version"][0][0], read)
+        self.assertIn("spin %d|teams|1500|1100|%d\nwheel 7\nsteps 7\nteams 3\nseats 2\n" % (spin["id"], spin["totalMs"]), read)
+        mine = [n for n in lines["seat"][0][2:]]
+        self.assertIn("mine Console 1|%d|%d\n" % (len(mine), team_of[mine[0]]), read)
+        for line in read.splitlines():
+            if not line.startswith("at "):
+                continue
+            _, ms, angle, step, stopped, done = line.split()
+            want = spin_at(spin, float(ms))
+            self.assertAlmostEqual(float(angle), want[0], places=2, msg=line)
+            self.assertEqual((int(step), int(stopped), int(done)), want[1:], line)
+        version = int(lines["version"][0][0])
+        # Waiting on a version it has: the answer comes once it changes, or when the wait ends.
+        started = time.time()
+        _, again = self.party_text("127.0.0.2", version, 400)
+        self.assertGreaterEqual(time.time() - started, 0.35)
+        self.assertEqual(again["version"], [[str(version)]])
+        threading.Timer(0.3, lambda: self.json("POST", "/api/party/keep", {})).start()
+        started = time.time()
+        _, kept = self.party_text("127.0.0.2", version, 10000)
+        self.assertLess(time.time() - started, 5)
+        self.assertGreater(int(kept["version"][0][0]), version)
+        self.assertEqual(kept["round"], [["1", "1"]])
+        # Not a NetISO connection: the console isn't counted as one, so not listed as connected.
+        self.assertEqual([c["connections"] for c in self.json("GET", "/api/state")["consoles"] if c["address"] == "127.0.0.2"], [0])
+        # What isn't right is refused.
+        self.json("POST", "/api/party/raffle", {})
+        self.refused("/api/party/spin", [({"kind": "colours"}, "kind is teams or pick."), ({"teams": 5}, "teams is a whole number from 2 to 4."),
+                                         ({"kind": "pick", "title": "x" * 65}, "65 characters long; 64 at most."), ([], "JSON object")])
+        self.json("POST", "/api/party", {"guests": [{"name": "Ann", "here": True}]})
+        self.refused("/api/party/spin", [({"kind": "pick"}, "Tick at least two guests who are here")])
+        self.json("POST", "/api/party", {"active": False})
+        self.assertIn("hasn't started", self.spin_ask("127.0.0.2", 2))
 
     def test_raffle_follows_the_rules(self):
         self.start(*self.PARTY_CONSOLES)

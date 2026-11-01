@@ -11,6 +11,13 @@ try {
     if ($LASTEXITCODE) { throw 'Xbox compilation failed. Check the SDK and RXDK integration.' }
     & $msbuild launcher\NetDiscTile.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation of the tile launcher failed.' }
+    # NetDiscParty.xex: the LAN party's raffle wheel on each console (party/),
+    # in a folder of its own for Hdd1:\NetISO, where Aurora lists it.
+    & $msbuild party\NetDiscParty.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Xbox compilation of NetDiscParty failed.' }
+    $party = 'build\NetDisc360 Party'
+    New-Item -ItemType Directory -Force $party | Out-Null
+    Copy-Item -LiteralPath build\xbox\NetDiscParty.xex -Destination "$party\default.xex" -Force
     # The folder to copy to the console: Sync is the tile launcher with a
     # netiso.ini that has no iso=, and it copies that tile launcher into each
     # game folder it makes (see shared/helper.h).
@@ -63,6 +70,7 @@ try {
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
     Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
+    Write-Host "Built $party. Copy it to Hdd1:\NetISO\NetDisc360 Party on each console for the LAN party's raffle wheel."
     Write-Host 'Built build\NetDisc360.xex. Add it as a DashLaunch plugin in place of NetIsoTiles.xex; it replaces NetISO.xex too.'
     Write-Host 'Built build\NetDisc360.exe. Start it: it opens its dashboard in your browser. NetDisc360.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }
