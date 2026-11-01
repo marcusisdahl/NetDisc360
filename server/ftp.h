@@ -44,6 +44,8 @@ public:
     bool Enters(const char* folder);
     bool Delete(const char* path);
     bool RemoveFolder(const char* path);
+    // Renames a file or folder (RNFR and RNTO, both full paths).
+    bool Rename(const char* from, const char* to);
     // A SITE command (FtpDll's own, such as INITIATESCAN); reply is its last
     // line. True for a 2xx reply.
     bool Site(const char* command, std::string& reply);

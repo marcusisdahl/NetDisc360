@@ -19,6 +19,7 @@ import re
 import shutil
 import socket
 import socketserver
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -57,7 +58,7 @@ def build_server():
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
-                                               "server/installed.cpp", "server/aurora.cpp", "server/system.cpp",
+                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -370,16 +371,33 @@ class ServerTest(unittest.TestCase):
             self.server.stdout.close()
         self.tmp.cleanup()
 
+    def ports(self):
+        """Extra arguments with ports of their own, picked again on each try."""
+        return []
+
     def start(self, *extra):
-        self.port = free_port()
-        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + list(extra),
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            line = self.server.stdout.readline()
-            if "Listening on port" in line:
-                return
-        self.fail("server didn't start")
+        # free_port's port can be taken by someone else before the server
+        # binds it; then the server says so and stops, and gets another.
+        for _ in range(3):
+            self.port = free_port()
+            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + self.ports() + list(extra),
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            deadline = time.time() + 10
+            said = []
+            while time.time() < deadline:
+                line = self.server.stdout.readline()
+                if "Listening on port" in line:
+                    return
+                if line:
+                    said.append(line.rstrip())
+                elif self.server.poll() is not None:
+                    break
+            if not any("an't listen on" in line for line in said):
+                break
+            self.server.kill()
+            self.server.wait()
+            self.server.stdout.close()
+        self.fail("server didn't start:\n" + "\n".join(said[-20:]))
 
     def add_iso(self, name, media_id, title_id, folder=None):
         path = os.path.join(folder or self.isos, name)
@@ -1017,6 +1035,42 @@ class Push(ServerTest):
             result = subprocess.run([LUA, check], capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
 
+    def test_fills_in_aurora_s_empty_art_for_netdisc360_and_fastftp360(self):
+        # Aurora's placeholders (2048 bytes) get the art from the aurora
+        # folder beside the launcher; art that is there already stays.
+        art = os.path.join(self.tmp.name, "aurora")
+        for app, title in (("netdisc360", "FFFF4E49"), ("fastftp360", "FFFF4646")):
+            os.makedirs(os.path.join(art, app))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(art, app, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(("%s %s ART" % (app, kind)).encode() * 1000)
+        game_data = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Data", "GameData")
+        placeholder = b"RXEA" + b"\0" * 2044
+        folders = {"FFFF4E49_00000048": "FFFF4E49", "FFFF4646_0000005B": "FFFF4646", "4D5307E6_00000006": "4D5307E6"}
+        for folder, title in folders.items():
+            os.makedirs(os.path.join(game_data, folder))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(game_data, folder, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(placeholder)
+        own = os.path.join(game_data, "FFFF4646_0000005B", "GCFFFF4646.asset")
+        with open(own, "wb") as f:
+            f.write(b"SOMEONE'S OWN COVER" * 200)
+        self.add_iso("a.iso", 1, 0x11111111)
+        out = self.push()
+        self.assertIn("wrote NetDisc360's cover art to Aurora", out)
+        self.assertIn("wrote FastFTP360's cover art to Aurora", out)
+
+        def read(folder, name):
+            with open(os.path.join(game_data, folder, name), "rb") as f:
+                return f.read()
+        self.assertEqual(read("FFFF4E49_00000048", "GCFFFF4E49.asset"), b"netdisc360 GC ART" * 1000)
+        self.assertEqual(read("FFFF4E49_00000048", "GLFFFF4E49.asset"), b"netdisc360 GL ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "BKFFFF4646.asset"), b"fastftp360 BK ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "GCFFFF4646.asset"), b"SOMEONE'S OWN COVER" * 200)
+        self.assertEqual(read("4D5307E6_00000006", "GC4D5307E6.asset"), placeholder)  # Other titles: Aurora's.
+        out = self.push()
+        self.assertNotIn("cover art to Aurora", out)
+
     def test_hides_install_discs_in_aurora(self):
         filters = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters")
         os.makedirs(filters)
@@ -1477,6 +1531,18 @@ print('lua ok')
         self.assertNotIn("NetISO.xex.txt (", out)
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
             self.assertEqual(f.read(), "127.0.0.8")
+        # NetDisc360.xex's own drive reads server= in NetDisc360.ini.
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetDisc360.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), "w", newline="") as f:
+            f.write("; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.9:4323\r\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetDisc360.ini (/Usb0/Plugins/NetDisc360.ini) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), newline="") as f:
+            self.assertEqual(f.read(), "; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.1:4323\r\n")
+        os.remove(os.path.join(usb, "Plugins", "NetDisc360.ini"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
         # And so is all of it when following is off.
         with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
             f.write("127.0.0.9")
@@ -1547,9 +1613,12 @@ class Dashboard(ServerTest):
         super().setUp()
         self.config = os.path.join(self.tmp.name, "netdisc.ini")
 
-    def start(self, *extra):
+    def ports(self):
         self.web = free_port()
-        super().start("--web-port", str(self.web), "--config", self.config, *extra)
+        return ["--web-port", str(self.web)]
+
+    def start(self, *extra):
+        super().start("--config", self.config, *extra)
 
     def restart(self, *extra):
         self.server.kill()
@@ -1817,11 +1886,13 @@ class Dashboard(ServerTest):
 
     def test_finds_and_checks_a_console(self):
         xbox = os.path.join(self.tmp.name, "xbox")
-        for folder in ("Usb0", "Hdd1/Apps/Aurora"):
+        for folder in ("Usb0", "Hdd1/Apps/Aurora", "Hdd1/Plugins"):
             os.makedirs(os.path.join(xbox, folder))
         files = {"Usb0/launch.ini": b"[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n[Plugins]\r\n"
-                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n",
-                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES"}
+                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n"
+                                    b"plugin4 = Hdd:\\Plugins\\NetDisc360.xex\r\n",
+                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES",
+                 "Hdd1/Plugins/NetDisc360.xex": b"DRIVE", "Hdd1/Plugins/NetDisc360.ini": b"read_kb=256\r\nserver = 10.0.0.7:4323\r\n"}
         for name, data in files.items():
             with open(os.path.join(xbox, name), "wb") as f:
                 f.write(data)
@@ -1837,15 +1908,81 @@ class Dashboard(ServerTest):
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2"})
             self.assertEqual([r[k] for k in ("ftp", "login", "aurora", "gameFolder", "launchIni")], [True, True, True, False, "/Usb0/launch.ini"])
             self.assertEqual(r["default"], "Hdd:\\Apps\\Aurora\\Aurora.xex")
-            netiso, tiles, gone = r["plugins"]
+            netiso, tiles, gone, drive = r["plugins"]
             self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
             self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())
             self.assertEqual([tiles["kind"], tiles["sha256"]], ["tiles", hashlib.sha256(b"TILES").hexdigest()])
+            # The plugin's server as it finds it: no NetDisc360.ini, so NetISO.xex.txt next to it.
+            self.assertEqual([tiles[k] for k in ("txt", "server", "serverFrom", "here")], [True, "10.0.0.99", "/Usb0/NetISO.xex.txt", False])
             self.assertEqual([gone["kind"], gone["found"]], ["other", False])
+            # The plugin's name since it has its own disc drive, from the hard drive as on an RGH console.
+            self.assertEqual([drive["slot"], drive["kind"], drive["found"], drive["sha256"]], [4, "tiles", True, hashlib.sha256(b"DRIVE").hexdigest()])
+            # server= in the NetDisc360.ini next to it, the port left off.
+            self.assertEqual([drive[k] for k in ("txt", "server", "serverFrom")], [True, "10.0.0.7", "/Hdd1/Plugins/NetDisc360.ini"])
             # A login typed in the wizard is tried before it's saved.
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
             self.assertEqual([r["ftp"], r["login"]], [True, False])
             self.assertFalse(self.json("POST", "/api/consoles/check", {"address": "127.0.0.3"})["ftp"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def test_finds_and_repairs_tiles_without_art(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        aurora = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data")
+        games = os.path.join(xbox, "Hdd1", "NetISO")
+        for folder in ("Databases", "GameData"):
+            os.makedirs(os.path.join(aurora, folder))
+        for folder in ("Halo 3", "Banjo-Kazooie - Nuts & Bolts", "Skate 3", "New Game", "NetISO Sync", "NetDisc360"):
+            os.makedirs(os.path.join(games, folder))
+        with open(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts", "netiso.ini"), "w") as f:
+            f.write("[NetISO]\r\niso=Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr).iso\r\n")
+        # Aurora's own table, as its content.db has it (tabs and all), on
+        # small pages with long rows, so the file has interior and overflow pages.
+        db = sqlite3.connect(os.path.join(aurora, "Databases", "content.db"))
+        db.execute("PRAGMA page_size=1024")
+        db.execute("CREATE TABLE ContentItems ( Id\t\t\tINTEGER PRIMARY KEY AUTOINCREMENT,  Directory\t\tTEXT COLLATE NOCASE,  "
+                   "Executable\tTEXT COLLATE NOCASE,  TitleId\t\tINTEGER,  TitleName\t\tTEXT COLLATE NOCASE,  Description\tTEXT COLLATE NOCASE,  "
+                   "ScanPathId\tINTEGER, CaseIndex DEFAULT 0,  UNIQUE (Directory, Executable, ScanPathId ) )")
+        rows = [("\\apps\\aurora", 0, "Aurora"), ("\\netiso\\netiso sync", -45495, "NetISO Sync")]
+        rows += [("\\games\\filler %d" % i, i, "Filler %d" % i) for i in range(300)]
+        rows += [("\\netiso\\halo 3", 0x4D5307E6, "Halo 3"), ("\\NetISO\\Banjo-Kazooie - Nuts & Bolts", 0x4D5307ED, "Banjo-Kazooie: Nuts & Bolts"),
+                 ("\\netiso\\skate 3", 0x454108E6 - (1 << 32), "Skate 3")]
+        for directory, title, name in rows:
+            db.execute("INSERT INTO ContentItems (Directory, Executable, TitleId, TitleName, Description, ScanPathId) VALUES (?, 'default.xex', ?, ?, ?, 3)",
+                       (directory, title, name, "A long description. " * 200))
+        db.commit()
+        ids = dict(db.execute("SELECT TitleName, Id FROM ContentItems"))
+        db.close()
+        # Halo 3 has its cover; Banjo got Aurora's empty one; Skate 3 has no GameData folder.
+        for name, title, size in (("Halo 3", 0x4D5307E6, 5000), ("Banjo-Kazooie: Nuts & Bolts", 0x4D5307ED, 2048)):
+            folder = os.path.join(aurora, "GameData", "%08X_%08X" % (title, ids[name]))
+            os.makedirs(folder)
+            with open(os.path.join(folder, "GC%08X.asset" % title), "wb") as f:
+                f.write(b"RXEA" + bytes(size - 4))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            found = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2"})
+            self.assertEqual(found["tiles"], [{"folder": "Banjo-Kazooie - Nuts & Bolts", "title": "Banjo-Kazooie: Nuts & Bolts"},
+                                              {"folder": "Skate 3", "title": "Skate 3"}])
+            self.assertEqual((found["renamed"], ftp.renamed, ftp.scans), ([], [], []))
+            # Just one: its folder gets a new name, and Aurora a scan.
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True, "folders": ["Skate 3"]})
+            self.assertEqual(done["renamed"], [{"from": "Skate 3", "to": "Skate 3 (2)"}])
+            self.assertNotIn("error", done)
+            self.assertEqual(ftp.scans, ["/Hdd1/NetISO"])
+            # The renamed tile isn't Aurora's yet; the rest are fetched again,
+            # under the disc's name with its tags (cut to 42 characters).
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True})
+            self.assertEqual([t["folder"] for t in done["tiles"]], ["Banjo-Kazooie - Nuts & Bolts"])
+            self.assertEqual(done["renamed"], [{"from": "Banjo-Kazooie - Nuts & Bolts", "to": "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr"}])
+            self.assertEqual(sorted(os.listdir(games)), ["Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr", "Halo 3", "NetDisc360", "NetISO Sync", "New Game", "Skate 3 (2)"])
+            self.assertEqual(os.listdir(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr")), ["netiso.ini"])
+            self.assertEqual(len(ftp.scans), 2)
+            self.assertEqual(self.call("POST", "/api/consoles/art", {"address": "127.0.0.3"})[0], 404)
         finally:
             ftp.shutdown()
             ftp.server_close()
