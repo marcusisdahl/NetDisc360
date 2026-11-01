@@ -565,7 +565,8 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .pc-row .gm { font-size: 13px; font-weight: 550; color: var(--muted); padding: 4px 8px; border-radius: 8px; white-space: nowrap; }
 .pc-row .gm.on { color: var(--accent-text); }
 .pill.gm { background: var(--accent); color: var(--on-accent); }
-.guest-add { display: flex; gap: 8px; margin-bottom: 12px; }
+.guest-add { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.guest-add .input { flex: 1 1 220px; min-width: 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); color: var(--text); }
 .chip > button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 4px 0 6px; font-weight: 550; border-radius: 99px; min-width: 0; }
@@ -1880,10 +1881,12 @@ function partyColours(theme, dark) {
 function setColours(el, colours) { for (const k in colours) el.style.setProperty(k, colours[k]); }
 
 // The theme's pictures as this browser loaded them (blob: URLs: the server
-// gives them only to the page's own requests), loaded again when they change.
+// gives them only to the page's own requests), loaded again when they change:
+// the server's version of them (theme.pictures) tells, here and on another
+// device, such as the big screen on a TV.
 const PartyPics = { key: '', loading: '', logo: '', backgrounds: [], changed: 0 };
 function partyPictures(theme, loaded) {
-  const key = (theme.logo ? 1 : 0) + '/' + theme.backgrounds + '/' + PartyPics.changed;
+  const key = (theme.logo ? 1 : 0) + '/' + theme.backgrounds + '/' + (theme.pictures || '') + '/' + PartyPics.changed;
   if (key !== PartyPics.key && key !== PartyPics.loading) {
     PartyPics.loading = key;
     const get = path => fetchImage(path).catch(() => '');
@@ -1968,7 +1971,7 @@ Pages.party = root => {
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div')), results = livePart(h('div'));
   const parts = [banner, form, consoles, guests, rules, raffle, seats, start, results];
   const guestCount = h('span.sub');
-  const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(); } });
+  const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
   const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
   seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
   main.append(
@@ -1977,7 +1980,8 @@ Pages.party = root => {
       h('div.stack',
         card('monitor', 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), null, consoles.el),
         card('users', 'Guests', guestCount, [h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here')],
-          h('div.guest-add', typed, h('button.btn', { onclick: addGuests }, ic('user-plus', 'sm'), 'Add')), guests.el),
+          h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
+            h('button.btn.ghost', { title: 'The names typed take the place of the guest list kept from before', onclick: () => addGuests(true) }, ic('list', 'sm'), 'New list')), guests.el),
         card('link', 'Rules', h('span.sub', 'for the team raffle'), null, rules.el)),
       h('div.stack',
         card('dices', 'Team raffle', null, null, raffle.el),
@@ -1985,17 +1989,56 @@ Pages.party = root => {
         card('play', 'Start on all', h('span.sub', 'one game on every party console'), null, start.el, results.el))));
   const systemLink = systemLinkTab(links);
 
-  // Changes the party; on a problem its parts show what the server has again.
-  async function change(changes, said) {
-    try { await api('party', changes); await refresh(); if (said) toast(said); return true; }
-    catch (e) { toast(e.message, true); for (const x of parts) x.reset(); update(); return false; }
+  // Changes to the party go to the server one at a time, in order, so quick
+  // taps don't undo each other. A tap on a guest, a console, a rule or a
+  // seat (edit, editSeats) shows at once, on top of the server's party
+  // (local), and is sent as the page has it when its turn comes; once
+  // nothing waits, the page shows the server's party again.
+  let local = null, waiting = 0, queue = Promise.resolve();
+  function shownParty() {
+    if (!local) return S.party;
+    const p = Object.assign({}, S.party, local);
+    delete p.seats;
+    if (local.seats) p.drawn = Object.assign({ teams: [], note: '', kept: false }, S.party.drawn, { seats: local.seats });
+    return p;
+  }
+  function inTurn(send) {
+    waiting++;
+    const run = queue.then(send).finally(() => { if (!--waiting) { local = null; update(); } });
+    queue = run.catch(() => {});
+    return run;
+  }
+  // On a problem its parts show what the server has again. changes can be a
+  // function, which makes them when their turn comes.
+  function change(changes, said) {
+    return inTurn(async () => {
+      try { await api('party', typeof changes === 'function' ? changes() : changes); await refresh(); if (said) toast(said); return true; }
+      catch (e) { toast(e.message, true); for (const x of parts) x.reset(); return false; }
+    });
+  }
+  function edit(fields) {
+    local = Object.assign(local || {}, fields);
+    update();
+    const keys = Object.keys(fields);
+    return change(() => { const body = {}; for (const k of keys) body[k] = local[k]; return body; });
+  }
+  function editSeats(grid) {
+    local = Object.assign(local || {}, { seats: grid });
+    update();
+    return inTurn(async () => {
+      try { await api('party/seats', { seats: local.seats }); await refresh(); }
+      catch (e) { toast(e.message, true); for (const x of parts) x.reset(); }
+    });
   }
 
   // The party and its theme: the banner shows it as the big screen does.
   function drawBanner(p, pics) {
     const here = guestsHere(p).length, t = p.theme;
-    const live = h('input', { type: 'checkbox', checked: p.active, 'data-focus': 'active', onchange: e => {
+    const live = h('input', { type: 'checkbox', checked: p.active, 'data-focus': 'active', onchange: async e => {
       if (e.target.checked && !p.gamemaster) { e.target.checked = false; toast('Choose the Gamemaster console first, under Consoles.', true); return; }
+      // Ending it clears who's here, the rounds, the teams and the seats (for the next party).
+      if (!e.target.checked && !(await confirmBox('End the LAN party?', [h('p', { style: { marginTop: 0 } }, 'Who’s here, the rounds, the teams and the seats are cleared. ' +
+        'The guest list, the consoles, the theme and the rules stay for the next party.')], 'End the party', true))) { e.target.checked = true; return; }
       change({ active: e.target.checked }, e.target.checked ? 'The LAN party is on' : 'The LAN party ended');
     } });
     return [
@@ -2077,26 +2120,33 @@ Pages.party = root => {
       const st = partyConsole(ip), on = p.consoles.includes(ip), gm = p.gamemaster === ip;
       return h('div.pc-row' + (on ? '.on' : ''),
         h('label.pick', h('input', { type: 'checkbox', checked: on, disabled: gm, 'data-focus': 'in-' + ip, title: gm ? 'The Gamemaster console is always in the party' : null,
-          onchange: e => change({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
+          onchange: e => edit({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
         h('span.what', h('b', ip), h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
         h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster'));
     })), h('p.hint', 'The Gamemaster console is the host’s: it’s seated first and starts first. Tick every console that plays.')];
   }
 
-  // The guests: kept for the next party, ticked when they're here.
-  function addGuests() {
+  // The guests: kept for the next party, ticked when they're here. The names
+  // typed are added to the list, or take its place (a new list).
+  async function addGuests(replace) {
     const names = typed.value.split(',').map(n => n.trim()).filter(Boolean);
-    if (!names.length) { typed.focus(); return; }
-    const list = S.party.guests.map(g => Object.assign({}, g));
+    if (!names.length) { typed.focus(); if (replace) toast('Type the new guest list first, with commas between the names.', true); return; }
+    for (const name of names) if ([...name].length > 32) { toast(name + ' is too long: 32 letters at most.', true); return; }
+    const p = shownParty();
+    let list = [];
+    if (replace) {
+      const gone = p.guests.filter(g => !names.some(n => sameName(n, g.name)));
+      if (gone.length && !(await confirmBox('A new guest list?', [h('p', { style: { marginTop: 0 } }, 'The names you typed take the place of the list. Taken off it: ' +
+        gone.map(g => g.name).join(', ') + '.')], 'New list'))) return;
+    } else list = p.guests.map(g => Object.assign({}, g));
     for (const name of names) {
-      if ([...name].length > 32) { toast(name + ' is too long: 32 letters at most.', true); return; }
       const known = list.find(g => sameName(g.name, name));
       if (known) known.here = true; else list.push({ name, here: true });
     }
-    change({ guests: list }).then(ok => { if (ok) { typed.value = ''; typed.focus(); } });
+    edit({ guests: list }).then(ok => { if (ok) { typed.value = ''; typed.focus(); } });
   }
-  const setGuests = list => change({ guests: list });
-  const everyone = here => setGuests(S.party.guests.map(g => ({ name: g.name, here })));
+  const setGuests = list => edit({ guests: list });
+  const everyone = here => setGuests(shownParty().guests.map(g => ({ name: g.name, here })));
   function drawGuests(p) {
     if (!p.guests.length) return h('p.muted', { style: { margin: 0 } }, 'No guests yet. Type their names above; they’re kept for the next party.');
     return [h('div.chips', p.guests.map(g => h('span.chip' + (g.here ? '.here' : ''),
@@ -2118,10 +2168,10 @@ Pages.party = root => {
         h('div.rule-add', a, h('span.muted', 'and'), b, h('button.btn.small', { 'data-focus': 'add-' + kind, onclick: () => {
           if (sameName(a.value, b.value)) { toast('Choose two different guests.', true); return; }
           if (pairs.some(([x, y]) => (sameName(x, a.value) && sameName(y, b.value)) || (sameName(x, b.value) && sameName(y, a.value)))) { toast(a.value + ' and ' + b.value + ' are in the list already.', true); return; }
-          change({ [kind]: pairs.concat([[a.value, b.value]]) });
+          edit({ [kind]: pairs.concat([[a.value, b.value]]) });
         } }, ic('plus', 'sm'), 'Add')),
         pairs.length ? h('div.chips', pairs.map(([x, y]) => h('span.chip', h('span.label', x + ' & ' + y),
-          h('button.x', { type: 'button', title: 'Remove this rule', 'aria-label': 'Remove ' + x + ' & ' + y, onclick: () => change({ [kind]: pairs.filter(q => q[0] !== x || q[1] !== y) }) }, ic('x', 'sm'))))) : null);
+          h('button.x', { type: 'button', title: 'Remove this rule', 'aria-label': 'Remove ' + x + ' & ' + y, onclick: () => edit({ [kind]: pairs.filter(q => q[0] !== x || q[1] !== y) }) }, ic('x', 'sm'))))) : null);
     };
     return [rule('together', 'Keep together', 'link', 'on the same team', p.together), rule('apart', 'Keep apart', 'unlink', 'on different teams', p.apart)];
   }
@@ -2142,7 +2192,7 @@ Pages.party = root => {
     const rulesSaid = p.together.length + p.apart.length ? 'Follows your ' + plural(p.together.length + p.apart.length, 'rule') + ', and doesn’t draw last round’s teams again.' : 'Doesn’t draw last round’s teams again.';
     return [
       h('div.raffle-bar', h('div.segmented', { role: 'group', 'aria-label': 'How many teams' }, [2, 3, 4].map(k => h('button', { class: k === n ? 'on' : '', 'aria-pressed': String(k === n), 'data-focus': 'teams-' + k,
-        disabled: shuffling, onclick: () => { if (k !== n) change({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
+        disabled: shuffling, onclick: () => { if (k !== n) edit({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
       grid,
       d && d.note && !shuffling ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
       h('div.raffle-actions',
@@ -2152,6 +2202,7 @@ Pages.party = root => {
     ];
   }
   async function drawTeams() {
+    await queue;  // The guests ticked just before, say.
     const p = S.party, n = p.teams, here = guestsHere(p);
     const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
     shuffling = true; pick = null;
@@ -2175,6 +2226,7 @@ Pages.party = root => {
     if (drawn && drawn.note) toast(drawn.note);
   }
   async function keep() {
+    await queue;
     try { const r = await api('party/keep', {}); await refresh(); toast('Teams kept for round ' + r.round); }
     catch (e) { toast(e.message, true); }
   }
@@ -2216,7 +2268,7 @@ Pages.party = root => {
   function pickedName(p) { const { grid, bench } = seatGrid(p); return pick.ip ? grid[pick.ip] && grid[pick.ip][pick.i] : bench[pick.i]; }
   function tap(at) {
     if (!pick || (pick.ip === at.ip && pick.i === at.i)) { pick = pick ? null : at; update(); return; }
-    const from = pick, p = S.party, { grid, bench } = seatGrid(p);
+    const from = pick, p = shownParty(), { grid, bench } = seatGrid(p);
     pick = null;
     const get = s => s.ip ? grid[s.ip][s.i] : bench[s.i];
     const a = get(from), b = get(at);
@@ -2227,7 +2279,7 @@ Pages.party = root => {
     // Seats are for guests who are here (one who left keeps a seat until then).
     const here = guestsHere(p);
     for (const ip in grid) grid[ip] = grid[ip].filter(n => n && here.includes(n));
-    api('party/seats', { seats: grid }).then(refresh).catch(e => { toast(e.message, true); update(); });
+    editSeats(grid);
   }
 
   // Start on all, Back to Aurora on all, Turn off all.
@@ -2256,7 +2308,8 @@ Pages.party = root => {
     // What to know before starting: players, copies, title updates.
     const here = guestsHere(p).length, d = p.drawn, crowded = d && g.perConsole ? p.consoles.filter(ip => (d.seats[ip] || []).length > g.perConsole) : [];
     const installed = p.consoles.filter(ip => (g.installedOn || []).includes(ip));
-    const tus = g.titleUpdates || {};
+    // The party's consoles' title updates (those read), whether the party is on or not.
+    const tus = g.titleUpdates || {}, differ = new Set(p.consoles.filter(ip => ip in tus).map(ip => tus[ip] || 'none')).size > 1;
     return [
       h('div.start-pick', select),
       h('div.game-facts',
@@ -2265,7 +2318,7 @@ Pages.party = root => {
         g.systemLink && g.total ? h('span.pill.info', g.total + ' in all') : null,
         installed.length ? h('span.pill.off', { title: 'Started from the copy installed on it' }, ic('hard-drive', 'sm'), 'Installed on ' + installed.join(', ')) : null),
       // Before starting (after, Start on all's answer says it, below).
-      g.tuMismatch && !(shown && shown.game === g.name && shown.titleUpdates) ? h('div.party-warn', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
+      differ && !(shown && shown.game === g.name && shown.titleUpdates) ? h('div.party-warn', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
         h('p', 'These consoles run different title updates of ' + g.name + ', so they may not find each other over System Link.'),
         h('ul', p.consoles.map(ip => h('li', h('span.mono', ip), h('span', ip in tus ? tus[ip] || 'None' : 'Not read yet')))))) : null,
       crowded.length ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + plural(g.perConsole, 'player') + ' per console; ' +
@@ -2278,6 +2331,7 @@ Pages.party = root => {
   async function startAll(g, button) {
     button.disabled = true;
     try {
+      await queue;
       let r;
       try { r = await api('party/start', { game: g.name }); }
       catch (e) {
@@ -2301,6 +2355,7 @@ Pages.party = root => {
     if (action === 'aurora' && playingNow.length && !(await confirmBox('Back to Aurora on every console?', ends, 'Back to Aurora', true))) return;
     button.disabled = true;
     try {
+      await queue;
       const r = await api('party/power', { action });
       shown = { kind: action, at: Date.now() / 1000, results: r.results };
       const ok = r.results.filter(x => x.ok).length;
@@ -2316,6 +2371,8 @@ Pages.party = root => {
       tu && tu.mismatch ? h('div.party-warn.big', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
         h('p', 'The consoles run different title updates of ' + shown.game + ', so they may not find each other over System Link.' + (tu.newest ? ' The newest is ' + tu.newest + '; use it on each console, in Aurora.' : '')),
         h('ul', Object.keys(tu.byConsole).map(ip => h('li', h('span.mono', ip), h('span', tu.byConsole[ip] === 'none' ? 'None' : tu.byConsole[ip])))))) : null,
+      tu && tu.unread && tu.unread.length ? h('div.party-note', ic('info', 'sm'), h('span', 'The title updates on ' + tu.unread.join(', ') + ' couldn’t be read (from Aurora, over FTP), so ' +
+        (tu.unread.length === 1 ? 'that console was' : 'those consoles were') + ' left out of the comparison.')) : null,
       h('div.results-head', h('b', shown.kind === 'start' ? 'Start on all: ' + shown.game : shown.kind === 'off' ? 'Turn off all' : 'Back to Aurora on all'), h('span.muted', clock(shown.at))),
       h('ul.results', shown.results.map(r => h('li.' + (r.ok ? 'ok' : 'bad'), ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
         h('div', h('b', r.address + (r.address === gm ? ' (Gamemaster)' : '')), h('div.muted', said(r)))))));
@@ -2325,7 +2382,7 @@ Pages.party = root => {
   function closeScreen() { if (screen) { screen.close(); screen = null; document.body.classList.remove('on-screen'); } }
   function update() {
     if (!S) return;
-    const p = S.party, dark = document.documentElement.dataset.theme === 'dark';
+    const p = shownParty(), dark = document.documentElement.dataset.theme === 'dark';
     const look = JSON.stringify([p.theme.accent, p.theme.accent2, dark]);
     if (look !== colours && !previewing) { colours = look; setColours(wrap, partyColours(p.theme, dark)); }
     for (const b of tabs.children) { b.classList.toggle('on', b.dataset.tab === tab); b.setAttribute('aria-pressed', String(b.dataset.tab === tab)); }
