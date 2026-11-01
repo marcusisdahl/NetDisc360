@@ -508,6 +508,222 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 .offline-bar { background: var(--warn-soft); color: var(--warn); padding: 8px 32px; font-weight: 550; display: flex; align-items: center; gap: 8px; }
 
+/* LAN party: the theme's colours (set by the page) apply inside .party and .screen only */
+:root { --team1: #d13438; --team1-text: #b3261e; --team2: #2f6fd6; --team2-text: #2559b0; --team3: #107c10; --team3-text: #0e6e0e; --team4: #e3b505; --team4-text: #7f6200; }
+:root[data-theme="dark"] { --team1: #f0675c; --team1-text: #f88a80; --team2: #6fa1ff; --team2-text: #8fb6ff; --team3: #5cc35c; --team3-text: #7dd37d; --team4: #f2c811; --team4-text: #f2c811; }
+.t1 { --team: var(--team1); --team-text: var(--team1-text); }
+.t2 { --team: var(--team2); --team-text: var(--team2-text); }
+.t3 { --team: var(--team3); --team-text: var(--team3-text); }
+.t4 { --team: var(--team4); --team-text: var(--team4-text); }
+.party-card { overflow: hidden; }
+.party-banner { position: relative; overflow: hidden; display: flex; align-items: center; gap: 16px; padding: 22px; min-height: 112px; color: #fff; background: linear-gradient(120deg, var(--deep1), var(--deep2)); }
+.party-banner .ring { position: absolute; border-radius: 50%; border: 18px solid var(--p2); opacity: .22; pointer-events: none; width: 230px; height: 230px; right: -70px; top: -100px; }
+.party-banner .ring.b { width: 120px; height: 120px; right: 150px; top: auto; bottom: -76px; border-width: 12px; opacity: .14; }
+.party-banner .photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: .28; }
+.party-banner > :not(.ring):not(.photo) { position: relative; }
+.logo-plate { width: 64px; height: 64px; flex: none; border-radius: 12px; background: #fff; display: grid; place-items: center; padding: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.logo-plate img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.party-banner .text { flex: 1; min-width: 0; }
+.party-banner h2 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; text-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.party-banner .line { margin: 4px 0 0; color: var(--glow); font-weight: 600; overflow-wrap: anywhere; }
+.party-banner .facts-line { margin: 2px 0 0; color: rgba(255,255,255,.82); font-size: 13px; }
+.party-live { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.28); font-weight: 600; cursor: pointer; white-space: nowrap; }
+.party-live .switch span { background: rgba(255,255,255,.32); }
+.party-live .switch input:checked + span { background: #fff; }
+.party-live .switch input:checked + span::after { background: var(--deep1); }
+.party-live .switch input:focus-visible + span { outline-color: #fff; }
+.party-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 28px; }
+.party-form .form { align-content: start; }
+.presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.radio.preset { flex-direction: column; gap: 4px; padding: 10px; position: relative; }
+.radio.preset input { position: absolute; top: 10px; right: 10px; margin: 0; }
+.radio.preset .i { color: var(--accent-text); }
+.radio.preset .help { font-size: 12px; }
+.colours { display: flex; gap: 10px 22px; flex-wrap: wrap; }
+.colour { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.colour input { width: 46px; height: 36px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--field); cursor: pointer; flex: none; }
+.colour .title { display: block; font-weight: 550; font-size: 13px; }
+.pics { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pic { position: relative; width: 96px; height: 60px; border-radius: 8px; overflow: hidden; background: var(--hover); border: 1px solid var(--line); display: grid; place-items: center; color: var(--faint); flex: none; }
+.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pic.logo { width: 60px; background: #fff; }
+.pic.logo img { object-fit: contain; padding: 4px; }
+.pic .remove { position: absolute; top: 3px; right: 3px; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; background: rgba(0,0,0,.62); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.pic .remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.party-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.party .card-head { flex-wrap: wrap; row-gap: 4px; }
+.party .card-head h2 { white-space: nowrap; }
+.pc-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.pc-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.pc-row.on { border-color: var(--accent); background: var(--accent-soft); }
+.pc-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+.pc-row .pick { flex: 1; }
+.pc-row input { accent-color: var(--accent); width: 17px; height: 17px; margin: 0; flex: none; }
+.pc-row .what { display: block; min-width: 0; overflow: hidden; }
+.pc-row .sub { display: block; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-row .sub .dot { display: inline-block; margin-right: 6px; vertical-align: 1px; }
+.pc-row .gm { font-size: 13px; font-weight: 550; color: var(--muted); padding: 4px 8px; border-radius: 8px; white-space: nowrap; }
+.pc-row .gm.on { color: var(--accent-text); }
+.pill.gm { background: var(--accent); color: var(--on-accent); }
+.guest-add { display: flex; gap: 8px; margin-bottom: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); color: var(--text); }
+.chip > button { border: 0; background: transparent; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 4px 0 6px; font-weight: 550; border-radius: 99px; min-width: 0; }
+.chip > button:first-child { padding-left: 6px; }
+.chip > button.x { padding: 0 10px 0 4px; color: var(--faint); }
+.chip > button.x:hover { color: var(--bad); }
+.chip > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip .tick { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--line-strong); display: grid; place-items: center; flex: none; }
+.chip .tick .i { width: 13px; height: 13px; stroke-width: 3; }
+.chip.here { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.chip.here .tick { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.chip .label { padding: 0 2px 0 12px; height: 32px; display: inline-flex; align-items: center; gap: 6px; font-weight: 550; overflow-wrap: anywhere; }
+.chip .label .i { color: var(--faint); }
+.chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule + .rule { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.rule-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.rule-head .muted { font-size: 13px; }
+.rule-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rule-add select { flex: 1 1 120px; width: auto; }
+.rule .chips { margin-top: 10px; }
+.raffle-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.raffle-bar .muted { font-size: 13px; }
+.teams { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.team { border: 1px solid var(--line); border-top: 4px solid var(--team); border-radius: 10px; padding: 10px 12px 12px; background: var(--panel); min-width: 0; }
+.team h3 { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: var(--team-text); display: flex; align-items: center; gap: 6px; text-transform: uppercase; letter-spacing: .03em; }
+.team .dot, .slot .dot { background: var(--team); }
+.team ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.team li { font-weight: 600; overflow-wrap: anywhere; }
+.team .where { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.teams.shuffling li { color: var(--muted); }
+.teams.reveal .team { animation: reveal .4s ease-out both; }
+@keyframes reveal { from { opacity: 0; transform: translateY(6px) scale(.97); } }
+.raffle-empty { padding: 18px; border: 1px dashed var(--line-strong); border-radius: 10px; text-align: center; color: var(--muted); }
+.party-note { margin-top: 12px; display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 13px; font-weight: 550; }
+.party-note .i { margin-top: 1px; }
+.raffle-actions, .party-buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.raffle-actions .muted { font-size: 12.5px; flex: 1 1 200px; }
+.seat-boxes { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.seat-box { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+.seat-box.gm { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.seat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.seat-head .sub { width: 100%; color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.slots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.slot { height: 38px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--field); color: var(--text); cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0 10px; font-weight: 600; text-align: left; min-width: 0; }
+.slot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot:hover { border-color: var(--accent); }
+.slot.empty { border-style: dashed; color: var(--faint); font-weight: 500; }
+.slot[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+.slot:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bench { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.bench-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px; flex-wrap: wrap; }
+.bench-head .muted { font-size: 13px; }
+.bench .slots { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.hint { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); }
+.start-pick { display: flex; gap: 8px; }
+.start-pick select { flex: 1; }
+.game-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.party-warn { margin-top: 12px; display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); }
+.party-warn > div { flex: 1; min-width: 0; }
+.party-warn b { display: block; font-size: 14.5px; }
+.party-warn p { margin: 3px 0 0; font-size: 13px; }
+.party-warn ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
+.party-warn li { display: contents; }
+.party-warn li span:last-child { font-weight: 650; }
+.party-warn.big { border: 2px solid var(--warn); }
+.party-results { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.party-results .party-warn { margin: 0 0 14px; }
+.sl-platform { white-space: nowrap; }
+.results-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.results-head .muted { font-size: 12.5px; }
+.results { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.results li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+.results li .i { margin-top: 2px; }
+.results li.ok .i { color: var(--good); }
+.results li.bad .i { color: var(--bad); }
+.results li .muted { font-size: 13px; overflow-wrap: anywhere; }
+.tu-rows { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+.tu-game { padding: 12px 0; border-top: 1px solid var(--line); }
+.tu-game:first-child { border-top: 0; padding-top: 0; }
+.tu-game .tu-rows { margin-top: 6px; font-size: 13.5px; }
+.check-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 550; color: var(--muted); }
+.check-label input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.table th .sort { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.table th .sort:hover { color: var(--text); }
+.table th .sort .i { width: 13px; height: 13px; }
+.table th.num .sort { flex-direction: row-reverse; }
+.sl-meta { display: none; color: var(--muted); font-size: 12.5px; font-weight: 400; margin-top: 2px; }
+.sl-consoles { display: flex; gap: 4px; flex-wrap: wrap; }
+.attribution { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; color: var(--muted); font-size: 12.5px; }
+.attribution .i { margin-top: 2px; flex: none; }
+.attribution p { margin: 0 0 4px; overflow-wrap: anywhere; }
+
+/* The big screen: on dark always, sized by the screen, readable across a room */
+body.on-screen { overflow: hidden; }
+.screen { position: fixed; inset: 0; z-index: 40; overflow: auto; color: #fff; background: var(--deep1); font-size: clamp(16px, 1.55vw, 34px); line-height: 1.25; font-weight: 600; }
+.screen .i { width: 1em; height: 1em; }
+.screen-bg, .screen-scrim, .screen-pattern { position: fixed; inset: 0; pointer-events: none; }
+.screen-bg { background: linear-gradient(135deg, var(--deep1), var(--deep2)); }
+.screen-bg img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.6s ease; }
+.screen-bg img.on { opacity: 1; }
+.screen-scrim { background: var(--scrim); }
+.screen.birthday .screen-pattern { background-image: radial-gradient(circle, var(--glow2) 0 3px, transparent 4px), radial-gradient(circle, var(--glow) 0 2px, transparent 3px); background-size: 90px 90px, 130px 130px; background-position: 0 0, 45px 65px; opacity: .28; }
+.screen.retro .screen-pattern { background: repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 2px, transparent 2px 5px); }
+.screen.retro { font-family: "Cascadia Mono", Consolas, "Courier New", monospace; }
+.screen.retro h1 { text-transform: uppercase; letter-spacing: .03em; text-shadow: .06em .06em 0 var(--p2), 0 0 .5em var(--p1); }
+.screen-body { position: relative; min-height: 100%; padding: clamp(18px, 3vw, 64px); padding-bottom: calc(clamp(18px, 3vw, 64px) + 44px); display: flex; flex-direction: column; gap: clamp(16px, 2.6vw, 52px); }
+.screen-head { display: flex; align-items: center; gap: clamp(14px, 2vw, 40px); }
+.screen-logo { width: clamp(64px, 9vw, 190px); height: clamp(64px, 9vw, 190px); flex: none; border-radius: clamp(12px, 1.2vw, 24px); background: #fff; padding: clamp(6px, .7vw, 16px); display: grid; place-items: center; box-shadow: 0 10px 34px rgba(0,0,0,.4); }
+.screen-logo img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.screen-title { flex: 1; min-width: 0; }
+.screen-title h1 { margin: 0; font-size: clamp(34px, 5.4vw, 124px); font-weight: 800; line-height: 1.02; letter-spacing: -.02em; overflow-wrap: anywhere; text-shadow: 0 3px 16px rgba(0,0,0,.4); }
+.screen-title p { margin: .25em 0 0; font-size: clamp(19px, 2.3vw, 52px); font-weight: 700; color: var(--glow); }
+.screen-clock { text-align: right; font-size: clamp(24px, 3.2vw, 72px); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.screen-clock small { display: block; font-size: .42em; font-weight: 650; opacity: .85; }
+.screen-soon { align-self: flex-start; padding: .35em .9em; border-radius: 99px; background: rgba(255,255,255,.16); font-size: 1.05em; }
+.screen-teams { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: clamp(10px, 1.6vw, 34px); }
+.screen-team { background: rgba(0,0,0,.38); border-radius: clamp(12px, 1.2vw, 26px); border-top: clamp(6px, .55vw, 12px) solid var(--team); padding: clamp(14px, 1.5vw, 32px); min-width: 0; }
+.screen-team h2 { margin: 0 0 .45em; font-size: 1.15em; color: var(--team); text-transform: uppercase; letter-spacing: .05em; }
+.screen-team ul, .screen-names { list-style: none; margin: 0; padding: 0; }
+.screen-team li { font-size: clamp(20px, 2.15vw, 50px); font-weight: 750; line-height: 1.3; overflow-wrap: anywhere; }
+.screen-team .where { margin-top: .7em; font-size: .78em; opacity: .85; display: flex; align-items: center; gap: .4em; }
+.screen .t1 { --team: #ff6b61; } .screen .t2 { --team: #6ea8ff; } .screen .t3 { --team: #5fd35f; } .screen .t4 { --team: #ffd23f; }
+.screen-waiting h2 { margin: 0 0 .5em; font-size: 1.5em; }
+.screen-waiting p { margin: .8em 0 0; opacity: .85; }
+.screen-names { display: flex; flex-wrap: wrap; gap: .45em; }
+.screen-names li { padding: .3em .8em; border-radius: 99px; background: rgba(255,255,255,.16); font-size: 1.15em; }
+.screen-consoles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, clamp(230px, 22vw, 460px)), 1fr)); gap: clamp(10px, 1.4vw, 30px); margin-top: auto; }
+.screen-console { background: rgba(0,0,0,.34); border-radius: clamp(10px, 1vw, 22px); padding: clamp(12px, 1.2vw, 26px); border-left: clamp(5px, .45vw, 10px) solid var(--team, rgba(255,255,255,.4)); min-width: 0; }
+.screen-console .top { display: flex; align-items: center; gap: .45em; font-size: .78em; opacity: .9; flex-wrap: wrap; }
+.screen-console .top .ip { margin-left: auto; opacity: .7; font-weight: 500; }
+.screen-console .names { margin: .3em 0; font-size: 1.15em; font-weight: 750; overflow-wrap: anywhere; }
+.screen-console .now { display: flex; align-items: center; gap: .45em; font-size: .85em; opacity: .9; overflow-wrap: anywhere; }
+.screen-console .now.playing { color: var(--glow); opacity: 1; }
+.screen-tools { position: fixed; right: 14px; bottom: 14px; z-index: 2; display: flex; gap: 8px; transition: opacity .3s; }
+.screen.idle .screen-tools { opacity: 0; }
+.screen-tools button { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,.3); background: rgba(0,0,0,.5); color: #fff; font: 600 14px/1 "Segoe UI", system-ui, sans-serif; cursor: pointer; }
+.screen-tools button .i { width: 16px; height: 16px; }
+.screen-tools button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+@media (max-width: 1100px) {
+  .party-grid, .party-form { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 860px) {
+  .sl-meta { display: block; }
+}
+@media (max-width: 640px) {
+  .presets { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .party-banner { flex-wrap: wrap; padding: 18px 16px; }
+  .party-banner h2 { font-size: 21px; }
+  .party-live { width: 100%; justify-content: space-between; }
+  .screen-head { flex-wrap: wrap; }
+  .screen-clock { width: 100%; text-align: left; }
+  .screen-teams { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .teams.reveal .team { animation: none; }
+  .screen-bg img { transition: none; }
+}
+
 @media (max-width: 1100px) {
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two { grid-template-columns: minmax(0, 1fr); }
@@ -650,7 +866,12 @@ async function api(path, body) {
   catch (e) { throw new Error('NetDisc360 isn\u2019t answering. Is it still running?'); }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && path !== 'login') { showLogin(); throw new Error('Log in first.'); }
-  if (!response.ok) throw new Error(data.error || 'Something went wrong (' + response.status + ').');
+  if (!response.ok) {
+    // With its status and answer, for a caller that asks again (a 409's busy consoles).
+    const error = new Error(data.error || 'Something went wrong (' + response.status + ').');
+    error.status = response.status; error.data = data;
+    throw error;
+  }
   return data;
 }
 async function save(changes, done) {
@@ -717,6 +938,7 @@ const Nav = [
   ['dashboard', 'Dashboard', 'layout-dashboard'],
   ['games', 'Games', 'gamepad-2'],
   ['consoles', 'Consoles', 'monitor'],
+  ['party', 'LAN party', 'party-popper'],
   ['folders', 'Game folders', 'folder'],
   ['log', 'Log', 'scroll-text'],
   ['settings', 'Settings', 'settings'],
@@ -731,7 +953,7 @@ async function refresh() {
     if (said) { store('restarted', ''); toast(said); }
     // Where the server can't ask GitHub (Docker), this browser does, for the "New" in the sidebar.
     if (!U && !S.update.checks && S.settings.updateCheck && !refresh.asked) { refresh.asked = true; loadUpdate(false).then(() => updateFrame()).catch(() => {}); }
-    if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || !G.games.length)) {
+    if (S.library.version !== G.version && (page === 'games' || page === 'dashboard' || page === 'party' || !G.games.length)) {
       const g = await api('games');
       if (g.version !== G.version) { G = g; if (view && view.games) view.games(); }
     }
@@ -792,7 +1014,10 @@ function updateFrame(problem) {
   const counts = { games: S.library.games, consoles: S.consoles.length ? online + '/' + S.consoles.length : '', folders: S.folders.length };
   for (const a of document.querySelectorAll('.nav a')) {
     const n = counts[a.dataset.page];
+    const tus = S.titleUpdates ? S.titleUpdates.mismatches : 0;
     if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
+    else if (a.dataset.page === 'games' && tus) fill($('.count', a), h('span.flag', { title: plural(tus, 'game') + ' with different title updates on the consoles' }, tus));
+    else if (a.dataset.page === 'party' && S.party && S.party.active) fill($('.count', a), h('span.flag.new', { title: 'The LAN party is on' }, 'On'));
     else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else fill($('.count', a), n === undefined || n === '' ? '' : n);
   }
@@ -807,6 +1032,8 @@ function route() {
   const id = (location.hash.slice(1) || 'dashboard').split('/')[0];
   const next = Pages[id] ? id : 'dashboard';
   for (const a of document.querySelectorAll('[data-page]')) a.classList.toggle('on', a.dataset.page === next);
+  const shown = $('.topbar a.on');
+  if (shown && shown.parentNode.scrollWidth > shown.parentNode.clientWidth) shown.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (next === page && view) { if (view.route) view.route(); return; }
   if (view && view.leave) view.leave();
   page = next;
@@ -979,11 +1206,11 @@ const EventIcons = { good: 'circle-check', play: 'play', xbox: 'monitor', info: 
 // Dashboard -----------------------------------------------------------------------
 
 Pages.dashboard = root => {
-  const open = h('div'), news = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
+  const open = h('div'), news = h('div'), copies = h('div'), updates = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
   const consoles = h('div.consoles'), events = h('ul.events');
   root.append(
     header('Dashboard', null),
-    h('div.stack', open, news, copies, setup, tiles,
+    h('div.stack', open, news, copies, updates, setup, tiles,
       h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
         h('div.card-body', chartWrap, legend)),
       h('div.grid.two',
@@ -1011,6 +1238,11 @@ Pages.dashboard = root => {
       if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
       else if (cut.length) fill(copies, h('div.notice', ic('triangle-alert'), h('span', (cut.length === 1 ? cut[0].name + ' is' : plural(cut.length, 'ISO') + ' are') + ' incomplete: a download or copy that stopped. A game crashes where it reads the missing part, so copy ' + (cut.length === 1 ? 'it' : 'them') + ' again.'), h('a.btn.small', { href: '#games' }, 'See which')));
       else copies.replaceChildren();
+      // Consoles (the party's while it's on) on different title updates of a game.
+      const tus = S.titleUpdates ? S.titleUpdates.mismatches : 0;
+      if (tus) fill(updates, h('div.notice', ic('triangle-alert'), h('span', (tus === 1 ? 'A game has' : tus + ' games have') + ' different title updates on ' + (S.party && S.party.active ? 'the party’s consoles' : 'your consoles') +
+        ', so those consoles may not find each other in it over System Link.'), h('button.btn.small', { onclick: titleUpdateList }, 'See which')));
+      else updates.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell NetISO where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetISO.xex.txt'), ' next to NetISO.xex on your USB drive, with one line: ', h('code', S.addresses[0] || 'this computer\u2019s address'), '. Then restart the Xbox.'] },
@@ -1070,7 +1302,7 @@ Pages.games = root => {
     };
     games.sort(sorts[sort] || byName);
     const key = JSON.stringify([G.version, G.conflicts, mode, kind, sort, query, now, store('covers'),
-      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join()), S ? S.consoles.map(c => c.address + (c.playing ? '+' : '')) : []]);
+      G.games.map(g => (g.tiles || []).join() + '/' + (g.installedOn || []).join() + '/' + !!g.tuMismatch), S ? S.consoles.map(c => c.address + (c.playing ? '+' : '')) : []]);
     if (key === drawn) return;
     drawn = key;
     const total = G.games.reduce((n, g) => n + g.size, 0);
@@ -1084,7 +1316,8 @@ Pages.games = root => {
       fill(list, h('div.covers', games.map(g => {
         const on = now[(g.name).toLowerCase()];
         const c = cover(g);
-        c.append(h('div.tag', h('span.kind', KindNames[g.kind]), g.incomplete ? h('span.kind.warn', { title: 'Cut off: a download or copy that stopped' }, 'Incomplete') : null));
+        c.append(h('div.tag', h('span.kind', KindNames[g.kind]), g.incomplete ? h('span.kind.warn', { title: 'Cut off: a download or copy that stopped' }, 'Incomplete') : null,
+          g.tuMismatch ? h('span.kind.warn', { title: 'Different Title Updates: the consoles run different title updates of it' }, 'Different TUs') : null));
         if (on) c.append(h('div.now', { title: 'Playing on ' + on.join(', ') }, h('span.pill', ic('play', 'sm'), on.length > 1 ? plural(on.length, 'console') : on[0])));
         const start = startButton(g, 'button.start');
         if (start) c.append(start);
@@ -1098,7 +1331,8 @@ Pages.games = root => {
           const on = now[g.name.toLowerCase()];
           return h('tr.click', { onclick: () => details(g) },
             h('td', h('div.cell-name', cover(g, true), h('div', { style: { flex: 1 } }, g.name, on ? h('div', h('span.pill.play', ic('play', 'sm'), 'Playing on ' + on[0])) : null,
-              g.incomplete ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Incomplete')) : null), startButton(g, 'button.btn.small'))),
+              g.incomplete ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Incomplete')) : null,
+              g.tuMismatch ? h('div', h('span.pill.warn', ic('triangle-alert', 'sm'), 'Different Title Updates')) : null), startButton(g, 'button.btn.small'))),
             h('td', h('span.kind-text', KindNames[g.kind])),
             h('td.hide-narrow.mono', g.titleId || '\u2014'),
             h('td.num', g.sizeKnown ? bytes(g.size) : '\u2026'),
@@ -1211,6 +1445,7 @@ function details(g) {
         h('div.k', 'Playing'), h('div.v', on ? on.join(', ') : 'Not now'),
         h('div.k', 'Played'), h('div.v', playedText(g)),
         g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
+        titleUpdateFacts(g),
         g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.join(', ') + (g.tiles && g.tiles.length ? ' (its NetISO tile asks which copy to play)' : ' (no tile there: Aurora lists the installed copy)'))] : null,
         h('div.k', 'In folder'), h('div.v', folder ? folder.path : '\u2014'),
         h('div.k', 'Path'), h('div.v.mono', { style: { fontSize: '12px' } }, g.path),
@@ -1223,6 +1458,17 @@ function details(g) {
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
   ]);
+}
+
+// The title update each console runs of a game (as their Aurora listed
+// them), and a badge when they differ.
+function titleUpdateFacts(g) {
+  const tus = g.titleUpdates || {}, consoles = Object.keys(tus);
+  if (!consoles.length) return null;
+  return [h('div.k', 'Title updates'), h('div.v',
+    g.tuMismatch ? h('div', { style: { marginBottom: '6px' } }, h('span.pill.warn', ic('triangle-alert', 'sm'), 'Different Title Updates')) : null,
+    h('div.tu-rows', consoles.map(ip => [h('span.mono', ip), h('span', tus[ip] || 'None')])),
+    g.tuMismatch ? h('div.muted', { style: { fontSize: '12.5px', marginTop: '6px' } }, 'Consoles on different title updates of a game usually can’t play it together over System Link. Use the same one on each, in Aurora.') : null)];
 }
 
 // A game's netiso.log from its folder on the console: what the launcher and
@@ -1550,6 +1796,724 @@ async function missingArt(address, button) {
       h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'), go),
     ];
   }, true);
+}
+
+// LAN party ------------------------------------------------------------------------
+// The party (its name and theme), the Gamemaster console and the party's
+// consoles, the guests, the team raffle and seats, and Start on all; a tab
+// with the System Link games, and the big screen (#party/screen) for a TV.
+// The theme's colours apply on this page and the big screen only.
+
+const Teams = [['Red', 't1'], ['Blue', 't2'], ['Green', 't3'], ['Yellow', 't4']];
+const PartyPresets = {
+  classic: { name: 'Classic', icon: 'party-popper', help: 'Your two colours', accent: '#107c10', accent2: '#ffffff' },
+  birthday: { name: 'Birthday', icon: 'cake', help: 'Whose, and how old', accent: '#db2777', accent2: '#f59e0b' },
+  company: { name: 'Company', icon: 'building-2', help: 'Logo, photos, colours', accent: '#1d4ed8', accent2: '#38bdf8' },
+  retro: { name: 'Retro', icon: 'joystick', help: 'Pixels and neon', accent: '#7c3aed', accent2: '#22d3ee' },
+};
+// 1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 101st, 111th.
+function ordinal(n) {
+  const tens = n % 100, ones = n % 10;
+  return n + (tens >= 11 && tens <= 13 ? 'th' : ones === 1 ? 'st' : ones === 2 ? 'nd' : ones === 3 ? 'rd' : 'th');
+}
+const guestsHere = p => p.guests.filter(g => g.here).map(g => g.name);
+const sameName = (a, b) => a.toLowerCase() === b.toLowerCase();
+function partyTitle(p) {
+  if (p.name) return p.name;
+  return p.theme.preset === 'birthday' && p.theme.person ? p.theme.person + '’s birthday' : 'LAN party';
+}
+// The line under its name: a birthday's greeting, or what it is.
+function partyLine(p) {
+  const t = p.theme;
+  if (t.preset === 'birthday') {
+    if (t.age > 0 && t.person) return 'Happy ' + ordinal(t.age) + ', ' + t.person + '!';
+    if (t.person) return 'Happy birthday, ' + t.person + '!';
+    return t.age > 0 ? 'Happy ' + ordinal(t.age) + ' birthday!' : 'Happy birthday!';
+  }
+  if (t.preset === 'retro') return 'Insert coin · Press Start';
+  return p.name ? 'LAN party' : '';
+}
+// What a party console does now, for this page and the big screen.
+function partyConsole(ip) {
+  const c = S.consoles.find(x => x.address === ip);
+  if (!c) return { c: null, dot: '', text: 'Not seen since NetDisc360 started' };
+  const st = consoleStatus(c);
+  return { c, dot: st.dot, text: c.playing ? 'Playing ' + c.mounted : st.text };
+}
+
+// Colours as #rrggbb, for the theme: mixed, and how far apart (WCAG's contrast).
+const rgbOf = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+const hexOf = rgb => '#' + rgb.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+const mix = (a, b, t) => { const x = rgbOf(a), y = rgbOf(b); return hexOf(x.map((v, i) => v + (y[i] - v) * t)); };
+const alpha = (hex, a) => 'rgba(' + rgbOf(hex).join(', ') + ', ' + a + ')';
+function luminance(hex) {
+  const [r, g, b] = rgbOf(hex).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+const contrast = (a, b) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+// colour taken toward end (black or white) until it's ratio apart from against.
+function toward(colour, end, against, ratio) {
+  for (let i = 0; i <= 20; i++) { const c = mix(colour, end, i / 20); if (contrast(c, against) >= ratio) return c; }
+  return end;
+}
+// The theme's colours as CSS variables: the dashboard's own accent ones for
+// this page in light or dark (so its buttons and switches take them, apart
+// enough from the panels), and deep ones under white text (the banner, the
+// big screen), with light ones (glow) to write on those.
+function partyColours(theme, dark) {
+  const valid = c => /^#[0-9a-f]{6}$/i.test(c || '');
+  const p1 = valid(theme.accent) ? theme.accent.toLowerCase() : PartyPresets.classic.accent;
+  const p2 = valid(theme.accent2) ? theme.accent2.toLowerCase() : PartyPresets.classic.accent2;
+  const deep1 = toward(p1, '#000000', '#ffffff', 7);
+  // A light second colour is a highlight: under the text it stays dark.
+  const deep2 = luminance(p2) > 0.5 ? mix(deep1, '#000000', 0.4) : toward(p2, '#000000', '#ffffff', 7);
+  const under = luminance(deep1) > luminance(deep2) ? deep1 : deep2;
+  const panel = dark ? '#1b1e22' : '#ffffff', soft = mix(panel, p1, dark ? 0.24 : 0.12);
+  const accent = toward(p1, dark ? '#ffffff' : '#000000', panel, 3);
+  return {
+    '--p1': p1, '--p2': p2, '--deep1': deep1, '--deep2': deep2, '--glow': toward(p1, '#ffffff', under, 4.5), '--glow2': toward(p2, '#ffffff', under, 4.5),
+    '--accent': accent, '--accent-hover': mix(accent, dark ? '#ffffff' : '#000000', 0.12),
+    '--on-accent': contrast(accent, '#ffffff') >= contrast(accent, '#111111') ? '#ffffff' : '#111111',
+    '--accent-soft': soft, '--accent-text': toward(p1, dark ? '#ffffff' : '#000000', soft, 4.5),
+  };
+}
+function setColours(el, colours) { for (const k in colours) el.style.setProperty(k, colours[k]); }
+
+// The theme's pictures as this browser loaded them (blob: URLs: the server
+// gives them only to the page's own requests), loaded again when they change.
+const PartyPics = { key: '', loading: '', logo: '', backgrounds: [], changed: 0 };
+function partyPictures(theme, loaded) {
+  const key = (theme.logo ? 1 : 0) + '/' + theme.backgrounds + '/' + PartyPics.changed;
+  if (key !== PartyPics.key && key !== PartyPics.loading) {
+    PartyPics.loading = key;
+    const get = path => fetchImage(path).catch(() => '');
+    const list = [theme.logo ? get('party/asset?kind=logo') : ''];
+    for (let n = 0; n < theme.backgrounds; n++) list.push(get('party/asset?kind=background&n=' + n));
+    Promise.all(list).then(urls => {
+      const stale = PartyPics.loading !== key ? urls : [PartyPics.logo].concat(PartyPics.backgrounds);
+      for (const u of stale) if (u) URL.revokeObjectURL(u);
+      if (PartyPics.loading !== key) return;
+      Object.assign(PartyPics, { key, loading: '', logo: urls[0], backgrounds: urls.slice(1) });
+      if (loaded) loaded();
+    });
+  }
+  return PartyPics;
+}
+function openPicture(blob) {
+  return new Promise((done, failed) => {
+    const url = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); done(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); failed(new Error('That picture couldn’t be opened.')); };
+    img.src = url;
+  });
+}
+// A picture to send for the theme (PNG, JPEG or WebP, 3 MB at most), made
+// smaller here first when it's bigger than the screens it's for, like a
+// phone's photo.
+async function picturePayload(file, kind) {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('Choose a PNG, JPEG or WebP picture.');
+  let blob = file;
+  const img = await openPicture(file);
+  const scale = Math.min(1, (kind === 'logo' ? 1024 : 2560) / Math.max(img.naturalWidth, img.naturalHeight, 1));
+  if (scale < 1 || file.size > 3 * 1048576) {
+    const canvas = h('canvas', { width: Math.max(1, Math.round(img.naturalWidth * scale)), height: Math.max(1, Math.round(img.naturalHeight * scale)) });
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    // A logo keeps its transparency; a photo needs none.
+    blob = await new Promise(done => canvas.toBlob(done, kind === 'logo' && file.type !== 'image/jpeg' ? 'image/png' : 'image/jpeg', 0.86));
+    if (!blob) throw new Error('That picture couldn’t be made smaller here.');
+  }
+  if (blob.size > 3 * 1048576) throw new Error('It’s over 3 MB; choose a smaller picture.');
+  const data = await new Promise((done, failed) => {
+    const reader = new FileReader();
+    reader.onload = () => done(String(reader.result).replace(/^[^,]*,/, ''));
+    reader.onerror = () => failed(new Error('That picture couldn’t be read.'));
+    reader.readAsDataURL(blob);
+  });
+  return { kind, type: blob.type, data };
+}
+
+const PartyBackgrounds = 8;  // Background photos at most, as the server keeps them.
+
+// A part of a page that is made again only when what it shows changed (its
+// key), and not while something is typed in it; the focus stays on the same
+// control (data-focus) when it is.
+function livePart(el) {
+  let drawn = null;
+  return {
+    el,
+    show(key, build) {
+      if (key === drawn) return;
+      const at = document.activeElement, inside = at && at !== document.body && el.contains(at);
+      if (inside && (at.tagName === 'TEXTAREA' || at.tagName === 'SELECT' || (at.tagName === 'INPUT' && !/^(checkbox|radio|button|file|color)$/.test(at.type)))) return;
+      drawn = key;
+      const focus = inside ? at.getAttribute('data-focus') : null;
+      fill(el, build());
+      const again = focus && [...el.querySelectorAll('[data-focus]')].find(x => x.getAttribute('data-focus') === focus);
+      if (again) again.focus();
+    },
+    reset() { drawn = null; },
+  };
+}
+
+Pages.party = root => {
+  const wrap = h('div.party');
+  let tab = 'party', screen = null, colours = '', previewing = false, shuffling = false, reveal = false, pick = null, chosen = store('party.game') || '', shown = null;
+  const tabs = h('div.segmented', [['party', 'Party', 'party-popper'], ['systemlink', 'System Link games', 'cable']].map(([id, label, icon]) =>
+    h('button', { 'data-tab': id, onclick: () => { location.hash = id === 'party' ? '#party' : '#party/' + id; } }, ic(icon, 'sm'), label)));
+  const main = h('div.stack'), links = h('div');
+  wrap.append(header('LAN party', 'Teams, seats and the same game on every console, run by the Gamemaster.', tabs,
+    h('a.btn', { href: '#party/screen', title: 'The party for a TV or a projector: its teams, seats and games' }, ic('tv', 'sm'), 'Big screen')), main, links);
+  root.append(wrap);
+  const banner = livePart(h('div.party-banner')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
+  const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div')), results = livePart(h('div'));
+  const parts = [banner, form, consoles, guests, rules, raffle, seats, start, results];
+  const guestCount = h('span.sub');
+  const typed = h('input.input', { placeholder: 'Names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(); } });
+  const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
+  seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
+  main.append(
+    h('div.card.party-card', banner.el, h('div.card-body', form.el)),
+    h('div.party-grid',
+      h('div.stack',
+        card('monitor', 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), null, consoles.el),
+        card('users', 'Guests', guestCount, [h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here')],
+          h('div.guest-add', typed, h('button.btn', { onclick: addGuests }, ic('user-plus', 'sm'), 'Add')), guests.el),
+        card('link', 'Rules', h('span.sub', 'for the team raffle'), null, rules.el)),
+      h('div.stack',
+        card('dices', 'Team raffle', null, null, raffle.el),
+        card('armchair', 'Seats', h('span.sub', 'teammates on one console, up to 4'), null, seats.el),
+        card('play', 'Start on all', h('span.sub', 'one game on every party console'), null, start.el, results.el))));
+  const systemLink = systemLinkTab(links);
+
+  // Changes the party; on a problem its parts show what the server has again.
+  async function change(changes, said) {
+    try { await api('party', changes); await refresh(); if (said) toast(said); return true; }
+    catch (e) { toast(e.message, true); for (const x of parts) x.reset(); update(); return false; }
+  }
+
+  // The party and its theme: the banner shows it as the big screen does.
+  function drawBanner(p, pics) {
+    const here = guestsHere(p).length, t = p.theme;
+    const live = h('input', { type: 'checkbox', checked: p.active, 'data-focus': 'active', onchange: e => {
+      if (e.target.checked && !p.gamemaster) { e.target.checked = false; toast('Choose the Gamemaster console first, under Consoles.', true); return; }
+      change({ active: e.target.checked }, e.target.checked ? 'The LAN party is on' : 'The LAN party ended');
+    } });
+    return [
+      pics.backgrounds[0] ? h('img.photo', { src: pics.backgrounds[0], alt: '' }) : null, h('span.ring'), h('span.ring.b'),
+      pics.logo ? h('div.logo-plate', h('img', { src: pics.logo, alt: 'Logo' })) : null,
+      h('div.text', h('h2', partyTitle(p)), partyLine(p) ? h('p.line', partyLine(p)) : null,
+        h('p.facts-line', PartyPresets[t.preset].name + ' theme · ' + (p.guests.length ? here + ' of ' + plural(p.guests.length, 'guest') + ' here' : 'no guests yet') + ' · ' + plural(p.consoles.length, 'console') +
+          (p.round ? ' · ' + plural(p.round, 'round') + ' played' : ''))),
+      h('label.party-live', h('span', p.active ? 'LAN party on' : 'Start the party'), h('span.switch', live, h('span'))),
+    ];
+  }
+
+  function drawForm(p, pics) {
+    const t = p.theme, saved = S.settings.saved;
+    // While a colour is being picked, this page shows it before it's saved.
+    const preview = changes => { previewing = true; colours = ''; setColours(wrap, partyColours(Object.assign({}, t, changes), document.documentElement.dataset.theme === 'dark')); };
+    const done = () => { previewing = false; };
+    const colour = (key, label) => h('label.colour', h('input', { type: 'color', value: t[key], 'data-focus': key, 'aria-label': label, onblur: done,
+      oninput: e => preview({ [key]: e.target.value }), onchange: e => { done(); change({ theme: { [key]: e.target.value } }); } }), h('span', h('span.title', label), h('span.mono.muted', t[key])));
+    const choose = kind => {
+      const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', multiple: kind === 'background', hidden: true });
+      file.onchange = () => { const files = [...file.files]; file.remove(); if (files.length) upload(kind, files); };
+      wrap.appendChild(file);
+      file.click();
+    };
+    const left = PartyBackgrounds - t.backgrounds;
+    return [
+      h('div.form',
+        h('label.field', h('span', 'Party name'), h('input.input', { value: p.name, maxlength: 64, placeholder: 'IT LAN 2026', 'data-focus': 'name', onchange: e => change({ name: e.target.value }) })),
+        h('div.field', h('span', 'Theme'), h('div.presets', { role: 'radiogroup', 'aria-label': 'Theme' }, Object.keys(PartyPresets).map(id => {
+          const pr = PartyPresets[id];
+          return h('label.radio.preset', h('input', { type: 'radio', name: 'preset', checked: t.preset === id, 'data-focus': 'preset-' + id, onchange: () => pickPreset(id) }),
+            ic(pr.icon), h('div', h('div.title', pr.name), h('div.help', pr.help)));
+        }))),
+        t.preset === 'birthday' ? h('div.form.cols',
+          h('label.field', h('span', 'Whose birthday'), h('input.input', { value: t.person, maxlength: 32, placeholder: 'Name', 'data-focus': 'person', onchange: e => change({ theme: { person: e.target.value } }) })),
+          h('label.field', h('span', 'Turning'), h('input.input', { type: 'number', min: 0, max: 150, value: t.age ? String(t.age) : '', placeholder: 'Age', 'data-focus': 'age',
+            onchange: e => change({ theme: { age: Math.max(0, Math.min(150, parseInt(e.target.value, 10) || 0)) } }) })),
+          h('span.help', { style: { gridColumn: '1 / -1' } }, 'The big screen says “' + partyLine(p) + '”')) : null),
+      h('div.form',
+        h('div.field', h('span', 'Colours'), h('div.colours', colour('accent', 'Main colour'), colour('accent2', 'Second colour'))),
+        h('div.field', h('span', 'Logo'), h('div.pics',
+          t.logo ? h('div.pic.logo', pics.logo ? h('img', { src: pics.logo, alt: 'The logo' }) : ic('loader-circle', 'sm spin'),
+            h('button.remove', { title: 'Remove the logo', 'aria-label': 'Remove the logo', onclick: () => removePicture('logo') }, ic('x', 'sm'))) : null,
+          h('button.btn.small', { disabled: !saved, onclick: () => choose('logo') }, ic('upload', 'sm'), t.logo ? 'Replace' : 'Add a logo'))),
+        h('div.field', h('span', 'Background photos'), h('div.pics',
+          Array.from({ length: t.backgrounds }, (_, i) => h('div.pic', pics.backgrounds[i] ? h('img', { src: pics.backgrounds[i], alt: 'Background photo ' + (i + 1) }) : ic('image', 'sm'),
+            h('button.remove', { title: 'Remove this photo', 'aria-label': 'Remove background photo ' + (i + 1), onclick: () => removePicture('background', i) }, ic('x', 'sm')))),
+          h('button.btn.small', { disabled: !saved || left <= 0, onclick: () => choose('background') }, ic('image', 'sm'), 'Add photos')),
+          h('span.help', saved ? 'They take turns behind the big screen, ' + PartyBackgrounds + ' at most. PNG, JPEG or WebP; big photos are made smaller first.'
+            : 'The settings aren’t kept in a file (start NetDisc360 with --config), so pictures can’t be kept.'))),
+    ];
+  }
+  // A preset brings its colours, unless the ones now were chosen by hand.
+  function pickPreset(id) {
+    const t = S.party.theme, was = PartyPresets[t.preset], theme = { preset: id };
+    if (!was || (t.accent === was.accent && t.accent2 === was.accent2)) Object.assign(theme, { accent: PartyPresets[id].accent, accent2: PartyPresets[id].accent2 });
+    change({ theme });
+  }
+  async function upload(kind, files) {
+    for (const f of kind === 'logo' ? files.slice(0, 1) : files) {
+      try { await api('party/asset', await picturePayload(f, kind)); }
+      catch (e) { toast(f.name + ': ' + e.message, true); if (/at most/.test(e.message)) break; }
+    }
+    PartyPics.changed++;
+    await refresh();
+  }
+  async function removePicture(kind, index) {
+    try { await api('party/asset/remove', index === undefined ? { kind } : { kind, index }); PartyPics.changed++; await refresh(); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  // The consoles: the Gamemaster's (the radio), and the party's (ticked).
+  function drawConsoles(p) {
+    const list = S.consoles.map(c => c.address);
+    for (const ip of p.consoles) if (!list.includes(ip)) list.push(ip);
+    if (!list.length) return h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to NetDisc360.'));
+    return [h('div.pc-list', list.map(ip => {
+      const st = partyConsole(ip), on = p.consoles.includes(ip), gm = p.gamemaster === ip;
+      return h('div.pc-row' + (on ? '.on' : ''),
+        h('label.pick', h('input', { type: 'checkbox', checked: on, disabled: gm, 'data-focus': 'in-' + ip, title: gm ? 'The Gamemaster console is always in the party' : null,
+          onchange: e => change({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
+        h('span.what', h('b', ip), h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
+        h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster'));
+    })), h('p.hint', 'The Gamemaster console is the host’s: it’s seated first and starts first. Tick every console that plays.')];
+  }
+
+  // The guests: kept for the next party, ticked when they're here.
+  function addGuests() {
+    const names = typed.value.split(',').map(n => n.trim()).filter(Boolean);
+    if (!names.length) { typed.focus(); return; }
+    const list = S.party.guests.map(g => Object.assign({}, g));
+    for (const name of names) {
+      if ([...name].length > 32) { toast(name + ' is too long: 32 letters at most.', true); return; }
+      const known = list.find(g => sameName(g.name, name));
+      if (known) known.here = true; else list.push({ name, here: true });
+    }
+    change({ guests: list }).then(ok => { if (ok) { typed.value = ''; typed.focus(); } });
+  }
+  const setGuests = list => change({ guests: list });
+  const everyone = here => setGuests(S.party.guests.map(g => ({ name: g.name, here })));
+  function drawGuests(p) {
+    if (!p.guests.length) return h('p.muted', { style: { margin: 0 } }, 'No guests yet. Type their names above; they’re kept for the next party.');
+    return [h('div.chips', p.guests.map(g => h('span.chip' + (g.here ? '.here' : ''),
+      h('button', { type: 'button', 'aria-pressed': String(g.here), 'data-focus': 'guest-' + g.name, title: g.here ? 'Here' : 'Not here yet',
+        onclick: () => setGuests(p.guests.map(x => x === g ? { name: x.name, here: !x.here } : x)) }, h('span.tick', g.here ? ic('check', 'sm') : null), h('span.chip-name', g.name)),
+      h('button.x', { type: 'button', title: 'Take off the guest list', 'aria-label': 'Take ' + g.name + ' off the guest list', onclick: () => setGuests(p.guests.filter(x => x !== g)) }, ic('x', 'sm'))))),
+    h('p.hint', 'Tap a name to tick who’s here. The list is kept for the next party.')];
+  }
+
+  // The raffle's rules: two people together, or apart.
+  function drawRules(p) {
+    const names = p.guests.map(g => g.name);
+    if (names.length < 2) return h('p.muted', { style: { margin: 0 } }, 'Add two guests or more, then keep two of them together or apart.');
+    const rule = (kind, title, icon, help, pairs) => {
+      const pickOne = (n, label) => h('select.input', { 'aria-label': label }, names.map((x, i) => h('option', { value: x, selected: i === n }, x)));
+      const a = pickOne(0, title + ': the first guest'), b = pickOne(1, title + ': the second guest');
+      return h('div.rule',
+        h('div.rule-head', ic(icon, 'sm'), h('b', title), h('span.muted', help)),
+        h('div.rule-add', a, h('span.muted', 'and'), b, h('button.btn.small', { 'data-focus': 'add-' + kind, onclick: () => {
+          if (sameName(a.value, b.value)) { toast('Choose two different guests.', true); return; }
+          if (pairs.some(([x, y]) => (sameName(x, a.value) && sameName(y, b.value)) || (sameName(x, b.value) && sameName(y, a.value)))) { toast(a.value + ' and ' + b.value + ' are in the list already.', true); return; }
+          change({ [kind]: pairs.concat([[a.value, b.value]]) });
+        } }, ic('plus', 'sm'), 'Add')),
+        pairs.length ? h('div.chips', pairs.map(([x, y]) => h('span.chip', h('span.label', x + ' & ' + y),
+          h('button.x', { type: 'button', title: 'Remove this rule', 'aria-label': 'Remove ' + x + ' & ' + y, onclick: () => change({ [kind]: pairs.filter(q => q[0] !== x || q[1] !== y) }) }, ic('x', 'sm'))))) : null);
+    };
+    return [rule('together', 'Keep together', 'link', 'on the same team', p.together), rule('apart', 'Keep apart', 'unlink', 'on different teams', p.apart)];
+  }
+
+  // The team raffle: 2, 3 or 4 teams of those here, in the teams' colours.
+  function teamBox(i, names, where) {
+    return h('div.team.' + Teams[i][1], { style: reveal ? { animationDelay: i * 90 + 'ms' } : null }, h('h3', h('span.dot'), 'Team ' + Teams[i][0]),
+      h('ul', names.map(n => h('li', n))), where && where.length ? h('div.where', ic('monitor', 'sm'), where.join(', ')) : null);
+  }
+  function drawRaffle(p) {
+    const here = guestsHere(p), d = p.drawn && p.drawn.teams.length ? p.drawn : null, n = p.teams;
+    const where = team => d ? p.consoles.filter(ip => (d.seats[ip] || []).some(x => team.includes(x))) : [];
+    const status = shuffling ? 'Drawing…' : d ? (d.kept ? 'Round ' + p.round + ', kept' : 'Round ' + (p.round + 1) + ': keep these, or draw again') : plural(here.length, 'guest') + ' here';
+    const grid = shuffling ? h('div.teams.shuffling', Array.from({ length: n }, (_, i) => teamBox(i, [])))
+      : d ? h('div.teams' + (reveal ? '.reveal' : ''), d.teams.map((team, i) => teamBox(i, team, where(team))))
+      : h('div.raffle-empty', here.length < n ? 'Tick at least ' + n + ' guests who are here.' : 'Draw ' + n + ' teams from the ' + plural(here.length, 'guest') + ' here.');
+    reveal = false;
+    const rulesSaid = p.together.length + p.apart.length ? 'Follows your ' + plural(p.together.length + p.apart.length, 'rule') + ', and doesn’t draw last round’s teams again.' : 'Doesn’t draw last round’s teams again.';
+    return [
+      h('div.raffle-bar', h('div.segmented', { role: 'group', 'aria-label': 'How many teams' }, [2, 3, 4].map(k => h('button', { class: k === n ? 'on' : '', 'aria-pressed': String(k === n), 'data-focus': 'teams-' + k,
+        disabled: shuffling, onclick: () => { if (k !== n) change({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
+      grid,
+      d && d.note && !shuffling ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
+      h('div.raffle-actions',
+        h('button.btn.primary', { 'data-focus': 'draw', disabled: shuffling || here.length < n, onclick: drawTeams }, ic('dices', 'sm'), d ? 'Draw again' : 'Draw'),
+        d ? h('button.btn', { 'data-focus': 'keep', disabled: shuffling || d.kept, onclick: keep }, ic('check', 'sm'), d.kept ? 'Kept' : 'Keep') : null,
+        h('span.muted', rulesSaid)),
+    ];
+  }
+  async function drawTeams() {
+    const p = S.party, n = p.teams, here = guestsHere(p);
+    const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    shuffling = true; pick = null;
+    update();
+    // A short shuffle while the server draws: the names jump between the teams.
+    const grid = $('.teams', raffle.el), sizes = Array.from({ length: n }, (_, i) => Math.floor(here.length / n) + (i < here.length % n ? 1 : 0));
+    const shuffle = () => {
+      if (!grid || !grid.isConnected) return;
+      const names = here.slice();
+      for (let i = names.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [names[i], names[k]] = [names[k], names[i]]; }
+      let at = 0;
+      fill(grid, sizes.map((size, i) => teamBox(i, names.slice(at, at += size))));
+    };
+    let timer = 0, drawn = null;
+    if (motion) { shuffle(); timer = setInterval(shuffle, 90); }
+    await Promise.all([api('party/raffle', { teams: n }).then(r => { drawn = r; }, e => toast(e.message, true)), new Promise(done => setTimeout(done, motion ? 1100 : 0))]);
+    clearInterval(timer);
+    shuffling = false; reveal = !!drawn && motion;
+    raffle.reset();
+    await refresh();
+    if (drawn && drawn.note) toast(drawn.note);
+  }
+  async function keep() {
+    try { const r = await api('party/keep', {}); await refresh(); toast('Teams kept for round ' + r.round); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  // The seats: up to four on a console (split-screen), the Gamemaster's
+  // first. Two seats chosen one after the other swap (by tap, click or keys).
+  function drawSeats(p) {
+    if (!p.consoles.length) return h('p.muted', { style: { margin: 0 } }, 'Choose the Gamemaster console and tick the party’s consoles first.');
+    const d = p.drawn, placed = d ? d.seats : {}, teams = d ? d.teams : [];
+    const teamOf = name => teams.findIndex(t => t.includes(name));
+    const seated = new Set([].concat(...p.consoles.map(ip => placed[ip] || [])));
+    const bench = guestsHere(p).filter(n => !seated.has(n));
+    const picked = pick ? pickedName(p) : null;
+    const slot = (at, name) => {
+      const on = !!pick && pick.ip === at.ip && pick.i === at.i, t = name ? teamOf(name) : -1;
+      const where = at.ip ? 'seat ' + (at.i + 1) + ' on ' + at.ip : 'not seated';
+      return h('button.slot' + (name ? '' : '.empty') + (t >= 0 ? '.' + Teams[t][1] : ''), { type: 'button', 'aria-pressed': String(on), 'data-focus': 'slot-' + at.ip + '-' + at.i,
+        'aria-label': (name || 'Empty') + ', ' + where + (pick && !on ? ': swap with ' + (picked || 'the empty seat') : ''), onclick: () => tap(at) },
+        name ? [h('span.dot'), h('span.n', name)] : h('span.n', at.ip ? 'Empty seat' : 'Not playing'));
+    };
+    return [
+      h('div.seat-boxes', p.consoles.map(ip => {
+        const names = placed[ip] || [], st = partyConsole(ip), gm = ip === p.gamemaster;
+        return h('div.seat-box' + (gm ? '.gm' : ''),
+          h('div.seat-head', ic('monitor', 'sm'), h('b', ip), gm ? h('span.pill.gm', ic('crown', 'sm'), 'Gamemaster') : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text)),
+          h('div.slots', [0, 1, 2, 3].map(i => slot({ ip, i }, names[i]))));
+      })),
+      bench.length || (pick && pick.ip && picked) ? h('div.bench', h('div.bench-head', h('b', 'Not seated'), h('span.muted', bench.length ? plural(bench.length, 'guest') + ' here without a seat' : 'Choose one to take off a seat')),
+        h('div.slots', bench.map((n, i) => slot({ ip: '', i }, n)), pick && pick.ip && picked ? slot({ ip: '', i: bench.length }, null) : null)) : null,
+      h('p.hint', pick ? 'Now choose who to swap with (Esc to cancel).' : 'To swap two people, choose one, then the other: on a console, or not seated.'),
+    ];
+  }
+  function seatGrid(p) {
+    const placed = p.drawn ? p.drawn.seats : {}, grid = {};
+    for (const ip of p.consoles) grid[ip] = (placed[ip] || []).slice();
+    const seated = new Set([].concat(...Object.values(grid)));
+    return { grid, bench: guestsHere(p).filter(n => !seated.has(n)) };
+  }
+  function pickedName(p) { const { grid, bench } = seatGrid(p); return pick.ip ? grid[pick.ip] && grid[pick.ip][pick.i] : bench[pick.i]; }
+  function tap(at) {
+    if (!pick || (pick.ip === at.ip && pick.i === at.i)) { pick = pick ? null : at; update(); return; }
+    const from = pick, p = S.party, { grid, bench } = seatGrid(p);
+    pick = null;
+    const get = s => s.ip ? grid[s.ip][s.i] : bench[s.i];
+    const a = get(from), b = get(at);
+    // Not seated stays not seated; nothing moves between two empty seats.
+    if ((!from.ip && !at.ip) || (!a && !b)) { update(); return; }
+    if (from.ip) grid[from.ip][from.i] = b;
+    if (at.ip) grid[at.ip][at.i] = a;
+    // Seats are for guests who are here (one who left keeps a seat until then).
+    const here = guestsHere(p);
+    for (const ip in grid) grid[ip] = grid[ip].filter(n => n && here.includes(n));
+    api('party/seats', { seats: grid }).then(refresh).catch(e => { toast(e.message, true); update(); });
+  }
+
+  // Start on all, Back to Aurora on all, Turn off all.
+  function startable(p) {
+    const games = G.games.filter(g => p.consoles.every(ip => (g.tiles || []).includes(ip) || (g.installedOn || []).includes(ip)));
+    return games.sort((a, b) => (b.systemLink === true) - (a.systemLink === true) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  }
+  function drawStart(p) {
+    if (!p.consoles.length) return h('p.muted', { style: { margin: 0 } }, 'Choose the Gamemaster console and tick the party’s consoles first.');
+    const games = startable(p), g = games.find(x => x.name === chosen) || games[0];
+    const buttons = h('div.party-buttons',
+      h('button.btn.primary', { disabled: !g, onclick: e => startAll(g, e.currentTarget) }, ic('play', 'sm'), 'Start on all'),
+      h('button.btn', { onclick: e => powerAll('aurora', e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Back to Aurora on all'),
+      h('button.btn.danger', { onclick: e => powerAll('off', e.currentTarget) }, ic('power', 'sm'), 'Turn off all'));
+    if (!g) return [h('p.muted', { style: { margin: 0 } }, 'No game is on every party console yet. A console has a game once NetDisc360 added its tile there, or when it’s installed on it.'), buttons];
+    const link = games.filter(x => x.systemLink), other = games.filter(x => !x.systemLink);
+    const option = x => h('option', { value: x.name, selected: x === g }, x.name + (x.systemLink && x.perConsole ? ' · ' + x.perConsole + ' per console' : ''));
+    const select = h('select.input', { 'aria-label': 'The game to start', 'data-focus': 'game', onchange: e => {
+      chosen = e.target.value; store('party.game', chosen);
+      // Made again for the game, with the focus where it was.
+      e.target.blur(); start.reset(); update();
+      const again = $('select', start.el);
+      if (again) again.focus();
+    } },
+      link.length ? h('optgroup', { label: 'System Link games' }, link.map(option)) : null, other.length ? h('optgroup', { label: link.length ? 'Other games' : 'Games' }, other.map(option)) : null);
+    // What to know before starting: players, copies, title updates.
+    const here = guestsHere(p).length, d = p.drawn, crowded = d && g.perConsole ? p.consoles.filter(ip => (d.seats[ip] || []).length > g.perConsole) : [];
+    const installed = p.consoles.filter(ip => (g.installedOn || []).includes(ip));
+    const tus = g.titleUpdates || {};
+    return [
+      h('div.start-pick', select),
+      h('div.game-facts',
+        g.systemLink ? h('span.pill.good', ic('cable', 'sm'), 'System Link') : h('span.pill.off', 'No System Link'),
+        g.systemLink ? h('span.pill.info', g.perConsole ? plural(g.perConsole, 'player') + ' per console' : 'Players per console not known') : null,
+        g.systemLink && g.total ? h('span.pill.info', g.total + ' in all') : null,
+        installed.length ? h('span.pill.off', { title: 'Started from the copy installed on it' }, ic('hard-drive', 'sm'), 'Installed on ' + installed.join(', ')) : null),
+      // Before starting (after, Start on all's answer says it, below).
+      g.tuMismatch && !(shown && shown.game === g.name && shown.titleUpdates) ? h('div.party-warn', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
+        h('p', 'These consoles run different title updates of ' + g.name + ', so they may not find each other over System Link.'),
+        h('ul', p.consoles.map(ip => h('li', h('span.mono', ip), h('span', ip in tus ? tus[ip] || 'None' : 'Not read yet')))))) : null,
+      crowded.length ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + plural(g.perConsole, 'player') + ' per console; ' +
+        crowded.map((ip, i) => d.seats[ip].length + (i ? ' at ' : ' sit at ') + ip).join(', ') + '.')) : null,
+      g.systemLink && g.total && here > g.total ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + g.total + ' in all over System Link; ' + here + ' guests are here.')) : null,
+      buttons,
+      h('p.hint', 'Let everyone sign in to their profile in Aurora first, then press Start on all. Nothing starts by itself.'),
+    ];
+  }
+  async function startAll(g, button) {
+    button.disabled = true;
+    try {
+      let r;
+      try { r = await api('party/start', { game: g.name }); }
+      catch (e) {
+        // A console in a game: asked once, then sent again.
+        if (e.status !== 409 || !e.data || !e.data.busy) throw e;
+        const busy = e.data.busy;
+        if (!(await confirmBox('Start ' + g.name + ' on every console?', [h('p', { style: { marginTop: 0 } }, busy.length === 1 ? 'This console is in a game, which ends:' : 'These consoles are in a game, which ends:'),
+          h('ul', { style: { marginBottom: 0 } }, busy.map(b => h('li', h('b', b.address), ': ', b.title)))], 'Start ' + g.name))) return;
+        r = await api('party/start', { game: g.name, confirm: true });
+      }
+      shown = { kind: 'start', game: g.name, at: Date.now() / 1000, results: r.results, titleUpdates: r.titleUpdates };
+      const ok = r.results.filter(x => x.ok).length;
+      toast(ok === r.results.length ? g.name + ' is starting on ' + plural(ok, 'console') : g.name + ' started on ' + ok + ' of ' + plural(r.results.length, 'console'), ok < r.results.length);
+    } catch (e) { toast(e.message, true); }
+    finally { button.disabled = false; update(); }
+  }
+  async function powerAll(action, button) {
+    const p = S.party, playingNow = p.consoles.map(ip => S.consoles.find(c => c.address === ip)).filter(c => c && c.playing);
+    const ends = playingNow.length ? [h('p', { style: { marginBottom: 0 } }, 'The game ends on ' + playingNow.map(c => c.address + ' (' + c.mounted + ')').join(', ') + '.')] : [];
+    if (action === 'off' && !(await confirmBox('Turn off every party console?', [h('p', { style: { marginTop: 0 } }, plural(p.consoles.length, 'console') + ' turn off as with their power button.'), ends], 'Turn off all', true))) return;
+    if (action === 'aurora' && playingNow.length && !(await confirmBox('Back to Aurora on every console?', ends, 'Back to Aurora', true))) return;
+    button.disabled = true;
+    try {
+      const r = await api('party/power', { action });
+      shown = { kind: action, at: Date.now() / 1000, results: r.results };
+      const ok = r.results.filter(x => x.ok).length;
+      toast((action === 'off' ? 'Turning off ' : 'Back to Aurora on ') + ok + ' of ' + plural(r.results.length, 'console'), ok < r.results.length);
+    } catch (e) { toast(e.message, true); }
+    finally { button.disabled = false; update(); }
+  }
+  function drawResults() {
+    if (!shown) return null;
+    const tu = shown.titleUpdates, gm = S.party.gamemaster;
+    const said = r => r.ok ? (shown.kind === 'off' ? 'Turning off' : shown.kind === 'aurora' ? 'Aurora is starting' : r.how === 'installed' ? 'Starting the copy installed on it' : 'Starting from its NetISO tile') : r.error;
+    return h('div.party-results',
+      tu && tu.mismatch ? h('div.party-warn.big', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
+        h('p', 'The consoles run different title updates of ' + shown.game + ', so they may not find each other over System Link.' + (tu.newest ? ' The newest is ' + tu.newest + '; use it on each console, in Aurora.' : '')),
+        h('ul', Object.keys(tu.byConsole).map(ip => h('li', h('span.mono', ip), h('span', tu.byConsole[ip] === 'none' ? 'None' : tu.byConsole[ip])))))) : null,
+      h('div.results-head', h('b', shown.kind === 'start' ? 'Start on all: ' + shown.game : shown.kind === 'off' ? 'Turn off all' : 'Back to Aurora on all'), h('span.muted', clock(shown.at))),
+      h('ul.results', shown.results.map(r => h('li.' + (r.ok ? 'ok' : 'bad'), ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
+        h('div', h('b', r.address + (r.address === gm ? ' (Gamemaster)' : '')), h('div.muted', said(r)))))));
+  }
+
+  function openScreen() { if (!screen) { screen = bigScreen(wrap); document.body.classList.add('on-screen'); } }
+  function closeScreen() { if (screen) { screen.close(); screen = null; document.body.classList.remove('on-screen'); } }
+  function update() {
+    if (!S) return;
+    const p = S.party, dark = document.documentElement.dataset.theme === 'dark';
+    const look = JSON.stringify([p.theme.accent, p.theme.accent2, dark]);
+    if (look !== colours && !previewing) { colours = look; setColours(wrap, partyColours(p.theme, dark)); }
+    for (const b of tabs.children) { b.classList.toggle('on', b.dataset.tab === tab); b.setAttribute('aria-pressed', String(b.dataset.tab === tab)); }
+    const pics = partyPictures(p.theme, update);
+    if (screen) screen.update();
+    if (tab === 'systemlink') { systemLink.update(); return; }
+    const here = guestsHere(p), statuses = p.consoles.concat(S.consoles.map(c => c.address)).map(ip => partyConsole(ip).text);
+    fill(guestCount, p.guests.length ? here.length + ' of ' + p.guests.length + ' here' : 'kept for the next party');
+    banner.show(JSON.stringify([p.active, p.name, p.theme, pics.key, p.guests, p.consoles.length, p.round, p.gamemaster]), () => drawBanner(p, pics));
+    form.show(JSON.stringify([p.name, p.theme, pics.key, S.settings.saved]), () => drawForm(p, pics));
+    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address), statuses]), () => drawConsoles(p));
+    guests.show(JSON.stringify(p.guests), () => drawGuests(p));
+    rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
+    raffle.show(JSON.stringify([p.teams, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling]), () => drawRaffle(p));
+    seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses]), () => drawSeats(p));
+    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
+    results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
+  }
+  function route() {
+    const sub = location.hash.split('/')[1] || '';
+    tab = sub === 'systemlink' ? 'systemlink' : 'party';
+    main.classList.toggle('hidden', tab !== 'party');
+    links.classList.toggle('hidden', tab !== 'systemlink');
+    if (sub === 'screen') openScreen(); else closeScreen();
+    update();
+  }
+  route();
+  return { update, games: update, route, leave: closeScreen };
+};
+
+// The big screen: the party's name and theme, its teams, who sits at which
+// console and what each plays, readable across a room on a TV, and on a phone.
+function bigScreen(parent) {
+  const bg = h('div.screen-bg'), body = h('div.screen-body'), time = h('div.screen-clock');
+  const full = document.fullscreenEnabled ? h('button', { onclick: () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {}) }, ic('maximize'), 'Full screen') : null;
+  const el = h('section.screen', { 'aria-label': 'The LAN party’s big screen' }, bg, h('div.screen-scrim'), h('div.screen-pattern'), body,
+    h('div.screen-tools', full, h('button', { onclick: () => { location.hash = '#party'; } }, ic('x'), 'Close')));
+  parent.appendChild(el);
+  let look = '', drawn = '', photo = 0, idle = 0, lock = null;
+  // The photos take turns; the buttons hide while nothing moves.
+  const turns = setInterval(() => {
+    const photos = bg.querySelectorAll('img');
+    if (photos.length < 2) return;
+    photos[photo % photos.length].classList.remove('on');
+    photos[++photo % photos.length].classList.add('on');
+  }, 12000);
+  const wake = () => { el.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => el.classList.add('idle'), 3000); };
+  const keys = e => { wake(); if (e.key === 'Escape' && !document.fullscreenElement && !$('.modal-back')) location.hash = '#party'; };
+  el.addEventListener('mousemove', wake);
+  el.addEventListener('pointerdown', wake);
+  document.addEventListener('keydown', keys);
+  wake();
+  // A TV or phone that would dim stays on (where the browser allows it).
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { lock = l; }).catch(() => {});
+  const label = (p, ip) => 'Console ' + (p.consoles.indexOf(ip) + 1);
+  const now = st => !st.c ? 'Not connected' : st.c.playing ? st.c.mounted : st.c.offline ? 'Offline' : st.c.connections > 0 || st.c.answers ? 'In Aurora' : 'Not connected';
+  return {
+    update() {
+      const p = S.party, pics = PartyPics;
+      const style = JSON.stringify([p.theme.preset, p.theme.accent, p.theme.accent2, pics.key]);
+      if (style !== look) {
+        look = style;
+        const colours = partyColours(p.theme, true);
+        setColours(el, colours);
+        el.style.setProperty('--scrim', pics.backgrounds.some(Boolean) ? 'linear-gradient(160deg, ' + alpha(colours['--deep1'], 0.74) + ', ' + alpha(colours['--deep2'], 0.88) + ')' : 'none');
+        for (const id in PartyPresets) el.classList.toggle(id, id === p.theme.preset);
+        fill(bg, pics.backgrounds.filter(Boolean).map((url, i) => h('img', { src: url, alt: '', class: i ? '' : 'on' })));
+        photo = 0;
+      }
+      fill(time, new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }), p.round || (p.drawn && p.drawn.teams.length) ? h('small', 'Round ' + (p.round + (p.drawn && p.drawn.teams.length && !p.drawn.kept ? 1 : 0))) : null);
+      const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text)]);
+      if (key === drawn) return;
+      drawn = key;
+      const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p);
+      const where = team => p.consoles.filter(ip => (d.seats[ip] || []).some(n => team.includes(n))).map(ip => label(p, ip));
+      fill(body,
+        h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,
+          h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), time),
+        p.active ? null : h('div.screen-soon', 'The LAN party starts soon'),
+        d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + Teams[i][1],
+          h('h2', 'Team ' + Teams[i][0]), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
+          : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,
+            h('p', 'The teams are drawn soon.')),
+        p.consoles.length ? h('div.screen-consoles', p.consoles.map(ip => {
+          const st = partyConsole(ip), names = d ? d.seats[ip] || [] : [], team = names.length ? d.teams.findIndex(t => t.includes(names[0])) : -1, gm = ip === p.gamemaster;
+          return h('div.screen-console' + (team >= 0 ? '.' + Teams[team][1] : ''),
+            h('div.top', ic(gm ? 'crown' : 'monitor'), h('span', label(p, ip) + (gm ? ' · Gamemaster' : '')), h('span.ip', ip)),
+            h('div.names', names.length ? names.join(', ') : 'No one seated'),
+            h('div.now' + (st.c && st.c.playing ? '.playing' : ''), ic(st.c && st.c.playing ? 'play' : 'layout-grid'), now(st)));
+        })) : null);
+    },
+    close() {
+      clearInterval(turns); clearTimeout(idle);
+      document.removeEventListener('keydown', keys);
+      if (lock) lock.release().catch(() => {});
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      el.remove();
+    },
+  };
+}
+
+// The System Link games (Wikipedia's lists, see data/README.md): players on
+// one console and in all, whether they're in the library, and which consoles
+// have them (the party's while it's on).
+const PlatformNames = { 360: 'Xbox 360', xbox: 'Original Xbox' };
+function systemLinkTab(el) {
+  let data = null, loadedFor = '', busy = false, query = '', platform = 'all', mine = false, sort = 'name', dir = 1, drawn = '';
+  const search = h('input.input', { type: 'search', placeholder: 'Search games', 'aria-label': 'Search the System Link games', oninput: e => { query = e.target.value.toLowerCase(); draw(); } });
+  const platforms = h('div.segmented', { role: 'group', 'aria-label': 'Platform' }, [['all', 'All'], ['360', 'Xbox 360'], ['xbox', 'Original Xbox']].map(([v, label]) =>
+    h('button', { 'data-platform': v, onclick: () => { platform = v; draw(); } }, label)));
+  const owned = h('label.check-label', h('input', { type: 'checkbox', onchange: e => { mine = e.target.checked; draw(); } }), 'In my library');
+  const count = h('span.muted'), list = h('div'), foot = h('div.attribution');
+  el.append(h('div.toolbar', h('div.input-icon.search', ic('search', 'sm'), search), platforms, owned, count), list, foot);
+  // Column, its heading, its cell's class, and the way it sorts first (numbers: most first).
+  const Columns = [['name', 'Game', '', 1], ['platform', 'Platform', 'hide-narrow', 1], ['perConsole', 'Per console', 'num', -1], ['total', 'In all', 'num', -1],
+    ['library', 'In your library', 'hide-narrow', -1], ['consoles', 'Consoles with it', 'hide-narrow', -1]];
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  const Sorts = {
+    name: byName,
+    platform: (a, b) => a.platform.localeCompare(b.platform),
+    perConsole: (a, b) => (a.perConsole || 0) - (b.perConsole || 0),
+    total: (a, b) => (a.total || 0) - (b.total || 0),
+    library: (a, b) => a.inLibrary - b.inLibrary,
+    consoles: (a, b) => a.consoles.length - b.consoles.length,
+  };
+  const out = (href, text) => h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+  const wiki = title => out('https://en.wikipedia.org/wiki/' + title.replace(/ /g, '_'), title);
+  async function load(want) {
+    busy = true;
+    try { data = await api('systemlink'); }
+    catch (e) { if (!data) fill(list, h('div.card', h('div.empty', ic('circle-alert'), h('p', e.message)))); }
+    loadedFor = want; busy = false; drawn = '';
+    draw();
+  }
+  function draw() {
+    for (const b of platforms.children) { b.classList.toggle('on', b.dataset.platform === platform); b.setAttribute('aria-pressed', String(b.dataset.platform === platform)); }
+    if (!data) { if (!busy) return; fill(list, h('div.card', h('div.empty', ic('loader-circle', 'spin'), h('p', 'Loading the list…')))); return; }
+    const key = JSON.stringify([loadedFor, query, platform, mine, sort, dir]);
+    if (key === drawn) return;
+    drawn = key;
+    const games = data.games.filter(g => (platform === 'all' || g.platform === platform) && (!mine || g.inLibrary) &&
+      (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query) || (g.game || '').toLowerCase().includes(query)));
+    // Unknown counts go last whichever way.
+    const unknown = g => (sort === 'perConsole' && !g.perConsole) || (sort === 'total' && !g.total);
+    games.sort((a, b) => unknown(a) - unknown(b) || dir * Sorts[sort](a, b) || byName(a, b));
+    const mineCount = data.games.filter(g => g.inLibrary).length;
+    fill(count, plural(games.length, 'game') + ' · ' + mineCount + ' in your library');
+    const heading = ([k, label, cls, first]) => h('th' + (cls ? '.' + cls : ''), { 'aria-sort': sort === k ? (dir > 0 ? 'ascending' : 'descending') : null },
+      h('button.sort', { onclick: () => { if (sort === k) dir = -dir; else { sort = k; dir = first; } draw(); } }, label, sort === k ? ic(dir > 0 ? 'arrow-up' : 'arrow-down', 'sm') : null));
+    const dash = h('span.faint', '—');
+    fill(list, games.length ? h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
+      h('thead', h('tr', Columns.map(heading))),
+      h('tbody', games.map(g => h('tr',
+        h('td', h('div', { style: { fontWeight: 600 } }, g.name), h('div.sl-meta', [PlatformNames[g.platform], g.inLibrary ? 'in your library' : '', g.consoles.length ? 'on ' + g.consoles.join(', ') : ''].filter(Boolean).join(' · '))),
+        h('td.hide-narrow.sl-platform', PlatformNames[g.platform]),
+        h('td.num', { title: g.perConsole ? null : 'Not known' }, g.perConsole || dash.cloneNode(true)),
+        h('td.num', { title: g.total ? null : 'Not known' }, g.total || dash.cloneNode(true)),
+        h('td.hide-narrow', g.inLibrary ? h('span.pill.good', ic('check', 'sm'), g.game && g.game !== g.name ? g.game : 'Yes') : dash.cloneNode(true)),
+        h('td.hide-narrow', g.consoles.length ? h('div.sl-consoles', g.consoles.map(a => h('span.pill.off', a))) : dash.cloneNode(true))))))) :
+      h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', mine ? 'None of your games, or try another name.' : 'Try another name, or All.'))));
+    const parts = String(data.attribution || '').split(/(https?:\/\/[^\s)]+)/);
+    fill(foot, ic('info', 'sm'), h('div', h('p', parts.map((t, i) => i % 2 ? out(t, t) : t)),
+      h('p', 'From ', wiki('List of Xbox 360 System Link games'), ' and ', wiki('List of Xbox System Link games'), ' on the English Wikipedia, by Wikipedia contributors, under ',
+        out('https://creativecommons.org/licenses/by-sa/4.0/', 'CC BY-SA 4.0'), '. Players are what those lists say; a game’s own manual may differ.')));
+  }
+  return {
+    update() {
+      const want = S.library.version + JSON.stringify([S.party.active, S.party.consoles]);
+      if (want !== loadedFor && !busy) load(want);
+      draw();
+    },
+  };
+}
+
+// Games whose consoles run different title updates (the party's while it's
+// on): each console's, and the newest any of them has.
+async function titleUpdateList() {
+  const body = h('div', h('p.muted', { style: { margin: 0 } }, 'Asking NetDisc360…'));
+  modal('Different Title Updates', close => [h('div.modal-body', body),
+    h('div.modal-foot', h('span.note', ic('info', 'sm'), 'As each console’s Aurora listed them last.'), h('button.btn.primary', { onclick: close }, 'Close'))], true);
+  try {
+    const r = await api('titleupdates'), games = r.games.filter(g => g.mismatch);
+    fill(body, games.length ? games.map(g => h('div.tu-game', h('b', g.game), h('span.muted', ' · the newest: ' + g.newest.name),
+      h('div.tu-rows', Object.keys(g.byConsole).map(ip => [h('span.mono', ip), h('span', g.byConsole[ip] ? g.byConsole[ip].name : 'None',
+        g.byConsole[ip] && g.byConsole[ip].version === g.newest.version ? h('span.pill.good', { style: { marginLeft: '8px', height: '20px' } }, 'Newest') : null)])))) :
+      h('p', { style: { margin: 0 } }, 'Every console runs the same title updates now.'),
+      games.length ? h('p.muted', { style: { marginBottom: 0 } }, 'Consoles on different title updates of a game usually can’t play it together over System Link. Use the newest on each, in Aurora.') : null);
+  } catch (e) { fill(body, h('p', { style: { margin: 0 } }, e.message)); }
 }
 
 // Game folders ------------------------------------------------------------------------
