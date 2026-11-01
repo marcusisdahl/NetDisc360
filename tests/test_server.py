@@ -8,6 +8,7 @@ Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
 """
 import base64
 import gzip
+import ftplib
 import hashlib
 import hmac
 import http.client
@@ -409,6 +410,19 @@ def build_party_parse():
                         os.path.join(ROOT, "party", "state.cpp")], check=True)
         build_party_parse.built = True
     return PARTY_PARSE
+
+
+PARTY_FTP = os.path.join(ROOT, "build", "host", "party-ftp")
+
+
+def build_party_ftp():
+    """tests/party_ftp.cpp with NetDiscParty.xex's FTP server (party/ftp.cpp), built once."""
+    if not getattr(build_party_ftp, "built", False):
+        os.makedirs(os.path.dirname(PARTY_FTP), exist_ok=True)
+        subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-o", PARTY_FTP, os.path.join(HERE, "party_ftp.cpp"),
+                        os.path.join(ROOT, "party", "ftp.cpp")], check=True)
+        build_party_ftp.built = True
+    return PARTY_FTP
 
 
 def connect_from(address, port):
@@ -2201,6 +2215,110 @@ print('lua ok')
             server.kill()
             server.communicate()
 
+    def test_copies_profiles_to_the_seats_through_the_wheel_app(self):
+        # After a spin or a swap, each seated guest's profile goes to their
+        # console: here the second shows the wheel, so through the wheel
+        # app's own FTP server (party/ftp.cpp, the real one, on the host).
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other = os.path.join(self.tmp.name, "xbox2")
+        os.makedirs(os.path.join(other, "Hdd1", "Content", "0009000000ABCDEF"))  # The console's own (online) profile.
+        app = subprocess.Popen([build_party_ftp(), os.path.join(other, "Hdd1"), "127.0.0.2", str(self.ftp.server_address[1])],
+                               stdout=subprocess.PIPE, text=True)
+        self.addCleanup(app.stdout.close)
+        self.addCleanup(app.wait)
+        self.addCleanup(app.kill)
+        self.assertEqual(app.stdout.readline().strip(), "ready")
+        ola, kari = "E00000000000A001", "E00000000000A002"
+
+        def package(gamertag):
+            name = gamertag.encode("utf-16-be")
+            return b"CON " + bytes(range(256)) + bytes(0x411 - 4 - 256) + name + bytes(0x2000 - 0x411 - len(name))
+        # Ola's profile is on the first console (Aurora's FTP server there);
+        # Kari's only in a copy kept on this computer.
+        content = os.path.join(self.xbox, "Hdd1", "Content", ola)
+        os.makedirs(os.path.join(content, "FFFE07D1", "00010000"))
+        os.makedirs(os.path.join(content, "4D5307E6", "00000001"))
+        with open(os.path.join(content, "FFFE07D1", "00010000", ola), "wb") as f:
+            f.write(package("Ola"))
+        with open(os.path.join(content, "4D5307E6", "00000001", "save"), "wb") as f:
+            f.write(b"ola's save" * 50000)  # Larger than one chunk.
+        kept = os.path.join(self.tmp.name, "Backups", "Profiles", kari)
+        os.makedirs(kept)
+        with zipfile.ZipFile(os.path.join(kept, "2026-10-30_23-00-00_127.0.0.1.zip"), "w") as z:
+            z.writestr("Content/%s/FFFE07D1/00010000/%s" % (kari, kari), package("Kari"))
+        with open(os.path.join(kept, "2026-10-30_23-00-00_127.0.0.1.ini"), "w", newline="") as f:
+            f.write("file=2026-10-30_23-00-00_127.0.0.1.zip\r\nname=Kari\r\ngamertag=Kari\r\nxuid=%s\r\nconsole=127.0.0.1\r\ntime=1793400000\r\nsize=8192\r\n" % kari)
+        config = os.path.join(self.tmp.name, "seats.ini")
+        with open(config, "w", newline="") as f:
+            f.write("guest_profiles=2\r\nguest_profile1=Ola|Ola|%s|1793400000|127.0.0.1|127.0.0.1\r\nguest_profile2=Kari|Kari|%s|1793400000|127.0.0.1|\r\n" % (ola, kari))
+        aurora = AuroraWeb()  # The first console is in Aurora.
+        self.addCleanup(aurora.close)
+        self.web = free_port()
+        server, port = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        stop = threading.Event()
+
+        def wheel():
+            # The second console's wheel app waits on the server (PartyWait), so it shows the wheel.
+            while not stop.is_set():
+                try:
+                    with connect_from("127.0.0.2", port) as conn:
+                        conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, 0, 0))
+                        exact(conn, struct.unpack(">I", exact(conn, 4))[0])
+                except OSError:
+                    pass
+                stop.wait(1)
+        threading.Thread(target=wheel, daemon=True).start()
+        self.addCleanup(stop.set)
+
+        def text_for(address):
+            with connect_from(address, port) as conn:
+                conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, 0, 0))
+                return exact(conn, struct.unpack(">I", exact(conn, 4))[0]).decode("utf-8")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 20))
+            self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.1", "127.0.0.2"],
+                                             "guests": [{"name": n, "here": True} for n in ("Ola", "Kari", "Lars", "Tom")]})
+            self.assertTrue(self.wait_for(lambda: "127.0.0.2" in self.json("GET", "/api/state")["party"]["wheelOn"], 10))
+            self.json("POST", "/api/party/seats", {"seats": {"127.0.0.2": ["Ola", "Kari", "Lars"], "127.0.0.1": ["Tom"]}})
+            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.2", {}).get("state") not in (None, "copying"), 30))
+            to = self.json("GET", "/api/state")["party"]["profilesTo"]
+            self.assertEqual(to["127.0.0.2"], {"state": "ready", "done": 2, "total": 2, "now": "", "note": "Lars has no profile yet (the LAN party page makes them)"})
+            self.assertEqual(to["127.0.0.1"], {"state": "ready", "done": 0, "total": 0, "now": "", "note": "Tom has no profile yet (the LAN party page makes them)"})
+            # Byte for byte, the save too; the console's own profile is untouched.
+            for xuid, root in ((ola, self.xbox), (kari, None)):
+                package_path = os.path.join("Hdd1", "Content", xuid, "FFFE07D1", "00010000", xuid)
+                with open(os.path.join(other, package_path), "rb") as f:
+                    self.assertEqual(f.read(), package("Ola" if xuid == ola else "Kari"))
+            with open(os.path.join(other, "Hdd1", "Content", ola, "4D5307E6", "00000001", "save"), "rb") as f:
+                self.assertEqual(f.read(), b"ola's save" * 50000)
+            self.assertEqual(sorted(os.listdir(os.path.join(other, "Hdd1", "Content"))), ["0009000000ABCDEF", ola, kari])
+            # The records know where they are now; the wheel app is told.
+            profiles = {g["name"]: sorted(g["on"]) for g in self.json("GET", "/api/party/profiles")["profiles"]}
+            self.assertEqual(profiles, {"Ola": ["127.0.0.1", "127.0.0.2"], "Kari": ["127.0.0.2"], "Lars": [], "Tom": []})
+            self.assertIn("\nprofiles\tready\t2\t2\t\tLars has no profile yet (the LAN party page makes them)\n", text_for("127.0.0.2"))
+            # The wheel app's FTP server writes nowhere else, and shows only offline profiles.
+            ftp = ftplib.FTP()
+            ftp.connect("127.0.0.2", self.ftp.server_address[1])
+            ftp.login("xboxftp", "xboxftp")
+            ftp.cwd("/Hdd1/Content")
+            self.assertEqual(sorted(ftp.nlst()), [ola, kari])
+            for bad in ("/Hdd1/Content/0009000000ABCDEF", "/Hdd1/NetISO", "/Hdd1/Content/../Apps"):
+                self.assertRaises(ftplib.error_perm, ftp.cwd, bad)
+            self.assertRaises(ftplib.error_perm, ftp.storbinary, "STOR /Hdd1/Content/x.bin", io.BytesIO(b"x"))
+            self.assertRaises(ftplib.error_perm, ftp.mkd, "/Hdd1/Apps")
+            ftp.quit()
+            # Swapped again: there already, nothing copied twice.
+            self.json("POST", "/api/party/seats", {"seats": {"127.0.0.2": ["Kari"], "127.0.0.1": ["Ola"]}})
+            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.1", {}).get("total") == 1
+                                          and self.json("GET", "/api/state")["party"]["profilesTo"]["127.0.0.1"]["state"] != "copying", 30))
+            self.assertEqual(self.json("GET", "/api/state")["party"]["profilesTo"]["127.0.0.2"]["done"], 1)
+        finally:
+            stop.set()
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("Guest profiles for the seats: 2 profiles copied to the seats (0 there already).", out)
+        self.assertIn("Guest profiles for the seats: 0 profiles copied to the seats (2 there already).", out)
+
     def test_turns_every_party_console_off_or_back_to_aurora(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         _, ftp2 = self.second_console()
@@ -2859,7 +2977,7 @@ class Dashboard(ServerTest):
         self.assertEqual(self.json("GET", "/api/state")["party"],
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
                                                                  "logo": False, "backgrounds": 0, "pictures": ""},
-                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": []})
+                          "gamemaster": "", "consoles": [], "guests": [], "teams": 2, "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}})
         tricky = "Cid | 50%, ok; ="  # Every character the settings file's lists split at.
         self.json("POST", "/api/party", {"active": True, "name": " Bjørn's 40th ", "gamemaster": "10.10.1.42",
                                          "theme": {"preset": "birthday", "person": "Bjørn", "age": 40, "accent": "#FF8800", "accent2": "#1a1a1a"},
@@ -2870,7 +2988,7 @@ class Dashboard(ServerTest):
                                                                     "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
-                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": []}
+                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
             self.assertEqual(self.json("GET", "/api/state")["party"], party)

@@ -89,6 +89,7 @@ int main(int argc, char** argv) {
     unsigned char* alpha=NULL; ImGui::GetIO().Fonts->GetTexDataAsAlpha8(&alpha,&TextureWidth,&TextureHeight); Texture=alpha;
     static party::Screen s;
     party::Parse(text,length,s.state);
+    s.copying=!strcmp(s.state.profiles,"copying");
     strcpy(s.server,"192.168.1.40"); s.link=party::LinkConnected;
     const char* mode=argc>6 ? argv[6] : "";
     if(!strcmp(mode,"lost")) { s.link=party::LinkLost; s.state.valid=false; }

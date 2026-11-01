@@ -705,6 +705,18 @@ Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return ThePa
 std::vector<GuestProfile> GuestProfiles;
 std::mutex GuestLock;
 std::vector<GuestProfile> GuestProfilesNow() { std::lock_guard<std::mutex> hold(GuestLock); return GuestProfiles; }
+// The seated guests' profiles going to their consoles after a spin or a
+// swap (PushSeatProfiles), by console address: what NetDiscParty.xex and
+// the page show meanwhile. Under GuestLock.
+struct SeatProfiles {
+    std::string state;   // "copying", "ready" or "failed".
+    int done, total;     // Guests whose profile is on it, of those seated there who have one.
+    std::string now;     // The guest whose profile is being copied.
+    std::string note;    // Who has no profile yet, or what went wrong.
+    SeatProfiles() : done(0), total(0) {}
+};
+std::map<std::string,SeatProfiles> SeatPushes;
+void PushSeatProfilesSoon();
 // The party's version, one more with each change (Save), which
 // NetDiscParty.xex waits on (PartyWait) so it hears of a spin at once
 // without asking again and again.
@@ -745,6 +757,14 @@ std::vector<const PartySignInRecord*> SignedIn(const Party& p, const std::string
 std::mutex WheelSeenLock;
 std::map<std::string,double> WheelSeen;
 const double WheelSeenSeconds = 40;
+// The consoles OpenWheel had Aurora start the wheel on, with when: Aurora is
+// closing there for a moment, so its FTP server is left alone.
+std::map<std::string,double> WheelOpened;  // Under WheelSeenLock.
+bool WheelOpening(const std::string& address, double seconds) {
+    std::lock_guard<std::mutex> hold(WheelSeenLock);
+    std::map<std::string,double>::const_iterator at=WheelOpened.find(address);
+    return at!=WheelOpened.end() && Now()-at->second<seconds;
+}
 bool ShowsWheel(const std::string& address) {
     std::lock_guard<std::mutex> hold(WheelSeenLock);
     std::map<std::string,double>::const_iterator at=WheelSeen.find(address);
@@ -2325,6 +2345,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     bool playing;
     { std::lock_guard<std::mutex> hold(ConsoleLock); playing=console.connections>0 && !console.mounted.empty() && !console.inAurora; }
     if(playing && !o.pushOnce) return;
+    // Nor while it shows the party wheel: the FTP server answering then is
+    // the wheel app's, for guest profiles only (party/ftp.h).
+    if(ShowsWheel(console.text) && !o.pushOnce) return;
     bool idle=o.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
     if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
     s.probedAt=Now();
@@ -3182,6 +3205,15 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
         for(std::map<std::string,double>::const_iterator i=WheelSeen.begin();i!=WheelSeen.end();++i) if(now-i->second<WheelSeenSeconds) j.String(i->first);
     }
     j.Close(']');
+    // The seated guests' profiles going to their consoles (PushSeatProfiles).
+    j.Key("profilesTo").Open('{');
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        for(std::map<std::string,SeatProfiles>::const_iterator i=SeatPushes.begin();i!=SeatPushes.end();++i)
+            j.Key(i->first.c_str()).Open('{').Set("state",i->second.state).Set("done",i->second.done).Set("total",i->second.total)
+             .Set("now",i->second.now).Set("note",i->second.note).Close('}');
+    }
+    j.Close('}');
     j.Close('}');
 }
 
@@ -5417,6 +5449,7 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
     SeatsJson(j,seats);
     j.Set("note",note).Close('}');
     out.body=j.Text();
+    PushSeatProfilesSoon();
 }
 
 // The raffle wheel (see Spin in party.h): teams drawn as PartyRaffle draws
@@ -5474,6 +5507,8 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, const s
     for(size_t i=0;i<joining.size();++i) Log("%s joins the LAN party for the wheel.",joining[i].c_str());
     if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
     else Log("The raffle wheel is drawing %d teams from %d guests.",teams,int(here.size()));
+    // Each guest's profile to the console they sit at, while the wheel turns.
+    if(!pick) PushSeatProfilesSoon();
     return true;
 }
 
@@ -5512,6 +5547,7 @@ bool OpenWheel(Console& c, std::string& how, std::string& error) {
         XboxLog(c,"couldn't open the party wheel: %s",error.c_str());
         return false;
     }
+    { std::lock_guard<std::mutex> hold(WheelSeenLock); WheelOpened[c.text]=Now(); }
     XboxLog(c,"opened the party wheel.");
     how=copied ? "copied and opened" : "opened";
     return true;
@@ -5642,6 +5678,12 @@ std::string PartyText(unsigned long long version, const std::string& address) {
         std::lock_guard<std::mutex> hold(PartyLock);
         std::vector<const PartySignInRecord*> signedIn=SignedIn(p,address);
         for(size_t i=0;i<signedIn.size();++i) if(signedIn[i]) line("signin",{Number(int(i)),Number(signedIn[i]->controller),signedIn[i]->gamertag});
+    }
+    // This console's guest profiles on their way (PushSeatProfiles): state, done, total, whose now, note.
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        std::map<std::string,SeatProfiles>::const_iterator to=SeatPushes.find(address);
+        if(to!=SeatPushes.end()) line("profiles",{to->second.state,Number(to->second.done),Number(to->second.total),to->second.now,to->second.note});
     }
     return t;
 }
@@ -6347,6 +6389,184 @@ void RemoveGuestProfiles(std::vector<std::string> names) {
     for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+".";
 }
 
+// The seated guests' profiles to their consoles, after a spin or a swap: on
+// each console, each guest seated there whose profile it hasn't got gets a
+// copy, from a console that has it (the one that made it first) or else the
+// copy kept on this computer, so they can sign in at once. A console that
+// shows the party wheel takes it through the wheel app's FTP server (party/
+// ftp.h); one opening the wheel is waited for (Aurora is closing then);
+// otherwise Aurora's FTP server, if Aurora is on screen. Guests who have no
+// profile yet are noted: the LAN party page makes them (MakeGuestProfiles).
+// SeatPushes tells the wheel app and the page how it goes.
+enum { SeatWheelWaitSeconds = 45, SeatWorkWaitSeconds = 600 };
+std::mutex SeatPushRunLock;
+bool SeatPushRunning=false, SeatPushAgain=false;  // Under SeatPushRunLock.
+
+std::string OneLine(std::string text) {
+    for(size_t i=0;i<text.size();++i) if(text[i]=='\t' || text[i]=='\r' || text[i]=='\n') text[i]=' ';
+    return text;
+}
+void SeatPushSet(const std::string& address, const std::string& state, int done, int total, const std::string& now, const std::string& note) {
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        SeatProfiles& s=SeatPushes[address];
+        s.state=state; s.done=done; s.total=total; s.now=now; s.note=OneLine(note);
+    }
+    PartyNews();
+}
+// One guest's content folder: from the other consoles that have it (the
+// one that made it first), else the best copy kept here.
+bool SeatProfileFiles(const GuestProfile& p, const std::string& skip, const Options& o, std::map<std::string,std::string>& files, std::string& error) {
+    std::vector<std::string> from;
+    for(size_t i=0;i<p.on.size();++i) if(p.on[i]!=skip) from.insert(p.on[i]==p.madeOn ? from.begin() : from.end(),p.on[i]);
+    for(size_t i=0;i<from.size();++i) {
+        Console* c=ConsoleIfKnown(inet_addr(from[i].c_str()));
+        if(!c) continue;
+        Busy busy(c);
+        FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+        std::string why;
+        files.clear();
+        if(ftp.Open() && ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,why)) return true;
+        XboxLog(*c,"couldn't give %s's profile to copy: %s",p.name.c_str(),why.empty() ? ftp.Error() : why.c_str());
+    }
+    std::vector<ProfileCopy> copies=ProfileCopies(KitPath(ProfilesFolder(o),p.xuid));
+    const ProfileCopy* best=BestProfileCopy(copies);
+    if(best && OpenProfileCopy(o,*best,files,error)) return true;
+    if(error.empty()) error="no console with it answers, and there's no copy of it on this computer";
+    return false;
+}
+void PushSeatsOnce() {
+    Options o=Current();
+    Party p=CurrentParty();
+    Seats seats=p.drawn ? p.seats : Seats();
+    {
+        // Consoles no one sits at any more have nothing coming.
+        std::lock_guard<std::mutex> hold(GuestLock);
+        for(std::map<std::string,SeatProfiles>::iterator i=SeatPushes.begin();i!=SeatPushes.end();) {
+            bool seated=false;
+            for(size_t k=0;k<seats.size();++k) if(seats[k].first==i->first && !seats[k].second.empty()) seated=true;
+            if(seated) ++i; else SeatPushes.erase(i++);
+        }
+    }
+    // What each console needs: its guests' records; those without a profile are noted.
+    struct ConsoleTodo { std::string address; std::vector<GuestProfile> guests; std::string none; };
+    std::vector<ConsoleTodo> todo;
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    bool any=false;
+    for(size_t i=0;i<records.size();++i) if(!records[i].xuid.empty()) any=true;
+    // A party without guest profiles: nothing to say.
+    if(!any) { std::lock_guard<std::mutex> hold(GuestLock); SeatPushes.clear(); return; }
+    for(size_t k=0;k<seats.size();++k) {
+        if(seats[k].second.empty()) continue;
+        ConsoleTodo t;
+        t.address=seats[k].first;
+        std::vector<std::string> none;
+        for(size_t i=0;i<seats[k].second.size();++i) {
+            GuestProfile* r=GuestProfileNamed(records,seats[k].second[i]);
+            if(r && !r->xuid.empty()) t.guests.push_back(*r); else none.push_back(seats[k].second[i]);
+        }
+        for(size_t i=0;i<none.size();++i) t.none+=(i ? (i+1==none.size() ? " and " : ", ") : "")+none[i];
+        if(!none.empty()) t.none+=(none.size()==1 ? " has" : " have")+std::string(" no profile yet (the LAN party page makes them)");
+        SeatPushSet(t.address,t.guests.empty() ? "ready" : "copying",0,int(t.guests.size()),"",t.none);
+        if(!t.guests.empty()) todo.push_back(t);
+    }
+    if(todo.empty()) return;
+    // One piece of profile work at a time (Work): after the page's, if one runs.
+    for(double until=Now()+SeatWorkWaitSeconds;;Sleep(1000)) {
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            if(!Work.running) { Work=ProfileWork(); Work.running=true; Work.what="copy to the seats"; Work.at=(long long)time(NULL); break; }
+        }
+        if(Now()>until) {
+            for(size_t k=0;k<todo.size();++k) SeatPushSet(todo[k].address,"failed",0,int(todo[k].guests.size()),"","The guest profiles were busy for too long; swap or spin again.");
+            return;
+        }
+    }
+    int copied=0, had=0;
+    std::vector<std::string> failed;
+    for(size_t k=0;k<todo.size();++k) {
+        ConsoleTodo& t=todo[k];
+        Console* c=ConsoleIfKnown(inet_addr(t.address.c_str()));
+        int total=int(t.guests.size()), done=0;
+        if(!c) { SeatPushSet(t.address,"failed",0,total,"","That console hasn't used NetDisc360 since it started."); continue; }
+        std::string word=ConsoleWord(*c);
+        // The wheel app (waited for when it was just opened); else Aurora, if it's on screen.
+        bool wheel=false;
+        for(double until=Now()+SeatWheelWaitSeconds;!(wheel=ShowsWheel(t.address)) && Now()<until && WheelOpening(t.address,SeatWheelWaitSeconds+15);) Sleep(500);
+        if(!wheel) {
+            AuroraWeb aurora(c->address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
+            if(!aurora.InAurora()) {
+                SeatPushSet(t.address,"failed",0,total,"",word+" shows neither the wheel nor Aurora, so its profiles come with the next spin or swap.");
+                failed.push_back(word+": not reachable");
+                continue;
+            }
+        }
+        std::string note=t.none, problem;
+        for(size_t i=0;i<t.guests.size();++i) {
+            GuestProfile& g=t.guests[i];
+            SeatPushSet(t.address,"copying",done,total,g.name,note);
+            {
+                std::lock_guard<std::mutex> hold(GuestLock);
+                Work.step="Copying "+g.name+"'s profile to "+word;
+            }
+            std::string error;
+            Busy busy(c);
+            FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+            if(!ftp.Open()) { problem=std::string("its FTP server doesn't answer: ")+ftp.Error(); break; }
+            if(ftp.Enters(ContentFolderFtp(g.xuid).c_str())) {
+                // There already (or still from an earlier party).
+                ++done; ++had;
+                if(std::find(g.on.begin(),g.on.end(),t.address)==g.on.end()) { SetOn(g,t.address,true); KeepGuestProfile(g); }
+                continue;
+            }
+            ftp.Close();
+            std::map<std::string,std::string> files;
+            if(!SeatProfileFiles(g,t.address,o,files,error)) { problem=g.name+"'s profile: "+error; continue; }
+            if(!ftp.Open() || !WriteTree(ftp,ContentFolderFtp(g.xuid),files,error)) {
+                problem="Couldn't copy "+g.name+"'s profile: "+(error.empty() ? std::string(ftp.Error()) : error);
+                continue;
+            }
+            ftp.Close();
+            ++done; ++copied;
+            SetOn(g,t.address,true);
+            KeepGuestProfile(g);
+            XboxLog(*c,"has %s's guest profile (%s) for their seat now%s.",g.name.c_str(),g.gamertag.c_str(),wheel ? ", through the party wheel" : "");
+        }
+        if(!problem.empty()) {
+            XboxLog(*c,"didn't get every seated guest's profile: %s",problem.c_str());
+            failed.push_back(word+": "+problem);
+            note=problem+(note.empty() ? "" : ". "+note);
+        }
+        SeatPushSet(t.address,done==total ? "ready" : "failed",done,total,"",note);
+    }
+    std::string result=Count(copied,"profile copied","profiles copied")+" to the seats ("+Number(had)+" there already)";
+    Log("Guest profiles for the seats: %s.%s%s",result.c_str(),failed.empty() ? "" : " ",failed.empty() ? "" : failed[0].c_str());
+    std::lock_guard<std::mutex> hold(GuestLock);
+    Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
+    Work.result=result+".";
+    Work.error.clear();
+    for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+".";
+}
+// Runs PushSeatsOnce on a thread of its own; asked again meanwhile, once more after.
+void PushSeatProfilesSoon() {
+    {
+        std::lock_guard<std::mutex> hold(SeatPushRunLock);
+        SeatPushAgain=true;
+        if(SeatPushRunning) return;
+        SeatPushRunning=true;
+    }
+    std::thread([]() {
+        for(;;) {
+            {
+                std::lock_guard<std::mutex> hold(SeatPushRunLock);
+                if(!SeatPushAgain) { SeatPushRunning=false; return; }
+                SeatPushAgain=false;
+            }
+            PushSeatsOnce();
+        }
+    }).detach();
+}
+
 // GET /api/party/profiles: the guests' profiles (every guest on the list,
 // and any other the server made that is still on a console or kept), each
 // with its consoles and kept copies, and the work under way.
@@ -6692,7 +6912,7 @@ void Api(const web::Request& r, web::Reply& out) {
         else { web::Json j; j.Open('{').Set("ok",true).Set("round",round).Close('}'); out.body=j.Text(); }
     }
     else if(r.method=="POST" && r.path=="/api/party/seats") {
-        if(ChangeSeats(body,error)) out.body="{\"ok\":true}";
+        if(ChangeSeats(body,error)) { out.body="{\"ok\":true}"; PushSeatProfilesSoon(); }
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party/start") PartyStart(body,out);

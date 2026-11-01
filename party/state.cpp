@@ -80,6 +80,9 @@ bool Parse(const char* text, unsigned length, State& s) {
             in.seat=atoi(NUMBER(0)); in.controller=atoi(NUMBER(1)); FIELD(2,in.gamertag);
             if(in.seat<0 || in.seat>=PerConsole || in.controller<0 || in.controller>3) --s.signedCount;
         }
+        else if(!strcmp(key,"profiles") && n>=5) {
+            FIELD(0,s.profiles); s.profilesDone=atoi(NUMBER(1)); s.profilesTotal=atoi(NUMBER(2)); FIELD(3,s.profilesNow); FIELD(4,s.profilesNote);
+        }
         else if(!strcmp(key,"seat") && n>=2 && s.seatCount<SeatsMost) {
             Seat& seat=s.seats[s.seatCount++];
             FIELD(0,seat.address); FIELD(1,seat.console);

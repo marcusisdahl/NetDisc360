@@ -26,6 +26,9 @@ struct Screen {
     int asking;         // The seat whose guest is asked to press A (-1: everyone's in).
     int choosing;       // The controller whose profile chooser (the Guide's) is open; -1 none.
     int leaveIn;        // Seconds to Aurora, once everyone's in; -1: staying.
+    // Guest profiles are being copied to this console (state.profiles, or
+    // the app's FTP server busy): B doesn't leave, and no one signs in yet.
+    bool copying;
     Screen();
 };
 // Creates the Dear ImGui context, its style and fonts.

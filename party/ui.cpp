@@ -17,7 +17,7 @@
 #endif
 
 namespace party {
-Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1) {
+Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1), copying(false) {
     memset(&state,0,sizeof(state));
     server[0]=notice[0]=0;
     for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; }
@@ -243,6 +243,23 @@ static void Ring(ImVec2 c, float r, int controller, unsigned lit, float glow) {
 
 // This console's players, signing in one after another: a card for each of
 // the four seats, the one asked now lit, its guest's team colour on top.
+// What's being copied to this console, for the screen ("" when nothing).
+static void CopyingText(const Screen& screen, char* text, size_t capacity) {
+    const State& s=screen.state;
+    text[0]=0;
+    if(!screen.copying) return;
+    if(!strcmp(s.profiles,"copying") && s.profilesNow[0] && s.profilesTotal>1)
+        _snprintf_s(text,capacity,_TRUNCATE,"Copying %s's profile (%d of %d)",s.profilesNow,s.profilesDone+1,s.profilesTotal);
+    else if(!strcmp(s.profiles,"copying") && s.profilesNow[0]) _snprintf_s(text,capacity,_TRUNCATE,"Copying %s's profile",s.profilesNow);
+    else _snprintf_s(text,capacity,_TRUNCATE,"Copying guest profiles to this Xbox");
+}
+// A small turning arc: work under way.
+static void Spinner(float x, float y, float r, double time, unsigned colour) {
+    const float a=float(time*5.0);
+    List->PathArcTo(ImVec2(x,y),r,a,a+4.2f,20);
+    List->PathStroke(Hex(colour),0,3);
+}
+
 static void DrawPlayers(const Screen& screen, const Seat& mine) {
     const State& s=screen.state;
     char text[256];
@@ -290,6 +307,9 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
             TextCentred(Body,cx,y+278,cw-32,Hex(White),"Choose your profile");
             _snprintf_s(text,sizeof(text),_TRUNCATE,"on controller %d",screen.choosing+1);
             TextCentred(Small,cx,y+318,cw-32,Hex(Muted),text);
+        } else if(asked && screen.copying) {
+            Spinner(cx,y+294,14,screen.time,Muted);
+            TextCentred(Small,cx,y+322,cw-32,Hex(Muted),"Getting profiles ready");
         } else if(asked) {
             const float bw=42+Width(Body,"Press");
             const float bx=cx-bw/2;
@@ -301,13 +321,20 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
     }
     // What to do now, under the cards.
     const float py=top+ch+16;
-    if(screen.asking>=0 && screen.asking<mine.count) {
+    if(screen.copying && screen.asking>=0) {
+        char line[NoteBytes];
+        CopyingText(screen,line,sizeof(line));
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"%s, one moment",line);
+        TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(White),text);
+    } else if(screen.asking>=0 && screen.asking<mine.count) {
         _snprintf_s(text,sizeof(text),_TRUNCATE,screen.choosing>=0 ? "%s, choose your profile" : "%s, press A to sign in",mine.names[screen.asking]);
         TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(White),text);
     } else if(screen.leaveIn>=0) {
         _snprintf_s(text,sizeof(text),_TRUNCATE,"Everyone's in! Back to Aurora in %d",screen.leaveIn);
         TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(Green),text);
     } else TextCentred(Heading,(Left+Right)/2.f,py,Right-Left,Hex(Green),"Everyone's in! Have fun");
+    // Who has no profile yet, or why one didn't come.
+    if(screen.state.profilesNote[0]) TextCentred(Small,(Left+Right)/2.f,py+42,Right-Left,Hex(!strcmp(screen.state.profiles,"failed") ? Error : Muted),screen.state.profilesNote);
 }
 
 void DrawUi(const Screen& screen) {
@@ -489,11 +516,28 @@ void DrawUi(const Screen& screen) {
         TextFit(Small,Right-nw+36,Bottom-103,nw-48,Hex(Error),screen.notice);
     }
 
+    // The guests' profiles on their way here (on the wheel; the players
+    // screen says it under the cards).
+    if(!players) {
+        char line[NoteBytes];
+        const bool failed=!strcmp(s.profiles,"failed") && s.profilesNote[0];
+        CopyingText(screen,line,sizeof(line));
+        if(!line[0] && failed) _snprintf_s(line,sizeof(line),_TRUNCATE,"%s",s.profilesNote);
+        if(line[0]) {
+            const float ly=Bottom-112-(screen.notice[0] ? 52 : 0);
+            float nw=Width(Small,line)+60; if(nw>Right-Left) nw=Right-Left;
+            Box(Right-nw,ly,nw,40,Hex(Raised),10);
+            if(screen.copying) Spinner(Right-nw+22,ly+20,9,screen.time,Green);
+            else List->AddCircleFilled(ImVec2(Right-nw+22,ly+20),6,Hex(ErrorStrong),12);
+            TextFit(Small,Right-nw+42,ly+9,nw-54,Hex(screen.copying ? White : Error),line);
+        }
+    }
+
     // Footer: the buttons, and the server.
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
     if(players) {
-        if(screen.asking>=0) bx=Button(bx,Bottom-40,"A",ButtonA,"Sign in");
+        if(screen.asking>=0 && !screen.copying) bx=Button(bx,Bottom-40,"A",ButtonA,"Sign in");
         else if(screen.leaveIn>=0) bx=Button(bx,Bottom-40,"A",ButtonA,"Go now");
         bx=Button(bx,Bottom-40,"Y",ButtonY,"See the wheel");
     } else {
@@ -503,7 +547,12 @@ void DrawUi(const Screen& screen) {
         }
         if(seat && seat->count>0 && !(s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s))) bx=Button(bx,Bottom-40,"Y",ButtonY,"Sign in");
     }
-    bx=Button(bx,Bottom-40,"B",ButtonB,"Back to Aurora");
+    // Not while profiles are copied here: leaving would cut them off.
+    if(screen.copying) {
+        Spinner(bx+16,Bottom-24,10,screen.time,Muted);
+        Text(Body,bx+38,Bottom-39,Hex(Muted),"Copying profiles, please wait");
+        bx+=38+Width(Body,"Copying profiles, please wait")+32;
+    } else bx=Button(bx,Bottom-40,"B",ButtonB,"Back to Aurora");
     const char* where=screen.link==LinkConnected ? "Connected to NetDisc360 at %s" : screen.link==LinkLost ? "Lost NetDisc360 at %s, trying again" : screen.link==LinkWaiting ? "Waiting for the network" : "Looking for NetDisc360 %s";
     _snprintf_s(text,sizeof(text),_TRUNCATE,where,screen.server);
     float tw=Width(Small,text);

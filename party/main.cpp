@@ -15,6 +15,11 @@
 // which controller (PartySignIn). Once everyone's in, it goes back to Aurora
 // by itself after a few seconds; Y looks at the wheel again.
 //
+// Each guest's profile comes to the console they sit at while the wheel
+// turns: Aurora's FTP server is gone while this app runs, so the app has a
+// tiny one of its own (ftp.h) that NetDisc360 copies them through. While
+// profiles are copied, B doesn't leave and no one is asked to sign in yet.
+//
 // It asks NetDisc360 on its NetISO port (4323) and waits there for news
 // (PartyWait, a long poll), so it hears of a spin at once without asking
 // again and again. The server is the one in party.ini next to this XEX
@@ -30,6 +35,7 @@
 #include "../shared/netdisc.h"
 #include "../third_party/imgui/imgui.h"
 #include "../launcher/imgui_impl_xbox360.h"
+#include "ftp.h"
 #include "state.h"
 #include "ui.h"
 
@@ -56,6 +62,7 @@ int LinkNow=party::LinkLooking;
 char ServerText[32]="";
 DWORD ServerAddress=0; int ServerPort=nia::IsvrPort;
 char Notice[160]="";          // What the server said to the Gamemaster's last spin.
+bool FtpFailed=false;         // The FTP server for guest profiles couldn't start.
 DWORD NoticeAt=0;
 
 // ---- Where the server is (as launcher/main.cpp finds it) ----
@@ -155,6 +162,16 @@ DWORD WINAPI Listen(void*) {
     if(XNetStartup(&params) || WSAStartup(MAKEWORD(2,2),&wsa)) return 0;
     XNADDR mine;
     while(XNetGetTitleXnAddr(&mine)==XNET_GET_XNADDR_PENDING) Sleep(250);
+    // The FTP server NetDisc360 copies guest profiles through (ftp.h): on
+    // Aurora's port (party.ini ftp=<port> for another), for no one until the
+    // server is found.
+    {
+        static char ini[nia::IniMax];
+        char value[16];
+        int port=party::FtpPort;
+        if(ReadText("game:\\party.ini",ini,sizeof(ini)) && nia::IniValue(ini,"ftp",value,sizeof(value)) && atoi(value)>0 && atoi(value)<65536) port=atoi(value);
+        if(LinkDrive("\\??\\PartyF:","\\Device\\Harddisk0\\Partition1")<0 || !party::FtpStart("PartyF:",port,INADDR_NONE)) FtpFailed=true;
+    }
     static char text[TextMost];
     static party::State read;
     unsigned long long version=0;
@@ -166,6 +183,7 @@ DWORD WINAPI Listen(void*) {
             if(!FindServer(address,port)) { Sleep(5000); continue; }
             EnterCriticalSection(&Lock);
             ServerAddress=address; ServerPort=port;
+            party::FtpAllowFrom(address);
             nia::AddressText(address,ServerText,sizeof(ServerText));
             LeaveCriticalSection(&Lock);
         }
@@ -319,7 +337,7 @@ void WatchSignIns(const party::Seat* mine, DWORD now) {
         if(pad>=0 && !SignedIn(pad)) { Frame.players[i].controller=-1; Frame.players[i].gamertag[0]=0; Tell(i,pad,true,0,NULL); }
     }
     Frame.asking=Asking(mine);
-    if(Frame.asking<0 && mine && mine->count && SignedHere && !Stay) {
+    if(Frame.asking<0 && mine && mine->count && SignedHere && !Stay && !Frame.copying) {
         if(!AllInAt) AllInAt=now;
         DWORD gone=now-AllInAt;
         Frame.leaveIn=gone>=LeaveMs ? 0 : int((LeaveMs-gone+999)/1000);
@@ -376,6 +394,7 @@ void __cdecl main() {
         strcpy_s(frame.server,ServerText);
         if(Notice[0] && now-NoticeAt>8000) Notice[0]=0;
         strcpy_s(frame.notice,Notice);
+        if(!frame.notice[0] && FtpFailed) strcpy_s(frame.notice,"Guest profiles can't be copied here: the FTP port is taken.");
         LeaveCriticalSection(&Lock);
         frame.spinMs=frame.state.spinId ? double(int(now-spinStart)) : 0;
         frame.time=(now-started)/1000.0;
@@ -391,15 +410,21 @@ void __cdecl main() {
         if(!turnedToPlayers && mine && mine->count && after>=(strcmp(frame.state.kind,"pick") ? PlayersAfterTeamsMs : PlayersAfterPickMs)) {
             turnedToPlayers=true; frame.view=party::ViewPlayers;
         }
+        // Guest profiles being copied here (by NetDisc360's word, or its FTP
+        // connection busy now or a moment ago): no leaving, no signing in yet.
+        party::FtpActivity ftp;
+        party::FtpNow(ftp);
+        frame.copying=ftp.sessions>0 || ftp.transfers>0 || (ftp.lastAt && now-ftp.lastAt<3000) ||
+                      (frame.link==party::LinkConnected && mine && mine->count && !strcmp(frame.state.profiles,"copying"));
         WatchSignIns(mine,now);
-        if(any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) break;
+        if((any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) && !frame.copying) break;
         if(frame.view==party::ViewPlayers && mine && mine->count) {
             if(any&XINPUT_GAMEPAD_Y) { frame.view=party::ViewWheel; Stay=true; }
             for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) {
-                if(frame.asking>=0) SignInPad(pad,mine);
+                if(frame.asking>=0) { if(!frame.copying) SignInPad(pad,mine); }
                 else if(frame.leaveIn>=0) frame.leaveIn=0;
             }
-            if(frame.leaveIn==0) break;
+            if(frame.leaveIn==0 && !frame.copying) break;
         } else {
             if((any&XINPUT_GAMEPAD_Y) && mine && mine->count && !(spun && after<0)) frame.view=party::ViewPlayers;
             // The Gamemaster spins: A for teams, X to pick one guest; once a second at most.

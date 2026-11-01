@@ -5,7 +5,7 @@
 // are here, the teams drawn and the raffle wheel's latest spin. Plain C++
 // with fixed sizes, shared by the Xbox build and tests/party_preview.cpp.
 namespace party {
-enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32 };
+enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32, NoteBytes = 200 };
 typedef char Name[NameBytes];
 
 // A turn of the wheel: from where the turn before left it to to degrees
@@ -40,6 +40,11 @@ struct State {
     int teamCount; int teamSize[TeamsMost]; Name team[TeamsMost][WheelMost];
     int seatCount; Seat seats[SeatsMost];
     int signedCount; SignedIn signedIn[PerConsole];
+    // This console's seated guests' profiles on their way here (after a
+    // spin or a swap): profiles is "copying", "ready" or "failed" ("": none
+    // asked), done of total, the guest whose profile comes now, and a note
+    // (who has no profile yet, or what went wrong).
+    char profiles[KindBytes + 4]; int profilesDone, profilesTotal; Name profilesNow; char profilesNote[NoteBytes];
 };
 
 // Reads the server's text into state; false (state.valid false) if it isn't one.
