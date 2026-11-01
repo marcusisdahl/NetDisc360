@@ -33,6 +33,7 @@ public:
     Json& Int(long long value);
     Json& Bool(bool value) { Comma(); text_+=value ? "true" : "false"; return *this; }
     Json& Null() { Comma(); text_+="null"; return *this; }
+    Json& Raw(const std::string& json) { Comma(); text_+=json; return *this; }  // JSON as it is (checked by Parse first).
     Json& Set(const char* key, const std::string& value) { return Key(key).String(value); }
     Json& Set(const char* key, const char* value) { return Key(key).String(value); }
     Json& Set(const char* key, int value) { return Key(key).Int(value); }

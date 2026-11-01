@@ -491,7 +491,7 @@ private:
             return Send(200,"text/html; charset=utf-8",page,
                         "Content-Encoding: gzip\r\nX-Frame-Options: DENY\r\n"
                         "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                        "img-src 'self' data: https://raw.githubusercontent.com; connect-src 'self' https://raw.githubusercontent.com https://api.github.com; "
+                        "img-src 'self' data: blob: https://raw.githubusercontent.com; connect-src 'self' https://raw.githubusercontent.com https://api.github.com; "
                         "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n",close);
         }
         // For Prometheus and the like, which can't log in on the page: the

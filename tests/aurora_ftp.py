@@ -124,9 +124,14 @@ class Handler(socketserver.StreamRequestHandler):
                     continue
                 self.reply("150 Opening data connection")
                 with open(path, "rb") as f:
-                    conn.sendall(f.read())
+                    data = f.read()
+                try:
+                    conn.sendall(data)
+                    sent = True
+                except OSError:  # The client took what it wanted and closed.
+                    sent = False
                 conn.close()
-                self.reply("226 File transferred")
+                self.reply("226 File transferred" if sent else "426 Connection closed; transfer aborted")
             elif command == "STOR":
                 path = self.local(argument)
                 conn = self.data_connection()
