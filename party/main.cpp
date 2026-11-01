@@ -375,11 +375,11 @@ WORD Buttons(DWORD pad) {
     XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
     if(XInputGetState(pad,&state)!=ERROR_SUCCESS) return 0;
     WORD b=state.Gamepad.wButtons;
-    const SHORT x=state.Gamepad.sThumbLX, y=state.Gamepad.sThumbLY, far=20000;
-    if(y>far) b|=XINPUT_GAMEPAD_DPAD_UP;
-    if(y<-far) b|=XINPUT_GAMEPAD_DPAD_DOWN;
-    if(x<-far) b|=XINPUT_GAMEPAD_DPAD_LEFT;
-    if(x>far) b|=XINPUT_GAMEPAD_DPAD_RIGHT;
+    const SHORT x=state.Gamepad.sThumbLX, y=state.Gamepad.sThumbLY, edge=20000;
+    if(y>edge) b|=XINPUT_GAMEPAD_DPAD_UP;
+    if(y<-edge) b|=XINPUT_GAMEPAD_DPAD_DOWN;
+    if(x<-edge) b|=XINPUT_GAMEPAD_DPAD_LEFT;
+    if(x>edge) b|=XINPUT_GAMEPAD_DPAD_RIGHT;
     return b;
 }
 // The d-pad's directions pressed now, or held long enough to repeat.

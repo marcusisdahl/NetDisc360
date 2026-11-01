@@ -180,7 +180,7 @@ DWORD WINAPI Watch(void*) {
     bool linked=false;
     while(!Stopping) {
         if(!linked && !(linked=Linked())) Log("couldn't link the hard drive; trying again.");
-        if(linked && GetFileAttributes(JobFile)!=INVALID_FILE_ATTRIBUTES) RunJob();
+        if(linked && GetFileAttributes(JobFile)!=DWORD(-1)) RunJob();  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
         for(DWORD waited=0;waited<EveryMs && !Stopping;waited+=250) Sleep(250);
     }
     return 0;
