@@ -2431,9 +2431,10 @@ std::string Trim(const std::string& text) {
 }
 
 // What the console has: Aurora's FTP login works, Aurora and the game folder
-// are where the settings say, and DashLaunch's launch.ini loads NetISO.xex
-// (with NetISO.xex.txt naming this computer) and NetIsoTiles.xex, each
-// file's SHA-256 for the dashboard to match with the releases.
+// are where the settings say, and DashLaunch's launch.ini loads NetDisc360.xex
+// (NetIsoTiles.xex before) and NetISO.xex if it's still used (with
+// NetISO.xex.txt naming this computer), each file's SHA-256 for the dashboard
+// to match with the releases.
 void CheckConsole(const web::Value& body, web::Reply& out) {
     Options o=Current();
     std::string text, user=o.ftpUser, password=o.ftpPassword;
@@ -2495,7 +2496,8 @@ void CheckConsole(const web::Value& body, web::Reply& out) {
     for(size_t i=0;i<plugins.size();++i) {
         std::string path=FtpPath(plugins[i].second), name=path.substr(path.rfind('/')+1), lower=name;
         for(size_t k=0;k<lower.size();++k) lower[k]=char(tolower((unsigned char)lower[k]));
-        const char* kind=lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
+        // NetDisc360.xex is the plugin's name since it became the disc drive too; NetIsoTiles.xex before.
+        const char* kind=lower.find("netdisc360")!=std::string::npos || lower.find("netisotiles")!=std::string::npos ? "tiles" : lower.find("netiso")!=std::string::npos ? "netiso"
                        : lower.find("netusb")!=std::string::npos || lower.find("usbnet")!=std::string::npos || lower.find("cusbenet")!=std::string::npos ? "usbnet" : "other";
         j.Open('{').Set("slot",plugins[i].first).Set("path",plugins[i].second).Set("name",name).Set("kind",kind);
         bool found=!path.empty() && ftp.Retrieve(path.c_str(),data,16<<20);

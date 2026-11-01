@@ -2063,7 +2063,10 @@ function consoleChecks(r) {
   const where = r.launchIni.replace(/^\/(\w+)\//, '$1:\\');
   const plugin = kind => r.plugins.find(p => p.kind === kind);
   const netiso = plugin('netiso'), tiles = plugin('tiles'), usb = plugin('usbnet');
-  if (!netiso) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t loaded', ['Add it to the [Plugins] section of ', h('code', where), ', like ', h('code', 'plugin2 = Usb:\\NetISO.xex'), '.']));
+  // NetDisc360.xex has its own disc drive; NetISO.xex is only needed with the older NetIsoTiles.xex.
+  const ownDrive = tiles && /netdisc360/i.test(tiles.name);
+  if (!netiso && ownDrive) out.push(wzCheck('good', 'NetDisc360.xex is the disc drive', 'NetISO.xex isn\u2019t needed with it.'));
+  else if (!netiso) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t loaded', ['Add it to the [Plugins] section of ', h('code', where), ', like ', h('code', 'plugin2 = Usb:\\NetISO.xex'), '.']));
   else if (!netiso.found) out.push(wzCheck('bad', 'NetISO.xex isn\u2019t where launch.ini says', h('code', netiso.path)));
   else {
     const known = NetIsoVersions[netiso.sha256];
@@ -2083,8 +2086,8 @@ function consoleChecks(r) {
         : wzCheck('info', title + ' is plugin ' + p.slot, unknown || 'It isn\u2019t from a release on GitHub (a build of your own?).'));
     }).catch(() => line.replaceWith(wzCheck('info', title + ' is plugin ' + p.slot, 'GitHub didn\u2019t answer, so its version wasn\u2019t checked.')));
   };
-  release(tiles, 'marcusisdahl/NetDisc360', ['netisotiles.xex'], 'NetIsoTiles.xex',
-    wzCheck('warn', 'NetIsoTiles.xex isn\u2019t loaded', ['It keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
+  release(tiles, 'marcusisdahl/NetDisc360', ['netdisc360.xex', 'netisotiles.xex'], tiles ? tiles.name : 'NetDisc360.xex',
+    wzCheck('warn', 'NetDisc360.xex isn\u2019t loaded', ['It keeps the Guide working in games and handles disc swaps. Get it from NetDisc360\u2019s release and add it to ', h('code', where), '.']));
   release(usb, 'marcusisdahl/NetUsb360', ['netusb360.xex', 'netusb360-acksmall.xex', 'usbnet360.xex', 'usbnet360-acksmall.xex'], usb ? usb.name : '', null,
     ['Not a NetUsb360 release. ', h('a', { href: 'https://github.com/marcusisdahl/NetUsb360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'NetUsb360'), ' loads games faster with a gigabit USB adapter.']);
   if (r.plugins.length > 5) out.push(wzCheck('warn', 'launch.ini has ' + r.plugins.length + ' plugins', 'DashLaunch loads 5 at most.'));
