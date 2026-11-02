@@ -10,6 +10,8 @@
 #include <set>
 #ifndef _WIN32
 #include <dirent.h>
+#include <limits.h>
+#include <stdlib.h>
 #endif
 
 namespace nia {
@@ -61,6 +63,16 @@ double Seconds() { return double(clock())/CLOCKS_PER_SEC; }
 
 struct Entry { std::string name; bool folder; U64 size; long long modified; };
 
+#ifndef _WIN32
+// Whether the folder link points at folder itself or a folder it is in.
+bool LinksBack(const std::string& folder, const std::string& link) {
+    char here[PATH_MAX], there[PATH_MAX];
+    if(!realpath(folder.c_str(),here) || !realpath(link.c_str(),there)) return true;
+    std::string a=std::string(here)+"/", b=std::string(there)+"/";
+    return !a.compare(0,b.size(),b);
+}
+#endif
+
 bool List(const std::string& folder, std::vector<Entry>& out) {
     out.clear();
 #ifdef _WIN32
@@ -82,7 +94,11 @@ bool List(const std::string& folder, std::vector<Entry>& out) {
     DIR* dir=opendir(folder.c_str()); if(!dir) return false;
     while(struct dirent* d=readdir(dir)) {
         if(!strcmp(d->d_name,".") || !strcmp(d->d_name,"..")) continue;
-        struct stat st; if(lstat(Join(folder,d->d_name).c_str(),&st)) continue;
+        std::string path=Join(folder,d->d_name);
+        struct stat st; if(lstat(path.c_str(),&st)) continue;
+        // A link (a NAS share linked into the games folder) counts as what it
+        // points at, unless it's a folder this one is in, which would loop.
+        if(S_ISLNK(st.st_mode) && (stat(path.c_str(),&st) || (S_ISDIR(st.st_mode) && LinksBack(folder,path)))) continue;
         if(!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) continue;
         Entry e; e.name=d->d_name; e.folder=S_ISDIR(st.st_mode); e.size=e.folder ? 0 : U64(st.st_size); e.modified=(long long)st.st_mtime;
         out.push_back(e);
@@ -622,6 +638,34 @@ bool ImageTitle(DiscImage& image, DWORD& titleId, DWORD& mediaId, int& disc, boo
     return true;
 }
 
+// Where an image's files end: past the last byte any file in its game
+// partition takes (its directory tables walked). An ISO shorter than that was
+// cut off (a download or copy that stopped), and a game reading the missing
+// part crashes. 0 if the tables can't be read.
+U64 ImageDataEnd(DiscImage& image) {
+    Volume volume;
+    if(!ImageVolume(image,volume) || !volume.rootSize) return 0;
+    struct Table { DWORD sector, size; int depth; };
+    std::vector<Table> pending(1,Table{ volume.rootSector, volume.rootSize, 0 });
+    std::set<DWORD> seen;
+    U64 end=volume.start+U64(volume.rootSector)*Sector+volume.rootSize;
+    std::vector<ImageEntry> entries;
+    while(!pending.empty()) {
+        Table t=pending.back(); pending.pop_back();
+        if(!seen.insert(t.sector).second || seen.size()>100000) continue;
+        U64 at=volume.start+U64(t.sector)*Sector;
+        end=std::max(end,at+t.size);
+        if(at+t.size>image.Size()) continue;  // Cut off before this table already.
+        if(!ReadTable(image,volume,t.sector,t.size,entries)) return 0;
+        for(size_t i=0;i<entries.size();++i) {
+            const ImageEntry& e=entries[i];
+            if(e.folder) { if(e.size && t.depth<64) pending.push_back(Table{ e.sector, e.size, t.depth+1 }); }
+            else if(e.size) end=std::max(end,volume.start+U64(e.sector)*Sector+e.size);
+        }
+    }
+    return end;
+}
+
 // Install discs --------------------------------------------------------------
 //
 // An install disc carries packages for its game in
@@ -690,7 +734,7 @@ void ImagePackages(DiscImage& image, DWORD titleId, std::vector<Package>& out) {
     },titleId,out);
 }
 
-struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool xbe; };
+struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete, xbe; };
 std::mutex TitlesLock;
 std::map<std::string,Known> Titles;
 
@@ -767,6 +811,13 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
     }
     return true;
 }
+}
+
+bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) { return XexTitle(xex,size,titleId,mediaId,disc); }
+bool GodIds(const unsigned char* h, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc) {
+    if(size<0x368 || (memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) || Big32(h+0x344)!=GodContentType) return false;
+    titleId=Big32(h+0x360); mediaId=Big32(h+0x354); disc=h[0x366] ? h[0x366] : 1;
+    return titleId!=0;
 }
 
 bool FindIsos(const std::string& folder, std::vector<IsoFile>& out) {
@@ -856,7 +907,9 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::lock_guard<std::mutex> hold(TitlesLock);
             std::map<std::string,Known>::const_iterator k=Titles.find(d.path);
             if(k!=Titles.end() && k->second.size==d.size && k->second.modified==d.modified) {
-                d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages; d.xbe=k->second.xbe;
+                d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages;
+                d.incomplete=k->second.incomplete;
+                d.xbe=k->second.xbe;
                 continue;
             }
         }
@@ -871,10 +924,13 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
         } else {
             IsoImage iso; std::string error;
-            if(iso.Open(d.path,error) && ImageTitle(iso,titleId,mediaId,disc,xbe)) ImagePackages(iso,titleId,d.packages);
+            if(iso.Open(d.path,error)) {
+                if(ImageTitle(iso,titleId,mediaId,disc,xbe)) ImagePackages(iso,titleId,d.packages);
+                d.incomplete=ImageDataEnd(iso)>iso.Size();
+            }
         }
         d.titleId=titleId; d.mediaId=titleId ? mediaId : 0; d.disc=titleId ? disc : 0; d.xbe=titleId && xbe;
-        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages, d.xbe };
+        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages, d.incomplete, d.xbe };
         std::lock_guard<std::mutex> hold(TitlesLock);
         Titles[d.path]=known;
     }

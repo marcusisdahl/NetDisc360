@@ -11,12 +11,15 @@ import gzip
 import hashlib
 import hmac
 import http.client
+import http.server
 import io
 import json
 import os
 import re
 import shutil
 import socket
+import socketserver
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -24,6 +27,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,8 +56,11 @@ def build_server():
     if os.environ.get("NETDISC_SERVER"):
         return
     os.makedirs(os.path.dirname(SERVER), exist_ok=True)
+    # The dashboard page as the server builds it in (not kept in git).
+    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_web.py")], check=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
+                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -115,6 +122,171 @@ def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
+
+
+# Aurora's web server's routes: the newer API's (Aurora 0.7b.2's own Nova)
+# and the older Nova's of the NetISO kit, by what they do.
+AURORA_ROUTES = {
+    "title": ("GET", "/title", "GET", "/getGameInfo"),
+    "launch": ("POST", "/title/launch", "POST", "/postLaunchGame"),
+    "temperature": ("GET", "/temperature", "GET", "/getTemperatureInfo"),
+    "profiles": ("GET", "/profile", "GET", "/getProfileInfo"),
+    "memory": ("GET", "/memory", "GET", "/getMemoryInfo"),
+    "shots": ("GET", "/screencapture/meta/list", "GET", "/getScreenCaptures"),
+    "take": ("GET", "/screencapture/meta", "GET", "/getScreenCapture"),
+    "shot": ("GET", "/image/screencapture", "GET", "/getScreenCaptureImage"),
+    "delete": ("DELETE", "/screencapture", "POST", "/postScreenCaptureDelete"),
+}
+SHOT = b"BM" + bytes(60)  # A screenshot as Aurora gives it: a BMP.
+
+
+class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
+    """Aurora's web server as NetISO-Manager uses it (port 9999): a login
+    (xboxhttp/xboxhttp) for a token, what runs, starting a title, the
+    console's temperatures, profiles and screenshots. With basic (Aurora's
+    "HTTP security"), every request needs HTTP's own login, /authenticate
+    too. With old, it's the NetISO kit's older Nova: no /authenticate, its
+    own paths for the rest, and a session cookie."""
+
+    def log_message(self, *args):
+        pass
+
+    def answer(self, status, body, kind="application/json"):
+        if self.server.basic and self.headers.get("Authorization") != "Basic " + base64.b64encode(b"xboxhttp:xboxhttp").decode():
+            status, body, kind = 401, {}, "application/json"
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(status)
+        if self.server.old:
+            self.send_header("Set-Cookie", "fsplugin_http_session=s1; path=/")
+        if status == 401 and self.server.basic:
+            self.send_header("WWW-Authenticate", 'Basic realm="Freestyle Plugin"')
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def form(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return dict(urllib.parse.parse_qsl(self.rfile.read(length).decode()))
+
+    def allowed(self):
+        return self.server.basic or self.headers.get("Authorization") == "Bearer t0ken"
+
+    def route(self):
+        path, _, query = self.path.partition("?")
+        for name, (method, new, old_method, old) in AURORA_ROUTES.items():
+            if (self.command, path) == ((old_method, old) if self.server.old else (method, new)):
+                return name, dict(urllib.parse.parse_qsl(query))
+        return None, {}
+
+    def handle_any(self):
+        form = self.form() if self.command == "POST" else {}
+        name, query = self.route()
+        if self.path == "/authenticate" and not self.server.old:
+            if form.get("username") == "xboxhttp" and form.get("password") == "xboxhttp":
+                self.answer(200, {"token": "t0ken"})
+            else:
+                self.answer(401, {})
+        elif not name:
+            self.answer(404, {})
+        elif not self.allowed():
+            self.answer(401, {})
+        elif name == "title":
+            self.answer(200, {"path": self.server.running, "titleid": "0xFFFE07D1"})
+        elif name == "launch":
+            self.server.launched.append((form.get("path"), form.get("exec"), form.get("type")))
+            self.server.cookies.append(self.headers.get("Cookie"))
+            self.answer(200, {})
+        elif name == "temperature":
+            self.answer(200, {"celsius": True, "cpu": 51.25, "gpu": 48.0, "memory": 45.5, "case": 40.0})
+        elif name == "profiles":
+            self.answer(200, [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
+                              {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}])
+        elif name == "memory":
+            self.answer(200, {"total": 536870912, "used": 268435456, "free": 268435456})
+        elif name == "shots":
+            self.answer(200, [{"filename": f, "titleid": "0x4D5307E6", "timestamp": f[8:] + "0"} for f in self.server.shots])
+        elif name == "take":
+            self.server.shots.append("00000000%014d" % (20261026230000 + len(self.server.shots)))
+            self.answer(200, {"filename": self.server.shots[-1]})
+        elif name == "shot":
+            if query.get("uuid") in self.server.shots:
+                self.answer(200, SHOT, "image/bmp")
+            else:
+                self.answer(404, {})
+        elif name == "delete":
+            uuid = query.get("uuid") or form.get("uuid")
+            if uuid in self.server.shots:
+                self.server.shots.remove(uuid)
+                self.answer(200, {})
+            else:
+                self.answer(404, {})
+
+    do_GET = do_POST = do_DELETE = handle_any
+
+
+class AuroraWeb(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, running=AURORA_XEX, basic=False, old=False):
+        super().__init__(("127.0.0.1", 0), AuroraWebHandler)
+        self.running = running
+        self.basic = basic
+        self.old = old
+        self.cookies = []
+        self.launched = []
+        self.shots = ["000000002026101900442758"]
+        self.port = self.server_address[1]
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+
+
+class Xbdm(socketserver.ThreadingTCPServer):
+    """The console's debug monitor (xbdm, port 730), as far as turning it off goes."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self):
+        self.commands = []
+        outer = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                self.wfile.write(b"201- connected\r\n")
+                for line in self.rfile:
+                    command = line.strip().decode()
+                    outer.commands.append(command)
+                    if command == "bye":
+                        self.wfile.write(b"200- bye\r\n")
+                        return
+                    if command == "shutdown":
+                        return  # the console powers off: xbdm closes without an answer
+                    self.wfile.write(b"407- unknown command\r\n")
+
+        super().__init__(("127.0.0.1", 0), Handler)
+        self.port = self.server_address[1]
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+
+
+def god_header(media_id, title_id, disc=1):
+    """A Games on Demand package's header file, as far as it names the game."""
+    header = bytearray(0x400)
+    header[0:4] = b"LIVE"
+    struct.pack_into(">I", header, 0x344, 0x7000)
+    struct.pack_into(">I", header, 0x354, media_id)
+    struct.pack_into(">I", header, 0x360, title_id)
+    header[0x366] = disc
+    return bytes(header)
 
 
 def connect_from(address, port):
@@ -212,16 +384,33 @@ class ServerTest(unittest.TestCase):
             self.server.stdout.close()
         self.tmp.cleanup()
 
+    def ports(self):
+        """Extra arguments with ports of their own, picked again on each try."""
+        return []
+
     def start(self, *extra):
-        self.port = free_port()
-        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + list(extra),
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            line = self.server.stdout.readline()
-            if "Listening on port" in line:
-                return
-        self.fail("server didn't start")
+        # free_port's port can be taken by someone else before the server
+        # binds it; then the server says so and stops, and gets another.
+        for _ in range(3):
+            self.port = free_port()
+            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + self.ports() + list(extra),
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            deadline = time.time() + 10
+            said = []
+            while time.time() < deadline:
+                line = self.server.stdout.readline()
+                if "Listening on port" in line:
+                    return
+                if line:
+                    said.append(line.rstrip())
+                elif self.server.poll() is not None:
+                    break
+            if not any("an't listen on" in line for line in said):
+                break
+            self.server.kill()
+            self.server.wait()
+            self.server.stdout.close()
+        self.fail("server didn't start:\n" + "\n".join(said[-20:]))
 
     def add_iso(self, name, media_id, title_id, folder=None):
         path = os.path.join(folder or self.isos, name)
@@ -289,6 +478,20 @@ class Protocol(ServerTest):
         self.assertEqual(c.size(), (0, 2048))
         self.assertEqual(c.mount("\\nothing.iso\\Mount\\"), 0)
         self.assertEqual(c.mount("\\Mount\\"), 0)  # An empty name mounts nothing.
+        c.close()
+
+    def test_follows_linked_folders_but_not_loops(self):
+        elsewhere = os.path.join(self.tmp.name, "nas")
+        os.makedirs(elsewhere)
+        self.add_iso("Linked.iso", 1, 0x11111111, elsewhere)
+        os.symlink(elsewhere, os.path.join(self.isos, "share"))
+        os.symlink(self.isos, os.path.join(self.isos, "loop"))  # Back to itself.
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        os.symlink(self.add_iso("Other.iso", 2, 0x22222222, other), os.path.join(self.isos, "Also.iso"))
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Also.iso", "Linked.iso"])
         c.close()
 
     def test_new_isos_show_without_a_restart(self):
@@ -603,6 +806,162 @@ class Push(ServerTest):
         self.assertIn("they stay until every game folder can be read again", result.stdout)
         self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
 
+    def test_keeps_the_games_of_a_game_folder_that_empties(self):
+        # A NAS share that isn't mounted shows as the empty folder under it:
+        # its games only seem gone, so they stay in Aurora.
+        self.add_iso("a.iso", 1, 0x11111111)
+        other = os.path.join(self.tmp.name, "nas")
+        os.makedirs(other)
+        moved = os.path.join(self.tmp.name, "away.iso")
+        path = self.add_iso("b.iso", 2, 0x22222222, other)
+        self.web = free_port()
+        server, _ = self.run_server(other, "--remove-wait", "2", "--web-port", str(self.web))
+        try:
+            self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "b")), 15))
+            os.rename(path, moved)
+            state = self.state_when(lambda s: any(f["emptied"] for f in s["folders"]), 10)
+            self.assertEqual([f["emptied"] for f in state["folders"]], [False, True])
+            time.sleep(14)  # Past the settling and the removal wait.
+            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "a", "b"])
+            self.assertIn("(it had games, and has none now)", json.dumps(self.json("GET", "/api/log?after=0")))
+            # Back: nothing held any more.
+            os.rename(moved, path)
+            state = self.state_when(lambda s: not any(f["emptied"] for f in s["folders"]), 10)
+            self.assertEqual([f["emptied"] for f in state["folders"]], [False, False])
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_counts_how_often_and_how_long_each_game_is_played(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        self.web = free_port()
+        server, port = self.run_server("--web-port", str(self.web), "--config", config)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            client = Client(port)
+            # A mount alone isn't a play: NetISO mounts its last disc as the console starts.
+            self.assertEqual(client.mount("Skate 3.iso"), 1)
+            client.read(0, 2048)
+            self.assertEqual(client.mount("Halo 3.iso"), 1)
+            for i in range(17):
+                client.read(i << 20, 1 << 20)
+            games = {}
+            self.assertTrue(self.wait_for(lambda: games.update({g["name"]: g for g in self.json("GET", "/api/games")["games"]}) or games.get("Halo 3", {}).get("plays") == 1, 5))
+            self.assertNotIn("plays", games["Skate 3"])
+            self.assertGreater(games["Halo 3"]["lastPlayed"], time.time() - 60)
+            with open(os.path.join(self.tmp.name, "plays.ini")) as f:
+                self.assertRegex(f.read(), r"^1\|\d+\|\d+\|halo 3\n$")
+            client.close()
+        finally:
+            server.kill()
+            server.communicate()
+        # Kept for the next start.
+        server, port = self.run_server("--web-port", str(self.web), "--config", config)
+        try:
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual(games["Halo 3"]["plays"], 1)
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_console_tools_on_the_dashboard(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        aurora, xbdm = AuroraWeb(), Xbdm()
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--xbdm-port", str(xbdm.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            for old in (False, True):
+                aurora.old = aurora.basic = old
+                # What Aurora says about the console.
+                status = self.json("GET", "/api/console/status?address=127.0.0.1")
+                self.assertEqual(status["temperature"]["cpu"], 51.25)
+                self.assertEqual(status["profiles"][0]["gamertag"], "Player One")
+                self.assertEqual(status["title"]["path"], AURORA_XEX)
+                # Its screenshots: listed, one as an image, taking one, deleting one.
+                shots = self.json("GET", "/api/console/screenshots?address=127.0.0.1")
+                self.assertEqual([x["filename"] for x in shots], aurora.shots)
+                status, response, data = self.call("GET", "/api/console/screenshot?address=127.0.0.1&id=" + aurora.shots[0])
+                self.assertEqual((status, response.getheader("Content-Type"), data), (200, "image/bmp", SHOT))
+                self.json("POST", "/api/console/screenshot/take", {"address": "127.0.0.1"})
+                self.assertEqual(len(self.json("GET", "/api/console/screenshots?address=127.0.0.1")), 2)
+                self.json("POST", "/api/console/screenshot/delete", {"address": "127.0.0.1", "id": aurora.shots[-1]})
+                self.assertEqual(len(aurora.shots), 1)
+                # Aurora started again.
+                aurora.launched.clear()
+                self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "aurora"})
+                self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # Turned off through its debug monitor.
+            self.json("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
+            self.assertEqual(xbdm.commands, ["shutdown"])
+            xbdm.close()
+            status, _, data = self.call("POST", "/api/console/power", {"address": "127.0.0.1", "action": "off"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"debug monitor (xbdm, port", data)
+            # A game's netiso.log from its folder.
+            log = self.json("GET", "/api/console/gamelog?address=127.0.0.1&game=Halo%203")
+            self.assertEqual((log["missing"], log["folder"]), (True, "/Hdd1/NetISO/Halo 3"))
+            with open(os.path.join(self.games, "Halo 3", "netiso.log"), "w") as f:
+                f.write("==== 2026-10-26\nmounted Halo 3.iso\n")
+            self.assertIn("mounted Halo 3.iso", self.json("GET", "/api/console/gamelog?address=127.0.0.1&game=Halo%203")["text"])
+            status, _, data = self.call("GET", "/api/console/gamelog?address=127.0.0.1&game=Gears")
+            self.assertEqual(status, 400)
+            self.assertIn(b"no folder for it", data)
+            # A console that never used the server.
+            self.assertEqual(self.call("GET", "/api/console/status?address=127.0.0.7")[0], 400)
+        finally:
+            aurora.close()
+            server.kill()
+            server.communicate()
+
+    def test_tells_an_incomplete_iso(self):
+        # Its directory says a file goes on past the end of the ISO: a
+        # download or copy that stopped.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        path = os.path.join(self.isos, "Skate 3.iso")
+        write_iso(path, {"default.xex": xex(execution_info(0x5C087C2C, 0x454108E6)), "data.bin": bytes(range(256)) * 256})
+        os.truncate(path, os.path.getsize(path) - 2048 - 1000)
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web))
+        try:
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual((games["Skate 3"]["incomplete"], games["Halo 3"]["incomplete"]), (True, False))
+            log = json.dumps(self.json("GET", "/api/log?after=0"))
+            self.assertIn("Skate 3.iso is shorter than the files on it say", log)
+            self.assertNotIn("Halo 3.iso is shorter", log)
+            self.assertIn("Skate 3 is incomplete; copy it again", json.dumps(self.json("GET", "/api/state")["events"]))
+        finally:
+            server.kill()
+            server.communicate()
+
+    def test_turns_a_console_off_after_its_last_game(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("[Server]\nauto_off_minutes=1\n")
+        xbdm = Xbdm()
+        self.web = free_port()
+        server, port = self.run_server("--web-port", str(self.web), "--config", config, "--xbdm-port", str(xbdm.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.assertEqual(self.json("GET", "/api/state")["settings"]["autoOffMinutes"], 1)
+            client = Client(port)
+            self.assertEqual(client.mount("Halo 3.iso"), 1)
+            client.read(0, 1 << 20)
+            # Back in Aurora (its FTP server answers 5 s after the mount), then a minute.
+            self.assertTrue(self.wait_for(lambda: "back in Aurora after Halo 3" in json.dumps(self.json("GET", "/api/log?after=0")), 15))
+            self.assertEqual(xbdm.commands, [])
+            self.assertTrue(self.wait_for(lambda: xbdm.commands, 70))
+            self.assertEqual(xbdm.commands, ["shutdown"])
+            self.assertTrue(self.wait_for(lambda: "turned off, 1 minute after its last game" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
+            client.close()
+        finally:
+            xbdm.close()
+            server.kill()
+            server.communicate()
+
     def test_keeps_a_gone_game_for_a_while_after_starting(self):
         # The window restarts the server for each folder added; a game from a
         # folder not added yet mustn't be dropped from Aurora meanwhile.
@@ -702,6 +1061,42 @@ class Push(ServerTest):
                         "print('lua ok')\n" % script)
             result = subprocess.run([LUA, check], capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
+    def test_fills_in_aurora_s_empty_art_for_netdisc360_and_fastftp360(self):
+        # Aurora's placeholders (2048 bytes) get the art from the aurora
+        # folder beside the launcher; art that is there already stays.
+        art = os.path.join(self.tmp.name, "aurora")
+        for app, title in (("netdisc360", "FFFF4E49"), ("fastftp360", "FFFF4646")):
+            os.makedirs(os.path.join(art, app))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(art, app, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(("%s %s ART" % (app, kind)).encode() * 1000)
+        game_data = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Data", "GameData")
+        placeholder = b"RXEA" + b"\0" * 2044
+        folders = {"FFFF4E49_00000048": "FFFF4E49", "FFFF4646_0000005B": "FFFF4646", "4D5307E6_00000006": "4D5307E6"}
+        for folder, title in folders.items():
+            os.makedirs(os.path.join(game_data, folder))
+            for kind in ("GC", "BK", "GL"):
+                with open(os.path.join(game_data, folder, "%s%s.asset" % (kind, title)), "wb") as f:
+                    f.write(placeholder)
+        own = os.path.join(game_data, "FFFF4646_0000005B", "GCFFFF4646.asset")
+        with open(own, "wb") as f:
+            f.write(b"SOMEONE'S OWN COVER" * 200)
+        self.add_iso("a.iso", 1, 0x11111111)
+        out = self.push()
+        self.assertIn("wrote NetDisc360's cover art to Aurora", out)
+        self.assertIn("wrote FastFTP360's cover art to Aurora", out)
+
+        def read(folder, name):
+            with open(os.path.join(game_data, folder, name), "rb") as f:
+                return f.read()
+        self.assertEqual(read("FFFF4E49_00000048", "GCFFFF4E49.asset"), b"netdisc360 GC ART" * 1000)
+        self.assertEqual(read("FFFF4E49_00000048", "GLFFFF4E49.asset"), b"netdisc360 GL ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "BKFFFF4646.asset"), b"fastftp360 BK ART" * 1000)
+        self.assertEqual(read("FFFF4646_0000005B", "GCFFFF4646.asset"), b"SOMEONE'S OWN COVER" * 200)
+        self.assertEqual(read("4D5307E6_00000006", "GC4D5307E6.asset"), placeholder)  # Other titles: Aurora's.
+        out = self.push()
+        self.assertNotIn("cover art to Aurora", out)
 
     def test_hides_install_discs_in_aurora(self):
         filters = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters")
@@ -1037,6 +1432,263 @@ class Push(ServerTest):
                 if part.startswith("content"):
                     self.assertGreater(len(part), len("content "), name)
 
+    def install(self, folder, media_id, title_id):
+        """A game installed on the console: its default.xex in folder (under Hdd1)."""
+        path = os.path.join(self.xbox, "Hdd1", *folder.split("/"))
+        os.makedirs(path)
+        with open(os.path.join(path, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(media_id, title_id)))
+
+    def test_leaves_out_games_installed_on_the_console(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Gears.iso", 0x11111111, 0x4D5307D5)
+        out = self.push()
+        self.assertIn("3 added", out)
+        # Halo 3 is installed in Hdd1:\Games (two folders down), Skate 3 as
+        # Games on Demand; Gears has only a save there.
+        self.install("Games/Shooters/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        os.makedirs(os.path.join(content, "454108E6", "00007000", "0123456789ABCDEF0123.data"))
+        with open(os.path.join(content, "454108E6", "00007000", "0123456789ABCDEF0123"), "wb") as f:
+            f.write(god_header(0x5C087C2C, 0x454108E6))
+        os.makedirs(os.path.join(content, "4D5307D5", "00000001"))
+        # Hdd1 itself is looked into too, but not the game folders in it,
+        # whose launchers have the games' IDs.
+        out = self.push(extra=["--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("2 games are installed on it (in /Hdd1/Games;/Hdd1, or as Games on Demand)", out)
+        self.assertIn("2 games installed on it get no game folder", out)
+        self.assertIn("2 removed", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "NetDisc360"])
+        # Only the package's header is read, and only its first bytes.
+        self.assertNotIn("RETR 0123456789ABCDEF0123.data", self.ftp.log)
+        # Without it, they're back, and their launchers offer the installed copy.
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("2 added", out)
+        self.assertEqual(sorted(os.listdir(self.games)), ["Gears", "Halo 3", "NetDisc360", "Skate 3"])
+        def local_copy(game):
+            with open(os.path.join(self.games, game, "netiso.ini"), encoding="latin-1") as f:
+                return [line[len("local_copy="):] for line in f.read().splitlines() if line.startswith("local_copy=")]
+        self.assertEqual(local_copy("Halo 3"), ["Hdd1:\\Games\\Shooters\\Halo 3\\default.xex"])
+        self.assertEqual(local_copy("Skate 3"), ["Hdd1:\\Content\\0000000000000000\\454108E6\\00007000\\0123456789ABCDEF0123"])
+        self.assertEqual(local_copy("Gears"), [])
+        # An installed copy that goes is taken out again, the rest of the file kept.
+        shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games"))
+        out = self.push(extra=["--no-installed", "--installed", "/Hdd1/Games;/Hdd1"])
+        self.assertIn("Halo 3 is no longer installed on the console; took local_copy out of its netiso.ini.", out)
+        self.assertEqual(local_copy("Halo 3"), [])
+        with open(os.path.join(self.games, "Halo 3", "netiso.ini"), encoding="latin-1") as f:
+            self.assertIn("iso=Halo 3.iso", f.read())
+        self.assertEqual(len(local_copy("Skate 3")), 1)
+
+    def test_writes_aurora_s_cleanup_script_and_online_filter(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        out = self.push()
+        self.assertIn("wrote Aurora's \"Hide PC games while NetDisc360 is off\" filter", out)
+        scripts = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts")
+        cleanup = os.path.join(scripts, "Utility", "NetDisc360 Cleanup", "Main.lua")
+        online = os.path.join(scripts, "Content", "Filters", "NetDiscOnline.lua")
+        for path in (cleanup, online):
+            with open(path, "rb") as f:
+                self.assertIn(b"\r\n", f.read())
+        # The marker is there while the server runs; it goes as it quits.
+        self.assertIn("online.txt", self.ftp.stored)
+        self.assertIn("DELE online.txt", self.ftp.log)
+        self.assertEqual(os.listdir(os.path.join(self.games, "NetDisc360")), ["boot.xex"])
+        # Nothing new: neither is written again.
+        self.ftp.stored.clear()
+        self.push()
+        self.assertEqual(self.ftp.stored, ["online.txt"])
+        if LUA:
+            check = os.path.join(self.tmp.name, "check.lua")
+            with open(check, "w") as f:
+                f.write(r"""
+local files = { ['Hdd1:\\NetISO\\NetDisc360\\online.txt'] = 'x' }
+FileSystem = {
+   FileExists = function(path) return files[path] ~= nil end,
+   DeleteFile = function(path) files[path] = nil end,
+   WriteFile = function(path, text) files[path] = text end }
+local shown = 'Hdd1:\\NetISO\\NetDisc360\\shown.txt'
+local tile = { Directory = '\\NetISO\\Halo 3\\' }
+local installed = { Directory = '\\Games\\Halo 3\\' }
+-- Aurora starts while NetDisc360 runs: everything shows.
+files[shown] = 'offline'
+GameListFilterCategories = { User = {} }
+dofile(%(online)r)
+local show = GameListFilterCategories.User['Hide PC games while NetDisc360 is off']
+assert(files[shown] == nil)
+assert(show(tile) and show(installed))
+assert(files[shown] == 'online')
+-- Aurora starts while it doesn't: the tiles are hidden.
+files = {}
+GameListFilterCategories = { User = {} }
+dofile(%(online)r)
+show = GameListFilterCategories.User['Hide PC games while NetDisc360 is off']
+assert(not show(tile) and show(installed))
+assert(not show({ Directory = 'NetISO\\Skate 3' }))
+assert(files[shown] == 'offline')
+-- The cleanup takes the rows of tiles that are gone off the list, after asking.
+local done, asked, refreshed = {}, nil, false
+Sql = {
+   ExecuteFetchRows = function(query) return {
+      { Id = 1, Directory = '\\NetISO\\Halo 3\\' },
+      { Id = '2', Directory = 'Hdd1:\\NetISO\\Old Game\\' },
+      { Id = 3, Directory = '\\Games\\Old Game\\' },
+      { Id = 4, Directory = '\\NETISO\\Gone\\' },
+      { Id = 5, Directory = '\\NetISO\\Skate 3' } } end,
+   Execute = function(query) table.insert(done, query) end }
+Script = {
+   ShowMessageBox = function(title, text, ...) asked = { ... }; return { Button = 1 } end,
+   RefreshListOnExit = function(on) refreshed = on end }
+dofile(%(cleanup)r)
+assert(scriptTitle == 'NetDisc360 Cleanup' and scriptPermissions[1] == 'sql')
+main()
+assert(#done == 5, #done)
+assert(done[1] == 'DELETE FROM Config.UserRecentGames WHERE ContentId IN (2,4)', done[1])
+assert(done[5] == 'DELETE FROM ContentItems WHERE Id IN (2,4)', done[5])
+assert(refreshed and asked[1] == 'OK')
+-- Cancel changes nothing.
+done = {}
+Script.ShowMessageBox = function() return { Button = 2 } end
+main()
+assert(#done == 0)
+print('lua ok')
+""" % {"online": online, "cleanup": cleanup})
+            result = subprocess.run([LUA, check], capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
+    def test_restarts_aurora_when_its_filter_hid_the_games(self):
+        # Aurora started while the server didn't run, and the filter hid the
+        # games: Aurora, on screen, is restarted once so they show.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        helper = os.path.join(self.games, "NetDisc360")
+        os.makedirs(helper)
+        with open(os.path.join(helper, "shown.txt"), "w") as f:
+            f.write("offline")
+        aurora = AuroraWeb()
+        try:
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter shows the PC games again", out)
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # The filter showed them as the server quit: restarted to hide them.
+            with open(os.path.join(helper, "shown.txt"), "w") as f:
+                f.write("online")
+            aurora.launched.clear()
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter hides the PC games while NetDisc360 is off", out)
+            self.assertEqual(len(aurora.launched), 1)
+            # Never during a game.
+            aurora.running = "\\Device\\Cdrom0\\default.xex"
+            aurora.launched.clear()
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("didn't restart Aurora so its filter hides the PC games while NetDisc360 is off: Aurora isn't on screen", out)
+            self.assertEqual(aurora.launched, [])
+        finally:
+            aurora.close()
+        # The NetISO kit's older Nova, with Aurora's HTTP security on.
+        with open(os.path.join(helper, "shown.txt"), "w") as f:
+            f.write("offline")
+        aurora = AuroraWeb(basic=True, old=True)
+        try:
+            out = self.push(extra=["--aurora-web-port", str(aurora.port)])
+            self.assertIn("restarted Aurora so its filter shows the PC games again", out)
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+        finally:
+            aurora.close()
+
+    def test_follows_this_computer_s_new_address(self):
+        # NetISO.xex.txt names 127.0.0.9, an address this computer had: once
+        # the console is quiet and nothing answers there, it names this one.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        usb = os.path.join(self.xbox, "Usb0")
+        os.makedirs(os.path.join(usb, "Plugins"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.9\r\n")
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("[Server]\nown_addresses=10.0.0.5,127.0.0.9\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetISO.xex.txt (/Usb0/Plugins/NetISO.xex.txt) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), newline="") as f:
+            self.assertEqual(f.read(), "127.0.0.1\r\n")
+        # An address this computer never had is left alone.
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.8")
+        out = self.push(extra=["--config", config])
+        self.assertNotIn("NetISO.xex.txt (", out)
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
+            self.assertEqual(f.read(), "127.0.0.8")
+        # NetDisc360.xex's own drive reads server= in NetDisc360.ini.
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetDisc360.xex\n")
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), "w", newline="") as f:
+            f.write("; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.9:4323\r\n")
+        out = self.push(extra=["--config", config])
+        self.assertIn("its NetDisc360.ini (/Usb0/Plugins/NetDisc360.ini) named 127.0.0.9, this computer's address before; it names 127.0.0.1 now", out)
+        with open(os.path.join(usb, "Plugins", "NetDisc360.ini"), newline="") as f:
+            self.assertEqual(f.read(), "; NetDisc360.xex\r\nwait = 90\r\nServer = 127.0.0.1:4323\r\n")
+        os.remove(os.path.join(usb, "Plugins", "NetDisc360.ini"))
+        with open(os.path.join(usb, "launch.ini"), "w") as f:
+            f.write("[Paths]\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\n[Plugins]\nplugin1 = Usb:\\Plugins\\NetISO.xex\n")
+        # And so is all of it when following is off.
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt"), "w") as f:
+            f.write("127.0.0.9")
+        with open(config, "a") as f:
+            f.write("follow_address=0\n")
+        self.push(extra=["--config", config])
+        with open(os.path.join(usb, "Plugins", "NetISO.xex.txt")) as f:
+            self.assertEqual(f.read(), "127.0.0.9")
+
+    def test_starts_a_game_from_the_dashboard(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.install("Games/Skate 3", 0x5C087C2C, 0x454108E6)
+        aurora = AuroraWeb()
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            games = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
+            self.assertEqual(games["Halo 3"]["tiles"], ["127.0.0.1"])
+            self.assertEqual(games["Skate 3"]["installedOn"], ["127.0.0.1"])
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            # An installed game starts from where it's installed.
+            self.json("POST", "/api/play", {"game": "Skate 3", "console": "127.0.0.1"})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0"),
+                                               ("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0")])
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.7"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"hasn't used NetDisc360", data)
+            # With Aurora's HTTP security on, the login goes on each request.
+            aurora.launched.clear()
+            aurora.basic = True
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+            self.json("POST", "/api/settings", {"auroraWebPassword": "wrong"})
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"refused the login", data)
+            self.assertTrue(self.wait_for(lambda: "couldn't start Halo 3 from the dashboard: Aurora's web server refused the login" in json.dumps(self.json("GET", "/api/log?after=0")), 5))
+            # The NetISO kit's older Nova starts it at /postLaunchGame.
+            self.json("POST", "/api/settings", {"auroraWebPassword": "xboxhttp"})
+            aurora.launched.clear()
+            aurora.old = True
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+            self.assertEqual(aurora.cookies[-1], "fsplugin_http_session=s1")
+            # Aurora's web server off.
+            aurora.close()
+            status, _, data = self.call("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"})
+            self.assertEqual(status, 400)
+            self.assertIn(b"doesn't answer on port", data)
+        finally:
+            aurora.close()
+            server.kill()
+            server.communicate()
+
     def test_no_xbox(self):
         self.add_iso("a.iso", 1, 0x11111111)
         out = self.push(expect=1, ftp_port=free_port())
@@ -1051,9 +1703,12 @@ class Dashboard(ServerTest):
         super().setUp()
         self.config = os.path.join(self.tmp.name, "netdisc.ini")
 
-    def start(self, *extra):
+    def ports(self):
         self.web = free_port()
-        super().start("--web-port", str(self.web), "--config", self.config, *extra)
+        return ["--web-port", str(self.web)]
+
+    def start(self, *extra):
+        super().start("--config", self.config, *extra)
 
     def restart(self, *extra):
         self.server.kill()
@@ -1071,7 +1726,7 @@ class Dashboard(ServerTest):
         self.assertIn(b"<title>NetDisc360</title>", gzip.decompress(data))
         state = self.state_when(lambda s: s["library"]["games"] == 1)
         self.assertEqual(state["library"]["games"], 1)
-        self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True}])
+        self.assertEqual(state["folders"], [{"path": self.isos, "games": 1, "found": True, "emptied": False}])
         self.assertTrue(state["settings"]["saved"])
         self.assertTrue(state["settings"]["ftpPasswordSet"])
         games = self.json("GET", "/api/games")["games"]
@@ -1145,6 +1800,28 @@ class Dashboard(ServerTest):
         self.assertEqual(state["library"]["duplicates"], 2)
         conflict = self.json("GET", "/api/games")["conflicts"][0]
         self.assertEqual([conflict[k] for k in ("served", "open", "chosen")], [folder, True, True])
+
+    def test_checks_its_own_setup(self):
+        # A game there twice, named with an address: the report leaves it out.
+        self.add_iso("Halo 3 10.1.2.3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        folder = os.path.join(self.isos, "Halo 3 extracted")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "default.xex"), "wb") as f:
+            f.write(xex(execution_info(0x1234, 0x4D5307E6)))
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2 and s["library"]["conflicts"] == 1)
+        setup = self.json("GET", "/api/setup")
+        self.assertEqual([setup[k] for k in ("folders", "foldersFound", "games", "iso", "god", "extracted", "conflicts")],
+                         [1, 1, 2, 2, 0, 0, 1])
+        self.assertEqual([setup[k] for k in ("skipInstalled", "auroraScripts", "followAddress", "keepAwake")], [True] * 4)
+        # Only Windows has network categories to fix.
+        self.assertEqual([setup[k] for k in ("networks", "publicNetwork", "canFix")], [[], False, False])
+        self.assertEqual(self.call("POST", "/api/network/private", {})[0], 400)
+        warning = [w for w in setup["warnings"] if "more than once" in w]
+        self.assertEqual(len(warning), 1)
+        self.assertIn("Halo 3 x.x.x.x", warning[0])
+        self.assertNotIn("10.1.2.3", json.dumps(setup))
 
     def test_reports_each_console(self):
         # What each console was sent, second by second, and its disc.
@@ -1246,6 +1923,31 @@ class Dashboard(ServerTest):
         # A line break would start another FTP command.
         self.assertEqual(self.call("POST", "/api/settings", {"aurora": "/Hdd1/Apps/Aurora\r\nRMD /Hdd1"})[0], 400)
 
+    def test_keeps_the_console_extras(self):
+        self.start()
+        self.assertEqual(self.call("POST", "/api/settings", {"installedFolders": "Games"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"auroraWebPort": 0})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"auroraWebUser": ""})[0], 400)
+        self.assertEqual(self.call("POST", "/api/settings", {"autoOffMinutes": -1})[0], 400)
+        self.json("POST", "/api/settings", {"skipInstalled": False, "installedFolders": " /Hdd1/Games/ ;/Usb0/Games\n/hdd1/games",
+                                             "auroraWebPassword": "w3b pass", "auroraWebPort": 8080, "restartAurora": False,
+                                             "keepAwake": False, "followAddress": False, "auroraScripts": False, "autoOffMinutes": 30})
+        for _ in range(2):  # As changed, and as saved.
+            settings = self.json("GET", "/api/state")["settings"]
+            self.assertEqual([settings[k] for k in ("skipInstalled", "installedFolders", "auroraWebUser", "auroraWebPasswordSet", "auroraWebPort",
+                                                    "restartAurora", "keepAwake", "followAddress", "auroraScripts", "autoOffMinutes")],
+                             [False, "/Hdd1/Games;/Usb0/Games", "xboxhttp", True, 8080, False, False, False, False, 30])
+            self.assertNotIn("w3b pass", json.dumps(settings))
+            self.restart()
+        with open(self.config) as f:
+            saved = f.read()
+        self.assertIn("installed_folders=/Hdd1/Games;/Usb0/Games\n", saved)
+        self.assertIn("aurora_web_port=8080\n", saved)
+        self.assertIn("auto_off_minutes=30\n", saved)
+        # Empty: Games on Demand only.
+        self.json("POST", "/api/settings", {"installedFolders": ""})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["installedFolders"], "")
+
     def test_settings_file_options_can_t_open_or_end_it(self):
         # A settings file (or a restored backup) can't do what only a command line should.
         with open(self.config, "w") as f:
@@ -1287,11 +1989,13 @@ class Dashboard(ServerTest):
 
     def test_finds_and_checks_a_console(self):
         xbox = os.path.join(self.tmp.name, "xbox")
-        for folder in ("Usb0", "Hdd1/Apps/Aurora"):
+        for folder in ("Usb0", "Hdd1/Apps/Aurora", "Hdd1/Plugins"):
             os.makedirs(os.path.join(xbox, folder))
         files = {"Usb0/launch.ini": b"[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n[Plugins]\r\n"
-                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n",
-                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES"}
+                                    b"plugin1 = Usb:\\NetISO.xex ; the server\r\nplugin2 = Usb:\\NetIsoTiles.xex\r\nplugin3 = Usb:\\Gone.xex\r\n"
+                                    b"plugin4 = Hdd:\\Plugins\\NetDisc360.xex\r\n",
+                 "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n", "Usb0/NetIsoTiles.xex": b"TILES",
+                 "Hdd1/Plugins/NetDisc360.xex": b"DRIVE", "Hdd1/Plugins/NetDisc360.ini": b"read_kb=256\r\nserver = 10.0.0.7:4323\r\n"}
         for name, data in files.items():
             with open(os.path.join(xbox, name), "wb") as f:
                 f.write(data)
@@ -1307,15 +2011,81 @@ class Dashboard(ServerTest):
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2"})
             self.assertEqual([r[k] for k in ("ftp", "login", "aurora", "gameFolder", "launchIni")], [True, True, True, False, "/Usb0/launch.ini"])
             self.assertEqual(r["default"], "Hdd:\\Apps\\Aurora\\Aurora.xex")
-            netiso, tiles, gone = r["plugins"]
+            netiso, tiles, gone, drive = r["plugins"]
             self.assertEqual([netiso[k] for k in ("slot", "kind", "found", "size", "txt", "server", "here")], [1, "netiso", True, 6, True, "10.0.0.99", False])
             self.assertEqual(netiso["sha256"], hashlib.sha256(b"NETISO").hexdigest())
             self.assertEqual([tiles["kind"], tiles["sha256"]], ["tiles", hashlib.sha256(b"TILES").hexdigest()])
+            # The plugin's server as it finds it: no NetDisc360.ini, so NetISO.xex.txt next to it.
+            self.assertEqual([tiles[k] for k in ("txt", "server", "serverFrom", "here")], [True, "10.0.0.99", "/Usb0/NetISO.xex.txt", False])
             self.assertEqual([gone["kind"], gone["found"]], ["other", False])
+            # The plugin's name since it has its own disc drive, from the hard drive as on an RGH console.
+            self.assertEqual([drive["slot"], drive["kind"], drive["found"], drive["sha256"]], [4, "tiles", True, hashlib.sha256(b"DRIVE").hexdigest()])
+            # server= in the NetDisc360.ini next to it, the port left off.
+            self.assertEqual([drive[k] for k in ("txt", "server", "serverFrom")], [True, "10.0.0.7", "/Hdd1/Plugins/NetDisc360.ini"])
             # A login typed in the wizard is tried before it's saved.
             r = self.json("POST", "/api/consoles/check", {"address": "127.0.0.2", "ftpPassword": "wrong"})
             self.assertEqual([r["ftp"], r["login"]], [True, False])
             self.assertFalse(self.json("POST", "/api/consoles/check", {"address": "127.0.0.3"})["ftp"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+
+    def test_finds_and_repairs_tiles_without_art(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        aurora = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data")
+        games = os.path.join(xbox, "Hdd1", "NetISO")
+        for folder in ("Databases", "GameData"):
+            os.makedirs(os.path.join(aurora, folder))
+        for folder in ("Halo 3", "Banjo-Kazooie - Nuts & Bolts", "Skate 3", "New Game", "NetISO Sync", "NetDisc360"):
+            os.makedirs(os.path.join(games, folder))
+        with open(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts", "netiso.ini"), "w") as f:
+            f.write("[NetISO]\r\niso=Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr).iso\r\n")
+        # Aurora's own table, as its content.db has it (tabs and all), on
+        # small pages with long rows, so the file has interior and overflow pages.
+        db = sqlite3.connect(os.path.join(aurora, "Databases", "content.db"))
+        db.execute("PRAGMA page_size=1024")
+        db.execute("CREATE TABLE ContentItems ( Id\t\t\tINTEGER PRIMARY KEY AUTOINCREMENT,  Directory\t\tTEXT COLLATE NOCASE,  "
+                   "Executable\tTEXT COLLATE NOCASE,  TitleId\t\tINTEGER,  TitleName\t\tTEXT COLLATE NOCASE,  Description\tTEXT COLLATE NOCASE,  "
+                   "ScanPathId\tINTEGER, CaseIndex DEFAULT 0,  UNIQUE (Directory, Executable, ScanPathId ) )")
+        rows = [("\\apps\\aurora", 0, "Aurora"), ("\\netiso\\netiso sync", -45495, "NetISO Sync")]
+        rows += [("\\games\\filler %d" % i, i, "Filler %d" % i) for i in range(300)]
+        rows += [("\\netiso\\halo 3", 0x4D5307E6, "Halo 3"), ("\\NetISO\\Banjo-Kazooie - Nuts & Bolts", 0x4D5307ED, "Banjo-Kazooie: Nuts & Bolts"),
+                 ("\\netiso\\skate 3", 0x454108E6 - (1 << 32), "Skate 3")]
+        for directory, title, name in rows:
+            db.execute("INSERT INTO ContentItems (Directory, Executable, TitleId, TitleName, Description, ScanPathId) VALUES (?, 'default.xex', ?, ?, ?, 3)",
+                       (directory, title, name, "A long description. " * 200))
+        db.commit()
+        ids = dict(db.execute("SELECT TitleName, Id FROM ContentItems"))
+        db.close()
+        # Halo 3 has its cover; Banjo got Aurora's empty one; Skate 3 has no GameData folder.
+        for name, title, size in (("Halo 3", 0x4D5307E6, 5000), ("Banjo-Kazooie: Nuts & Bolts", 0x4D5307ED, 2048)):
+            folder = os.path.join(aurora, "GameData", "%08X_%08X" % (title, ids[name]))
+            os.makedirs(folder)
+            with open(os.path.join(folder, "GC%08X.asset" % title), "wb") as f:
+                f.write(b"RXEA" + bytes(size - 4))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            found = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2"})
+            self.assertEqual(found["tiles"], [{"folder": "Banjo-Kazooie - Nuts & Bolts", "title": "Banjo-Kazooie: Nuts & Bolts"},
+                                              {"folder": "Skate 3", "title": "Skate 3"}])
+            self.assertEqual((found["renamed"], ftp.renamed, ftp.scans), ([], [], []))
+            # Just one: its folder gets a new name, and Aurora a scan.
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True, "folders": ["Skate 3"]})
+            self.assertEqual(done["renamed"], [{"from": "Skate 3", "to": "Skate 3 (2)"}])
+            self.assertNotIn("error", done)
+            self.assertEqual(ftp.scans, ["/Hdd1/NetISO"])
+            # The renamed tile isn't Aurora's yet; the rest are fetched again,
+            # under the disc's name with its tags (cut to 42 characters).
+            done = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2", "repair": True})
+            self.assertEqual([t["folder"] for t in done["tiles"]], ["Banjo-Kazooie - Nuts & Bolts"])
+            self.assertEqual(done["renamed"], [{"from": "Banjo-Kazooie - Nuts & Bolts", "to": "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr"}])
+            self.assertEqual(sorted(os.listdir(games)), ["Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr", "Halo 3", "NetDisc360", "NetISO Sync", "New Game", "Skate 3 (2)"])
+            self.assertEqual(os.listdir(os.path.join(games, "Banjo-Kazooie - Nuts & Bolts (USA) (EnJaFr")), ["netiso.ini"])
+            self.assertEqual(len(ftp.scans), 2)
+            self.assertEqual(self.call("POST", "/api/consoles/art", {"address": "127.0.0.3"})[0], 404)
         finally:
             ftp.shutdown()
             ftp.server_close()
@@ -1515,9 +2285,13 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
         # With a password, any name for this computer works.
         self.assertEqual(self.call("GET", "/api/state", cookie=cookie, headers={"Host": "netdisc.example.com"})[0], 200)
-        started = time.time()
+        # A wrong password: that address waits a second before it may try
+        # again (doubling with each one more), without holding others up.
         self.assertEqual(self.call("POST", "/api/login", {"password": "hunter2"})[0], 401)
-        self.assertGreaterEqual(time.time() - started, 0.9)
+        status, _, body = self.call("POST", "/api/login", {"password": "hunter2 x"})
+        self.assertEqual(status, 429)
+        self.assertIn("Try again in 1 s", json.loads(body)["error"])
+        time.sleep(1.1)
         status, response, _ = self.call("POST", "/api/login", {"password": "hunter2 x"})
         self.assertEqual(status, 200)
         self.assertTrue(response.getheader("Set-Cookie").startswith("netdisc_session="))
@@ -1540,6 +2314,63 @@ class Dashboard(ServerTest):
         end = str(int(time.time()) + 3600)
         forged = "netdisc_session=%s.%s" % (end, hmac.new(stored.encode(), end.encode(), hashlib.sha256).hexdigest())
         self.assertEqual(self.call("GET", "/api/state", cookie=forged)[0], 401)
+
+    def test_logging_out_ends_the_session(self):
+        self.start()
+        _, response, _ = self.call("POST", "/api/password", {"password": "hunter2"})
+        cookie = response.getheader("Set-Cookie").split(";")[0]
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 200)
+        status, response, _ = self.call("POST", "/api/logout", {}, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("Max-Age=0", response.getheader("Set-Cookie"))
+        # A copy of the cookie doesn't work any more either.
+        self.assertEqual(self.call("GET", "/api/state", cookie=cookie)[0], 401)
+        status, response, _ = self.call("POST", "/api/login", {"password": "hunter2"})
+        self.assertEqual(self.call("GET", "/api/state", cookie=response.getheader("Set-Cookie").split(";")[0])[0], 200)
+
+    def test_metrics_for_prometheus(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start("--xbox", "127.0.0.2")
+        client = Client.__new__(Client)  # As the console at 127.0.0.2.
+        client.conn = socket.create_connection(("127.0.0.1", self.port), timeout=10, source_address=("127.0.0.2", 0))
+        self.assertEqual(client.mount("Halo 3.iso"), 1)
+        client.close()
+        status, response, body = self.call("GET", "/metrics", page=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(response.getheader("Content-Type").startswith("text/plain"))
+        text = body.decode()
+        self.assertIn("netdisc_games 1\n", text)
+        self.assertIn("netdisc_game_starts_total 1\n", text)
+        self.assertIn('netdisc_console_connections{console="127.0.0.2"}', text)
+        # With a password: as HTTP Basic auth, any user name.
+        self.call("POST", "/api/password", {"password": "hunter2"})
+        status, response, _ = self.call("GET", "/metrics", page=False)
+        self.assertEqual(status, 401)
+        self.assertIn("Basic", response.getheader("WWW-Authenticate"))
+        good = {"Authorization": "Basic " + base64.b64encode(b"prometheus:hunter2").decode()}
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=good)[0], 200)
+        bad = {"Authorization": "Basic " + base64.b64encode(b"prometheus:guess").decode()}
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=bad)[0], 401)
+        self.assertEqual(self.call("GET", "/metrics", page=False, headers=good)[0], 429)  # It waits a second now.
+
+    def test_speed_test_over_aurora_ftp(self):
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            result = self.json("POST", "/api/consoles/speed", {"address": "127.0.0.2"})
+            self.assertEqual(result["bytes"], 32 << 20)
+            self.assertGreater(result["toXbox"], 0)
+            self.assertGreater(result["fromXbox"], 0)
+            # The test file is gone again.
+            self.assertEqual(os.listdir(os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360")), [])
+            self.assertEqual(self.call("POST", "/api/consoles/speed", {"address": "127.0.0.3"})[0], 404)
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
 
     def test_takes_the_password_from_the_environment(self):
         os.environ["NETDISC_WEB_PASSWORD"] = "from docker"

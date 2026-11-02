@@ -1,5 +1,10 @@
-// NetISO Tiles: a DashLaunch plugin that starts NetISO game tiles from inside
-// Aurora.
+// NetDisc360.xex: the DashLaunch plugin on the console (called NetIsoTiles.xex
+// before). It is the disc drive that plays games from the server (disc.cpp,
+// in place of cOz's NetISO.xex), and it looks after the game tiles: disc
+// swaps, the Guide, and the launches below.
+//
+// What follows is how the tile part came about, when NetISO.xex was still the
+// disc drive; with NetISO.xex loaded, all of it still applies.
 //
 // Whenever the game launcher (launcher/main.cpp) asked the NetISO plugin to
 // mount, the Guide was dead until the next reboot: right after the mount,
@@ -27,8 +32,8 @@
 // disc's ISO mounted (see Disc swaps below), an original Xbox game starts in
 // the emulator version its netiso.ini names (see Original Xbox emulator
 // below) and finds System Link games with Aurora's LiNK off (see Original
-// Xbox System Link below), and NetISO's read size and receive buffer are
-// raised at start-up (see NetIsoTiles.ini below).
+// Xbox System Link below), and, with NetISO.xex loaded, NetISO's read size
+// and receive buffer are raised at start-up (see NetDisc360.ini below).
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
@@ -37,6 +42,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include "../shared/isvr.h"
+#include "disc.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -88,7 +94,7 @@ static const char MountFolder[]="Mount";
 // After the mount the plugin fakes a tray open and close on its own thread,
 // and the console then reads the new disc. Reading the disc meanwhile broke
 // the game the launcher started, so the disc is left alone this long first.
-static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=256;
+static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=4,MaxEntries=100000;
 
 // ---- Hooks ----
 
@@ -235,27 +241,9 @@ static void Unhook(Hook& hook) {
 // Appended to the tile's netiso.log, in the launcher's format.
 static HANDLE Log=INVALID_HANDLE_VALUE;
 static char LogLine[1024];
-// The log is a handle of Aurora's process, which the system thread doing
-// the mount can't write to, so its lines wait here until it's done.
-static volatile DWORD DeferThread=0;
-static char Deferred[16384];
-static size_t DeferredLength=0;
-static bool Deferring() { return DeferThread && DeferThread==GetCurrentThreadId(); }
 static void Write(const char* text) {
     if(Log==INVALID_HANDLE_VALUE) return;
-    if(Deferring()) {
-        size_t length=strlen(text);
-        if(DeferredLength+length<sizeof(Deferred)) { memcpy(Deferred+DeferredLength,text,length); DeferredLength+=length; }
-        return;
-    }
     DWORD done=0; WriteFile(Log,text,strlen(text),&done,NULL);
-}
-// Writes the system thread's lines once it has finished.
-static void WriteDeferred() {
-    DeferThread=0;
-    if(!DeferredLength) return;
-    Deferred[DeferredLength]=0; DeferredLength=0;
-    Write(Deferred);
 }
 static void Note(const char* format,...) {
     if(Log==INVALID_HANDLE_VALUE) return;
@@ -276,7 +264,7 @@ static void OpenLog(const char* folder) {
     SYSTEMTIME t; GetLocalTime(&t);
     DWORD up=GetTickCount()/1000;
     Write("\r\n");
-    Note("==== %04u-%02u-%02u, NetISO Tiles plugin built %s %s, console up %lu:%02lu:%02lu ====",
+    Note("==== %04u-%02u-%02u, NetDisc360 plugin built %s %s, console up %lu:%02lu:%02lu ====",
          t.wYear,t.wMonth,t.wDay,__DATE__,__TIME__,up/3600,up/60%60,up%60);
 }
 static void CloseLog() {
@@ -292,12 +280,10 @@ static void Show(const char* text) {
     wide[i]=0;
     Notice(0x22,0xFF,1,wide,NULL);
 }
-// Logged and shown. One the system thread asks for waits in Pending and is
-// shown from Aurora's thread.
-static char Pending[128];
+// Logged and shown.
 static void Tell(const char* text) {
     Note("Notice: %s",text);
-    if(Deferring()) strcpy_s(Pending,text); else Show(text);
+    Show(text);
 }
 
 // ---- NetISO's unload call ----
@@ -309,8 +295,8 @@ static void Tell(const char* text) {
 // launcher, the helper, this plugin on Aurora's thread) left the Guide dead
 // until reboot, and so did a failed one (seen on the console); that this
 // call is why is inferred, since there is no Guide app to close there. So
-// NetISO's import of it is pointed here: the plugin's own mount thread and
-// title threads skip it, and system threads such as the Guide's still get it.
+// NetISO's import of it is pointed here: title threads (Aurora's and the
+// games') skip it, and system threads such as the Guide's still get it.
 static const DWORD AppUnloadSelfOrdinal=581;
 static DWORD* const UnloadThunk=(DWORD*)0x9110c12c;
 static const DWORD* const UnloadCall=(const DWORD*)0x91104dc0;
@@ -319,7 +305,7 @@ typedef DWORD (*AppUnload)(DWORD,DWORD,DWORD,DWORD);
 static AppUnload AppUnloadSelf=NULL;
 static volatile LONG UnloadsSkipped=0;
 static DWORD UnloadHooked(DWORD a,DWORD b,DWORD c,DWORD d) {
-    if(KeGetCurrentProcessType()!=SystemProcess || Deferring()) { InterlockedIncrement(&UnloadsSkipped); return 0; }
+    if(KeGetCurrentProcessType()!=SystemProcess) { InterlockedIncrement(&UnloadsSkipped); return 0; }
     return AppUnloadSelf(a,b,c,d);
 }
 // Points NetISO's import of XamAppUnloadSelf at UnloadHooked, once. Checks
@@ -461,10 +447,14 @@ static LONG OpenFolder(const char* folder,HANDLE& handle) {
     char path[MAX_PATH]; sprintf_s(path,"%s\\",folder);
     return OpenPath(path,true,handle);
 }
-// Lists a folder by device path into Names; the number of names, or -1 when
-// it can't be opened. Stops at MaxNames, or if an entry comes back twice in a
-// row.
-static int ListFolder(const char* folder) {
+// Lists a folder by device path and keeps only the entry named want (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed, or -1 when it can't be opened. Stops
+// after MaxEntries, or if an entry comes back twice in a row.
+static int NamesKept=0;
+static char LastName[MAX_PATH];
+static int ListFolder(const char* folder,const char* want) {
+    NamesKept=0; LastName[0]=0;
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
@@ -472,18 +462,22 @@ static int ListFolder(const char* folder) {
     for(;;) {
         LONG result=QueryFolder(handle,count==0);
         if(result<0) { if(result!=NoMoreFiles) Note("%s: listing stopped (status %08X)",folder,result); break; }
-        if(count==MaxNames) { Note("%s: more than %d entries; using the first %d.",folder,MaxNames,MaxNames); break; }
+        if(count==MaxEntries) { Note("%s: more than %d entries; stopping there.",folder,MaxEntries); break; }
+        char name[MAX_PATH];
         DWORD length=Entry.nameLength<MAX_PATH-1 ? Entry.nameLength : MAX_PATH-1;
-        memcpy(Names[count],Entry.name,length); Names[count][length]=0;
-        if(count && !strcmp(Names[count],Names[count-1])) { Note("%s: %s came back twice; stopping.",folder,Names[count]); break; }
+        memcpy(name,Entry.name,length); name[length]=0;
+        if(count && !strcmp(name,LastName)) { Note("%s: %s came back twice; stopping.",folder,name); break; }
+        strcpy_s(LastName,name);
+        if(want && !_stricmp(name,want) && NamesKept<MaxNames) strcpy_s(Names[NamesKept++],name);
         ++count;
     }
     NtClose(handle);
     Note("%s: %d entries",folder,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 // The ISO's Mount folder, \Device\NetIso\<iso>\Mount, after listing the root
@@ -491,42 +485,29 @@ static const char* FindName(int count,const char* name) {
 // these folders doesn't mount. isoFolder gets the ISO's own folder.
 static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,char* isoFolder) {
     isoFolder[0]=0;
-    int count=ListFolder(IsoDevice);
+    int count=ListFolder(IsoDevice,settings.iso);
     if(count<0) return false;
-    const char* iso=FindName(count,settings.iso);
+    const char* iso=FindName(settings.iso);
     if(!iso) { Note("The server doesn't list %s.",settings.iso); return false; }
     sprintf_s(isoFolder,capacity,"%s\\%s",IsoDevice,iso);
-    count=ListFolder(isoFolder);
-    if(count>=0 && !FindName(count,MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
+    count=ListFolder(isoFolder,MountFolder);
+    if(count>=0 && !FindName(MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
     sprintf_s(folder,capacity,"%s\\%s",isoFolder,MountFolder);
     return true;
 }
 // Opening and listing a Mount folder mounts: the plugin swaps the disc before
-// the listing returns (empty), then fakes the tray open and close. With hold,
-// the folder stays open (in MountHandle) until the caller closes it.
-static HANDLE MountHandle=NULL;
-static bool ListMountFolder(const char* folder,bool hold) {
+// the listing returns (empty), then fakes the tray open and close.
+static bool ListMountFolder(const char* folder) {
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
     LONG result=QueryFolder(handle,true);
     Note("%s: listed (status %08X)",folder,result);
-    if(hold) MountHandle=handle; else NtClose(handle);
+    NtClose(handle);
     return true;
-}
-static void CloseMountFolder() {
-    if(!MountHandle) return;
-    NtClose(MountHandle); MountHandle=NULL;
-    Note("Closed the Mount folder (hold_mount).");
 }
 
 static char Folder[MAX_PATH],Ini[2048];
-// Whole number from the tile's netiso.ini, or fallback.
-static int IniNumber(const char* key,int fallback) {
-    char value[16];
-    if(!IniValue(Ini,key,value,sizeof(value)) || !value[0]) return fallback;
-    return atoi(value);
-}
 
 // ---- Server ----
 
@@ -553,23 +534,84 @@ static bool ReadDeviceText(const char* path,char* text,DWORD capacity) {
     text[status.information]=0;
     return true;
 }
-// server= in the tile's netiso.ini, or the NetISO plugin's own netiso.xex.txt
-// on Hdd1: or Usb0:, as the launcher finds it.
+// ---- Settings files ----
+
+// The folder DashLaunch loaded this plugin from (launch.ini's plugin line),
+// as \Device\..., with its backslash; empty when unknown. Its settings and
+// the server's address sit next to it (as NetISO.xex.txt sat next to
+// NetISO.xex), or on the root of Usb0: or Hdd1:.
+static char OwnFolder[MAX_PATH]="";
+static void FindOwnFolder(HANDLE module) {
+    // The module handle is its loader entry, with FullDllName (a
+    // UNICODE_STRING: length in bytes, capacity, text) at 0x24.
+    const BYTE* entry=(const BYTE*)module;
+    if(!entry || !MmIsAddressValid((void*)entry) || !MmIsAddressValid((void*)(entry+0x2B))) return;
+    USHORT bytes=*(const USHORT*)(entry+0x24);
+    const WCHAR* name=*(const WCHAR* const*)(entry+0x28);
+    if(!bytes || !name || !MmIsAddressValid((void*)name) || !MmIsAddressValid((void*)((const BYTE*)name+bytes-1))) return;
+    char path[MAX_PATH]; size_t length=0;
+    for(size_t i=0;i<size_t(bytes/2) && length+1<sizeof(path);++i) path[length++]=name[i]>0 && name[i]<128 ? char(name[i]) : '?';
+    path[length]=0;
+    char* slash=strrchr(path,'\\');
+    if(!slash || path[0]!='\\' || strchr(path,'?')) return; // Only a kernel path, like \Device\Mass0\NetDisc360.xex.
+    slash[1]=0;
+    strcpy_s(OwnFolder,path);
+}
+
+// The settings below are read from NetDisc360.ini: the first one found of
+// the one next to this plugin and those on the root of Usb0: and Hdd1:
+// (NetIsoTiles.ini, its name before, if there is none). Returns which file
+// set key, or NULL.
+static const char* TuningValue(const char* key,char* value,size_t capacity) {
+    char own[2][MAX_PATH];
+    const char* files[6]={NULL,"\\Device\\Mass0\\NetDisc360.ini","\\Device\\Harddisk0\\Partition1\\NetDisc360.ini",
+                          NULL,"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
+    if(OwnFolder[0]) {
+        sprintf_s(own[0],"%sNetDisc360.ini",OwnFolder); files[0]=own[0];
+        sprintf_s(own[1],"%sNetIsoTiles.ini",OwnFolder); files[3]=own[1];
+    }
+    for(int i=0;i<6;++i) {
+        char text[1024];
+        if(!files[i] || !ReadDeviceText(files[i],text,sizeof(text))) continue;
+        return IniValue(text,key,value,capacity) ? files[i] : NULL;
+    }
+    return NULL;
+}
+// The server the console uses: server= in NetDisc360.ini, else the first
+// line of NetISO.xex.txt next to this plugin or on the root of Hdd1: or
+// Usb0: (as NetISO.xex read it). from names where it was found.
+static bool PluginServer(DWORD& address,int& port,char* from,size_t capacity) {
+    char value[64];
+    if(const char* file=TuningValue("server",value,sizeof(value))) {
+        if(ParseServer(value,address,port)) { sprintf_s(from,capacity,"server= in %s",file); return true; }
+        sprintf_s(from,capacity,"server=%s in %s isn't an IPv4 address",value,file);
+        return false;
+    }
+    char own[MAX_PATH]="";
+    if(OwnFolder[0]) sprintf_s(own,"%sNetISO.xex.txt",OwnFolder);
+    const char* const files[]={own,"\\Device\\Harddisk0\\Partition1\\netiso.xex.txt","\\Device\\Mass0\\netiso.xex.txt"};
+    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
+        char text[128];
+        if(!files[i][0] || !ReadDeviceText(files[i],text,sizeof(text))) continue;
+        text[strcspn(text,"\r\n")]=0;
+        if(ParseServer(text,address,port)) { sprintf_s(from,capacity,"%s",files[i]); return true; }
+    }
+    strcpy_s(from,capacity,"no server= in NetDisc360.ini and no NetISO.xex.txt");
+    return false;
+}
+
+// server= in the tile's netiso.ini, else the console's server (PluginServer),
+// as the launcher finds it.
 static bool FindServer(DWORD& address,int& port) {
     char value[64];
     if(IniValue(Ini,"server",value,sizeof(value))) {
         if(ParseServer(value,address,port)) return true;
         Note("server=%s in %s is not an IPv4 address.",value,IniName); return false;
     }
-    static const char* const plugin[]={"\\Device\\Harddisk0\\Partition1\\netiso.xex.txt","\\Device\\Mass0\\netiso.xex.txt"};
-    for(int i=0;i<int(sizeof(plugin)/sizeof(plugin[0]));++i) {
-        char text[128];
-        if(!ReadDeviceText(plugin[i],text,sizeof(text))) continue;
-        text[strcspn(text,"\r\n")]=0;
-        if(ParseServer(text,address,port)) { Note("Server %s from %s.",text,plugin[i]); return true; }
-    }
-    Note("No server address in %s or netiso.xex.txt.",IniName);
-    return false;
+    char from[MAX_PATH+48];
+    bool found=PluginServer(address,port,from,sizeof(from));
+    Note(found ? "Server from %s." : "No server: %s.",from);
+    return found;
 }
 // Whether the NetISO server answers, asked before anything touches the disc
 // drive or the NetISO drive. For a minute or two after boot the console can't
@@ -598,19 +640,31 @@ static ServerState CheckServer(char* where,size_t capacity) {
     return state;
 }
 
-// tiles_stop= in a game folder's netiso.ini stops the plugin after one step
-// and goes back to Aurora, with no notice and without the tile's launcher, to
-// find the step that kills the Guide: after the server check (server),
-// reading the disc drive (disc), listing the NetISO drive's root (root),
-// finding the ISO's Mount folder (iso), or the mount, before the start (mount).
-enum Step { StepServer, StepDisc, StepRoot, StepIso, StepMount, NoStop };
-static int StopStep() {
-    static const char* const steps[]={"server","disc","root","iso","mount"};
-    char value[16];
-    if(!IniValue(Ini,"tiles_stop",value,sizeof(value)) || !value[0]) return NoStop;
-    for(int i=0;i<NoStop;++i) if(!_stricmp(value,steps[i])) { Note("Test: stopping after %s (tiles_stop).",steps[i]); return i; }
-    Note("Unknown tiles_stop=%s; not stopping.",value);
-    return NoStop;
+// ---- NetDisc360's own disc drive ----
+
+// Mounts iso with this plugin's own drive (disc.cpp) and waits until the
+// drive has done it: its netdisc::Result, or ResultNone if the drive is off
+// or didn't finish in a minute (it waits up to 30 s for the network).
+// address 0 is the server the drive uses now.
+static DWORD DriveMount(const char* iso,DWORD address,int port) {
+    DWORD ticket=disc::Mount(address,port,iso);
+    if(!ticket) return netdisc::ResultNone;
+    DWORD result=netdisc::ResultNone;
+    for(DWORD start=GetTickCount();GetTickCount()-start<60000;Sleep(100))
+        if(disc::Finished(ticket,result)) return result;
+    return netdisc::ResultNone;
+}
+static const char* DriveResultText(DWORD result) {
+    switch(result) {
+    case netdisc::ResultMounted: return "mounted";
+    case netdisc::ResultEjected: return "ejected";
+    case netdisc::ResultNoNetwork: return "the console's network didn't come up";
+    case netdisc::ResultNoServer: return "the server didn't answer";
+    case netdisc::ResultNotOnServer: return "the server doesn't have it";
+    case netdisc::ResultNotADisc: return "the server sent an empty disc";
+    case netdisc::ResultLost: return "the server went away";
+    default: return "the drive didn't finish";
+    }
 }
 
 // What the plugin made of a tile.
@@ -620,37 +674,33 @@ enum Outcome {
     Cancelled   // back to Aurora, starting nothing
 };
 
-// Two test switches in a game folder's netiso.ini, to find what Aurora's file
-// browser does around its mount that keeps the Guide: hold_mount=1 keeps the
-// Mount folder open until the disc is the game, and relist=1 lists the ISO's
-// folder and the root again right after the mount, as a user leaving the
-// Mount folder would.
-static Outcome MountSteps(const Settings& settings,int stop) {
+static Outcome MountSteps(const Settings& settings) {
     bool game=DiscIsGame(settings);
     Note(game ? "The game is already mounted." : "The disc isn't the game.");
-    if(stop==StepDisc) return Cancelled;
     if(game) return Started;
-    if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
-    if(stop==StepRoot) { ListFolder(IsoDevice); return Cancelled; }
-    bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
-    char folder[MAX_PATH],isoFolder[MAX_PATH];
-    bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
-    if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
-    if(stop==StepIso) return Cancelled;
-    LONG skipped=UnloadsSkipped;
-    if(!ListMountFolder(folder,hold)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
-    Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
-    if(relist) {
-        Note("Listing the ISO's folder and the root again (relist).");
-        if(isoFolder[0]) ListFolder(isoFolder);
-        ListFolder(IsoDevice);
+    if(disc::Active()) {
+        DWORD address=0; int port=nia::IsvrPort;
+        FindServer(address,port);
+        DWORD result=DriveMount(settings.iso,address,port);
+        Note("NetDisc360's drive: %s.",DriveResultText(result));
+        if(result!=netdisc::ResultMounted) {
+            Tell(result==netdisc::ResultNotOnServer ? "NetDisc360: the server doesn't list this game." : "NetDisc360 couldn't mount this game.");
+            return Fallback;
+        }
+    } else {
+        if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
+        char folder[MAX_PATH],isoFolder[MAX_PATH];
+        bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
+        if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
+        LONG skipped=UnloadsSkipped;
+        if(!ListMountFolder(folder)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
+        Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
     }
     Sleep(QuietMs);
     for(int waited=QuietMs;waited<QuietMs+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return stop==StepMount ? Cancelled : Started; }
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return Started; }
         Sleep(PollMs);
     }
-    CloseMountFolder();
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
@@ -658,46 +708,7 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     return Fallback;
 }
 
-// tiles_thread=system in netiso.ini runs the drive steps on a system thread
-// while Aurora's thread waits, as a request from the Guide comes from the
-// system process. NetISO doesn't look at the requester's process in its
-// mount path apart from the unload call above (read from the binary), so
-// this is only a test switch.
-struct MountJob { const Settings* settings; int stop; Outcome outcome; };
-static MountJob Job;
-static DWORD WINAPI MountThread(void* job) {
-    DeferThread=GetCurrentThreadId(); // Aurora's thread is waiting meanwhile.
-    MountJob* mount=(MountJob*)job;
-    mount->outcome=MountSteps(*mount->settings,mount->stop);
-    return 0;
-}
-static const DWORD MountThreadMs=QuietMs+MountWaitMs+30000;
-// Set while a system thread that overran its time may still be running.
-static volatile bool ThreadOverran=false;
-static Outcome MountOnSystemThread(const Settings& settings,int stop) {
-    if(ThreadOverran) { Note("An earlier mount thread may still be running; not starting another."); return Fallback; }
-    Job.settings=&settings; Job.stop=stop; Job.outcome=Fallback;
-    Pending[0]=0;
-    Note("Mounting from a system thread.");
-    HANDLE thread=NULL; DWORD id=0;
-    LONG status=ExCreateThread(&thread,0x10000,&id,NULL,MountThread,&Job,SystemThread);
-    if(status<0) { Note("No system thread (status %08X); mounting from Aurora's thread.",status); return MountSteps(settings,stop); }
-    DWORD waited=WaitForSingleObject(thread,MountThreadMs);
-    CloseHandle(thread);
-    if(waited!=WAIT_OBJECT_0) {
-        // It still uses Job and keeps its lines to itself.
-        ThreadOverran=true;
-        Note("The system thread didn't finish in %lu ms.",MountThreadMs);
-        Tell("NetDisc360: the mount didn't finish.");
-        return Cancelled;
-    }
-    WriteDeferred();
-    if(Pending[0]) Show(Pending);
-    return Job.outcome;
-}
-
 static Outcome Mount(const Settings& settings) {
-    int stop=StopStep();
     char where[16]="";
     if(CheckServer(where,sizeof(where))==ServerDown) {
         static char text[96];
@@ -705,26 +716,12 @@ static Outcome Mount(const Settings& settings) {
         Tell(text);
         return Cancelled;
     }
-    if(stop==StepServer) return Cancelled;
-    char thread[16];
-    if(IniValue(Ini,"tiles_thread",thread,sizeof(thread)) && !_stricmp(thread,"system")) return MountOnSystemThread(settings,stop);
-    return MountSteps(settings,stop);
+    return MountSteps(settings);
 }
 
 // ---- NetISO's read size and receive buffer ----
 
-// Both are set in NetIsoTiles.ini on the root of Usb0: or Hdd1:, the first
-// one found. Returns which file set key, or NULL.
-static const char* TuningValue(const char* key,char* value,size_t capacity) {
-    static const char* const files[]={"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
-    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
-        char text[512];
-        if(!ReadDeviceText(files[i],text,sizeof(text))) continue;
-        return IniValue(text,key,value,capacity) ? files[i] : NULL;
-    }
-    return NULL;
-}
-
+// With NetISO.xex loaded: read_kb and rcv_kb in NetDisc360.ini (TuningValue).
 // NetISO.xex 1.0 splits every disc read into 4 KB requests and sends the next
 // only when the last one's data is in (its read loop at 0x911050cc, read from
 // the binary). Each request costs a round trip, about 0.6 ms through a USB
@@ -819,6 +816,32 @@ static void UnpatchReceiveBuffer() {
     *SocketOptionCall=SocketOptionCode;
     FlushCode(SocketOptionCall,4);
     ReceiveBytes=0;
+}
+
+// The own disc drive's settings, from NetDisc360.ini (TuningValue): read_kb
+// (the most asked for in one request, 64 when left out), read_depth (how
+// many requests are out at once, 4), rcv_kb (the connection's receive
+// buffer, 64; 0 leaves XNet's own), own_disc=0, which leaves the drive off,
+// and the server it connects to at start (PluginServer).
+static char DriveAbout[MAX_PATH+160];
+static void StartDrive() {
+    char value[16];
+    disc::Settings settings;
+    memset(&settings,0,sizeof(settings));
+    char from[MAX_PATH+48];
+    int port=nia::IsvrPort;
+    if(!PluginServer(settings.address,port,from,sizeof(from))) settings.address=0;
+    settings.port=port;
+    sprintf_s(DriveAbout,"Plugin folder %s; the server from %s.",OwnFolder[0] ? OwnFolder : "unknown",from);
+    settings.about=DriveAbout;
+    settings.readBytes=DWORD(DefaultReadKb)*1024;
+    if(TuningValue("read_kb",value,sizeof(value)) && atoi(value)>0) settings.readBytes=DWORD(atoi(value))*1024;
+    settings.depth=4;
+    if(TuningValue("read_depth",value,sizeof(value)) && atoi(value)>0) settings.depth=atoi(value);
+    settings.receiveBytes=DefaultReceiveKb*1024;
+    if(TuningValue("rcv_kb",value,sizeof(value)) && value[0]) settings.receiveBytes=atoi(value)*1024;
+    settings.enabled=!(TuningValue("own_disc",value,sizeof(value)) && !strcmp(value,"0"));
+    disc::Start(settings);
 }
 
 // ---- Disc swaps ----
@@ -1230,8 +1253,12 @@ static DWORD WINAPI SwapThread(void*) {
     Settings settings; memset(&settings,0,sizeof(settings));
     strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
-    if(!FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
-    else if(!ListMountFolder(folder,false)) SwapNote("Can't open %s.",folder);
+    DWORD result=netdisc::ResultMounted;
+    // The drive keeps to the server of the disc in it.
+    if(disc::Active() && (result=DriveMount(settings.iso,0,0))!=netdisc::ResultMounted)
+        SwapNote("NetDisc360's drive couldn't mount %s: %s.",settings.iso,DriveResultText(result));
+    else if(!disc::Active() && !FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
+    else if(!disc::Active() && !ListMountFolder(folder)) SwapNote("Can't open %s.",folder);
     else {
         for(int waited=0;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
             in=DiscNumber()==disc;
@@ -1865,6 +1892,8 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     OpenLog(Folder);
     Note("Tile %s",path);
     Note("ISO %s, Title ID %08X, Media ID %08X",settings.iso,settings.titleId,settings.mediaId);
+    Note("NetDisc360's disc drive: %s",disc::Note());
+    if(disc::Active()) return true;
     Note("NetISO reads: %s.",ReadLimitNote);
     Note("NetISO's receive buffer: %s; set on %ld connection(s), refused on %ld.",ReceiveNote,ReceiveSets,ReceiveRefusals);
     // Tried again for every tile: DllMain's try fails when launch.ini loads
@@ -2003,7 +2032,7 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
 }
 
 BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
-    UNREFERENCED_PARAMETER(module); UNREFERENCED_PARAMETER(reserved);
+    UNREFERENCED_PARAMETER(reserved);
     if(reason==DLL_PROCESS_ATTACH) {
         HANDLE xam=NULL; void* address=NULL;
         if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,QueueNoticeOrdinal,&address)>=0) Notice=(QueueNotice)address;
@@ -2012,15 +2041,19 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         if(HookStart(LaunchTitleHook,LaunchTitleOrdinal,LaunchTitleHooked,LaunchTitleStub)
            && !HookStart(LaunchTitleExHook,LaunchTitleExOrdinal,LaunchTitleExHooked,LaunchTitleExStub))
             Unhook(LaunchTitleHook);
-        // NetISO.xex is loaded before this plugin in launch.ini; if not, the
-        // first tile patches its unload call, and its read size and receive
-        // buffer stay NetISO's own.
+        // With NetISO.xex loaded before this plugin in launch.ini, its unload
+        // call, read size and receive buffer are patched (if it comes after,
+        // the first tile patches its unload call). Without it, this plugin's
+        // own drive starts and is the disc drive at once (as NetISO.xex did).
+        FindOwnFolder(module);
         PatchUnload();
         PatchReadLimit();
         PatchReceiveBuffer();
+        StartDrive();
         FindSwapExports();
         StartWatcher();
     } else if(reason==DLL_PROCESS_DETACH) {
+        disc::Stop();
         StopWatcher();
         UnpatchReceiveBuffer();
         UnpatchUnload();

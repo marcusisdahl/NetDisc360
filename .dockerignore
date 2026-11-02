@@ -3,3 +3,6 @@
 !shared/
 !tests/posix_compat.h
 !docker/
+!art/aurora/*/*.asset
+!web/
+!tools/make_web.py
