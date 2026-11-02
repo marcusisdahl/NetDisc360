@@ -1857,10 +1857,10 @@ static void StartLink() {
     LONG status=0;
     HANDLE xbdm=LoadedModule("xbdm.xex",status);
     void* setMemory=NULL;
-    LONG found=xbdm ? XexGetProcedureAddress(xbdm,DmSetMemoryOrdinal,&setMemory) : 0;
-    if(!xbdm || found<0 || !setMemory) {
+    LONG resolved=xbdm ? XexGetProcedureAddress(xbdm,DmSetMemoryOrdinal,&setMemory) : 0;
+    if(!xbdm || resolved<0 || !setMemory) {
         SwapNote("System Link: no DmSetMemory from xbdm.xex (module %X, XexGetModuleHandle said %X, its export 40 %X), and xam's export table can only be changed through it; left to Nova.",
-                 DWORD(xbdm),DWORD(status),DWORD(found));
+                 DWORD(xbdm),DWORD(status),DWORD(resolved));
         return;
     }
     SwapNote("System Link: xbdm.xex at %X (XexGetModuleHandle said %X), DmSetMemory at %X.",DWORD(xbdm),DWORD(status),DWORD(setMemory));
