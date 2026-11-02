@@ -6,7 +6,9 @@
 #include "isvr.h"
 
 namespace nia {
-enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxFolders = 1024, PathMax = 320, IniMax = 4096 };
+// MaxGames: the most ISOs Sync makes folders for (a safety limit; libraries
+// of a few thousand are normal).
+enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxGames = 65536, PathMax = 320, IniMax = 4096 };
 
 #ifdef _XBOX
 const char PathSeparator = '\\';
@@ -72,13 +74,18 @@ typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 // What a disc is in its game's set, from the server's disc map (see
 // server/discmap.h). Sync writes it into the game folder's netiso.ini as
 // disc_role and disc_label, where the NetDisc360 plugin reads it for its
-// disc swap notices.
+// disc swap notices. local is the same game installed on the console, which
+// Sync writes as local_copy, so the launcher can offer to play that copy.
 struct DiscRoleInfo {
     bool known;      // false: netiso.ini is left as it is.
     char role[16];   // install, play, content, next or own; empty for a game on one disc.
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
+    char local[PathMax];  // "Hdd1:\Games\Halo 3\default.xex" or a Games on Demand package; empty: none.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
+// Called before each of the server's ISOs is looked at (done of total), so a
+// big first sync can show how far it has got.
+typedef void (*Progress)(int done, int total);
 
 // Whether the console is to have a game folder for an ISO: not when the
 // same game is installed on it, which Aurora lists already.
@@ -97,5 +104,6 @@ typedef void (*Placed)(const char* iso, const char* folder);
 // has whatever removeGone says; placed, if not NULL, is told the folders.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
-          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL);
+          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL,
+          Progress progress=NULL);
 }

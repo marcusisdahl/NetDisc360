@@ -10,7 +10,9 @@
 #include <vector>
 #ifdef _WIN32
 #include <winhttp.h>
+#include <bcrypt.h>
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
 #ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
 #define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
 #endif
@@ -60,6 +62,14 @@ int ComparePre(const std::string& a, const std::string& b) {
     }
 }
 
+// A release of NetDisc360 has a version as its tag (v1.2.0); others, such as
+// dev-launchers (the dev Docker image's launchers, see RELEASING.md), aren't
+// updates.
+bool VersionTag(const std::string& tag) {
+    size_t at=!tag.empty() && (tag[0]=='v' || tag[0]=='V') ? 1 : 0;
+    return at<tag.size() && tag[at]>='0' && tag[at]<='9';
+}
+
 std::string Text(const web::Value& v, const char* key) {
     const web::Value* f=v.Get(key);
     return f && f->type==web::Value::String ? f->text : std::string();
@@ -98,6 +108,7 @@ Release Read(const web::Value& r) {
     const web::Value* assets=r.Get("assets");
     for(size_t i=0;assets && assets->type==web::Value::Array && i<assets->items.size();++i) {
         const web::Value& a=assets->items[i];
+        if(a.type==web::Value::Object && Lower(Text(a,"name"))=="netdisc360.exe.sig") out.sigUrl=Text(a,"browser_download_url");
         if(a.type!=web::Value::Object || Lower(Text(a,"name"))!="netdisc360.exe") continue;
         out.exeUrl=Text(a,"browser_download_url");
         out.exeDigest=Lower(Text(a,"digest"));
@@ -114,7 +125,7 @@ bool List(const std::string& json, bool prereleases, std::vector<Release>& out, 
     if(!web::Parse(json,list) || list.type!=web::Value::Array) { error="GitHub's answer wasn't a list of releases."; return false; }
     for(size_t i=0;i<list.items.size();++i) {
         const web::Value& r=list.items[i];
-        if(r.type!=web::Value::Object || Flag(r,"draft") || (Flag(r,"prerelease") && !prereleases) || Text(r,"tag_name").empty()) continue;
+        if(r.type!=web::Value::Object || Flag(r,"draft") || (Flag(r,"prerelease") && !prereleases) || !VersionTag(Text(r,"tag_name"))) continue;
         out.push_back(Read(r));
     }
     // Newest first; of two with the same version, the one GitHub listed first.
@@ -146,6 +157,49 @@ bool CheckExe(const std::string& data, const Release& r, std::string& error) {
     }
     return true;
 }
+
+bool Signed() { return sizeof(NETDISC_UPDATE_KEY)>1; }
+
+#ifdef _WIN32
+namespace {
+// Hex digits as bytes; empty if text isn't only pairs of them (spaces and
+// line ends around it are fine).
+std::vector<unsigned char> FromHex(const std::string& text) {
+    std::vector<unsigned char> out;
+    std::string digits;
+    for(size_t i=0;i<text.size();++i) if(text[i]!=' ' && text[i]!='\r' && text[i]!='\n' && text[i]!='\t') digits+=text[i];
+    if(digits.size()%2 || digits.find_first_not_of("0123456789abcdefABCDEF")!=std::string::npos) return out;
+    for(size_t i=0;i<digits.size();i+=2) out.push_back((unsigned char)strtoul(digits.substr(i,2).c_str(),NULL,16));
+    return out;
+}
+}  // namespace
+
+bool CheckSignature(const std::string& exe, const std::string& signature, std::string& error) {
+    std::vector<unsigned char> key=FromHex(NETDISC_UPDATE_KEY), sig=FromHex(signature), hash=FromHex(web::Sha256Hex(exe));
+    if(key.size()!=64) { error="This build has no valid update key."; return false; }
+    if(sig.size()!=64) { error="The release's NetDisc360.exe.sig isn't a signature, so nothing was installed."; return false; }
+    // A BCRYPT_ECCKEY_BLOB: its magic and key size, then X and Y.
+    std::vector<unsigned char> blob(sizeof(BCRYPT_ECCKEY_BLOB)+64);
+    BCRYPT_ECCKEY_BLOB head={BCRYPT_ECDSA_PUBLIC_P256_MAGIC,32};
+    memcpy(blob.data(),&head,sizeof(head)); memcpy(blob.data()+sizeof(head),key.data(),64);
+    BCRYPT_ALG_HANDLE algorithm=NULL; BCRYPT_KEY_HANDLE handle=NULL;
+    bool ok=BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_ECDSA_P256_ALGORITHM,NULL,0)==0 &&
+            BCryptImportKeyPair(algorithm,NULL,BCRYPT_ECCPUBLIC_BLOB,&handle,blob.data(),ULONG(blob.size()),0)==0;
+    if(!ok) error="Windows couldn't load the update key.";
+    else if(BCryptVerifySignature(handle,NULL,hash.data(),ULONG(hash.size()),sig.data(),ULONG(sig.size()),0)!=0) {
+        ok=false;
+        error="The download isn't signed by NetDisc360's key, so it wasn't installed.";
+    }
+    if(handle) BCryptDestroyKey(handle);
+    if(algorithm) BCryptCloseAlgorithmProvider(algorithm,0);
+    return ok;
+}
+#else
+bool CheckSignature(const std::string&, const std::string&, std::string& error) {
+    error="This build doesn't install updates itself.";
+    return false;
+}
+#endif
 
 bool FromRepo(const std::string& url) {
     std::string from=Lower("https://github.com/" NETDISC_REPO "/releases/download/");

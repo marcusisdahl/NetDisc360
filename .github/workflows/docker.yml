@@ -4,8 +4,9 @@
 #   release is published). It can also be run by hand for an existing release
 #   tag.
 # - on every push to the dev branch: tagged dev (and dev-<commit>), for
-#   testing what will be in the next release. It uses the latest release's
-#   launchers.
+#   testing what will be in the next release. It uses the dev launchers
+#   (NetISO-Sync.zip on the dev-launchers pre-release, see RELEASING.md), or
+#   the latest release's when there are none.
 name: Docker image
 
 on:
@@ -75,5 +76,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/${{ env.DEV == 'true' && 'latest/download' || format('download/{0}', env.TAG) }}/NetISO-Sync.zip
+            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/${{ env.DEV == 'true' && 'download/dev-launchers' || format('download/{0}', env.TAG) }}/NetISO-Sync.zip
+            LAUNCHER_FALLBACK_URL=${{ env.DEV == 'true' && format('https://github.com/{0}/releases/latest/download/NetISO-Sync.zip', github.repository) || '' }}
             REQUIRE_LAUNCHER=1

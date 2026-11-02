@@ -86,7 +86,7 @@ static const char BootXex[]="game:\\boot.xex";
 // GetTickCount when the tile was pressed, for the timer at the top.
 static DWORD Started=0;
 static const char MountFolder[]="Mount";
-static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
+static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=16;
 // After the mount the plugin fakes a tray open and close on its own thread
 // (0.2 s apart), and the console then reads the new disc. The launcher used
 // to read the disc right away and every 0.5 s while that went on; the game
@@ -361,24 +361,31 @@ static bool DiscIsGame(const Settings& settings) {
 }
 
 static char Names[MaxNames][MAX_PATH];
-// Lists a NetIso folder. With the plugin, listing a "Mount" folder is what
-// mounts, and that listing is empty.
-static int ListFolder(const char* folder) {
+static int NamesKept=0;
+// Lists a NetIso folder and keeps only the entries named want or also (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed. With the plugin, listing a "Mount"
+// folder is what mounts, and that listing is empty. Only the kept names are
+// logged, not every game on every start.
+static int ListFolder(const char* folder,const char* want,const char* also=NULL) {
+    NamesKept=0;
     char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
     WIN32_FIND_DATA found;
     HANDLE find=FindFirstFile(pattern,&found);
     if(find==INVALID_HANDLE_VALUE) { Note("%s: nothing listed (error %lu)",pattern,GetLastError()); return 0; }
     int count=0;
     do {
-        if(count<MaxNames) strcpy_s(Names[count++],found.cFileName);
-        Note("  %s",found.cFileName);
+        ++count;
+        bool keep=(want && !_stricmp(found.cFileName,want)) || (also && !_stricmp(found.cFileName,also));
+        if(keep && NamesKept<MaxNames) { strcpy_s(Names[NamesKept++],found.cFileName); Note("  %s",found.cFileName); }
     } while(FindNextFile(find,&found));
     FindClose(find);
     Note("%s: %d entries",pattern,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 
@@ -395,12 +402,12 @@ static Found FindMountFolder(const Settings& settings,char* folder,size_t capaci
     for(int depth=0;depth<MaxDepth;++depth) {
         if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
         if(CancelAsked) return FoundStopped;
-        int count=ListFolder(folder);
+        int count=ListFolder(folder,settings.iso,MountFolder);
         // An empty root: the plugin couldn't reach the server.
         if(!depth && !count) return FoundNoRoot;
-        const char* next=FindName(count,settings.iso);
+        const char* next=FindName(settings.iso);
         if(next) sawIso=true;
-        else if((next=FindName(count,MountFolder))!=NULL) {
+        else if((next=FindName(MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
             if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return FoundStopped; }
             return FoundMount;
@@ -540,8 +547,8 @@ static const char NoServerEntry[]="No Server!";
 static bool WaitForNetIso() {
     const DWORD start=GetTickCount();
     for(;;) {
-        int count=ListFolder(IsoRoot);
-        if(!FindName(count,NoServerEntry)) return true;
+        ListFolder(IsoRoot,NoServerEntry);
+        if(!FindName(NoServerEntry)) return true;
         DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
         if(up>=BootSeconds && waited>=RetrySeconds*3) return false;
         ShowStep(nia::StepMount,0.12,"NetISO is still connecting to the server after the reboot... %lu s",waited);
@@ -1000,6 +1007,77 @@ static InstallChoice AskToInstall(const char* game,const Install& install) {
     return InstallBack;
 }
 
+// ---- A copy installed on this Xbox ----
+
+// local_copy in netiso.ini, which NetDisc360 writes when the same game (Title
+// ID and disc) is installed on the console too: extracted
+// ("Hdd1:\Games\Halo 3\default.xex") or as Games on Demand (the package's
+// header file under Content). Aurora lists that copy as a tile of its own,
+// with the same name, so this tile asks which copy to play. Asked before
+// anything goes over the network, so the local copy plays with the PC off.
+static bool MapPath(const char* path,char* out,size_t capacity);
+static void DevicePath(const char* path,char* out,size_t capacity);
+static void UnlinkDrives();
+static bool LocalCopy(const char* ini,char* local,size_t capacity) {
+    if(!nia::IniValue(ini,"local_copy",local,capacity) || !local[0]) return false;
+    char path[MAX_PATH];
+    bool there=MapPath(local,path,sizeof(path)) && GetFileAttributes(path)!=DWORD(-1);  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
+    UnlinkDrives();
+    Note(there ? "It's installed on this Xbox too: %s" : "local_copy=%s isn't there; playing from the server.",local);
+    return there;
+}
+enum LocalChoice { LocalBack, LocalPlay, LocalNetwork };
+static LocalChoice AskLocalCopy(const char* game,const char* local) {
+    Problem.step=nia::StepServer; Problem.retry=true;
+    char where[MAX_PATH]; strcpy_s(where,local);
+    char* name=strrchr(where,'\\');
+    if(strstr(where,"\\Content\\")) { char* colon=strchr(where,':'); if(colon) colon[1]=0; }
+    else if(name && !_stricmp(name+1,"default.xex")) *name=0;
+    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"%s is installed on this Xbox too",game);
+    if(strstr(local,"\\Content\\")) _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's on %s as Games on Demand, with its own tile in Aurora.",where);
+    else _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's in %s, with its own tile in Aurora.",where);
+    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A plays that copy: it loads faster and doesn't need the PC.");
+    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X plays it from the PC over the network.");
+    Note("Asking: %s",Problem.title);
+    WORD button=ShowCard(true,"Play from this Xbox","Play from the PC");
+    if(button==XINPUT_GAMEPAD_A) { Note("A pressed: starting the copy on this Xbox."); return LocalPlay; }
+    if(button==XINPUT_GAMEPAD_X) { Note("X pressed: playing from the server."); return LocalNetwork; }
+    Note("Back to Aurora.");
+    return LocalBack;
+}
+// Starts the installed copy as Aurora starts it from its own tile. True to
+// play from the server instead, when that didn't start and the player
+// pressed X.
+// A Games on Demand package isn't an XEX: XLaunchNewImage on it went to the
+// Xbox dashboard (seen on the console). xam's XamContentLaunchImageFromFileInternal
+// (ordinal 599) mounts the package and starts the XEX in it, as for a game
+// bought on Xbox Live; it too returns only when the start failed.
+typedef DWORD (__stdcall* LaunchFromPackage)(const char* path,const char* xex);
+static const DWORD LaunchFromPackageOrdinal=599;
+static bool StartLocal(const char* local) {
+    char device[MAX_PATH]; DevicePath(local,device,sizeof(device));
+    ClearLaunchData();
+    ScreenStop();
+    if(strstr(local,"\\Content\\")) {
+        HANDLE xam=NULL; void* address=NULL;
+        if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,LaunchFromPackageOrdinal,&address)>=0 && address) {
+            Note("Starting %s from the Games on Demand package %s",DiscXexName,device);
+            CloseLog();
+            DWORD result=LaunchFromPackage(address)(device,DiscXexName);
+            OpenLog(false);
+            Note("XamContentLaunchImageFromFileInternal returned %08X (%lu).",result,GetLastError());
+        } else Note("xam has no XamContentLaunchImageFromFileInternal.");
+    } else {
+        Note("Starting %s",device);
+        Launch(device);
+    }
+    char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting %s failed (error %lu).",local,GetLastError());
+    Fail(nia::StepStart,true,"The copy on this Xbox didn't start",line,"Start it from its own tile in Aurora, or play it from the PC.");
+    bool network=ShowCard(false,"Back to Aurora","Play from the PC")==XINPUT_GAMEPAD_X;
+    Note(network ? "X pressed: playing from the server." : "Back to Aurora.");
+    return network;
+}
+
 // Mounts the game and starts it, showing what goes wrong until the player
 // goes back to Aurora. mount_only=1 in netiso.ini mounts and goes back to
 // Aurora without starting the game, to tell whether the mount or the start
@@ -1014,6 +1092,12 @@ static void LaunchGame(const char* ini) {
     EnterCriticalSection(&ShownLock);
     strcpy_s(Shown.iso,settings.iso); nia::GameName(settings.iso,Shown.game,sizeof(Shown.game)); Shown.titleId=settings.titleId;
     LeaveCriticalSection(&ShownLock);
+    static char local[MAX_PATH];
+    if(LocalCopy(ini,local,sizeof(local))) {
+        LocalChoice choice=AskLocalCopy(Shown.game,local);
+        if(choice==LocalBack) return;
+        if(choice==LocalPlay && !StartLocal(local)) return;
+    }
     // A game whose install disc is on the server checks for the install first,
     // and can start the install disc instead.
     static Install install;

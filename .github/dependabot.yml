@@ -1,0 +1,14 @@
+# Proposes pull requests (into dev) when the Docker base image's digest or a
+# GitHub Action used by the workflows has a new version.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: monthly
