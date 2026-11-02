@@ -784,6 +784,7 @@ struct SeatProfiles {
 std::map<std::string,SeatProfiles> SeatPushes;
 void PushSeatProfilesSoon();
 void AdoptGuestProfile(const std::string& name, unsigned long long xuid, const std::string& gamertag, const std::string& console);
+void PlaysOn(const std::string& name, unsigned long long xuid, const std::string& console);
 std::string PartyAppJobAnswer(const std::string& console, int index, const std::string& body);
 std::string PartyAppJobFor(const std::string& console);
 std::vector<std::string> GuestsWithoutProfile();
@@ -818,6 +819,34 @@ void GuestStatsSoon(const std::string& address, double seconds);
 std::mutex PartyNewsLock;
 std::condition_variable PartyNewsCome;
 unsigned long long PartyVersion=1;
+// The live feed on the big screen (Marcus 2026-11-02): what happens at the
+// party as it happens, newest last; FeedMost kept, while a party is on.
+struct FeedItem { long long at; std::string kind, text; };
+std::deque<FeedItem> Feed;
+std::mutex FeedLock;
+enum { FeedMost = 30, FeedShown = 12 };
+// When anything was last done for the party (a join, a sign-in, a spin, a
+// game started or won), for Turn off all when idle; Now() seconds.
+std::atomic<long long> PartyActiveAt(0);
+// How often the live feed asks each party console's Aurora for its signed-in
+// profiles' gamerscore (LiveLoop).
+double LiveEverySeconds = 40;
+void PartyBusy() { PartyActiveAt=(long long)Now(); }
+void PartyNews();
+Party CurrentParty();
+void PartyFeed(const char* kind, const char* format, ...) {
+    if(!CurrentParty().active) return;
+    char text[400];
+    va_list a; va_start(a,format); _vsnprintf_s(text,sizeof(text),_TRUNCATE,format,a); va_end(a);
+    {
+        std::lock_guard<std::mutex> hold(FeedLock);
+        FeedItem item={(long long)time(NULL),kind,text};
+        Feed.push_back(item);
+        while(Feed.size()>FeedMost) Feed.pop_front();
+    }
+    PartyBusy();
+    PartyNews();
+}
 void PartyNews() {
     { std::lock_guard<std::mutex> hold(PartyNewsLock); ++PartyVersion; }
     PartyNewsCome.notify_all();
@@ -998,6 +1027,18 @@ bool PlayEnded(Console& console) {
 }
 
 // console mounted game (its listed name), or started it again from the disc.
+// The guests signed in on this console's party screen play there now: their
+// copies on the other consoles fall behind (PlaysOn).
+void PlayersPlayOn(const std::string& address) {
+    Party p=CurrentParty();
+    std::vector<PartySignInRecord> here;
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        std::vector<const PartySignInRecord*> in=SignedIn(p,address);
+        for(size_t i=0;i<in.size();++i) if(in[i]) here.push_back(*in[i]);
+    }
+    for(size_t i=0;i<here.size();++i) PlaysOn(here[i].name,here[i].xuid,address);
+}
 void PlayStarted(Console& console, const std::string& name, DWORD titleId) {
     std::string game=config::ToUtf8(WithoutIso(name));
     {
@@ -1010,6 +1051,7 @@ void PlayStarted(Console& console, const std::string& name, DWORD titleId) {
         console.game=game; console.gameTitle=titleId; console.gameSince=Now();
     }
     console.gameEndedAt=0;
+    PlayersPlayOn(console.text);
     {
         std::lock_guard<std::mutex> hold(PlaysLock);
         Played& p=Plays[Lower(game)];
@@ -1066,6 +1108,90 @@ void FollowLaunch(Console& c, int port) {
 // GameProbeSeconds, only while it's in a game, and answering means Aurora
 // runs again. A game started from the disc in Aurora shows by its reads;
 // one started from the dashboard, by FollowLaunch.
+// The live feed's gamerscore (Marcus 2026-11-02: "Ola earned 20 G in Halo
+// 3" on the big screen as it happens): every LiveEverySeconds, each party
+// console's Aurora (its web server answers in a game too) says its
+// signed-in profiles' gamerscore; a guest's that rose is news. And Turn off
+// all when idle: the party's consoles turn off once none of them played or
+// did anything for the party for its idleOffMinutes.
+bool PowerOn(Console& console, const std::string& action, std::string& error);
+std::map<std::string,int> LiveScores;  // By XUID (upper case): the gamerscore seen last.
+void LiveLook(Console& c, const Options& o, const std::string& game) {
+    AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
+    std::string body;
+    web::Value v;
+    if(!aurora.Get("/profile","/getProfileInfo",body) || !web::Parse(body,v) || v.type!=web::Value::Array) return;
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    for(size_t i=0;i<v.items.size();++i) {
+        const web::Value* x=v.items[i].Get("xuid");
+        const web::Value* score=v.items[i].Get("gamerscore");
+        const web::Value* in=v.items[i].Get("signedin");
+        if(!x || x->type!=web::Value::String || !score || score->type!=web::Value::Number || (in && in->type==web::Value::Number && in->number==0)) continue;
+        std::string xuid;
+        if(!OfflineXuid(x->text,xuid)) continue;
+        const GuestProfile* guest=NULL;
+        for(size_t k=0;k<records.size() && !guest;++k) if(records[k].xuid==xuid) guest=&records[k];
+        if(!guest) continue;
+        int now=int(score->number), before=-1;
+        {
+            std::lock_guard<std::mutex> hold(StatsLock);
+            std::map<std::string,int>::iterator seen=LiveScores.find(xuid);
+            if(seen!=LiveScores.end()) before=seen->second;
+            LiveScores[xuid]=now;
+            GuestStats& g=StatsOf(guest->name);
+            if(g.partyStart<0) g.partyStart=g.gamerscore>=0 ? g.gamerscore : now;
+            if(before<0 && g.gamerscore>=0) before=g.gamerscore;
+            g.gamerscore=std::max(g.gamerscore,now);
+        }
+        if(before>=0 && now>before) {
+            if(game.empty()) PartyFeed("score","%s earned %d G",guest->name.c_str(),now-before);
+            else PartyFeed("score","%s earned %d G in %s",guest->name.c_str(),now-before,game.c_str());
+        }
+    }
+}
+void LiveLoop() {
+    double next=0;
+    bool off=false;  // Turned off for this idle stretch already.
+    for(;;Sleep(2000)) {
+        Party p=CurrentParty();
+        Options o=Current();
+        std::vector<Console*> consoles;
+        for(size_t i=0;i<p.consoles.size();++i) { Console* c=ConsoleIfKnown(inet_addr(p.consoles[i].c_str())); if(c) consoles.push_back(c); }
+        bool playing=false;
+        std::vector<Console*> on;
+        {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            for(size_t i=0;i<consoles.size();++i) {
+                Console& c=*consoles[i];
+                if(c.offline || !(c.answers || c.connections>0)) continue;
+                on.push_back(&c);
+                if(!c.game.empty() || c.launchedAt) playing=true;
+            }
+        }
+        if(playing) PartyBusy();
+        if(!p.active || Now()<next) {} else {
+            next=Now()+LiveEverySeconds;
+            for(size_t i=0;i<on.size();++i) {
+                std::string game;
+                { std::lock_guard<std::mutex> hold(ConsoleLock); game=on[i]->game; }
+                LiveLook(*on[i],o,game);
+            }
+        }
+        // Turn off all when idle.
+        long long busyAt=PartyActiveAt.load();
+        if(!busyAt) { PartyBusy(); continue; }
+        bool idle=p.idleOffMinutes>0 && !on.empty() && Now()-double(busyAt)>=p.idleOffMinutes*60.0;
+        if(!idle) { off=false; continue; }
+        if(off) continue;
+        off=true;
+        Log("LAN party: no one played or did anything for the party for %s, so its consoles turn off (Turn off all when idle).",Count(p.idleOffMinutes,"minute","minutes").c_str());
+        Event(EventInfo,"The party's consoles turned off after %s idle",Count(p.idleOffMinutes,"minute","minutes").c_str());
+        for(size_t i=0;i<on.size();++i) {
+            std::string error;
+            if(!PowerOn(*on[i],"off",error)) XboxLog(*on[i],"didn't turn off when idle: %s",error.c_str());
+        }
+    }
+}
 void AuroraLoop() {
     for(;;) {
         Options o=Current();
@@ -1524,10 +1650,13 @@ private:
                 had.push_back(r);
             }
         }
+        PartyBusy();
         if(out) Log("%s: controller %d signed out on the party screen.",peer_,controller+1);
         else Log("%s: %s signed in on controller %d (%s).",peer_,name.c_str(),controller+1,gamertag.empty() ? "no gamertag" : gamertag.c_str());
-        if(!out && xuid) AdoptGuestProfile(name,xuid,gamertag,peer_);
+        if(!out && xuid) { AdoptGuestProfile(name,xuid,gamertag,peer_); PlaysOn(name,xuid,peer_); }
         PartyNews();
+        // Their progress here goes to the other consoles while they're away.
+        if(out) PushSeatProfilesSoon();
         return std::string();
     }
     bool Handle(int command, DWORD index, U64 offset, DWORD length) {
@@ -3434,7 +3563,25 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
         }
         j.Close('}');
     }
-    j.Close(']').Set("statsReading",StatsReading.load()).Set("teams",p.teams).Key("teamColours").Open('[');
+    j.Close(']').Set("statsReading",StatsReading.load()).Set("teams",p.teams).Set("balance",BalanceNames[p.balance]).Set("game",p.game).Set("started",p.started).Set("idleOffMinutes",p.idleOffMinutes);
+    // The live feed, newest first.
+    j.Key("feed").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(FeedLock);
+        for(size_t i=Feed.size(),n=0;i-->0 && n<FeedShown;++n) j.Open('{').Set("at",Feed[i].at).Set("kind",Feed[i].kind).Set("text",Feed[i].text).Close('}');
+    }
+    j.Close(']');
+    // Rounds won, and the points they give (most first).
+    j.Key("wins").Open('[');
+    for(size_t i=0;i<p.wins.size();++i) {
+        j.Open('{').Set("round",p.wins[i].round).Set("game",p.wins[i].game).Set("team",p.wins[i].team).Set("at",p.wins[i].at).Key("players");
+        NamesJson(j,p.wins[i].players);
+        j.Close('}');
+    }
+    j.Close(']').Key("points").Open('[');
+    std::vector<std::pair<std::string,int> > points=PartyPoints(p);
+    for(size_t i=0;i<points.size();++i) j.Open('{').Set("name",points[i].first).Set("points",points[i].second).Close('}');
+    j.Close(']').Key("teamColours").Open('[');
     for(size_t i=0;i<p.teamColours.size();++i) j.Int(p.teamColours[i]);
     j.Close(']').Key("palette").Open('[');
     for(int i=0;i<TeamColoursCount;++i)
@@ -5729,6 +5876,12 @@ bool ChangeParty(const web::Value& v, std::string& error) {
     if((f=v.Get("active"))) {
         if(f->type!=web::Value::Bool) { error="active is true or false."; return false; }
         next.active=f->boolean;
+        // A new party counts its own rounds won.
+        if(!was.active && next.active) {
+            next.wins.clear(); next.game.clear(); next.started=(long long)time(NULL);
+            std::lock_guard<std::mutex> hold(FeedLock);
+            Feed.clear();
+        }
         if(was.active && !next.active) {
             for(size_t i=0;i<next.guests.size();++i) next.guests[i].here=false;
             next.round=0; next.drawn=false; next.kept=false;
@@ -5774,6 +5927,13 @@ bool ChangeParty(const web::Value& v, std::string& error) {
         next.gamemaster=f->text;
     }
     if(!Whole(v,"teams",TeamsLeast,TeamsMost,next.teams,error) && !error.empty()) return false;
+    if(!Whole(v,"idleOffMinutes",0,IdleOffMost,next.idleOffMinutes,error) && !error.empty()) return false;
+    if(Text(v,"balance",text)) {
+        int b=-1;
+        for(int k=0;k<BalanceCount;++k) if(text==BalanceNames[k]) b=k;
+        if(b<0) { error="balance is random, wins or gamerscore."; return false; }
+        next.balance=b;
+    }
     if((f=v.Get("teamColours"))) {
         if(f->type!=web::Value::Array || f->items.size()>TeamsMost) { error="teamColours is a list of up to "+Number(TeamsMost)+" colours (0-"+Number(TeamColoursCount-1)+")."; return false; }
         std::vector<int> colours=next.teamColours;
@@ -5851,6 +6011,80 @@ bool ChangeParty(const web::Value& v, std::string& error) {
     return true;
 }
 
+// The same team said to win again this soon is a double press.
+enum { WinAgainSeconds = 60, PartyTextPointsMost = 16 };
+// How strong each of here is for a fair draw (Party::balance): their wins
+// this party, or their gamerscore (one not read yet: the others' average).
+// Empty: drawn at random.
+std::vector<double> Strengths(const Party& p, const std::vector<std::string>& here) {
+    std::vector<double> out;
+    if(p.balance==BalanceWins) {
+        std::vector<std::pair<std::string,int> > points=PartyPoints(p);
+        for(size_t i=0;i<here.size();++i) {
+            double n=0;
+            for(size_t k=0;k<points.size();++k) if(SameName(points[k].first,here[i])) n=points[k].second;
+            out.push_back(n);
+        }
+    } else if(p.balance==BalanceGamerscore) {
+        std::vector<GuestStats> stats=GuestStatsNow();
+        double sum=0;
+        int known=0;
+        for(size_t i=0;i<here.size();++i) {
+            double score=-1;
+            for(size_t k=0;k<stats.size();++k) if(SameName(stats[k].name,here[i])) score=stats[k].gamerscore;
+            out.push_back(score);
+            if(score>=0) { sum+=score; ++known; }
+        }
+        for(size_t i=0;i<out.size();++i) if(out[i]<0) out[i]=known ? sum/known : 0;
+    }
+    return out;
+}
+
+// Who won the round: team t of the latest draw (Marcus 2026-11-02, points
+// for the night), said by the Gamemaster on the dashboard or the console;
+// t < 0 takes the last one said back. said: a sentence for the screens.
+bool SayWinner(int t, const std::string& by, std::string& said, std::string& error) {
+    std::lock_guard<std::mutex> changing(PartyChangeLock);
+    Party p=CurrentParty();
+    if(t<0) {
+        if(p.wins.empty()) { error="No round's winner was said yet."; return false; }
+        RoundWin w=p.wins.back();
+        { std::lock_guard<std::mutex> hold(PartyLock); if(!TheParty.wins.empty()) TheParty.wins.pop_back(); }
+        Save();
+        said=w.team+"'s win in round "+Number(w.round)+" is taken back.";
+        Log("LAN party: %s (%s)",said.c_str(),by.c_str());
+        return true;
+    }
+    if(!p.drawn || t>=int(p.drawnTeams.size())) { error="Draw the teams first, then say which one won."; return false; }
+    RoundWin w;
+    w.round=p.wins.empty() ? 1 : p.wins.back().round+1;
+    w.game=p.game; w.team=TeamName(p.teamColours,t); w.players=p.drawnTeams[size_t(t)]; w.at=(long long)time(NULL);
+    if(!p.wins.empty() && p.wins.back().players==w.players && w.at-p.wins.back().at<WinAgainSeconds) { error=w.team+"'s win is counted already."; return false; }
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        TheParty.wins.push_back(w);
+        TidyParty(TheParty);
+    }
+    Save();
+    std::string players;
+    for(size_t i=0;i<w.players.size();++i) players+=(i ? (i+1==w.players.size() ? " and " : ", ") : "")+w.players[i];
+    said=w.team+" won round "+Number(w.round)+(w.game.empty() ? std::string() : " ("+w.game+")")+": a point each for "+players+".";
+    Log("LAN party: %s (%s)",said.c_str(),by.c_str());
+    Event(EventInfo,"%s won round %d%s",w.team.c_str(),w.round,w.game.empty() ? "" : (" of "+w.game).c_str());
+    PartyFeed("win","%s",said.c_str());
+    return true;
+}
+// POST /api/party/winner {team}: team (0-3) of the latest draw won this round; -1 takes the last back.
+void PartyWinner(const web::Value& v, web::Reply& out) {
+    int team=-2;
+    std::string error, said;
+    if(!Whole(v,"team",-1,TeamsMost-1,team,error)) { out.Error(400,error.empty() ? "Send the team that won (0-3), or -1 to take the last back." : error); return; }
+    if(!SayWinner(team,"on the dashboard",said,error)) { out.Error(400,error); return; }
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("said",said).Close('}');
+    out.body=j.Text();
+}
+
 // POST /api/party/raffle {teams, seed?}: draws teams from the guests who are
 // here and seats them on the party's consoles; seed draws the same teams again.
 std::atomic<unsigned> Draws(0);
@@ -5864,7 +6098,9 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
     unsigned from=seed>=0 ? unsigned(seed) : unsigned(time(NULL))*2654435761u^unsigned((unsigned long long)(Now()*1e6))^(++Draws*40503u);
     std::vector<Team> drawn;
     Seats seats;
-    if(!Raffle(GuestsHere(p),teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,p.consoles,seats,error)) { out.Error(400,error); return; }
+    std::vector<std::string> here=GuestsHere(p);
+    std::vector<double> strength=Strengths(p,here);
+    if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error,strength.empty() ? NULL : &strength) || !Seat(drawn,p.consoles,seats,error)) { out.Error(400,error); return; }
     int round;
     {
         std::lock_guard<std::mutex> hold(PartyLock);
@@ -5915,7 +6151,8 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, const s
         if(here.size()<2) { error=here.empty() ? "No one is here yet: tick the guests who are here." : "Tick at least two guests who are here, so the wheel has a choice."; return false; }
         PlanPickSpin(here,std::mt19937(from)()%here.size(),title,from,spin);
     } else {
-        if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error) || !Seat(drawn,on,seats,error)) return false;
+        std::vector<double> strength=Strengths(p,here);
+        if(!Raffle(here,teams,p.together,p.apart,p.last,from,drawn,note,error,strength.empty() ? NULL : &strength) || !Seat(drawn,on,seats,error)) return false;
         PlanTeamSpin(drawn,from,spin);
         // Every party console has an entry, empty when no one plays on it.
         for(size_t i=0;i<p.consoles.size();++i)
@@ -5939,6 +6176,7 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, const s
     for(size_t i=0;i<joining.size();++i) Log("%s joins the LAN party for the wheel.",joining[i].c_str());
     if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
     else Log("The raffle wheel is drawing %d teams from %d guests.",teams,int(here.size()));
+    PartyBusy();
     // Each guest's profile to the console they sit at, while the wheel turns.
     if(!pick) PushSeatProfilesSoon();
     return true;
@@ -5995,6 +6233,20 @@ bool OpenWheel(Console& c, std::string& how, std::string& error) {
     return true;
 }
 
+// The party's consoles that are on and don't show the party app (in a game
+// or in Aurora), but from.
+std::vector<Console*> PartyConsolesAway(const std::string& from) {
+    Party p=CurrentParty();
+    std::vector<Console*> known, out;
+    for(size_t i=0;i<p.consoles.size();++i) {
+        if(p.consoles[i]==from || ShowsWheel(p.consoles[i])) continue;
+        Console* c=ConsoleIfKnown(inet_addr(p.consoles[i].c_str()));
+        if(c) known.push_back(c);
+    }
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t i=0;i<known.size();++i) if(!known[i]->offline && (known[i]->answers || known[i]->connections>0)) out.push_back(known[i]);
+    return out;
+}
 std::vector<Console*> WheelToOpen(const std::string& from, bool all) {
     Party p=CurrentParty();
     Options o=Current();
@@ -6101,8 +6353,27 @@ std::vector<std::string> Fields(const std::string& text) {
 // openall (the party app opens on every console in Aurora, which join it).
 // reopen: this console's app went back to Aurora for this server's newer
 // one. "" or why not; said is a sentence for the screen.
+// "This is your 4th LAN: 12345 G so far." for a guest who was at earlier
+// LANs ("" for one who wasn't).
+std::string Ordinal(int n) {
+    int tens=n%100, ones=n%10;
+    return Number(n)+(tens>=11 && tens<=13 ? "th" : ones==1 ? "st" : ones==2 ? "nd" : ones==3 ? "rd" : "th");
+}
+std::string EarlierLans(const std::string& name) {
+    std::vector<GuestStats> stats=GuestStatsNow();
+    for(size_t i=0;i<stats.size();++i) {
+        const GuestStats& g=stats[i];
+        if(!SameName(g.name,name) || g.parties<=0) continue;
+        std::string out="This is your "+Ordinal(g.parties+1)+" LAN";
+        if(g.gamerscore>=0) out+=": "+Number(g.gamerscore)+" G so far";
+        else if(g.plays>0) out+=": "+Count(g.plays,"game","games")+" played so far";
+        return out+".";
+    }
+    return std::string();
+}
 std::string PartyEdit(const std::string& peer, const std::string& text, std::string& said) {
     std::vector<std::string> f=Fields(text);
+    PartyBusy();
     const std::string& what=f[0];
     Party p=CurrentParty();
     std::string error;
@@ -6129,6 +6400,10 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
         Log("%s joined the LAN party on %s.",(listed.empty() ? name : listed).c_str(),peer.c_str());
         MakeProfilesSoon(AutoMakeDelaySeconds);
         said=listed.empty() ? "Welcome, "+name+"!" : "Welcome back, "+listed+"!";
+        // Welcome back with what they did at earlier LANs (Marcus 2026-11-02).
+        std::string earlier=listed.empty() ? std::string() : EarlierLans(listed);
+        if(!earlier.empty()) said+=" "+earlier;
+        if(what=="join" || what=="add") PartyFeed("join","%s",listed.empty() ? (name+" joined the party").c_str() : said.c_str());
         return "";
     }
     bool master=p.gamemaster.empty() || p.gamemaster==peer || !ShowsWheel(p.gamemaster);
@@ -6191,6 +6466,24 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
             Put(change,"consoles",consoles);
         }
         return ChangeParty(change,error) ? "" : error;
+    }
+    if(what=="winner") {
+        int t=f.size()>=2 ? atoi(f[1].c_str()) : -2;
+        if(t<-1 || t>=TeamsMost) return "That isn't a team.";
+        return SayWinner(t,"on "+peer,said,error) ? "" : error;
+    }
+    if(what=="balance") {
+        if(f.size()<2) return "Say random, wins or gamerscore.";
+        Put(change,"balance",TextValue(f[1]));
+        return ChangeParty(change,error) ? "" : error;
+    }
+    if(what=="backall") {
+        // Back to the party on all (Marcus 2026-11-02): from a game too, which ends.
+        std::vector<Console*> back=PartyConsolesAway(peer);
+        OpenWheels(back);
+        if(!back.empty()) Log("%s brought %s back to the party.",peer.c_str(),Count(int(back.size()),"console","consoles").c_str());
+        said=back.empty() ? "Every party console that's on shows the party already." : "Bringing "+Count(int(back.size()),"console","consoles")+" back to the party.";
+        return "";
     }
     if(what=="openall") {
         int opened=0;
@@ -6332,6 +6625,13 @@ std::string PartyText(unsigned long long version, const std::string& address) {
     line("colours",{p.theme.accent,p.theme.accent2});
     if(!p.gamemaster.empty()) line("gamemaster",{nameOf(p.gamemaster),p.gamemaster});
     line("teams",{Number(p.teams)});
+    line("balance",{BalanceNames[p.balance]});
+    // The night's points (most first) and rounds won.
+    {
+        std::vector<std::pair<std::string,int> > points=PartyPoints(p);
+        for(size_t i=0;i<points.size() && i<PartyTextPointsMost;++i) line("points",{points[i].first,Number(points[i].second)});
+        if(!p.wins.empty()) line("won",{Number(p.wins.back().round),p.wins.back().team,p.wins.back().game});
+    }
     {
         std::string job=PartyAppJobFor(address);
         if(!job.empty()) line("makeprofiles",{job});
@@ -6597,15 +6897,21 @@ void PartyStart(const web::Value& v, web::Reply& out) {
     UpdatesJson(j,game,addresses);
     j.Close('}');
     out.body=j.Text();
+    if(started) {
+        { std::lock_guard<std::mutex> hold(PartyLock); TheParty.game=config::ToUtf8(WithoutIso(game.name)); }
+        Save();
+        PartyFeed("game","%s started on %s",config::ToUtf8(WithoutIso(game.name)).c_str(),Count(started,"console","consoles").c_str());
+    }
     Log("Start on all: %s started on %d of %s.",WithoutIso(game.name).c_str(),started,Count(int(results.size()),"console","consoles").c_str());
     Event(EventPlay,"%s started on %d of %s (Start on all)",WithoutIso(game.name).c_str(),started,Count(int(results.size()),"console","consoles").c_str());
 }
 
-// POST /api/party/power {action, consoles?}: Back to Aurora on all (aurora)
-// or Turn off all (off), on the party's consoles (or those named) at once.
+// POST /api/party/power {action, consoles?}: Back to Aurora on all (aurora),
+// Back to the party on all (party: the party app, from a game too) or Turn
+// off all (off), on the party's consoles (or those named) at once.
 void PartyPower(const web::Value& v, web::Reply& out) {
     std::string action, error;
-    if(!Text(v,"action",action) || (action!="aurora" && action!="off")) { out.Error(400,"Send action aurora or off."); return; }
+    if(!Text(v,"action",action) || (action!="aurora" && action!="off" && action!="party")) { out.Error(400,"Send action aurora, party or off."); return; }
     std::vector<std::string> addresses;
     if(!CommandConsoles(v,addresses,error)) { out.Error(400,error); return; }
     std::vector<std::string> errors(addresses.size());
@@ -6614,7 +6920,8 @@ void PartyPower(const web::Value& v, web::Reply& out) {
     for(size_t i=0;i<addresses.size();++i)
         threads.push_back(std::thread([&addresses,&errors,&done,&action,i]() {
             Console* c=AskedConsole(addresses[i],errors[i]);
-            done[i]=c && PowerOn(*c,action,errors[i]);
+            std::string how;
+            done[i]=c && (action=="party" ? OpenWheel(*c,how,errors[i]) : PowerOn(*c,action,errors[i]));
         }));
     for(size_t i=0;i<threads.size();++i) threads[i].join();
     web::Json j;
@@ -6740,17 +7047,53 @@ void SetOn(GuestProfile& p, const std::string& console, bool on) {
     std::vector<std::string>::iterator at=std::find(p.on.begin(),p.on.end(),console);
     if(on && at==p.on.end()) p.on.push_back(console);
     if(!on && at!=p.on.end()) p.on.erase(at);
+    std::vector<std::string>::iterator old=std::find(p.stale.begin(),p.stale.end(),console);
+    if(!on && old!=p.stale.end()) p.stale.erase(old);
+    if(!on && p.playedOn==console) { p.playedOn.clear(); p.stale.clear(); }
 }
 // p is on console now, as the record has it now (another console's copy
 // may have been noted meanwhile); p gets the record.
-void MarkProfileOn(GuestProfile& p, const std::string& console) {
+// fresh: its copy there is as new as the one on the console they played
+// on last (false: older, brought up to date later).
+void MarkProfileOn(GuestProfile& p, const std::string& console, bool fresh = true) {
     {
         std::lock_guard<std::mutex> hold(GuestLock);
         GuestProfile* had=GuestProfileNamed(GuestProfiles,p.name);
         if(had && had->xuid==p.xuid) p=*had;
     }
     SetOn(p,console,true);
+    std::vector<std::string>::iterator old=std::find(p.stale.begin(),p.stale.end(),console);
+    if(fresh && old!=p.stale.end()) p.stale.erase(old);
+    if(!fresh && old==p.stale.end() && !p.playedOn.empty() && p.playedOn!=console) p.stale.push_back(console);
     KeepGuestProfile(p);
+}
+// Progress follows the player (Marcus): name signed in or plays on console
+// with their guest profile (xuid), so the copy there is the newest and the
+// others are older from now on; PushSeatsOnce brings those up to date.
+void PlaysOn(const std::string& name, unsigned long long xuid, const std::string& console) {
+    char hex[24];
+    _snprintf_s(hex,sizeof(hex),_TRUNCATE,"%016llX",xuid);
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        GuestProfile* had=GuestProfileNamed(GuestProfiles,name);
+        if(!had || had->xuid.empty() || _stricmp(had->xuid.c_str(),hex)) return;
+        if(std::find(had->on.begin(),had->on.end(),console)==had->on.end()) had->on.push_back(console);
+        std::vector<std::string> stale;
+        for(size_t i=0;i<had->on.size();++i) if(had->on[i]!=console) stale.push_back(had->on[i]);
+        if(had->playedOn==console && had->stale==stale) return;
+        had->playedOn=console; had->stale=stale;
+    }
+    Save();
+}
+// The console with name's newest progress, when the copy on console is older
+// than it ("" when it isn't).
+std::string NewerOn(const std::string& name, const std::string& console) {
+    std::lock_guard<std::mutex> hold(GuestLock);
+    GuestProfile* had=GuestProfileNamed(GuestProfiles,name);
+    if(!had || had->playedOn.empty() || had->playedOn==console) return std::string();
+    if(std::find(had->stale.begin(),had->stale.end(),console)==had->stale.end()) return std::string();
+    if(std::find(had->on.begin(),had->on.end(),had->playedOn)==had->on.end()) return std::string();
+    return had->playedOn;
 }
 // A guest who signs in (or joins) on a console's party screen with an
 // offline profile of their own, one made there by hand: it becomes their
@@ -7307,24 +7650,46 @@ void SeatPushSet(const std::string& address, const std::string& state, int done,
 }
 // One guest's content folder: from the other consoles that have it (the
 // one that made it first), else the best copy kept here.
-bool SeatProfileFiles(const GuestProfile& p, const std::string& skip, const Options& o, std::map<std::string,std::string>& files, std::string& error) {
+// One guest's content folder from the console at address.
+bool ProfileFilesOn(const GuestProfile& p, const std::string& address, const Options& o, std::map<std::string,std::string>& files, std::string& error) {
+    files.clear();
+    Console* c=ConsoleIfKnown(inet_addr(address.c_str()));
+    if(!c) { error=address+" hasn't used NetDisc360 since it started"; return false; }
+    Busy busy(c);
+    FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+    std::string why;
+    if(ftp.Open() && ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,why)) return true;
+    error=why.empty() ? std::string(ftp.Error()) : why;
+    XboxLog(*c,"couldn't give %s's profile to copy: %s",p.name.c_str(),error.c_str());
+    return false;
+}
+// from: the console it came from ("" for the copy on this computer).
+bool SeatProfileFiles(const GuestProfile& p, const std::string& skip, const Options& o, std::map<std::string,std::string>& files, std::string& error, std::string* came = NULL) {
+    // The newest progress first (where they played last), then the one that made it.
     std::vector<std::string> from;
-    for(size_t i=0;i<p.on.size();++i) if(p.on[i]!=skip) from.insert(p.on[i]==p.madeOn ? from.begin() : from.end(),p.on[i]);
+    for(size_t i=0;i<p.on.size();++i) if(p.on[i]!=skip && p.on[i]!=p.playedOn) from.insert(p.on[i]==p.madeOn ? from.begin() : from.end(),p.on[i]);
+    if(!p.playedOn.empty() && p.playedOn!=skip && std::find(p.on.begin(),p.on.end(),p.playedOn)!=p.on.end()) from.insert(from.begin(),p.playedOn);
     for(size_t i=0;i<from.size();++i) {
-        Console* c=ConsoleIfKnown(inet_addr(from[i].c_str()));
-        if(!c) continue;
-        Busy busy(c);
-        FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
         std::string why;
-        files.clear();
-        if(ftp.Open() && ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,why)) return true;
-        XboxLog(*c,"couldn't give %s's profile to copy: %s",p.name.c_str(),why.empty() ? ftp.Error() : why.c_str());
+        if(ProfileFilesOn(p,from[i],o,files,why)) { if(came) *came=from[i]; return true; }
     }
+    if(came) came->clear();
     std::vector<ProfileCopy> copies=ProfileCopies(KitPath(ProfilesFolder(o),p.xuid));
     const ProfileCopy* best=BestProfileCopy(copies);
     if(best && OpenProfileCopy(o,*best,files,error)) return true;
     if(error.empty()) error="no console with it answers, and there's no copy of it on this computer";
     return false;
+}
+// Whether guest g is signed in on console c: on its party screen (seated
+// there), or as its Aurora says. Their profile there is never written then.
+bool SignedInHere(const GuestProfile& g, const std::string& address, const Console& c, const Options& o) {
+    Party p=CurrentParty();
+    {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        std::vector<const PartySignInRecord*> in=SignedIn(p,address);
+        for(size_t i=0;i<in.size();++i) if(in[i] && SameName(in[i]->name,g.name)) return true;
+    }
+    return SignedIn(c,o,g.xuid)==1;
 }
 void PushSeatsOnce() {
     Options o=Current();
@@ -7384,7 +7749,7 @@ void PushSeatsOnce() {
             return;
         }
     }
-    int copied=0, had=0;
+    int copied=0, had=0, updated=0;
     std::vector<std::string> failed;
     for(size_t k=0;k<todo.size();++k) {
         ConsoleTodo& t=todo[k];
@@ -7417,20 +7782,44 @@ void PushSeatsOnce() {
             if(!ftp.Open()) { problem=std::string("its FTP server doesn't answer: ")+ftp.Error(); break; }
             if(ftp.Enters(ContentFolderFtp(g.xuid).c_str())) {
                 // There already (or still from an earlier party).
-                ++done; ++had;
-                if(std::find(g.on.begin(),g.on.end(),t.address)==g.on.end()) MarkProfileOn(g,t.address);
+                ++done;
+                if(std::find(g.on.begin(),g.on.end(),t.address)==g.on.end()) MarkProfileOn(g,t.address,false);
+                // Progress follows the player: older than where they played
+                // last, it's brought up to date (not while they're signed in here).
+                std::string newer=NewerOn(g.name,t.address);
+                if(newer.empty() || SignedInHere(g,t.address,*c,o)) { ++had; continue; }
+                ftp.Close();
+                std::map<std::string,std::string> files;
+                Console* from=ConsoleIfKnown(inet_addr(newer.c_str()));
+                std::string fromWord=from ? ConsoleWord(*from) : newer;
+                SeatPushSet(t.address,"copying",done-1,total,g.name,note);
+                if(!ProfileFilesOn(g,newer,o,files,error)) {
+                    ++had;
+                    XboxLog(*c,"keeps its older copy of %s's profile for now: %s, with their newest progress, gave none (%s).",g.name.c_str(),fromWord.c_str(),error.c_str());
+                    continue;
+                }
+                if(!ftp.Open() || !WriteTree(ftp,ContentFolderFtp(g.xuid),files,error)) {
+                    problem="Couldn't bring "+g.name+"'s profile up to date: "+(error.empty() ? std::string(ftp.Error()) : error);
+                    --done;
+                    continue;
+                }
+                ftp.Close();
+                ++updated;
+                MarkProfileOn(g,t.address);
+                XboxLog(*c,"has %s's newest progress now (from %s).",g.name.c_str(),fromWord.c_str());
                 continue;
             }
             ftp.Close();
             std::map<std::string,std::string> files;
-            if(!SeatProfileFiles(g,t.address,o,files,error)) { problem=g.name+"'s profile: "+error; continue; }
+            std::string came;
+            if(!SeatProfileFiles(g,t.address,o,files,error,&came)) { problem=g.name+"'s profile: "+error; continue; }
             if(!ftp.Open() || !WriteTree(ftp,ContentFolderFtp(g.xuid),files,error)) {
                 problem="Couldn't copy "+g.name+"'s profile: "+(error.empty() ? std::string(ftp.Error()) : error);
                 continue;
             }
             ftp.Close();
             ++done; ++copied;
-            MarkProfileOn(g,t.address);
+            MarkProfileOn(g,t.address,came.empty() || g.playedOn.empty() || came==g.playedOn);
             XboxLog(*c,"has %s's guest profile (%s) now%s.",g.name.c_str(),g.gamertag.c_str(),wheel ? ", through the party wheel" : "");
         }
         if(!problem.empty()) {
@@ -7440,7 +7829,7 @@ void PushSeatsOnce() {
         }
         SeatPushSet(t.address,done==total ? "ready" : "failed",done,total,"",note);
     }
-    std::string result=Count(copied,"profile copied","profiles copied")+" to the party's consoles ("+Number(had)+" there already)";
+    std::string result=Count(copied,"profile copied","profiles copied")+" to the party's consoles ("+Number(had)+" there already"+(updated ? ", "+Number(updated)+" brought up to date" : std::string())+")";
     Log("Guest profiles for the party's consoles: %s.%s%s",result.c_str(),failed.empty() ? "" : " ",failed.empty() ? "" : failed[0].c_str());
     std::lock_guard<std::mutex> hold(GuestLock);
     Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
@@ -7575,6 +7964,7 @@ int ReadGuestStats(const std::string& address, const std::vector<std::string>& n
     FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) return 0;
     int read=0;
+    std::vector<std::pair<std::string,int> > earned;  // For the live feed.
     for(size_t i=0;i<wanted.size();++i) {
         std::vector<unsigned char> data;
         if(!ftp.Retrieve(ProfilePackageFtp(wanted[i].second).c_str(),data,size_t(64)<<20)) continue;
@@ -7585,12 +7975,14 @@ int ReadGuestStats(const std::string& address, const std::vector<std::string>& n
         std::lock_guard<std::mutex> hold(StatsLock);
         GuestStats& g=StatsOf(wanted[i].first);
         if(p.active && here && g.partyStart<0) g.partyStart=g.gamerscore>=0 ? g.gamerscore : stats.gamerscore;
+        if(p.active && here && g.gamerscore>=0 && stats.gamerscore>g.gamerscore) earned.push_back(std::make_pair(wanted[i].first,stats.gamerscore-g.gamerscore));
         g.gamerscore=std::max(g.gamerscore,stats.gamerscore);
         g.achievements=std::max(g.achievements,stats.achievements);
         g.readAt=(long long)time(NULL);
         ++read;
     }
     if(read) Save();
+    for(size_t i=0;i<earned.size();++i) PartyFeed("score","%s earned %d G",earned[i].first.c_str(),earned[i].second);
     return read;
 }
 
@@ -7980,6 +8372,7 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party/start") PartyStart(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/winner") PartyWinner(body,out);
     else if(r.method=="POST" && r.path=="/api/party/power") PartyPower(body,out);
     else if(r.method=="POST" && r.path=="/api/party/asset") PartyAsset(body,out);
     else if(r.method=="POST" && r.path=="/api/party/asset/remove") {
@@ -8236,6 +8629,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--aurora") o.aurora=args[++i];
         else if(hasValue && a=="--installed") o.installedFolders=args[++i];
         else if(hasValue && a=="--aurora-web-port") o.auroraWebPort=atoi(args[++i].c_str());
+        else if(hasValue && a=="--live-every") LiveEverySeconds=std::max(1.0,atof(args[++i].c_str()));  // For the tests.
         else if(hasValue && a=="--xbdm-port") o.xbdmPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--name-port") o.namePort=atoi(args[++i].c_str());  // For the tests.
         else if(hasValue && a=="--port") o.port=atoi(args[++i].c_str());
@@ -8405,6 +8799,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(WatchLoop).detach();
     std::thread(RateLoop).detach();
     std::thread(AuroraLoop).detach();
+    std::thread(LiveLoop).detach();
     std::thread(PingLoop).detach();
     std::thread(NamesLoop).detach();
     std::thread(SizeLoop).detach();

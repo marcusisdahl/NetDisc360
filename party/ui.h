@@ -40,11 +40,14 @@ struct Screen {
     Screen();
 };
 // The setup's tabs, and how many rows each has: Players (Add a player, then
-// every guest), Teams (how many, then each team's colour) and Consoles (Open
-// the party on all, then every console NetDisc360 knows).
-enum SetupTab { TabPlayers, TabTeams, TabConsoles, TabsCount };
+// every guest), Teams (how many, how they're drawn, then each team's
+// colour), Scores (which team won the round, and taking the last back) and Consoles (Open
+// the party on all, Back to the party on all, then every console NetDisc360 knows).
+enum SetupTab { TabPlayers, TabTeams, TabScores, TabConsoles, TabsCount };
 int SetupRows(const State& s, int tab);
 enum { SetupShown = 6 };  // Rows shown at once.
+// The Consoles tab's first rows: Open the party on all, Back to the party on all.
+enum { ConsoleActions = 2 };
 // The consoles to choose the Gamemaster from (those that are on), by
 // hostRow: indices into s.known; count of them.
 int HostChoices(const State& s, int* out);

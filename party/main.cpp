@@ -12,7 +12,8 @@
 // guest list and here, and get a guest profile. The Gamemaster's console
 // spins (Start for teams, X picks one guest) and sets the party up (RB):
 // who plays (ticked) and new players, how many teams and their colours, and
-// the party's consoles, with "Open the party on all consoles".
+// the party's consoles, with "Open the party on all consoles" and "Back to the
+// party on all" (from a game too).
 //
 // Once the wheel drew the teams, the screen turns to this console's players
 // (up to four, each in their team's colour) and asks them to sign in one
@@ -460,7 +461,12 @@ void SetupChange(party::Screen& f, int by) {
         if(n>=2 && n<=party::TeamsMost) QueueEdit("teams\t%d",n);
         return;
     }
-    int t=f.setupRow-1, count=s.paletteCount>0 ? s.paletteCount : party::TeamsMost;
+    if(f.setupRow==1) {
+        int b=(party::BalanceOf(s)+(by ? by : 1)+party::BalanceCount)%party::BalanceCount;
+        QueueEdit("balance\t%s",party::BalanceNames[b]);
+        return;
+    }
+    int t=f.setupRow-2, count=s.paletteCount>0 ? s.paletteCount : party::TeamsMost;
     int c=(s.teamColour[t]+(by ? by : 1)+count)%count;
     QueueEdit("colour\t%d\t%d",t,c);
 }
@@ -471,8 +477,13 @@ void SetupPress(party::Screen& f, int pad) {
         if(r==0) OpenKeyboard(pad,KeyAdd);
         else if(r-1<s.guestCount) QueueEdit("here\t%s\t%d",s.guests[r-1].name,s.guests[r-1].here ? 0 : 1);
     } else if(f.setupTab==party::TabTeams) SetupChange(f,0);
+    else if(f.setupTab==party::TabScores) {
+        if(r<s.teamCount) QueueEdit("winner\t%d",r);
+        else if(s.wonRound>0) QueueEdit("winner\t-1");
+    }
     else if(r==0) QueueEdit("openall");
-    else if(r-1<s.knownCount) QueueEdit("console\t%s\t%d",s.known[r-1].address,s.known[r-1].inParty ? 0 : 1);
+    else if(r==1) QueueEdit("backall");
+    else if(r-party::ConsoleActions<s.knownCount) QueueEdit("console\t%s\t%d",s.known[r-party::ConsoleActions].address,s.known[r-party::ConsoleActions].inParty ? 0 : 1);
 }
 bool SignedIn(int pad) { return XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn; }
 
@@ -652,8 +663,8 @@ void __cdecl main() {
             if(moved&XINPUT_GAMEPAD_DPAD_LEFT) SetupChange(frame,-1);
             if(moved&XINPUT_GAMEPAD_DPAD_RIGHT) SetupChange(frame,1);
             for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { SetupPress(frame,pad); break; }
-            if((any&XINPUT_GAMEPAD_Y) && frame.setupTab==party::TabConsoles && frame.setupRow>0 && frame.setupRow-1<st.knownCount)
-                QueueEdit("gamemaster\t%s",st.known[frame.setupRow-1].address);
+            if((any&XINPUT_GAMEPAD_Y) && frame.setupTab==party::TabConsoles && frame.setupRow>=party::ConsoleActions && frame.setupRow-party::ConsoleActions<st.knownCount)
+                QueueEdit("gamemaster\t%s",st.known[frame.setupRow-party::ConsoleActions].address);
         } else {
             if(frame.setup) frame.setup=false;  // No longer the Gamemaster's.
             if((any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) && !frame.copying) break;

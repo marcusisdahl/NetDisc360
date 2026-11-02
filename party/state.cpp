@@ -96,6 +96,9 @@ bool Parse(const char* text, unsigned length, State& s) {
             }
         }
         else if(!strcmp(key,"makeprofiles") && n>=1) FIELD(0,s.profileJob);
+        else if(!strcmp(key,"balance") && n>=1) FIELD(0,s.balance);
+        else if(!strcmp(key,"points") && n>=2 && s.pointCount<GuestsMost) { FIELD(0,s.pointName[s.pointCount]); s.points[s.pointCount++]=atoi(NUMBER(1)); }
+        else if(!strcmp(key,"won") && n>=3) { s.wonRound=atoi(NUMBER(0)); FIELD(1,s.wonTeam); FIELD(2,s.wonGame); }
         else if(!strcmp(key,"teamcolours")) { for(int t=0;t<n && t<TeamsMost;++t) s.teamColour[t]=atoi(NUMBER(t)); }
         else if(!strcmp(key,"guest") && n>=4 && s.guestCount<GuestsMost) {
             Guest& g=s.guests[s.guestCount++];
@@ -120,6 +123,13 @@ bool Parse(const char* text, unsigned length, State& s) {
     if(s.teams<2 || s.teams>TeamsMost) s.teams=2;
     s.valid=header;
     return header;
+}
+
+const char* const BalanceNames[BalanceCount]={"random","wins","gamerscore"};
+const char* const BalanceLabels[BalanceCount]={"At random","Even by wins","Even by gamerscore"};
+int BalanceOf(const State& s) {
+    for(int b=0;b<BalanceCount;++b) if(!strcmp(s.balance,BalanceNames[b])) return b;
+    return BalanceRandom;
 }
 
 Colour TeamColourOf(const State& s, int t) {

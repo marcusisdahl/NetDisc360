@@ -69,7 +69,16 @@ struct State {
     // "": none), while every party console shows the app: it gets the job
     // and the pictures from the server (PartyJobAsk) and answers there.
     char profileJob[24];
+    // How the raffle draws teams ("random", "wins", "gamerscore"), the
+    // night's points (most first), and the latest round won (wonRound 0: none).
+    char balance[16];
+    int pointCount; Name pointName[GuestsMost]; int points[GuestsMost];
+    int wonRound; Name wonTeam, wonGame;
 };
+enum { BalanceRandom, BalanceWins, BalanceGamerscore, BalanceCount };
+extern const char* const BalanceNames[BalanceCount];   // "random", "wins", "gamerscore"
+extern const char* const BalanceLabels[BalanceCount];  // "At random", "Even by wins", ...
+int BalanceOf(const State& s);
 // Team t's colour, with Red, Blue, Green and Yellow when the server doesn't say.
 Colour TeamColourOf(const State& s, int t);
 

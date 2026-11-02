@@ -70,7 +70,8 @@ struct Draw {
     std::vector<std::vector<int> > teams;
     std::vector<size_t> split, joined;  // The together pairs it splits, the apart pairs it puts on one team.
     bool repeat;
-    Draw() : repeat(false) {}
+    double spread;                      // Strongest team's average strength less the weakest's.
+    Draw() : repeat(false), spread(0) {}
     size_t Faults() const { return split.size()+joined.size()+(repeat ? 1 : 0); }
 };
 
@@ -239,6 +240,8 @@ void TidyParty(Party& p) {
         p.teamColours.swap(colours);
     }
     p.round=std::max(0,p.round);
+    if(p.balance<0 || p.balance>=BalanceCount) p.balance=BalanceRandom;
+    if(p.wins.size()>PartyWinsMost) p.wins.erase(p.wins.begin(),p.wins.begin()+long(p.wins.size()-PartyWinsMost));
     if(!KnownPreset(p.theme.preset)) p.theme.preset="classic";
     PartyTheme plain;
     if(!CleanColour(p.theme.accent,p.theme.accent)) p.theme.accent=plain.accent;
@@ -281,8 +284,10 @@ void TidyParty(Party& p) {
 }
 
 bool Raffle(const std::vector<std::string>& people, int teams, const std::vector<NamePair>& together, const std::vector<NamePair>& apart,
-            const std::vector<Team>& last, unsigned seed, std::vector<Team>& out, std::string& note, std::string& error) {
+            const std::vector<Team>& last, unsigned seed, std::vector<Team>& out, std::string& note, std::string& error,
+            const std::vector<double>* strength) {
     out.clear(); note.clear();
+    if(strength && strength->size()!=people.size()) strength=NULL;
     if(teams<TeamsLeast || teams>TeamsMost) { error="Draw 2, 3 or 4 teams."; return false; }
     size_t n=people.size(), k=size_t(teams);
     if(n<k) {
@@ -371,8 +376,19 @@ bool Raffle(const std::vector<std::string>& people, int teams, const std::vector
             for(size_t t=0;t<k;++t) for(size_t m=0;m<d.teams[t].size();++m) named[t].push_back(people[size_t(d.teams[t][m])]);
             d.repeat=TeamSet(named)==lastSet;
         }
-        if(!any || d.Faults()<best.Faults()) { best=d; any=true; }
-        if(!best.Faults()) break;
+        if(strength) {
+            double most=0, least=0;
+            for(size_t t=0;t<k;++t) {
+                double sum=0;
+                for(size_t m=0;m<d.teams[t].size();++m) sum+=(*strength)[size_t(d.teams[t][m])];
+                double average=d.teams[t].empty() ? 0 : sum/double(d.teams[t].size());
+                if(!t || average>most) most=average;
+                if(!t || average<least) least=average;
+            }
+            d.spread=most-least;
+        }
+        if(!any || d.Faults()<best.Faults() || (strength && d.Faults()==best.Faults() && d.spread<best.spread)) { best=d; any=true; }
+        if(!best.Faults() && (!strength || best.spread<=0)) break;
     }
     // Each team in the guest list's order.
     for(size_t t=0;t<k;++t) {
@@ -467,6 +483,15 @@ void SaveParty(config::File& f, const Party& p) {
     f.Set("party_seats",seats);
     f.Set("party_note",p.note);
     f.Set("party_kept",p.kept ? "1" : "0");
+    f.Set("party_balance",BalanceNames[p.balance>=0 && p.balance<BalanceCount ? p.balance : 0]);
+    // Each round won as "round|at|game|team|A,B".
+    std::vector<std::string> wins;
+    for(size_t i=0;i<p.wins.size();++i)
+        wins.push_back(Number(p.wins[i].round)+"|"+Number(p.wins[i].at)+"|"+Escaped(p.wins[i].game)+"|"+Escaped(p.wins[i].team)+"|"+TeamText(p.wins[i].players));
+    SetList(f,"party_wins","party_win",wins);
+    f.Set("party_game",p.game);
+    f.Set("party_started",Number(p.started));
+    f.Set("party_idle_off",Number(p.idleOffMinutes));
 }
 
 void SaveGuestStats(config::File& f, const std::vector<GuestStats>& stats) {
@@ -541,7 +566,37 @@ void LoadParty(const config::File& f, Party& p) {
     }
     p.note=f.Get("party_note");
     p.kept=f.Get("party_kept")=="1";
+    std::string balance=f.Get("party_balance");
+    for(int b=0;b<BalanceCount;++b) if(balance==BalanceNames[b]) p.balance=b;
+    std::vector<std::string> wins=GetList(f,"party_wins","party_win");
+    for(size_t i=0;i<wins.size();++i) {
+        std::vector<std::string> parts=Split(wins[i],'|');
+        if(parts.size()<5) continue;
+        RoundWin w;
+        w.round=atoi(parts[0].c_str()); w.at=atoll(parts[1].c_str());
+        w.game=Unescaped(parts[2]); w.team=Unescaped(parts[3]); w.players=ReadTeam(parts[4]);
+        p.wins.push_back(w);
+    }
+    p.game=f.Get("party_game");
+    p.started=f.Number("party_started",0);
+    p.idleOffMinutes=int(std::max(0LL,std::min((long long)IdleOffMost,f.Number("party_idle_off",0))));
     TidyParty(p);
+}
+
+std::vector<std::pair<std::string,int> > PartyPoints(const Party& p) {
+    std::vector<std::pair<std::string,int> > out;
+    for(size_t i=0;i<p.wins.size();++i)
+        for(size_t m=0;m<p.wins[i].players.size();++m) {
+            const std::string& name=p.wins[i].players[m];
+            size_t k=0;
+            while(k<out.size() && !SameName(out[k].first,name)) ++k;
+            if(k==out.size()) out.push_back(std::make_pair(GuestNamed(p,name).empty() ? name : GuestNamed(p,name),0));
+            ++out[k].second;
+        }
+    std::stable_sort(out.begin(),out.end(),[](const std::pair<std::string,int>& a, const std::pair<std::string,int>& b) {
+        return a.second!=b.second ? a.second>b.second : Folded(a.first)<Folded(b.first);
+    });
+    return out;
 }
 
 // The raffle wheel -----------------------------------------------------------
@@ -632,6 +687,8 @@ double SpinAngle(const Spin& spin, double ms, int* step, bool* stopped) {
     if(stopped) *stopped=still;
     return angle;
 }
+
+const char* const BalanceNames[BalanceCount]={"random","wins","gamerscore"};
 
 const TeamColour TeamPalette[TeamColoursCount]={
     {"Red","#e5483e","#b3261e","#ff6b61",false},

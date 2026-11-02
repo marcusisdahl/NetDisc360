@@ -38,6 +38,11 @@ struct GuestProfile {
     // by NetDisc360: copied to the others all the same, but never removed
     // from madeOn.
     bool adopted;
+    // Progress follows the player: the console they last signed in or
+    // played on (its copy is the newest), and the consoles whose copy is
+    // older than that one's, brought up to date when they can be.
+    std::string playedOn;
+    std::vector<std::string> stale;
     GuestProfile() : made(0), adopted(false) {}
 };
 

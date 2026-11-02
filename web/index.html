@@ -599,6 +599,29 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .scores .bar span { display: block; height: 100%; border-radius: 99px; background: var(--accent); transition: width .6s ease-out; }
 .scores .top1 .bar span { background: linear-gradient(90deg, var(--accent), #e3b505); }
 .scores b { font-variant-numeric: tabular-nums; font-size: 13.5px; }
+.who-won { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.who-won .btn { border-left: 5px solid var(--team); }
+.won-last { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.recap { padding: 12px 14px; border-radius: 10px; background: var(--hover); margin: 0 0 14px; }
+.recap h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+.recap p { margin: 0; color: var(--muted); font-size: 13px; }
+.balance { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; font-size: 13px; }
+.screen-points { background: rgba(0,0,0,.34); border-radius: clamp(10px, 1vw, 22px); padding: clamp(12px, 1.2vw, 26px); }
+.screen-points h2 { margin: 0 0 .4em; font-size: 1.05em; text-transform: uppercase; letter-spacing: .05em; opacity: .9; display: flex; align-items: center; gap: .4em; }
+.screen-points ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .4em .9em; }
+.screen-points li { font-size: clamp(18px, 1.7vw, 40px); font-weight: 700; }
+.screen-points li b { color: var(--glow); margin-left: .3em; font-variant-numeric: tabular-nums; }
+.screen-points .last { margin-top: .5em; font-size: .8em; opacity: .85; }
+.screen-recap { text-align: center; padding: clamp(16px, 3vh, 48px); background: rgba(0,0,0,.38); border-radius: clamp(12px, 1.2vw, 26px); }
+.screen-recap small { display: block; text-transform: uppercase; letter-spacing: .08em; opacity: .85; font-size: .8em; }
+.screen-recap h2 { margin: .15em 0; font-size: clamp(40px, 6vw, 140px); line-height: 1.05; overflow-wrap: anywhere; }
+.screen-recap p { margin: .3em 0 0; font-size: 1.1em; opacity: .9; }
+.screen-feed { list-style: none; margin: 0; padding: 0; display: grid; gap: .35em; }
+.screen-feed li { display: flex; align-items: center; gap: .5em; padding: .35em .7em; border-radius: .5em; background: rgba(0,0,0,.3); font-size: clamp(16px, 1.35vw, 32px); font-weight: 650; }
+.screen-feed li:first-child { background: rgba(255,255,255,.16); animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
+.screen-feed li .when { margin-left: auto; opacity: .7; font-size: .8em; font-weight: 600; }
+.idle-off { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.idle-off select { width: auto; }
 .bests { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 14px; }
 .bests:empty { display: none; }
 .best { display: flex; flex-direction: column; padding: 10px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line); min-width: 0; }
@@ -2746,7 +2769,7 @@ Pages.party = root => {
           h('div.card-body', h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
             h('button.btn.ghost', { title: 'The names typed take the place of the guest list kept from before', onclick: () => addGuests(true) }, ic('list', 'sm'), 'New list')), guests.el),
           h('div.card-foot', profiles.el)),
-        card('trophy', 'Scoreboard', h('span.sub', 'gamerscore and play time'), null, scores.el)),
+        card('trophy', 'Scoreboard', h('span.sub', 'rounds won, gamerscore and play time'), null, scores.el)),
       h('div.stack',
         h('div.card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '3'), h('h2', 'Teams')), h('div.card-body', raffle.el,
           h('details.party-rules', h('summary', ic('link', 'sm'), h('b', 'Rules'), rulesCount, ic('chevron-down', 'sm chev')), rules.el))),
@@ -3061,10 +3084,40 @@ Pages.party = root => {
   // The scoreboard: the players by gamerscore (earned tonight, while the party
   // is on and someone earned some), and who played the most and came the most.
   function drawScores(p) {
+    return [drawPoints(p), drawGamerscore(p)];
+  }
+  // Who won the round (the Gamemaster says it after each game), the night's
+  // points, and once the party ended, its recap.
+  function drawPoints(p) {
+    const wins = p.wins || [], points = p.points || [], d = p.drawn && p.drawn.teams.length ? p.drawn : null, last = wins[wins.length - 1];
+    if (!p.active) {
+      if (!wins.length) return null;
+      const top = points.length ? points.filter(x => x.points === points[0].points) : [];
+      const games = [...new Set(wins.map(w => w.game).filter(Boolean))];
+      return h('div.recap', h('h3', ic('trophy', 'sm'), top.length ? 'Champion' + (top.length > 1 ? 's' : '') + ' of the last party: ' + top.map(x => x.name).join(' & ') : 'The last party'),
+        h('p', plural(wins.length, 'round') + ' won' + (top.length ? ', ' + plural(top[0].points, 'point') + (top.length > 1 ? ' each' : '') : '') + (games.length ? ' · ' + games.join(', ') : '') + '.'));
+    }
+    return [
+      d ? h('div', h('p.score-what', 'Who won this round?' + (p.game ? ' (' + p.game + ')' : '')), h('div.who-won', d.teams.map((team, i) => h('button.btn.small.' + teamLook(i, p).cls,
+        { 'data-focus': 'won-' + i, title: 'A point each for ' + team.join(', '), onclick: e => sayWinner(i, e.currentTarget) }, ic('trophy', 'sm'), teamName(i, p))))) : null,
+      last ? h('div.won-last', ic('history', 'sm'), h('span', 'Round ' + last.round + ': ' + last.team + ' won' + (last.game ? ' (' + last.game + ')' : '')),
+        h('button.btn.small.ghost', { 'data-focus': 'won-undo', onclick: e => sayWinner(-1, e.currentTarget) }, 'Take back')) : null,
+      points.length ? [h('p.score-what', 'Points tonight'), h('ol.scores', points.slice(0, 10).map((x, i) => h('li' + (i < 3 ? '.top' + (i + 1) : ''),
+        h('span.rank', i < 3 ? ic('medal', 'sm') : String(i + 1)), h('span.name', x.name),
+        h('span.bar', h('span', { style: { width: Math.max(2, x.points / points[0].points * 100) + '%' } })), h('b', plural(x.points, 'point')))))] : null,
+    ];
+  }
+  async function sayWinner(team, button) {
+    button.disabled = true;
+    try { const r = await api('party/winner', { team }); await refresh(); toast(r.said); }
+    catch (e) { toast(e.message, true); }
+    finally { button.disabled = false; }
+  }
+  function drawGamerscore(p) {
     const all = p.guests.filter(g => g.stats && (g.stats.readAt || g.stats.playSeconds || g.stats.parties));
     // While the party is on, those here; otherwise everyone on the list.
     const rows = p.active && all.some(g => g.here) ? all.filter(g => g.here) : all;
-    if (!rows.length) return h('div.players-empty', ic('trophy'), h('p', 'The scores show here once the players’ profiles are read: when a game ends, or with Read gamerscore under Players.'));
+    if (!rows.length) return (p.wins || []).length ? null : h('div.players-empty', ic('trophy'), h('p', 'The scores show here once the players’ profiles are read: when a game ends, or with Read gamerscore under Players.'));
     const tonight = p.active && rows.some(g => g.stats.earned > 0);
     const value = g => tonight ? g.stats.earned : g.stats.gamerscore;
     const ranked = rows.filter(g => g.stats.readAt).sort((a, b) => value(b) - value(a) || a.name.localeCompare(b.name)), top = Math.max(1, ...ranked.map(value));
@@ -3221,6 +3274,11 @@ Pages.party = root => {
       h('div.raffle-bar', h('div.segmented', { role: 'group', 'aria-label': 'How many teams' }, [2, 3, 4].map(k => h('button', { class: k === n ? 'on' : '', 'aria-pressed': String(k === n), 'data-focus': 'teams-' + k,
         disabled: shuffling, onclick: () => { if (k !== n) edit({ teams: k }); } }, k + ' teams'))), h('span.muted', status)),
       drawColours(p),
+      h('div.balance', h('span.muted', 'Teams drawn'), h('div.segmented', { role: 'group', 'aria-label': 'How the teams are drawn' },
+        [['random', 'At random'], ['wins', 'Even by wins'], ['gamerscore', 'Even by gamerscore']].map(([k, label]) => h('button', { class: (p.balance || 'random') === k ? 'on' : '',
+          'aria-pressed': String((p.balance || 'random') === k), 'data-focus': 'balance-' + k, disabled: shuffling,
+          title: k === 'wins' ? 'The players with the most points tonight are spread over the teams' : k === 'gamerscore' ? 'The players with the most gamerscore are spread over the teams' : 'Any draw that follows the rules',
+          onclick: () => { if ((p.balance || 'random') !== k) edit({ balance: k }); } }, label)))),
       grid,
       d && d.note && !shuffling ? h('div.party-note', ic('info', 'sm'), h('span', d.note)) : null,
       raffleButtons(p, shuffling, d),
@@ -3348,9 +3406,10 @@ Pages.party = root => {
     const games = startable(p), g = games.find(x => x.name === chosen) || games[0];
     const buttons = h('div.party-buttons',
       h('button.btn.primary', { disabled: !g, onclick: e => startAll(g, e.currentTarget) }, ic('play', 'sm'), 'Start on all'),
+      h('button.btn', { title: 'Opens the LAN party app on every party console, from a game too', onclick: e => powerAll('party', e.currentTarget) }, ic('party-popper', 'sm'), 'Back to the party on all'),
       h('button.btn', { onclick: e => powerAll('aurora', e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Back to Aurora on all'),
       h('button.btn.danger', { onclick: e => powerAll('off', e.currentTarget) }, ic('power', 'sm'), 'Turn off all'));
-    if (!g) return [h('p.muted', { style: { margin: 0 } }, 'No game is on every party console yet. A console has a game once NetDisc360 added its tile there, or when it’s installed on it.'), buttons];
+    if (!g) return [h('p.muted', { style: { margin: 0 } }, 'No game is on every party console yet. A console has a game once NetDisc360 added its tile there, or when it’s installed on it.'), buttons, idleOff(p)];
     const link = games.filter(x => x.systemLink), other = games.filter(x => !x.systemLink);
     const option = x => h('option', { value: x.name, selected: x === g }, x.name + (x.systemLink && x.perConsole ? ' · ' + x.perConsole + ' per console' : ''));
     const select = h('select.input', { 'aria-label': 'The game to start', 'data-focus': 'game', onchange: e => {
@@ -3381,8 +3440,16 @@ Pages.party = root => {
         crowded.map((ip, i) => d.seats[ip].length + (i ? ' at ' : ' sit at ') + ip).join(', ') + '.')) : null,
       g.systemLink && g.total && here > g.total ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + g.total + ' in all over System Link; ' + here + ' guests are here.')) : null,
       buttons,
+      idleOff(p),
       h('p.hint', 'Let everyone sign in to their profile in Aurora first, then press Start on all. Nothing starts by itself.'),
     ];
+  }
+  // Turn off all when idle: the party's consoles turn off once no one played or did anything for the party for that long.
+  function idleOff(p) {
+    const now = p.idleOffMinutes || 0;
+    return h('label.idle-off', ic('moon', 'sm'), 'Turn off all when idle for',
+      h('select.input', { 'data-focus': 'idle-off', onchange: e => edit({ idleOffMinutes: Number(e.target.value) }) },
+        [[0, 'never'], [30, '30 minutes'], [60, '1 hour'], [120, '2 hours']].map(([m, label]) => h('option', { value: m, selected: m === now }, label))));
   }
   async function startAll(g, button) {
     button.disabled = true;
@@ -3409,27 +3476,28 @@ Pages.party = root => {
     const ends = playingNow.length ? [h('p', { style: { marginBottom: 0 } }, 'The game ends on ' + playingNow.map(c => cName(c) + ' (' + c.mounted + ')').join(', ') + '.')] : [];
     if (action === 'off' && !(await confirmBox('Turn off every party console?', [h('p', { style: { marginTop: 0 } }, plural(p.consoles.length, 'console') + ' turn off as with their power button.'), ends], 'Turn off all', true))) return;
     if (action === 'aurora' && playingNow.length && !(await confirmBox('Back to Aurora on every console?', ends, 'Back to Aurora', true))) return;
+    if (action === 'party' && playingNow.length && !(await confirmBox('Back to the party on every console?', ends, 'Back to the party', true))) return;
     button.disabled = true;
     try {
       await queue;
       const r = await api('party/power', { action });
       shown = { kind: action, at: Date.now() / 1000, results: r.results };
       const ok = r.results.filter(x => x.ok).length;
-      toast((action === 'off' ? 'Turning off ' : 'Back to Aurora on ') + ok + ' of ' + plural(r.results.length, 'console'), ok < r.results.length);
+      toast((action === 'off' ? 'Turning off ' : action === 'party' ? 'Back to the party on ' : 'Back to Aurora on ') + ok + ' of ' + plural(r.results.length, 'console'), ok < r.results.length);
     } catch (e) { toast(e.message, true); }
     finally { button.disabled = false; update(); }
   }
   function drawResults() {
     if (!shown) return null;
     const tu = shown.titleUpdates, gm = S.party.gamemaster;
-    const said = r => r.ok ? (shown.kind === 'off' ? 'Turning off' : shown.kind === 'aurora' ? 'Aurora is starting' : r.how === 'installed' ? 'Starting the copy installed on it' : 'Starting from its NetISO tile') : r.error;
+    const said = r => r.ok ? (shown.kind === 'off' ? 'Turning off' : shown.kind === 'aurora' ? 'Aurora is starting' : shown.kind === 'party' ? 'The party app is opening' : r.how === 'installed' ? 'Starting the copy installed on it' : 'Starting from its NetISO tile') : r.error;
     return h('div.party-results',
       tu && tu.mismatch ? h('div.party-warn.big', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
         h('p', 'The consoles run different title updates of ' + shown.game + ', so they may not find each other over System Link.' + (tu.newest ? ' The newest is ' + tu.newest + '; use it on each console, in Aurora.' : '')),
         h('ul', Object.keys(tu.byConsole).map(ip => h('li', h('span.mono', ip), h('span', tu.byConsole[ip] === 'none' ? 'None' : tu.byConsole[ip])))))) : null,
       tu && tu.unread && tu.unread.length ? h('div.party-note', ic('info', 'sm'), h('span', 'The title updates on ' + tu.unread.join(', ') + ' couldn’t be read (from Aurora, over FTP), so ' +
         (tu.unread.length === 1 ? 'that console was' : 'those consoles were') + ' left out of the comparison.')) : null,
-      h('div.results-head', h('b', shown.kind === 'start' ? 'Start on all: ' + shown.game : shown.kind === 'off' ? 'Turn off all' : 'Back to Aurora on all'), h('span.muted', clock(shown.at))),
+      h('div.results-head', h('b', shown.kind === 'start' ? 'Start on all: ' + shown.game : shown.kind === 'off' ? 'Turn off all' : shown.kind === 'party' ? 'Back to the party on all' : 'Back to Aurora on all'), h('span.muted', clock(shown.at))),
       h('ul.results', shown.results.map(r => h('li.' + (r.ok ? 'ok' : 'bad'), ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
         h('div', h('b', r.address + (r.address === gm ? ' (Gamemaster)' : '')), h('div.muted', said(r)))))));
   }
@@ -3457,13 +3525,13 @@ Pages.party = root => {
     const named = S.consoles.map(c => c.address + '=' + c.name);
     guests.show(JSON.stringify([p.guests, prof && prof.profiles, profileConsoles(p), named]), () => drawGuests(p));
     profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), named, S.party.statsReading]), () => drawProfiles(p));
-    scores.show(JSON.stringify([p.active, p.guests]), () => drawScores(p));
+    scores.show(JSON.stringify([p.active, p.guests, p.wins, p.points, p.drawn, p.teamColours, p.game]), () => drawScores(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
     const sp = S.party.spin && spinLive(S.party.spin) ? S.party.spin : null;
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
-    raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn]), () => drawRaffle(p));
+    raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn, p.balance]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
-    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game]), () => drawStart(p));
+    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
   function route() {
@@ -3705,10 +3773,22 @@ function bigScreen(parent) {
           : h('div.screen-callout.waiting', h('span', spinDone(sp) ? 'The teams are ready!' : got.length ? 'Who’s next?' : 'Who’s first?'))) : null;
         return h('div.screen-spin', h('div.screen-wheel', wheel.el, wait ? h('div.screen-wait', h('small', 'Turns in'), h('b', wait)) : null), h('div.screen-side', callout, side));
       };
+      const wins = p.wins || [], points = p.points || [], lastWin = wins[wins.length - 1];
+      const champions = points.length ? points.filter(x => x.points === points[0].points) : [];
+      const pointsBox = p.active && points.length ? h('div.screen-points', h('h2', ic('trophy'), 'Points tonight'),
+        h('ol', points.slice(0, 12).map(x => h('li', x.name, h('b', x.points)))),
+        lastWin ? h('div.last', 'Round ' + lastWin.round + ': ' + lastWin.team + ' won' + (lastWin.game ? ' (' + lastWin.game + ')' : '')) : null) : null;
+      const feedIcon = { join: 'user-plus', win: 'trophy', game: 'play', score: 'medal' };
+      const feed = p.active && (p.feed || []).length ? h('ul.screen-feed', { 'aria-live': 'polite' }, p.feed.slice(0, 4).map(x => h('li', ic(feedIcon[x.kind] || 'sparkles'), h('span', x.text),
+        h('span.when', new Date(x.at * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))))) : null;
       fill(body,
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,
           h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), time),
-        p.active ? null : h('div.screen-soon', 'The LAN party starts soon'),
+        p.active ? null : wins.length && champions.length ? h('div.screen-recap', h('small', 'Champion' + (champions.length > 1 ? 's' : '') + ' of the night'),
+          h('h2', champions.map(x => x.name).join(' & ')),
+          h('p', plural(wins.length, 'round') + ' played · ' + plural(champions[0].points, 'win') + (champions.length > 1 ? ' each' : '') + '. Thanks for coming!')) : h('div.screen-soon', 'The LAN party starts soon'),
+        pointsBox,
+        feed,
         sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls,
           h('h2', teamName(i)), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
           : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,

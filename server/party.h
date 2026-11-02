@@ -70,6 +70,22 @@ struct Spin {
 };
 enum { SpinLeadMs = 1500, SpinPauseMs = 2500, SpinFirstMs = 7500, SpinTitleMost = 64 };
 
+// Who won a round (Marcus 2026-11-02: points for the night): the Gamemaster
+// says which team won the game just played; each of its players gets a point.
+struct RoundWin {
+    int round;                           // The party's round (Party::round) it was.
+    std::string game;                    // The game played, as Start on all started it ("" not known).
+    std::string team;                    // Its name then ("Team Red").
+    Team players;
+    long long at;                        // When it was said (Unix seconds).
+    RoundWin() : round(0), at(0) {}
+};
+enum { PartyWinsMost = 200, IdleOffMost = 480 };
+// How the raffle draws teams: at random, or as even as it can by the night's
+// wins (points) or by gamerscore (GuestStats), still following the rules.
+enum { BalanceRandom, BalanceWins, BalanceGamerscore, BalanceCount };
+extern const char* const BalanceNames[BalanceCount];  // "random", "wins", "gamerscore".
+
 struct Party {
     bool active;
     std::string name;
@@ -89,7 +105,14 @@ struct Party {
     std::string note;
     std::vector<Team> last;              // The teams kept last, which the next raffle doesn't draw again.
     Spin spin;                           // The latest wheel; gone (id kept) once its draw is changed some other way.
-    Party() : active(false), teams(2), round(0), drawn(false), kept(false) { for(int t=0;t<TeamsMost;++t) teamColours.push_back(t); }
+    int balance;                         // BalanceRandom, BalanceWins or BalanceGamerscore.
+    std::vector<RoundWin> wins;          // This party's rounds won, oldest first (cleared when a new party starts).
+    std::string game;                    // The game Start on all started last.
+    long long started;                   // When this party started (Unix seconds; 0 not known).
+    // Turn off all when idle: the party's consoles turn off once none of
+    // them played or did anything for the party for this long (0: never).
+    int idleOffMinutes;
+    Party() : active(false), teams(2), round(0), drawn(false), kept(false), balance(BalanceRandom), started(0), idleOffMinutes(0) { for(int t=0;t<TeamsMost;++t) teamColours.push_back(t); }
 };
 
 // A name as typed (a guest's, the party's, a birthday's person): trimmed,
@@ -118,8 +141,14 @@ void TidyParty(Party& party);
 // draw of RaffleTries follows them all, the one that breaks the fewest is
 // returned, and note says what it couldn't follow. False, with why in
 // error, when the teams can't be drawn at all.
+// strength (one for each of people, or NULL): among the draws that follow the
+// rules best, the one whose teams' average strengths are closest.
 bool Raffle(const std::vector<std::string>& people, int teams, const std::vector<NamePair>& together, const std::vector<NamePair>& apart,
-            const std::vector<Team>& last, unsigned seed, std::vector<Team>& out, std::string& note, std::string& error);
+            const std::vector<Team>& last, unsigned seed, std::vector<Team>& out, std::string& note, std::string& error,
+            const std::vector<double>* strength = NULL);
+// Each guest's points this party (a round won: one), most first, then by
+// name; those with none left out.
+std::vector<std::pair<std::string,int> > PartyPoints(const Party& party);
 // Seats teams on consoles (the Gamemaster's first): each team on consoles of
 // its own, in parts of SeatsPerConsole, the biggest part on the first
 // console; when there are fewer consoles than that takes, small teams share

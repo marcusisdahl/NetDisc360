@@ -437,7 +437,12 @@ void SaveGuestProfiles(config::File& f, const std::vector<GuestProfile>& profile
         const GuestProfile& p=profiles[i];
         std::string on;
         for(size_t k=0;k<p.on.size();++k) on+=(k ? "," : "")+Escaped(p.on[k]);
-        f.Set(("guest_profile"+Number((long long)i+1)).c_str(),Escaped(p.name)+"|"+Escaped(p.gamertag)+"|"+p.xuid+"|"+Number(p.made)+"|"+Escaped(p.madeOn)+"|"+on+(p.adopted ? "|adopted" : ""));
+        std::string stale;
+        for(size_t k=0;k<p.stale.size();++k) stale+=(k ? "," : "")+Escaped(p.stale[k]);
+        std::string line=Escaped(p.name)+"|"+Escaped(p.gamertag)+"|"+p.xuid+"|"+Number(p.made)+"|"+Escaped(p.madeOn)+"|"+on;
+        if(p.adopted || !p.playedOn.empty()) line+=std::string("|")+(p.adopted ? "adopted" : "");
+        if(!p.playedOn.empty()) line+="|"+Escaped(p.playedOn)+"|"+stale;
+        f.Set(("guest_profile"+Number((long long)i+1)).c_str(),line);
     }
     for(long long i=(long long)count+1;i<=before;++i) f.Remove(("guest_profile"+Number(i)).c_str());
 }
@@ -454,6 +459,11 @@ void LoadGuestProfiles(const config::File& f, std::vector<GuestProfile>& profile
         std::vector<std::string> on=Split(parts[5],',');
         for(size_t k=0;k<on.size();++k) if(!on[k].empty()) p.on.push_back(Unescaped(on[k]));
         p.adopted=parts.size()>=7 && parts[6]=="adopted";
+        if(parts.size()>=9) {
+            p.playedOn=Unescaped(parts[7]);
+            std::vector<std::string> stale=Split(parts[8],',');
+            for(size_t k=0;k<stale.size();++k) if(!stale[k].empty()) p.stale.push_back(Unescaped(stale[k]));
+        }
         if(!GuestProfileNamed(profiles,p.name)) profiles.push_back(p);
     }
 }

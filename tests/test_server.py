@@ -2470,6 +2470,135 @@ print('lua ok')
         self.assertIn("Guest profiles for the party's consoles: 3 profiles copied to the party's consoles (1 there already).", out)
         self.assertIn("Guest profiles for the party's consoles: 0 profiles copied to the party's consoles (4 there already).", out)
 
+    def test_progress_follows_the_player_to_the_other_consoles(self):
+        # Ola plays on the second console (the wheel app's FTP there); once
+        # drawn to the first, her newest profile and saves are copied there
+        # over her older copy (Marcus 2026-11-02: switch consoles freely).
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other = os.path.join(self.tmp.name, "xbox2")
+        os.makedirs(os.path.join(other, "Hdd1"))
+        app = subprocess.Popen([build_party_ftp(), os.path.join(other, "Hdd1"), "127.0.0.2", str(self.ftp.server_address[1])],
+                               stdout=subprocess.PIPE, text=True)
+        self.addCleanup(app.stdout.close)
+        self.addCleanup(app.wait)
+        self.addCleanup(app.kill)
+        self.assertEqual(app.stdout.readline().strip(), "ready")
+        ola = "E00000000000A001"
+
+        def put(root, package, save):
+            content = os.path.join(root, "Hdd1", "Content", ola)
+            os.makedirs(os.path.join(content, "FFFE07D1", "00010000"), exist_ok=True)
+            os.makedirs(os.path.join(content, "4D5307E6", "00000001"), exist_ok=True)
+            with open(os.path.join(content, "FFFE07D1", "00010000", ola), "wb") as f:
+                f.write(package)
+            with open(os.path.join(content, "4D5307E6", "00000001", "save"), "wb") as f:
+                f.write(save)
+
+        def read(root, *path):
+            with open(os.path.join(root, "Hdd1", "Content", ola, *path), "rb") as f:
+                return f.read()
+        put(self.xbox, b"CON old" + bytes(4096), b"old save")
+        put(other, b"CON old" + bytes(4096), b"old save")
+        config = os.path.join(self.tmp.name, "seats.ini")
+        with open(config, "w", newline="") as f:
+            f.write("guest_profiles=1\r\nguest_profile1=Ola|Ola|%s|1793400000|127.0.0.1|127.0.0.1,127.0.0.2\r\n" % ola)
+        aurora = AuroraWeb()
+        self.addCleanup(aurora.close)
+        self.web = free_port()
+        server, port = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        stop = threading.Event()
+
+        def wheel():
+            while not stop.is_set():
+                try:
+                    with connect_from("127.0.0.2", port) as conn:
+                        conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, 0, 0))
+                        exact(conn, struct.unpack(">I", exact(conn, 4))[0])
+                except OSError:
+                    pass
+                stop.wait(1)
+        threading.Thread(target=wheel, daemon=True).start()
+        self.addCleanup(stop.set)
+
+        def sign_in(address, seat, controller, xuid, gamertag=b"Ola"):
+            with connect_from(address, port) as conn:
+                conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5049, seat | (controller << 8), xuid, len(gamertag)) + gamertag)
+                return exact(conn, struct.unpack(">I", exact(conn, 4))[0]).decode("utf-8")
+
+        def settled(address):
+            to = self.json("GET", "/api/state")["party"]["profilesTo"].get(address, {})
+            return to.get("state") not in (None, "copying")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 20))
+            self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.1", "127.0.0.2"],
+                                             "guests": [{"name": "Ola", "here": True}, {"name": "Kari", "here": True}]})
+            self.assertTrue(self.wait_for(lambda: "127.0.0.2" in self.json("GET", "/api/state")["party"]["wheelOn"], 10))
+            self.json("POST", "/api/party/seats", {"seats": {"127.0.0.2": ["Ola"], "127.0.0.1": ["Kari"]}})
+            self.assertTrue(self.wait_for(lambda: settled("127.0.0.1") and settled("127.0.0.2"), 30))
+            # She signs in there and plays: her copy there is the newest now.
+            self.assertEqual(sign_in("127.0.0.2", 0, 0, int(ola, 16)), "ok\n")
+            put(other, b"CON new" + bytes(8192), b"new save, level 9" * 1000)
+            # Drawn to the first console next: it gets her newest progress.
+            self.json("POST", "/api/party/seats", {"seats": {"127.0.0.1": ["Ola"], "127.0.0.2": ["Kari"]}})
+            self.assertTrue(self.wait_for(lambda: read(self.xbox, "4D5307E6", "00000001", "save") == b"new save, level 9" * 1000, 30))
+            self.assertEqual(read(self.xbox, "FFFE07D1", "00010000", ola), b"CON new" + bytes(8192))
+            self.assertTrue(self.wait_for(lambda: settled("127.0.0.1"), 30))
+            # Up to date now: not copied again.
+            self.json("POST", "/api/party/seats", {"seats": {"127.0.0.1": ["Ola", "Kari"]}})
+            self.assertTrue(self.wait_for(lambda: settled("127.0.0.1") and settled("127.0.0.2"), 30))
+            time.sleep(1)
+        finally:
+            stop.set()
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("127.0.0.1: has Ola's newest progress now (from ", out)
+        self.assertEqual(out.count("newest progress now"), 1)
+        self.assertIn("1 brought up to date)", out)
+        with open(config) as f:
+            self.assertIn("|127.0.0.2|", f.read())  # Where she played last, kept.
+
+    def test_live_feed_and_turn_off_all_when_idle(self):
+        # A guest's gamerscore rising on a console (as its Aurora says, in a
+        # game too) is news on the big screen; the party's consoles turn off
+        # once nothing happened for the party for its idle minutes.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        ola = "E00000000000A001"
+        config = os.path.join(self.tmp.name, "live.ini")
+        with open(config, "w", newline="") as f:
+            f.write("guest_profiles=1\r\nguest_profile1=Ola|Ola|%s|1793400000|127.0.0.1|127.0.0.1\r\n" % ola)
+        aurora = AuroraWeb()
+        self.addCleanup(aurora.close)
+        aurora.profiles = [{"index": 0, "gamertag": "Ola", "gamerscore": 100, "signedin": 1, "xuid": ola}]
+        xbdm = Xbdm()
+        self.addCleanup(xbdm.close)
+        self.web = free_port()
+        server, port = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--xbdm-port", str(xbdm.port),
+                                       "--config", config, "--live-every", "1")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 20))
+            # The console is on: its NetISO plugin is connected.
+            keep = connect_from("127.0.0.1", port)
+            self.addCleanup(keep.close)
+            keep.sendall(b"ISVR" + struct.pack(">HHQI", 0, 0, 0, 0))
+            self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.1"], "guests": [{"name": "Ola", "here": True}]})
+            time.sleep(2.5)
+            aurora.profiles[0]["gamerscore"] = 120
+            feed = lambda: [x["text"] for x in self.json("GET", "/api/state")["party"]["feed"]]
+            self.assertTrue(self.wait_for(lambda: "Ola earned 20 G" in feed(), 10), feed())
+            self.assertEqual([x["kind"] for x in self.json("GET", "/api/state")["party"]["feed"]], ["score"])
+            self.assertEqual(xbdm.commands, [])
+            # Turn off all when idle: a minute here (the tests can't wait an hour).
+            self.assertEqual(self.call("POST", "/api/party", {"idleOffMinutes": 999})[0], 400)
+            self.json("POST", "/api/party", {"idleOffMinutes": 1})
+            self.assertEqual(self.json("GET", "/api/state")["party"]["idleOffMinutes"], 1)
+            self.assertTrue(self.wait_for(lambda: xbdm.commands == ["shutdown"], 75), xbdm.commands)
+            time.sleep(3)
+            self.assertEqual(xbdm.commands, ["shutdown"])  # Once.
+        finally:
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("its consoles turn off (Turn off all when idle).", out)
+
     def test_turns_every_party_console_off_or_back_to_aurora(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         _, ftp2 = self.second_console()
@@ -2488,6 +2617,12 @@ print('lua ok')
             self.assertEqual(done, {"results": [{"address": "127.0.0.2", "ok": True, "error": ""}, {"address": "127.0.0.1", "ok": True, "error": ""}]})
             for each in (aurora, aurora2):
                 self.assertEqual(each.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\Aurora", "Aurora.xex", "0")])
+            # Back to the party on all: the party app, from a game too.
+            done = self.json("POST", "/api/party/power", {"action": "party"})
+            self.assertEqual(done, {"results": [{"address": "127.0.0.2", "ok": True, "error": ""}, {"address": "127.0.0.1", "ok": True, "error": ""}]})
+            for each in (aurora, aurora2):
+                self.assertEqual(each.launched[1:], [("\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360 Party", "default.xex", "0")])
+                del each.launched[1:]
             # Only those named.
             self.json("POST", "/api/party/power", {"action": "off", "consoles": ["127.0.0.2"]})
             self.assertEqual((xbdm.commands, xbdm2.commands), ([], ["shutdown"]))
@@ -3124,7 +3259,7 @@ class Dashboard(ServerTest):
     def party_now(self):
         """The party in /api/state, without the guests' numbers and the team colours."""
         party = self.json("GET", "/api/state")["party"]
-        for key in ("statsReading", "teamColours", "palette"):
+        for key in ("statsReading", "teamColours", "palette", "started", "feed"):
             del party[key]
         for g in party["guests"]:
             g.pop("stats", None)
@@ -3143,6 +3278,7 @@ class Dashboard(ServerTest):
                          {"active": False, "name": "", "theme": {"preset": "classic", "accent": "#107c10", "accent2": "#ffffff", "person": "", "age": 0,
                                                                  "logo": False, "backgrounds": 0, "pictures": ""},
                           "gamemaster": "", "consoles": [], "guests": [], "statsReading": False, "teams": 2, "teamColours": [0, 1, 2, 3], "palette": self.PALETTE,
+                          "balance": "random", "game": "", "started": 0, "idleOffMinutes": 0, "feed": [], "wins": [], "points": [],
                           "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}})
         # The teams' colours: 4 of the palette's 8, kept; one another team has swaps.
         self.json("POST", "/api/party", {"teamColours": [5, 4, 7, 3]})
@@ -3163,6 +3299,7 @@ class Dashboard(ServerTest):
                                                                     "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
+                 "balance": "random", "game": "", "idleOffMinutes": 0, "wins": [], "points": [],
                  "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
@@ -3358,6 +3495,54 @@ class Dashboard(ServerTest):
             size = struct.unpack(">I", exact(conn, 4))[0]
             return exact(conn, size).decode("utf-8")
 
+    def test_who_won_points_and_fair_teams(self):
+        self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
+        names = ["Ann", "Bob", "Cid", "Dag", "Eva", "Fia"]
+        self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.2", "consoles": ["127.0.0.2", "127.0.0.3"],
+                                         "guests": [{"name": n, "here": True} for n in names]})
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual((party["balance"], party["wins"], party["points"], party["game"]), ("random", [], [], ""))
+        self.assertGreater(party["started"], 0)
+        self.refused("/api/party/winner", [({"team": 0}, "Draw the teams first"), ({"team": 7}, "")])
+        drawn = self.json("POST", "/api/party/raffle", {"teams": 2, "seed": 5})["teams"]
+        said = self.json("POST", "/api/party/winner", {"team": 0})["said"]
+        self.assertEqual(said, "Team Red won round 1: a point each for %s, %s and %s." % tuple(drawn[0]))
+        # A second press at once is the same win.
+        self.refused("/api/party/winner", [({"team": 0}, "Team Red's win is counted already.")])
+        party = self.json("GET", "/api/state")["party"]
+        self.assertEqual([(w["round"], w["team"], w["players"]) for w in party["wins"]], [(1, "Team Red", drawn[0])])
+        self.assertEqual(party["points"], [{"name": n, "points": 1} for n in sorted(drawn[0])])
+        # Taken back, then said again; the console sees the points (PartyText).
+        self.assertEqual(self.json("POST", "/api/party/winner", {"team": -1})["said"], "Team Red's win in round 1 is taken back.")
+        self.assertEqual(self.json("GET", "/api/state")["party"]["wins"], [])
+        self.json("POST", "/api/party/winner", {"team": 1})
+        _, lines = self.party_text("127.0.0.2")
+        self.assertEqual(lines["points"], [[n, "1"] for n in sorted(drawn[1])])
+        self.assertEqual(lines["won"], [["1", "Team Blue", ""]])
+        self.assertEqual(lines["balance"], [["random"]])
+        # Fair teams by wins: the three with a point are spread over the teams, every draw.
+        self.json("POST", "/api/party", {"balance": "wins"})
+        self.refused("/api/party", [({"balance": "height"}, "balance is random, wins or gamerscore")])
+        for seed in range(6):
+            teams = self.json("POST", "/api/party/raffle", {"teams": 2, "seed": seed})["teams"]
+            winners = [len([n for n in t if n in drawn[1]]) for t in teams]
+            self.assertEqual(sorted(winners), [1, 2], (seed, teams))
+        # From the Gamemaster's console too; the winners are kept over a restart and cleared when a new party starts.
+        self.assertEqual(self.edit_ask("127.0.0.2", "balance\tgamerscore"), "ok\t\n")
+        red = self.json("GET", "/api/state")["party"]["drawn"]["teams"][0]
+        self.assertEqual(self.edit_ask("127.0.0.2", "winner\t0"), "ok\tTeam Red won round 2: a point each for %s, %s and %s.\n" % tuple(red))
+        self.assertEqual(self.edit_ask("127.0.0.3", "winner\t1"), "error\tOnly the Gamemaster's console sets up the party.\n")
+        self.assertEqual(self.json("GET", "/api/state")["party"]["balance"], "gamerscore")
+        self.json("POST", "/api/party", {"active": False})
+        self.assertEqual(len(self.json("GET", "/api/state")["party"]["wins"]), 2)  # The recap shows them.
+        self.json("POST", "/api/party", {"active": True})
+        self.assertEqual(self.json("GET", "/api/state")["party"]["wins"], [])
+        # Welcome back with what they did at earlier LANs, on the console and in the live feed.
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\tAnn"), "ok\tWelcome back, Ann! This is your 2nd LAN.\n")
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\tGus"), "ok\tWelcome, Gus!\n")
+        self.assertEqual([(x["kind"], x["text"]) for x in self.json("GET", "/api/state")["party"]["feed"]],
+                         [("join", "Gus joined the party"), ("join", "Welcome back, Ann! This is your 2nd LAN.")])
+
     def test_party_from_the_console(self):
         self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
         # No Gamemaster yet: the app shows the server's build, the palette and the consoles to choose from.
@@ -3412,6 +3597,7 @@ class Dashboard(ServerTest):
         # Open on all: every console that shows the party already, so none opens; the gamerscores are read in the background.
         self.assertEqual(self.json("POST", "/api/party/open", {}), {"ok": True, "opened": 0})
         self.assertEqual(self.edit_ask("127.0.0.2", "openall"), "ok\tEvery console that's on shows the party already.\n")
+        self.assertEqual(self.edit_ask("127.0.0.2", "backall"), "ok\tEvery party console that's on shows the party already.\n")
         self.assertTrue(self.json("POST", "/api/party/stats", {})["ok"])
         for _ in range(50):
             if not self.json("GET", "/api/state")["party"]["statsReading"]:

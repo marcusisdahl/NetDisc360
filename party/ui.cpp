@@ -352,8 +352,9 @@ static void DrawPlayers(const Screen& screen, const Seat& mine) {
 
 int SetupRows(const State& s, int tab) {
     if(tab==TabPlayers) return 1+s.guestCount;
-    if(tab==TabTeams) return 1+(s.teams>=2 && s.teams<=TeamsMost ? s.teams : 2);
-    return 1+s.knownCount;
+    if(tab==TabTeams) return 2+(s.teams>=2 && s.teams<=TeamsMost ? s.teams : 2);
+    if(tab==TabScores) return s.round>0 ? s.teamCount+(s.wonRound>0 ? 1 : 0) : 0;
+    return ConsoleActions+s.knownCount;
 }
 int HostChoices(const State& s, int* out) {
     int n=0;
@@ -466,7 +467,7 @@ static void DrawSetup(const Screen& screen) {
     Box(x,y,w,h,Hex(Card),18);
     Text(Heading,x+32,y+22,Hex(White),"Set up the party");
     // The tabs, LB and RB between them.
-    static const char* const tabs[TabsCount]={"Players","Teams","Consoles"};
+    static const char* const tabs[TabsCount]={"Players","Teams","Scores","Consoles"};
     float tx=x+w-32;
     for(int t=TabsCount-1;t>=0;--t) {
         float tw=Width(Body,tabs[t])+36;
@@ -508,7 +509,16 @@ static void DrawSetup(const Screen& screen) {
                 Arrow(vx+50,ry+16,1,picked ? White : Dim);
                 continue;
             }
-            const int t=r-1;
+            if(r==1) {
+                Text(Body,lx,ly,Hex(White),"Teams drawn");
+                const char* how=BalanceLabels[BalanceOf(s)];
+                float vx=x+w-270;
+                Arrow(vx-40,ry+16,-1,picked ? White : Dim);
+                TextCentred(Body,vx+95,ly,200,Hex(White),how);
+                Arrow(vx+230,ry+16,1,picked ? White : Dim);
+                continue;
+            }
+            const int t=r-2;
             _snprintf_s(text,sizeof(text),_TRUNCATE,"Team %d",t+1);
             Text(Body,lx,ly,Hex(White),text);
             float sx=x+w-420;
@@ -516,6 +526,16 @@ static void DrawSetup(const Screen& screen) {
             TextCentred(Body,sx+150,ly,280,Hex(TeamOn(t)),TeamName[t]);
             Arrow(sx-30,ry+16,-1,picked ? White : Dim);
             Arrow(sx+320,ry+16,1,picked ? White : Dim);
+        } else if(screen.setupTab==TabScores) {
+            if(r<s.teamCount) {
+                Box(lx,ry+8,300,36,Hex(TeamFill[r]),18);
+                TextCentred(Body,lx+150,ly,280,Hex(TeamOn(r)),TeamName[r]);
+                Text(Body,lx+320,ly,Hex(White),"won this round");
+                continue;
+            }
+            Box(lx,ry+11,30,30,Hex(ButtonA),15);
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"Take back round %d (%s)",s.wonRound,s.wonTeam);
+            TextFit(Body,lx+46,ly,w-140,Hex(White),text);
         } else {
             if(r==0) {
                 Box(lx,ry+11,30,30,Hex(ButtonA),15);
@@ -523,7 +543,13 @@ static void DrawSetup(const Screen& screen) {
                 TextRight(Small,x+w-48,ly+4,Hex(Muted),"those in Aurora start it, and join");
                 continue;
             }
-            const Known& k=s.known[r-1];
+            if(r==1) {
+                Box(lx,ry+11,30,30,Hex(ButtonA),15);
+                Text(Body,lx+46,ly,Hex(White),"Back to the party on all");
+                TextRight(Small,x+w-48,ly+4,Hex(Muted),"the party's consoles; games end");
+                continue;
+            }
+            const Known& k=s.known[r-ConsoleActions];
             const bool master=s.gamemasterName[0] && !strcmp(k.name[0] ? k.name : k.address,s.gamemasterName);
             Tick(lx,ry+11,k.inParty || master,picked);
             if(master) Crown(lx+46,ry+14,22,Hex(0xF2C811));
@@ -531,6 +557,20 @@ static void DrawSetup(const Screen& screen) {
             _snprintf_s(text,sizeof(text),_TRUNCATE,"%s%s",!strcmp(k.address,s.address) ? "This Xbox  /  " : "",StateText(k.state));
             TextRight(Small,x+w-48,ly+4,Hex(!strcmp(k.state,"off") ? Dim : Muted),text);
         }
+    }
+    // Scores: the night's points under the rows (or why there are no rows).
+    if(screen.setupTab==TabScores) {
+        float sy=top+(rows<SetupShown ? rows : SetupShown)*(rowH+6)+8;
+        if(!rows) { TextFit(Body,x+48,sy,w-96,Hex(Muted),"Draw the teams first; after each game, say which team won here."); sy+=44; }
+        if(s.pointCount) {
+            char line[512]; int used=_snprintf_s(line,sizeof(line),_TRUNCATE,"Points tonight:");
+            for(int i=0;i<s.pointCount && used>0 && used<int(sizeof(line))-8;++i) {
+                int more=_snprintf_s(line+used,sizeof(line)-used,_TRUNCATE,"%s %s %d",i ? "  /" : "",s.pointName[i],s.points[i]);
+                if(more<0) break;
+                used+=more;
+            }
+            TextFit(Body,x+48,sy,w-96,Hex(White),line);
+        } else if(rows) TextFit(Small,x+48,sy,w-96,Hex(Muted),"Each player of the team that won gets a point.");
     }
     // More above or below.
     if(screen.setupTop>0) Text(Small,x+w/2-40,top-26,Hex(Dim),"More above");
@@ -661,6 +701,16 @@ void DrawUi(const Screen& screen) {
         float ty=py+h+24;
         _snprintf_s(text,sizeof(text),_TRUNCATE,s.kept ? "Round %d" : "Round %d, not kept yet",s.round);
         Text(Small,px,ty,Hex(Muted),text);
+        if(s.pointCount) {
+            // The night's top three.
+            char line[256]; int used=0;
+            for(int i=0;i<s.pointCount && i<3 && used<int(sizeof(line))-8;++i) {
+                int more=_snprintf_s(line+used,sizeof(line)-used,_TRUNCATE,"%s%s %d",i ? "   " : "Points: ",s.pointName[i],s.points[i]);
+                if(more<0) break;
+                used+=more;
+            }
+            if(used>0) TextRight(Small,px+pw,ty,Hex(0xF2C811),line);
+        }
         ty+=34;
         const int columns=s.teamCount>2 ? 2 : s.teamCount, rows=(s.teamCount+1)/2;
         const float gap=12, cw=(pw-gap*(columns-1))/columns, ch=((Bottom-80)-ty-gap*(rows-1))/rows;
@@ -722,9 +772,10 @@ void DrawUi(const Screen& screen) {
     float bx=Left;
     const bool turning=s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s);
     if(screen.setup && s.valid) {
-        bx=Button(bx,Bottom-40,"A",ButtonA,screen.setupTab==TabTeams ? "Next" : screen.setupTab==TabPlayers && screen.setupRow>0 ? "Playing or not" : "Choose");
+        bx=Button(bx,Bottom-40,"A",ButtonA,screen.setupTab==TabTeams ? "Next" : screen.setupTab==TabPlayers && screen.setupRow>0 ? "Playing or not" :
+                  screen.setupTab==TabScores ? (screen.setupRow<s.teamCount ? "Won" : "Take back") : "Choose");
         if(screen.setupTab==TabTeams) bx=Tag(bx,Bottom-40,"< >","Change");
-        if(screen.setupTab==TabConsoles && screen.setupRow>0) bx=Button(bx,Bottom-40,"Y",ButtonY,"Gamemaster");
+        if(screen.setupTab==TabConsoles && screen.setupRow>=ConsoleActions) bx=Button(bx,Bottom-40,"Y",ButtonY,"Gamemaster");
         bx=Button(bx,Bottom-40,"B",ButtonB,"Done");
     } else if(players) {
         if(screen.asking>=0 && !screen.copying) bx=Button(bx,Bottom-40,"A",ButtonA,"Sign in");
