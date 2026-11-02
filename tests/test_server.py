@@ -2068,6 +2068,11 @@ class Dashboard(ServerTest):
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
+            # The console is known once the server's first push to it has
+            # begun, which can take a moment after start-up.
+            deadline = time.time() + 15
+            while self.call("POST", "/api/consoles/art", {"address": "127.0.0.2"})[0] == 404 and time.time() < deadline:
+                time.sleep(0.2)
             found = self.json("POST", "/api/consoles/art", {"address": "127.0.0.2"})
             self.assertEqual(found["tiles"], [{"folder": "Banjo-Kazooie - Nuts & Bolts", "title": "Banjo-Kazooie: Nuts & Bolts"},
                                               {"folder": "Skate 3", "title": "Skate 3"}])
