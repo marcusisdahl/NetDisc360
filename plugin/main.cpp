@@ -1329,12 +1329,10 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // notices from the game's own threads did. ArmSwap shows "ready" instead.
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
-static void LinkWatch();
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
-        LinkWatch();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -1583,35 +1581,32 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // NetDll_XnpEthernetInterceptSetCallbacks (109) and
 // NetDll_XnpEthernetInterceptXmit (110), as slot 1 (the title). Aurora's
 // Nova.xex puts its own function for each in xam's export table, for LiNK.
-// It keeps the game's callbacks to itself instead of passing them on to
-// xam, and has its own registered with xam as slot 2 (the system); its
-// callback for LAN frames hands the game each one from 0.0.0.1 (original
-// Xbox System Link) only while LiNK runs. With LiNK off it drops them, so
-// an original Xbox game hears nothing: each console sends, and neither finds
-// the other's System Link game (read from Nova.xex 0.7b.2; seen with Halo
-// and Halo 2; 360 games don't go this way).
-// Changing Nova's code when the emulator starts crashed the game every time
-// ("Fatal Crash Intercepted" before it sent a frame, whatever was changed),
-// so Nova's code stays as it is. When the emulator starts, xam's export
-// table gets NetDisc360's functions for 109 and 110 in Nova's place; they
-// call Nova's, and count. Once the game has given Nova its callbacks, the
-// watcher thread registers NetDisc360's own as slot 2 in Nova's place, and
-// hands the game each System Link frame as Nova does with LiNK on; Nova
-// unregisters them itself when the game ends. In NetDisc360.ini,
-// xbox_link=xam also hands the game's callbacks to xam as slot 1, on the
-// game's own thread (xam refused them from the watcher thread),
-// xbox_link_send=system sends the game's frames as slot 2 instead of through
-// Nova, and xbox_link=nova (or off) leaves it all to Nova. The log counts the
-// frames and lists their kinds.
+// Nova's 110 passes the game's frames on to xam, so they go out (seen in a
+// capture on the PC). Its 109 keeps the game's callbacks to itself instead
+// of passing them on, and only LiNK hands the game frames (its slot-2
+// callback sees the console's own outgoing frames, which LiNK tunnels), so
+// with LiNK off an original Xbox game hears nothing and no console finds
+// another's System Link game (read from Nova.xex 0.7b.2; seen with Halo and
+// Halo 2; 360 games don't go this way).
+// When the emulator starts, NetDisc360 puts its own functions for 109 and
+// 110 in xam's export table in Nova's place. Its 109 calls Nova's, so Nova
+// keeps what it knows, and then hands xam the game's callbacks as slot 1 on
+// the game's own thread (xam refused them from a system thread), with its
+// own callback in front that counts what comes in. Its 110 counts and calls
+// Nova's. xam's export table is read-only memory: a plain store there was
+// what showed "Fatal Crash Intercepted" (caught over xbdm), so, as Nova
+// does, it is written through xbdm's DmSetMemory, which needs xbdm.xex
+// loaded. xbox_link=nova (or off) in NetDisc360.ini leaves it all to Nova.
 static const DWORD SetCallbacksOrdinal=109,XmitOrdinal=110;
 static const DWORD SlotOneCompare=0x2F030001;
 typedef LONG (*SetCallbacks)(DWORD slot,void* frames,void* other,void* context,DWORD more);
 typedef LONG (*Xmit)(DWORD slot,BYTE* frame,DWORD length);
 typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length);
 typedef BYTE* (*NovaInstance)();
-// Nova's CSystemLink: the game's callbacks as SetCallbacks got them, and
-// whether Nova's own are registered.
-static const DWORD NovaHasTitle=0x14C,NovaTitleFrames=0x154,NovaTitleContext=0x15C,NovaRegistered=0xD0;
+typedef LONG (__stdcall *SetMemory)(void* address,DWORD size,const void* data,DWORD* written);
+static const DWORD DmSetMemoryOrdinal=40;
+// Nova's CSystemLink: where its 109 keeps the game's context.
+static const DWORD NovaTitleContext=0x15C;
 
 // Where a bl at at goes, or 0.
 static DWORD CallTarget(const DWORD* at) {
@@ -1711,9 +1706,10 @@ static void NoteKinds(FrameKinds& table,const char* what) {
 static BYTE* volatile LinkNova=NULL;
 static SetCallbacks NovaSet=NULL,RealSet=NULL; // Nova's function for 109; xam's own, through Nova's import
 static Xmit NovaXmit=NULL,RealXmit=NULL;
-static volatile bool LinkActive=false,LinkXam=false,LinkSystemSend=false,LinkDone=false;
-static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0,LinkSets=0,LinkSent=0,LinkSentXbox=0,LinkRefused=0;
-static volatile LONG LinkXamResult=-1,LinkLastRefusal=0,LinkSlotTwo=-1,LinkSlotTwoRetry=-1;
+static TitleFrames volatile GameFrames=NULL;    // the game's callback for incoming frames, while xam has ours for it
+static volatile bool LinkActive=false,LinkRegistered=false;
+static volatile DWORD LinkSeen=0,LinkXbox=0,LinkTaken=0,LinkSets=0,LinkSent=0,LinkSentXbox=0,LinkRefused=0;
+static volatile LONG LinkXamResult=-1,LinkXamRetry=-1,LinkLastRefusal=0;
 // An IPv4 frame from 0.0.0.1, as original Xbox consoles send System Link.
 // The frame may come with its Ethernet header or start at the IPv4 header,
 // so both are looked at.
@@ -1746,80 +1742,88 @@ static void NoteDumps(FrameDumps& dumps,const char* what) {
     }
     dumps.count=0;
 }
-// xam's export 109 while the emulator runs: Nova's keeps the game's
-// callbacks; with xbox_link=xam xam gets them too, on the game's thread.
-static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,DWORD more) {
-    LONG result=NovaSet(slot,frames,other,context,more);
-    if(slot==1 && LinkActive) {
-        ++LinkSets;
-        if(LinkXam) LinkXamResult=RealSet(1,frames,other,context,more);
+// What xam calls with each frame for the game, in front of the game's own
+// callback: counts and lists them, and says whether the game took one.
+static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
+    TitleFrames game=GameFrames;
+    if(!game || !LinkActive) return 0;
+    if(frame && length>=14) {
+        ++LinkSeen;
+        NoteKind(LinkHeardKinds,frame,length);
+        DumpFrame(LinkHeardDumps,frame,length);
+        if(XboxFrame(frame,length)) ++LinkXbox;
     }
+    LONG result=game(context,frame,length);
+    if(result==1) ++LinkTaken;
     return result;
 }
-// xam's export 110 while the emulator runs: counts the game's frames, and
-// sends them through Nova's, or as slot 2 with xbox_link_send=system.
+// xam's export 109 while the emulator runs: Nova's keeps the game's
+// callbacks, and xam gets them as slot 1, on the game's thread, with
+// LinkFrames in front. Without callbacks the game takes them back from both.
+static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,DWORD more) {
+    LONG result=NovaSet(slot,frames,other,context,more);
+    if(slot!=1 || !LinkActive) return result;
+    ++LinkSets;
+    if(!frames) {
+        if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+        GameFrames=NULL;
+        return result;
+    }
+    GameFrames=(TitleFrames)frames;
+    LONG xam=RealSet(1,(void*)LinkFrames,other,context,more),retry=0;
+    if(xam) { // taken: once more after taking it back
+        RealSet(1,NULL,NULL,NULL,0);
+        retry=RealSet(1,(void*)LinkFrames,other,context,more);
+    }
+    LinkXamResult=xam; LinkXamRetry=retry;
+    LinkRegistered=!xam || !retry;
+    return result;
+}
+// xam's export 110 while the emulator runs: counts the game's frames and
+// sends them through Nova's, as before.
 static LONG LinkXmit(DWORD slot,BYTE* frame,DWORD length) {
     if(slot!=1 || !LinkActive) return NovaXmit(slot,frame,length);
     ++LinkSent;
-    if(frame && XboxFrame(frame,length)) ++LinkSentXbox;
-    NoteKind(LinkSentKinds,frame,length);
-    DumpFrame(LinkSentDumps,frame,length);
-    LONG result=LinkSystemSend ? RealXmit(2,frame,length) : NovaXmit(1,frame,length);
+    if(frame && length>=14) {
+        if(XboxFrame(frame,length)) ++LinkSentXbox;
+        NoteKind(LinkSentKinds,frame,length);
+        DumpFrame(LinkSentDumps,frame,length);
+    }
+    LONG result=NovaXmit(1,frame,length);
     if(result) { ++LinkRefused; LinkLastRefusal=result; }
     return result;
-}
-// What xam calls with each LAN frame in Nova's place: hands the game the
-// System Link ones, as Nova's does with LiNK on, and says whether it took one.
-static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
-    UNREFERENCED_PARAMETER(context);
-    if(!frame || length<14) return 0;
-    ++LinkSeen;
-    if(!LinkActive) return 0;
-    NoteKind(LinkHeardKinds,frame,length);
-    DumpFrame(LinkHeardDumps,frame,length);
-    if(!XboxFrame(frame,length)) return 0;
-    ++LinkXbox;
-    BYTE* nova=LinkNova;
-    if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return 0;
-    TitleFrames title=*(TitleFrames*)(nova+NovaTitleFrames);
-    if(!title) return 0;
-    ++LinkGiven;
-    if(title(*(void**)(nova+NovaTitleContext),frame,length)!=1) return 0;
-    ++LinkTaken;
-    return 1;
-}
-static LONG LinkOther(void* context,BYTE* frame,DWORD length) {
-    UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(frame); UNREFERENCED_PARAMETER(length);
-    return 0;
 }
 // On any launch: what the emulator's frames did since it started.
 static void StopLink() {
     if(!LinkActive) return;
-    LinkActive=false;
-    if(LinkXam) SwapNote("System Link: the game set its callbacks %u times, xam said %X the last time.",LinkSets,DWORD(LinkXamResult));
-    else SwapNote("System Link: the game set its callbacks %u times.",LinkSets);
+    // On the title's thread, as the game's own were registered: xam mustn't
+    // keep calling into a game that's gone.
+    if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+    LinkActive=false; GameFrames=NULL;
+    SwapNote("System Link: the game set its callbacks %u times; xam said %X (then %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
     SwapNote("System Link: the game sent %u frames, %u of them System Link; %u refused (last %X).",LinkSent,LinkSentXbox,LinkRefused,DWORD(LinkLastRefusal));
-    if(!LinkXam)
-        SwapNote("System Link: slot 2 %s (xam said %X, then %X); xam handed NetDisc360 %u frames, %u of them System Link from consoles; the game got %u and took %u.",
-                 LinkDone ? "registered" : "not registered",DWORD(LinkSlotTwo),DWORD(LinkSlotTwoRetry),LinkSeen,LinkXbox,LinkGiven,LinkTaken);
+    SwapNote("System Link: xam handed the game %u frames, %u of them System Link from consoles; the game took %u.",LinkSeen,LinkXbox,LinkTaken);
     NoteKinds(LinkSentKinds,"sent");
     NoteKinds(LinkHeardKinds,"heard");
     NoteDumps(LinkSentDumps,"sent");
     NoteDumps(LinkHeardDumps,"heard");
-    LinkSeen=LinkXbox=LinkGiven=LinkTaken=LinkSets=LinkSent=LinkSentXbox=LinkRefused=0;
-    LinkXamResult=LinkSlotTwo=LinkSlotTwoRetry=-1; LinkLastRefusal=0;
+    LinkSeen=LinkXbox=LinkTaken=LinkSets=LinkSent=LinkSentXbox=LinkRefused=0;
+    LinkXamResult=LinkXamRetry=-1; LinkLastRefusal=0;
 }
 // When the emulator starts, on the launching title's thread, before the
-// emulator loads: puts NetDisc360's functions in xam's export table. On
-// every start: Nova may have been loaded again since.
+// emulator loads: puts NetDisc360's functions in xam's export table, through
+// xbdm's DmSetMemory as Nova does. On every start: Nova may have been loaded
+// again since.
 static void StartLink() {
     StopLink();
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
     if(from && (!_stricmp(value,"nova") || !_stricmp(value,"off"))) { SwapNote("System Link: left to Nova (xbox_link=%s in %s).",value,from); return; }
-    bool xam=from && !_stricmp(value,"xam");
-    from=TuningValue("xbox_link_send",value,sizeof(value));
-    bool system=from && !_stricmp(value,"system");
+    HANDLE xbdm=NULL; void* setMemory=NULL;
+    if(XexGetModuleHandle("xbdm.xex",&xbdm)<0 || XexGetProcedureAddress(xbdm,DmSetMemoryOrdinal,&setMemory)<0 || !setMemory) {
+        SwapNote("System Link: xbdm.xex isn't loaded, and xam's export table can only be changed through it; left to Nova.");
+        return;
+    }
     HANDLE module=NULL;
     DWORD setBase=0,xmitBase=0;
     DWORD* setEntry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,setBase);
@@ -1843,7 +1847,7 @@ static void StartLink() {
     NovaInstance instance=(NovaInstance)CallTarget(set.instance);
     if(instance!=(NovaInstance)CallTarget(xmit.instance)) { SwapNote("System Link: Nova's functions %X and %X don't share an instance; left as they are.",setAt,xmitAt); return; }
     // The function Nova's calls for slot 1 (bl 8 words after the compare)
-    // stores the callbacks where NovaTitleFrames says: checked by its words.
+    // stores the callbacks where known: checked by its words.
     const DWORD* keep=(const DWORD*)CallTarget(set.compare+8);
     int found=0;
     if(keep && MmIsAddressValid((void*)keep) && MmIsAddressValid((void*)(keep+24)))
@@ -1855,31 +1859,23 @@ static void StartLink() {
     LinkNova=nova;
     NovaSet=(SetCallbacks)setAt; NovaXmit=(Xmit)xmitAt;
     RealSet=(SetCallbacks)CallTarget(set.xam); RealXmit=(Xmit)CallTarget(xmit.xam);
-    LinkXam=xam; LinkSystemSend=system; LinkDone=false;
+    GameFrames=NULL; LinkRegistered=false;
     LinkActive=true;
-    // Data, not code: the emulator's imports are bound to what's here when it loads.
-    if(setBase+*setEntry!=DWORD(LinkSetCallbacks)) { *setEntry=DWORD(LinkSetCallbacks)-setBase; FlushCode(setEntry,4); }
-    if(xmitBase+*xmitEntry!=DWORD(LinkXmit)) { *xmitEntry=DWORD(LinkXmit)-xmitBase; FlushCode(xmitEntry,4); }
-    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks))
-        SwapNote("System Link: xam's export 109 reads %X after the change, not NetDisc360's %X.",DWORD(address),DWORD(LinkSetCallbacks));
-    SwapNote("System Link: xam's exports 109 and 110 go through NetDisc360 now (Nova's %X, %X); %s; the game's frames go out %s.",setAt,xmitAt,
-             xam ? "xam gets the game's callbacks too (xbox_link=xam)" : "NetDisc360 hands the game System Link frames as slot 2",
-             system ? "as slot 2 (xbox_link_send=system)" : "through Nova");
-}
-// On the watcher thread, every half second at most: once the game has given
-// Nova its callbacks, registers NetDisc360's as slot 2 in Nova's place
-// (xam answers 0x2735 while Nova's are registered).
-static void LinkWatch() {
-    if(!LinkActive || LinkDone || LinkXam) return;
-    BYTE* nova=LinkNova;
-    if(!nova || *(DWORD*)(nova+NovaHasTitle)!=1) return;
-    LONG result=RealSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0),retry=0;
-    if(result) {
-        RealSet(2,NULL,NULL,NULL,0); // as Nova unregisters its own
-        retry=RealSet(2,(void*)LinkFrames,(void*)LinkOther,(void*)&LinkSeen,0);
+    // Data, not code: the emulator's imports are bound to what's here when
+    // it loads. Read-only memory, so through DmSetMemory.
+    SetMemory write=(SetMemory)setMemory;
+    DWORD setValue=DWORD(LinkSetCallbacks)-setBase,xmitValue=DWORD(LinkXmit)-xmitBase,written=0;
+    LONG setResult=0,xmitResult=0;
+    if(*setEntry!=setValue) setResult=write(setEntry,4,&setValue,&written);
+    if(*xmitEntry!=xmitValue) xmitResult=write(xmitEntry,4,&xmitValue,&written);
+    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks)
+       || XexGetProcedureAddress(module,XmitOrdinal,&xmitAddress)<0 || DWORD(xmitAddress)!=DWORD(LinkXmit)) {
+        SwapNote("System Link: xam's exports read %X, %X after the change (DmSetMemory said %X, %X), not NetDisc360's; left to Nova.",
+                 DWORD(address),DWORD(xmitAddress),DWORD(setResult),DWORD(xmitResult));
+        LinkActive=false;
+        return;
     }
-    LinkSlotTwo=result; LinkSlotTwoRetry=retry;
-    LinkDone=!result || !retry;
+    SwapNote("System Link: xam's exports 109 and 110 go through NetDisc360 now (Nova's %X, %X); the game's callbacks go to xam as slot 1 too.",setAt,xmitAt);
 }
 // Whether path from mountPath is the console starting the emulator for an
 // original Xbox disc.
