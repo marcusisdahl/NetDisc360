@@ -1635,6 +1635,41 @@ static bool IsNovaFunction(DWORD address,NovaFunction& function) {
     }
     return false;
 }
+// A loaded module by its file name, any case. XexGetModuleHandle doesn't
+// find xbdm.xex from the emulator's launch (seen on both consoles, though
+// xbdm lists itself loaded), so the loader's list is walked from xam's
+// entry too: each entry's first word links the next, and its FullDllName
+// (see FindOwnFolder) ends in the file name.
+static HANDLE LoadedModule(const char* name,LONG& status) {
+    HANDLE module=NULL;
+    status=XexGetModuleHandle(name,&module);
+    if(status>=0 && module) return module;
+    HANDLE xam=NULL;
+    if(XexGetModuleHandle("xam.xex",&xam)<0 || !xam) return NULL;
+    size_t wanted=strlen(name);
+    const BYTE* entry=(const BYTE*)xam;
+    for(int n=0;n<512;++n) {
+        if(!MmIsAddressValid((void*)entry)) return NULL;
+        entry=*(const BYTE* const*)entry;
+        if(!entry || entry==(const BYTE*)xam || !MmIsAddressValid((void*)entry) || !MmIsAddressValid((void*)(entry+0x2B))) return NULL;
+        USHORT bytes=*(const USHORT*)(entry+0x24);
+        const WCHAR* text=*(const WCHAR* const*)(entry+0x28);
+        if(bytes<2 || bytes>520 || (bytes&1) || !text || !MmIsAddressValid((void*)text) || !MmIsAddressValid((void*)((const BYTE*)text+bytes-1))) continue;
+        size_t length=bytes/2,start=length;
+        while(start && text[start-1]!='\\' && text[start-1]!=':') --start;
+        if(length-start!=wanted) continue;
+        size_t i=0;
+        for(;i<wanted;++i) {
+            WCHAR c=text[start+i];
+            if(c>='A' && c<='Z') c=WCHAR(c+32);
+            char w=name[i];
+            if(w>='A' && w<='Z') w=char(w+32);
+            if(c!=WCHAR((unsigned char)w)) break;
+        }
+        if(i==wanted) return (HANDLE)entry;
+    }
+    return NULL;
+}
 // The entry for ordinal in a module's export table, as Nova finds xam's: the
 // security info's export table (+0x160), whose entries are addresses less
 // the image base (its high half at +0x20); NULL if there is none.
@@ -1819,11 +1854,16 @@ static void StartLink() {
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
     if(from && (!_stricmp(value,"nova") || !_stricmp(value,"off"))) { SwapNote("System Link: left to Nova (xbox_link=%s in %s).",value,from); return; }
-    HANDLE xbdm=NULL; void* setMemory=NULL;
-    if(XexGetModuleHandle("xbdm.xex",&xbdm)<0 || XexGetProcedureAddress(xbdm,DmSetMemoryOrdinal,&setMemory)<0 || !setMemory) {
-        SwapNote("System Link: xbdm.xex isn't loaded, and xam's export table can only be changed through it; left to Nova.");
+    LONG status=0;
+    HANDLE xbdm=LoadedModule("xbdm.xex",status);
+    void* setMemory=NULL;
+    LONG found=xbdm ? XexGetProcedureAddress(xbdm,DmSetMemoryOrdinal,&setMemory) : 0;
+    if(!xbdm || found<0 || !setMemory) {
+        SwapNote("System Link: no DmSetMemory from xbdm.xex (module %X, XexGetModuleHandle said %X, its export 40 %X), and xam's export table can only be changed through it; left to Nova.",
+                 DWORD(xbdm),DWORD(status),DWORD(found));
         return;
     }
+    SwapNote("System Link: xbdm.xex at %X (XexGetModuleHandle said %X), DmSetMemory at %X.",DWORD(xbdm),DWORD(status),DWORD(setMemory));
     HANDLE module=NULL;
     DWORD setBase=0,xmitBase=0;
     DWORD* setEntry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,setBase);
