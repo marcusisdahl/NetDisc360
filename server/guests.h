@@ -34,7 +34,11 @@ struct GuestProfile {
     long long made;               // When it was made or put back (Unix seconds).
     std::string madeOn;           // The console that made it.
     std::vector<std::string> on;  // The consoles it's on now, as far as the server knows.
-    GuestProfile() : made(0) {}
+    // Made on a console by hand (the guest signed in or joined with it), not
+    // by NetDisc360: copied to the others all the same, but never removed
+    // from madeOn.
+    bool adopted;
+    GuestProfile() : made(0), adopted(false) {}
 };
 
 // The gamertag for a guest's name: ASCII letters, digits and spaces (å, ø, é

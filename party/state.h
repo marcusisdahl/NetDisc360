@@ -65,6 +65,10 @@ struct State {
     int teamColour[TeamsMost];
     int guestCount; Guest guests[GuestsMost];
     int knownCount; Known known[KnownMost];
+    // Guest profiles this console's app is asked to make (the job's number;
+    // "": none), while every party console shows the app: it gets the job
+    // and the pictures from the server (PartyJobAsk) and answers there.
+    char profileJob[24];
 };
 // Team t's colour, with Red, Blue, Green and Yellow when the server doesn't say.
 Colour TeamColourOf(const State& s, int t);

@@ -95,6 +95,7 @@ bool Parse(const char* text, unsigned length, State& s) {
                 if(i>=s.paletteCount) s.paletteCount=i+1;
             }
         }
+        else if(!strcmp(key,"makeprofiles") && n>=1) FIELD(0,s.profileJob);
         else if(!strcmp(key,"teamcolours")) { for(int t=0;t<n && t<TeamsMost;++t) s.teamColour[t]=atoi(NUMBER(t)); }
         else if(!strcmp(key,"guest") && n>=4 && s.guestCount<GuestsMost) {
             Guest& g=s.guests[s.guestCount++];

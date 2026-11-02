@@ -19,4 +19,12 @@ typedef void (*ShowCall)(const char* text);
 // Starts the watching thread. note logs (netiso.log), show puts a notice on screen.
 void Start(NoteCall note, ShowCall show);
 void Stop();
+// The job's work alone, for NetDiscParty.xex too (which gets the job and its
+// pictures from the server instead of files): makes the guestN= profiles
+// (and gives profileN= ones their pictures), each picture read with read
+// (its file name as the job names it; bytes read, or -1); writes
+// ProfileDone's lines into done (by=by); made: how many it made. note logs.
+typedef int (*ReadCall)(void* with, const char* name, void* into, unsigned long capacity);
+size_t MakeFromJob(const char* job, ReadCall read, void* with, char* done, size_t capacity, const char* by, int* made);
+void SetNote(NoteCall note);
 }

@@ -46,6 +46,7 @@
 #include "../launcher/imgui_impl_xbox360.h"
 #include "../server/version.h"
 #include "../shared/build_id.h"
+#include "../plugin/profiles_job.h"
 #include "ftp.h"
 #include "state.h"
 #include "ui.h"
@@ -58,7 +59,7 @@ extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,voi
 
 namespace {
 // The party's commands (server/main.cpp): wait for news, spin, and say who signed in.
-enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, PartyEditAsk = 0x5045, SignedOut = 0x8000, WaitMs = 25000, TextMost = 64 << 10 };
+enum { PartyWait = 0x5057, PartySpinAsk = 0x5053, PartySignIn = 0x5049, PartyEditAsk = 0x5045, PartyJobAsk = 0x504A, SignedOut = 0x8000, WaitMs = 25000, TextMost = 64 << 10 };
 // How long the screen stays on the wheel after it stopped, before it turns to
 // the players (a pick's result is read longer), and how long it waits once
 // everyone's in before it goes back to Aurora.
@@ -277,6 +278,45 @@ DWORD WINAPI SendEdits(void*) {
     }
 }
 
+// Guest profiles made here, when the server asks (state.profileJob): while
+// every party console shows this app, none can start NetDisc360's helper
+// from Aurora, so this app makes them as the helper does (the plugin's
+// profilejob::MakeFromJob), with the job and its gamer pictures from the
+// server (PartyJobAsk index 0: the job; 1: a picture, its file name sent;
+// 2: the answer sent). The server copies them to the other consoles.
+char JobSeen[24]="";
+volatile LONG JobBusy=0;
+// Each request on a connection of its own: making a profile takes a while.
+struct JobServer { DWORD address; int port; };
+bool JobAsk(const JobServer& server, int index, const char* body, DWORD length, char* reply, DWORD capacity, DWORD& size) {
+    nia::IsvrClient client(20);
+    return server.address && client.Connect(server.address,server.port,5) && client.Text(PartyJobAsk,DWORD(index),0,length,reply,capacity,size,body);
+}
+int ReadJobPicture(void* with, const char* name, void* into, unsigned long capacity) {
+    DWORD size=0;
+    if(capacity<2 || !JobAsk(*static_cast<JobServer*>(with),1,name,DWORD(strlen(name)),static_cast<char*>(into),DWORD(capacity),size)) return -1;
+    return int(size);
+}
+DWORD WINAPI MakeJob(void*) {
+    JobServer server;
+    EnterCriticalSection(&Lock);
+    server.address=ServerAddress; server.port=ServerPort;
+    strcpy_s(Notice,"Making guest profiles, one moment..."); NoticeAt=GetTickCount(); NoticeGood=true;
+    LeaveCriticalSection(&Lock);
+    static char job[4096], done[8192], said[256];
+    DWORD size=0;
+    int made=0;
+    if(JobAsk(server,0,NULL,0,job,sizeof(job),size) && size) {
+        size_t used=profilejob::MakeFromJob(job,ReadJobPicture,&server,done,sizeof(done),"party",&made);
+        JobAsk(server,2,done,DWORD(used),said,sizeof(said),size);
+    }
+    EnterCriticalSection(&Lock);
+    if(made) { sprintf_s(Notice,made==1 ? "1 guest profile made" : "%d guest profiles made",made); NoticeAt=GetTickCount(); NoticeGood=true; }
+    LeaveCriticalSection(&Lock);
+    InterlockedExchange(&JobBusy,0);
+    return 0;
+}
+
 // The Guide's keyboard, for a name: a player joining (on their own
 // controller), or the Gamemaster adding one in the setup.
 enum KeyFor { KeyJoin, KeyAdd };
@@ -307,7 +347,7 @@ bool OpenKeyboard(int pad, int purpose) {
 // Each frame: the name typed, once the keyboard closed.
 void WatchKeyboard() {
     if(KeyPad<0 || !XHasOverlappedIoCompleted(&KeyWait)) return;
-    int purpose=KeyPurpose;
+    int purpose=KeyPurpose, pad=KeyPad;
     KeyPad=-1;
     if(XGetOverlappedResult(&KeyWait,NULL,FALSE)!=ERROR_SUCCESS) return;  // Cancelled.
     // As UTF-8, trimmed.
@@ -322,7 +362,16 @@ void WatchKeyboard() {
     name[n]=0;
     char* at=name; while(*at==' ') ++at;
     for(size_t k=strlen(at);k && at[k-1]==' ';--k) at[k-1]=0;
-    if(*at) QueueEdit(purpose==KeyJoin ? "join\t%s" : "add\t%s",at);
+    if(!*at) return;
+    // Joined signed in to a profile: the server copies it to the party's
+    // other consoles (one made here by hand, say).
+    ULONGLONG xuid=0;
+    char gamertag[party::GamertagBytes]="";
+    if(purpose==KeyJoin && XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn && XUserGetXUID(DWORD(pad),&xuid)==ERROR_SUCCESS && xuid) {
+        if(XUserGetName(DWORD(pad),gamertag,sizeof(gamertag))!=ERROR_SUCCESS) gamertag[0]=0;
+        for(char* c=gamertag;*c;++c) if(*c=='\t' || *c=='\n') *c=' ';
+        QueueEdit("join\t%s\t%016I64X\t%s",at,xuid,gamertag);
+    } else QueueEdit(purpose==KeyJoin ? "join\t%s" : "add\t%s",at);
 }
 
 
@@ -543,6 +592,13 @@ void __cdecl main() {
             else if(int(start-spinStart)<0) spinStart=start;
             HaveLatest=false;
         }
+        // Profiles to make here (once per job).
+        if(frame.state.profileJob[0] && strcmp(frame.state.profileJob,JobSeen) && !JobBusy) {
+            strcpy_s(JobSeen,frame.state.profileJob);
+            InterlockedExchange(&JobBusy,1);
+            HANDLE maker=CreateThread(NULL,0,MakeJob,NULL,0,NULL);
+            if(maker) CloseHandle(maker); else InterlockedExchange(&JobBusy,0);
+        }
         frame.link=LinkNow;
         strcpy_s(frame.server,ServerText);
         if(Notice[0] && now-NoticeAt>8000) Notice[0]=0;
@@ -568,7 +624,7 @@ void __cdecl main() {
         // connection busy now or a moment ago): no leaving, no signing in yet.
         party::FtpActivity ftp;
         party::FtpNow(ftp);
-        frame.copying=ftp.sessions>0 || ftp.transfers>0 || (ftp.lastAt && now-ftp.lastAt<3000) ||
+        frame.copying=JobBusy!=0 || ftp.sessions>0 || ftp.transfers>0 || (ftp.lastAt && now-ftp.lastAt<3000) ||
                       (frame.link==party::LinkConnected && mine && mine->count && !strcmp(frame.state.profiles,"copying"));
         WatchSignIns(mine,now);
         WatchKeyboard();

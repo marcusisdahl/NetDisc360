@@ -2803,7 +2803,7 @@ Pages.party = root => {
       if (e.target.checked && !p.gamemaster) { e.target.checked = false; toast('Choose the Gamemaster console first, under Consoles.', true); return; }
       // Ending it clears who's here, the rounds, the teams and the seats (for the next party).
       const withProfiles = !e.target.checked && prof && prof.profiles && prof.profiles.some(g => g.on.length) && !(prof.work && prof.work.running);
-      const removeToo = h('input', { type: 'checkbox', checked: true });
+      const removeToo = h('input', { type: 'checkbox', checked: false });  // Kept for the next party unless asked (Marcus).
       if (!e.target.checked && !(await confirmBox('End the LAN party?', [h('p', { style: { marginTop: 0 } }, 'Who’s here, the rounds, the teams and the seats are cleared. ' +
         'The guest list, the consoles, the theme and the rules stay for the next party.'),
         withProfiles ? h('label.check-label', removeToo, h('span', 'Remove the guest profiles from the consoles too (a copy with their achievements is kept on this PC)')) : null], 'End the party', true))) { e.target.checked = true; return; }

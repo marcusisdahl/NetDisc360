@@ -2287,6 +2287,80 @@ print('lua ok')
             out = server.communicate()[0]
         self.assertIn("making 1 guest profile with its NetDisc360.xex plugin (Aurora stays on screen).", out)
 
+    def test_the_party_app_makes_profiles_while_every_console_shows_it(self):
+        # Every console shows NetDiscParty.xex (none can start the helper
+        # from Aurora): the Gamemaster's app makes the profile. Here a thread
+        # does what the app does: it sees "makeprofiles" in the party, asks
+        # for the job and its picture (PartyJobAsk) and answers. A guest who
+        # joins signed in to a profile made by hand gets that one (adopted).
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        root = os.path.join(self.xbox, "Hdd1")
+        stop, asked = threading.Event(), []
+        port_box = {}
+
+        def job_ask(index, body=b""):
+            with connect_from("127.0.0.1", port_box["port"]) as conn:
+                conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x504A, index, 0, len(body)) + body)
+                return exact(conn, struct.unpack(">I", exact(conn, 4))[0])
+
+        def app():
+            seen = ""
+            while not stop.is_set():
+                try:
+                    with connect_from("127.0.0.1", port_box["port"]) as conn:
+                        conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, 0, 0))
+                        text = exact(conn, struct.unpack(">I", exact(conn, 4))[0]).decode("utf-8")
+                    job = [l.split("\t")[1] for l in text.splitlines() if l.startswith("makeprofiles\t")]
+                    if job and job[0] != seen:
+                        seen = job[0]
+                        lines = dict(l.split("=", 1) for l in job_ask(0).decode().splitlines() if "=" in l)
+                        asked.append((lines, len(job_ask(1, lines["picture1"].encode())), job_ask(1, b"../x")))
+                        xuid = "E00000000000C001"
+                        os.makedirs(os.path.join(root, "Content", xuid, "FFFE07D1", "00010000"))
+                        with open(os.path.join(root, "Content", xuid, "FFFE07D1", "00010000", xuid), "wb") as f:
+                            f.write(b"CON " + bytes(0x2000))
+                        asked.append(job_ask(2, ("job=%s\r\nby=party\r\nguest1=%s\r\npicture1=ok\r\n" % (lines["job"], xuid)).encode()))
+                except OSError:
+                    pass
+                stop.wait(0.3)
+        config = os.path.join(self.tmp.name, "app.ini")
+        self.web = free_port()
+        server, port_box["port"] = self.run_server("--web-port", str(self.web), "--config", config)
+        threading.Thread(target=app, daemon=True).start()
+        self.addCleanup(stop.set)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 20))
+            self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.1"], "guests": [{"name": "Nora", "here": True}]})
+            self.assertTrue(self.wait_for(lambda: "127.0.0.1" in self.json("GET", "/api/state")["party"]["wheelOn"], 10))
+            self.json("POST", "/api/party/profiles", {"action": "make"})
+            self.assertTrue(self.wait_for(lambda: any(g["xuid"] for g in self.json("GET", "/api/party/profiles")["profiles"]), 40))
+            r = self.json("GET", "/api/party/profiles")
+            self.assertEqual([(g["name"], g["xuid"], g["on"]) for g in r["profiles"]], [("Nora", "E00000000000C001", ["127.0.0.1"])])
+            lines, picture, bad = asked[0]
+            self.assertEqual((lines["guest1"], picture > 100, bad), ("Nora", True, b""))
+            self.assertEqual(asked[1], b"ok\n")
+            self.assertNotIn("makeprofiles", "".join(self.party_text_from("127.0.0.1", port_box["port"])))
+            # Joined signed in to a profile of one's own (offline): it's theirs.
+            with connect_from("127.0.0.1", port_box["port"]) as conn:
+                edit = "join\tGabbi\tE00000000000D00D\tGabbi G".encode()
+                conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5045, 0, 0, len(edit)) + edit)
+                self.assertEqual(exact(conn, struct.unpack(">I", exact(conn, 4))[0]), "ok\tWelcome, Gabbi!\n".encode())
+            gabbi = [g for g in self.json("GET", "/api/party/profiles")["profiles"] if g["name"] == "Gabbi"]
+            self.assertEqual([(g["gamertag"], g["xuid"], g["madeOn"], g["on"]) for g in gabbi], [("Gabbi G", "E00000000000D00D", "127.0.0.1", ["127.0.0.1"])])
+        finally:
+            stop.set()
+            server.kill()
+            out = server.communicate()[0]
+        self.assertIn("making 1 guest profile with the LAN party app (every console shows it).", out)
+        self.assertIn("Gabbi's own profile Gabbi G (E00000000000D00D) is their guest profile now", out)
+        with open(config) as f:
+            self.assertIn("|127.0.0.1|127.0.0.1|adopted", f.read())
+
+    def party_text_from(self, address, port):
+        with connect_from(address, port) as conn:
+            conn.sendall(b"ISVR" + struct.pack(">HHQI", 0x5057, 0, 0, 0))
+            return exact(conn, struct.unpack(">I", exact(conn, 4))[0]).decode("utf-8")
+
     def test_copies_profiles_to_the_seats_through_the_wheel_app(self):
         # After a spin or a swap, each seated guest's profile goes to their
         # console: here the second shows the wheel, so through the wheel
@@ -2355,7 +2429,12 @@ print('lua ok')
             self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.2", {}).get("state") not in (None, "copying"), 30))
             to = self.json("GET", "/api/state")["party"]["profilesTo"]
             self.assertEqual(to["127.0.0.2"], {"state": "ready", "done": 2, "total": 2, "now": "", "note": "Lars has no profile yet (the LAN party page makes them)"})
-            self.assertEqual(to["127.0.0.1"], {"state": "ready", "done": 0, "total": 0, "now": "", "note": "Tom has no profile yet (the LAN party page makes them)"})
+            # Every guest here gets their profile on every party console (Marcus 2026-11-02), seated or not.
+            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.1", {}).get("state") not in (None, "copying"), 30))
+            to = self.json("GET", "/api/state")["party"]["profilesTo"]
+            self.assertEqual(to["127.0.0.1"], {"state": "ready", "done": 2, "total": 2, "now": "", "note": "Tom has no profile yet (the LAN party page makes them)"})
+            with open(os.path.join(self.xbox, "Hdd1", "Content", kari, "FFFE07D1", "00010000", kari), "rb") as f:
+                self.assertEqual(f.read(), package("Kari"))
             # Byte for byte, the save too; the console's own profile is untouched.
             for xuid, root in ((ola, self.xbox), (kari, None)):
                 package_path = os.path.join("Hdd1", "Content", xuid, "FFFE07D1", "00010000", xuid)
@@ -2366,7 +2445,7 @@ print('lua ok')
             self.assertEqual(sorted(os.listdir(os.path.join(other, "Hdd1", "Content"))), ["0009000000ABCDEF", ola, kari])
             # The records know where they are now; the wheel app is told.
             profiles = {g["name"]: sorted(g["on"]) for g in self.json("GET", "/api/party/profiles")["profiles"]}
-            self.assertEqual(profiles, {"Ola": ["127.0.0.1", "127.0.0.2"], "Kari": ["127.0.0.2"], "Lars": [], "Tom": []})
+            self.assertEqual(profiles, {"Ola": ["127.0.0.1", "127.0.0.2"], "Kari": ["127.0.0.1", "127.0.0.2"], "Lars": [], "Tom": []})
             self.assertIn("\nprofiles\tready\t2\t2\t\tLars has no profile yet (the LAN party page makes them)\n", text_for("127.0.0.2"))
             # The wheel app's FTP server writes nowhere else, and shows only offline profiles.
             ftp = ftplib.FTP()
@@ -2381,15 +2460,15 @@ print('lua ok')
             ftp.quit()
             # Swapped again: there already, nothing copied twice.
             self.json("POST", "/api/party/seats", {"seats": {"127.0.0.2": ["Kari"], "127.0.0.1": ["Ola"]}})
-            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.1", {}).get("total") == 1
+            self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["party"]["profilesTo"].get("127.0.0.1", {}).get("total") == 2
                                           and self.json("GET", "/api/state")["party"]["profilesTo"]["127.0.0.1"]["state"] != "copying", 30))
-            self.assertEqual(self.json("GET", "/api/state")["party"]["profilesTo"]["127.0.0.2"]["done"], 1)
+            self.assertEqual(self.json("GET", "/api/state")["party"]["profilesTo"]["127.0.0.2"]["done"], 2)
         finally:
             stop.set()
             server.kill()
             out = server.communicate()[0]
-        self.assertIn("Guest profiles for the seats: 2 profiles copied to the seats (0 there already).", out)
-        self.assertIn("Guest profiles for the seats: 0 profiles copied to the seats (2 there already).", out)
+        self.assertIn("Guest profiles for the party's consoles: 3 profiles copied to the party's consoles (1 there already).", out)
+        self.assertIn("Guest profiles for the party's consoles: 0 profiles copied to the party's consoles (4 there already).", out)
 
     def test_turns_every_party_console_off_or_back_to_aurora(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

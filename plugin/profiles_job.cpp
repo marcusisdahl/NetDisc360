@@ -71,9 +71,16 @@ bool Value(const char* text, const char* key, char* value, size_t capacity) {
 }
 bool SafeName(const char* name) { return name[0] && !strchr(name,'\\') && !strchr(name,':') && !strstr(name,".."); }
 
-// Guest n's gamer picture (pictureN= and picture_smallN=, in folder) on xuid; its line in done.
-void Picture(const char* job, const char* folder, int n, ULONGLONG xuid, char* done, size_t& used, size_t capacity) {
-    char key[24], name[64], path[160];
+// A picture file the job names, from the folder beside the job.
+char PictureFolder[96];
+int ReadPictureFile(void*, const char* name, void* into, unsigned long capacity) {
+    char path[160];
+    sprintf_s(path,"NdJob:%s\\%s",PictureFolder,name);
+    return ReadBytes(path,into,capacity);
+}
+// Guest n's gamer picture (pictureN= and picture_smallN=, read with read) on xuid; its line in done.
+void Picture(const char* job, ReadCall read, void* with, int n, ULONGLONG xuid, char* done, size_t& used, size_t capacity) {
+    char key[24], name[64];
     sprintf_s(key,"picture%d",n);
     if(!Value(job,key,name,sizeof(name)) || !name[0]) return;
     static BYTE big[64*1024], small[32*1024];
@@ -82,13 +89,11 @@ void Picture(const char* job, const char* folder, int n, ULONGLONG xuid, char* d
     int bigSize=-1, smallSize=0;
     if(!SafeName(name)) sprintf_s(why,"%s isn't a file name.",name);
     else {
-        sprintf_s(path,"NdJob:%s\\%s",folder,name);
-        bigSize=ReadBytes(path,big,sizeof(big));
-        if(bigSize<=0) sprintf_s(why,"couldn't read %s.",path);
+        bigSize=read(with,name,big,sizeof(big));
+        if(bigSize<=0) sprintf_s(why,"couldn't read %s.",name);
         sprintf_s(key,"picture_small%d",n);
         if(bigSize>0 && Value(job,key,name,sizeof(name)) && SafeName(name)) {
-            sprintf_s(path,"NdJob:%s\\%s",folder,name);
-            smallSize=ReadBytes(path,small,sizeof(small));
+            smallSize=read(with,name,small,sizeof(small));
             if(smallSize<=0) smallSize=0;
         }
     }
@@ -106,18 +111,12 @@ void Picture(const char* job, const char* folder, int n, ULONGLONG xuid, char* d
     }
 }
 
-void RunJob() {
-    static char job[4096];
-    int size=ReadBytes(JobFile,job,sizeof(job)-1);
-    if(size<0) return;
-    job[size]=0;
-    // First, so a crash or a freeze in xam doesn't start it again.
-    if(!DeleteFile(JobFile)) { Log("couldn't delete the job (%lu); left alone.",GetLastError()); return; }
-    char number[32]="", folder[96]="";
+}  // namespace
+
+// The job's profiles made, and what to answer in done (ProfileDone's lines, by=by).
+size_t MakeFromJob(const char* job, ReadCall read, void* with, char* done, size_t capacity, const char* by, int* madeOut) {
+    char number[32]="";
     Value(job,"job",number,sizeof(number));
-    // The pictures' folder under Hdd1: (\NetISO\NetDisc360).
-    Value(job,"folder",folder,sizeof(folder));
-    if(strchr(folder,':') || strstr(folder,"..") || (folder[0] && folder[0]!='\\')) folder[0]=0;
     static nia::ProfileInfo profiles[nia::ProfilesListed];
     int listed=nia::ListProfiles(profiles,nia::ProfilesListed);
     nia::ProfileCall call=nia::DefaultProfileCall(profiles,listed);
@@ -126,8 +125,7 @@ void RunJob() {
     if(Value(job,"flags",value,sizeof(value)) && value[0]) call.flags=strtoul(value,NULL,0);
     ULONGLONG like=0;
     for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
-    static char done[8192];
-    size_t used=sprintf_s(done,"job=%s\r\nby=plugin\r\n",number);
+    size_t used=sprintf_s(done,capacity,"job=%s\r\nby=%s\r\n",number,by);
     int asked=0, made=0;
     for(int n=1;n<=nia::ProfileJobMost && !Stopping;++n) {
         char key[16], name[64];
@@ -136,7 +134,7 @@ void RunJob() {
             // profileN=<XUID>: one there already, for its picture only.
             sprintf_s(key,"profile%d",n);
             ULONGLONG existing=Value(job,key,name,sizeof(name)) && name[0] ? _strtoui64(name,NULL,16) : 0;
-            if(existing) { ++asked; Picture(job,folder,n,existing,done,used,sizeof(done)); ++made; }
+            if(existing) { ++asked; Picture(job,read,with,n,existing,done,used,capacity); ++made; }
             continue;
         }
         ++asked;
@@ -152,14 +150,33 @@ void RunJob() {
         if(nia::MakeProfile(gamertag,call,xuid,code,why,sizeof(why),NULL)) {
             ++made;
             Log("made %s: %016I64X.",name,xuid);
-            used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",n,xuid);
-            Picture(job,folder,n,xuid,done,used,sizeof(done));
+            used+=sprintf_s(done+used,capacity-used,"guest%d=%016I64X\r\n",n,xuid);
+            Picture(job,read,with,n,xuid,done,used,capacity);
         } else {
             Log("couldn't make %s: %s",name,why);
             for(char* c=why;*c;++c) if(*c=='\r' || *c=='\n') *c=' ';
-            used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",n,why);
+            used+=sprintf_s(done+used,capacity-used,"error%d=%s\r\n",n,why);
         }
     }
+    Log("job %s: made %d of %d.",number[0] ? number : "?",made,asked);
+    if(madeOut) *madeOut=made;
+    return used;
+}
+
+namespace {
+void RunJob() {
+    static char job[4096];
+    int size=ReadBytes(JobFile,job,sizeof(job)-1);
+    if(size<0) return;
+    job[size]=0;
+    // First, so a crash or a freeze in xam doesn't start it again.
+    if(!DeleteFile(JobFile)) { Log("couldn't delete the job (%lu); left alone.",GetLastError()); return; }
+    // The pictures' folder under Hdd1: (\NetISO\NetDisc360).
+    Value(job,"folder",PictureFolder,sizeof(PictureFolder));
+    if(strchr(PictureFolder,':') || strstr(PictureFolder,"..") || (PictureFolder[0] && PictureFolder[0]!='\\')) PictureFolder[0]=0;
+    static char done[8192];
+    int made=0;
+    size_t used=MakeFromJob(job,ReadPictureFile,NULL,done,sizeof(done),"plugin",&made);
     // Written aside, then named: the server never reads half of it.
     HANDLE file=CreateFile(DonePart,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
     DWORD wrote=0;
@@ -167,7 +184,6 @@ void RunJob() {
     if(file!=INVALID_HANDLE_VALUE) CloseHandle(file);
     DeleteFile(DoneFile);
     if(!ok || !MoveFile(DonePart,DoneFile)) Log("couldn't write NetDisc360.done (%lu).",GetLastError());
-    Log("job %s: made %d of %d.",number[0] ? number : "?",made,asked);
     if(Show && made) {
         char text[64];
         sprintf_s(text,made==1 ? "NetDisc360: 1 guest profile made" : "NetDisc360: %d guest profiles made",made);
@@ -187,6 +203,7 @@ DWORD WINAPI Watch(void*) {
 }
 }
 
+void SetNote(NoteCall note) { Note=note; }
 void Start(NoteCall note, ShowCall show) {
     Note=note; Show=show;
     DWORD id=0;
