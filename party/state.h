@@ -6,7 +6,7 @@
 // with fixed sizes, shared by the Xbox build and tests/party_preview.cpp.
 namespace party {
 enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32, NoteBytes = 200,
-       GuestsMost = 64, KnownMost = 16, PaletteMost = 8 };
+       GuestsMost = 64, KnownMost = 16, PaletteMost = 8, VoteGamesMost = 10 };
 typedef char Name[NameBytes];
 
 // A turn of the wheel: from where the turn before left it to to degrees
@@ -74,6 +74,15 @@ struct State {
     char balance[16];
     int pointCount; Name pointName[GuestsMost]; int points[GuestsMost];
     int wonRound; Name wonTeam, wonGame;
+    // Readiness: how many of the party's consoles are ready for the next
+    // game (readyOf: -1 not said), and the first thing in the way.
+    int readyCount, readyOf; char readyNote[NoteBytes];
+    // The game vote (voteId 0: none): open or over, seconds left, the game
+    // the wheel picked; each game with its votes; and the game each of this
+    // console's controllers voted for (-1: none).
+    unsigned voteId; bool voteOpen; int voteLeft; Name votePicked;
+    int voteCount; Name voteGame[VoteGamesMost]; int voteVotes[VoteGamesMost];
+    int myVote[PerConsole];
 };
 enum { BalanceRandom, BalanceWins, BalanceGamerscore, BalanceCount };
 extern const char* const BalanceNames[BalanceCount];   // "random", "wins", "gamerscore"

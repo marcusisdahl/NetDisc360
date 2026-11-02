@@ -112,6 +112,10 @@ struct Party {
     // Turn off all when idle: the party's consoles turn off once none of
     // them played or did anything for the party for this long (0: never).
     int idleOffMinutes;
+    // Join from a phone: the party relay's address (relay/, on Cloudflare;
+    // "" off), this party's code there (shown on the big screen, made new for
+    // each party) and the key that shows the relay this NetDisc360 posts it.
+    std::string phoneRelay, phoneCode, phoneKey;
     Party() : active(false), teams(2), round(0), drawn(false), kept(false), balance(BalanceRandom), started(0), idleOffMinutes(0) { for(int t=0;t<TeamsMost;++t) teamColours.push_back(t); }
 };
 

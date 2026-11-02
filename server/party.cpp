@@ -492,6 +492,9 @@ void SaveParty(config::File& f, const Party& p) {
     f.Set("party_game",p.game);
     f.Set("party_started",Number(p.started));
     f.Set("party_idle_off",Number(p.idleOffMinutes));
+    f.Set("party_phone_relay",p.phoneRelay);
+    f.Set("party_phone_code",p.phoneCode);
+    f.Set("party_phone_key",p.phoneKey);
 }
 
 void SaveGuestStats(config::File& f, const std::vector<GuestStats>& stats) {
@@ -580,6 +583,9 @@ void LoadParty(const config::File& f, Party& p) {
     p.game=f.Get("party_game");
     p.started=f.Number("party_started",0);
     p.idleOffMinutes=int(std::max(0LL,std::min((long long)IdleOffMost,f.Number("party_idle_off",0))));
+    p.phoneRelay=f.Get("party_phone_relay");
+    p.phoneCode=f.Get("party_phone_code");
+    p.phoneKey=f.Get("party_phone_key");
     TidyParty(p);
 }
 

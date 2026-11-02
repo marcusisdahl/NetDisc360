@@ -22,6 +22,7 @@
 #include "picture.h"
 #include "installed.h"
 #include "party.h"
+#include "relay.h"
 #include "system.h"
 #include "systemlink.h"
 #include "update.h"
@@ -821,6 +822,18 @@ std::condition_variable PartyNewsCome;
 unsigned long long PartyVersion=1;
 // The live feed on the big screen (Marcus 2026-11-02): what happens at the
 // party as it happens, newest last; FeedMost kept, while a party is on.
+// Join from a phone: how posting the party to its relay went (RelayLoop).
+struct RelayState { bool ok; std::string error; double at; int joins; RelayState() : ok(false), at(0), joins(0) {} };
+RelayState RelayNow;
+std::mutex RelayLock;
+// A party code: 6 letters and digits, none that look alike (no I, O, 0, 1).
+std::string NewPartyCode() {
+    static const char letters[]="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const std::string random=web::NewSecret();
+    std::string code;
+    for(int i=0;i<6;++i) code+=letters[strtoul(random.substr(size_t(i)*2,2).c_str(),NULL,16)%32];
+    return code;
+}
 struct FeedItem { long long at; std::string kind, text; };
 std::deque<FeedItem> Feed;
 std::mutex FeedLock;
@@ -912,6 +925,7 @@ bool WheelUpdate(const std::string& address) {
 // their name in lower case: the console's address. Under PartyLock.
 std::map<std::string,std::string> JoinedOn;
 std::string PartyText(unsigned long long version, const std::string& address);
+void VoteJson(web::Json& j);
 std::string PartyEdit(const std::string& peer, const std::string& text, std::string& said);
 bool ChangeParty(const web::Value& v, std::string& error);
 // The consoles to open the wheel on, for a spin or "open on all" from
@@ -925,7 +939,7 @@ bool OpenPartyEverywhere(const std::string& from, int& opened, std::string& erro
 // consoles first: Aurora closes, the app starts and finds the server.
 enum { OpenLeadMs = 12000 };
 bool StartSpin(bool pick, int teams, const std::string& title, int seed, const std::vector<std::string>* consoles, int leadMs,
-               Spin& out, std::string& note, std::string& error);
+               Spin& out, std::string& note, std::string& error, const std::vector<std::pair<std::string,int> >* among = NULL);
 
 // A line about one console: "Xbox 192.168.1.30: ...".
 void XboxLog(const Console& console, const char* format, ...) {
@@ -1115,6 +1129,7 @@ void FollowLaunch(Console& c, int port) {
 // all when idle: the party's consoles turn off once none of them played or
 // did anything for the party for its idleOffMinutes.
 bool PowerOn(Console& console, const std::string& action, std::string& error);
+void CloseVoteIfDue();
 std::map<std::string,int> LiveScores;  // By XUID (upper case): the gamerscore seen last.
 void LiveLook(Console& c, const Options& o, const std::string& game) {
     AuroraWeb aurora(c.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
@@ -1169,6 +1184,7 @@ void LiveLoop() {
             }
         }
         if(playing) PartyBusy();
+        CloseVoteIfDue();  // A game vote whose time is up closes (and the wheel spins).
         if(!p.active || Now()<next) {} else {
             next=Now()+LiveEverySeconds;
             for(size_t i=0;i<on.size();++i) {
@@ -3540,6 +3556,49 @@ void SpinJson(web::Json& j, const Spin& s) {
     j.Close(']').Set("leadMs",s.leadMs).Set("pauseMs",s.pauseMs).Set("totalMs",s.TotalMs()).Set("elapsed",(long long)((Now()-s.at)*1000)).Close('}');
 }
 
+// Readiness check per console (Marcus 2026-11-02): what stands between a
+// party console and the next game, in plain sentences; none: ready.
+std::vector<std::string> NotReady(const Party& p, const std::string& address) {
+    std::vector<std::string> out;
+    Console* c=ConsoleIfKnown(inet_addr(address.c_str()));
+    bool on=false, disc=false;
+    if(c) {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        on=!c->offline && (c->answers || c->connections>0);
+        disc=c->connections>0;
+    }
+    if(!on) { out.push_back("It's off, or doesn't answer"); return out; }
+    if(!disc) out.push_back("Its NetDisc360 disc drive isn't connected, so games from this PC can't start on it");
+    if(ShowsWheel(address)) {
+        std::lock_guard<std::mutex> hold(WheelSeenLock);
+        std::map<std::string,unsigned>::const_iterator b=WheelBuild.find(address);
+        if(WheelAppBuiltIn && NETDISC_BUILD_STAMP && b!=WheelBuild.end() && b->second<NETDISC_BUILD_STAMP) out.push_back("Its party app is older than this server's; it updates itself in Aurora");
+    }
+    // Every guest here has their profile on it (Marcus: on every party console).
+    std::vector<GuestProfile> records=GuestProfilesNow();
+    std::vector<std::string> here=GuestsHere(p), missing, none;
+    for(size_t i=0;i<here.size();++i) {
+        GuestProfile* r=GuestProfileNamed(records,here[i]);
+        if(!r || r->xuid.empty()) none.push_back(here[i]);
+        else if(std::find(r->on.begin(),r->on.end(),address)==r->on.end()) missing.push_back(here[i]);
+    }
+    auto names=[](const std::vector<std::string>& list) {
+        std::string text;
+        for(size_t i=0;i<list.size();++i) text+=(i ? (i+1==list.size() ? " and " : ", ") : "")+list[i];
+        return text;
+    };
+    if(!missing.empty()) out.push_back(names(missing)+(missing.size()==1 ? "'s profile isn't" : "'s profiles aren't")+" on it yet");
+    if(!none.empty()) out.push_back(names(none)+(none.size()==1 ? " has" : " have")+" no profile yet");
+    // Its seated players signed in on its party screen.
+    std::lock_guard<std::mutex> hold(PartyLock);
+    std::vector<const PartySignInRecord*> in=SignedIn(p,address);
+    int signedIn=0;
+    for(size_t i=0;i<in.size();++i) if(in[i]) ++signedIn;
+    if(p.drawn && !in.empty() && signedIn<int(in.size()))
+        out.push_back(Number(signedIn)+" of "+Number(int(in.size()))+" seated players signed in");
+    return out;
+}
+
 // The party as the page reads it (in /api/state).
 void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
     j.Open('{').Set("active",p.active).Set("name",p.name);
@@ -3564,6 +3623,16 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
         j.Close('}');
     }
     j.Close(']').Set("statsReading",StatsReading.load()).Set("teams",p.teams).Set("balance",BalanceNames[p.balance]).Set("game",p.game).Set("started",p.started).Set("idleOffMinutes",p.idleOffMinutes);
+    // Join from a phone: the relay, the party code and its page, and how posting goes.
+    {
+        RelayState r;
+        if(!p.phoneRelay.empty()) { std::lock_guard<std::mutex> hold(RelayLock); r=RelayNow; }
+        j.Key("phone").Open('{').Set("relay",p.phoneRelay).Set("code",p.phoneRelay.empty() ? std::string() : p.phoneCode)
+         .Set("url",p.phoneRelay.empty() || p.phoneCode.empty() ? std::string() : p.phoneRelay+"/"+p.phoneCode)
+         .Set("ok",r.ok).Set("error",r.error).Set("joins",r.joins).Close('}');
+    }
+    j.Key("vote");
+    VoteJson(j);
     // The live feed, newest first.
     j.Key("feed").Open('[');
     {
@@ -3615,6 +3684,13 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
                 else j.Null();
             j.Close(']');
         }
+    }
+    j.Close('}').Key("ready").Open('{');
+    for(size_t i=0;i<p.consoles.size();++i) {
+        std::vector<std::string> problems=NotReady(p,p.consoles[i]);
+        j.Key(p.consoles[i].c_str()).Open('[');
+        for(size_t k=0;k<problems.size();++k) j.String(problems[k]);
+        j.Close(']');
     }
     j.Close('}').Key("wheelOn").Open('[');
     {
@@ -5326,6 +5402,31 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
     return true;
 }
 
+// Which copy of game Start on all starts on consoles: "installed" when each
+// has it installed (as Aurora starts it from here), "tile" when some have it
+// installed and the others not but every one has its tile (the copy on this
+// PC for all), "" otherwise (each its own way, as StartOn picks).
+std::string SameCopy(const std::vector<Console*>& consoles, const IsoFile& game) {
+    int installed=0, tiles=0, known=0;
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t i=0;i<consoles.size();++i) {
+        if(!consoles[i]) continue;
+        const Console& c=*consoles[i];
+        ++known;
+        if(c.tiles.count(Lower(game.name))) ++tiles;
+        bool has=false;
+        for(size_t k=0;k<c.installed.size() && !has && game.titleId;++k) {
+            const InstalledGame& g=c.installed[k];
+            has=g.titleId==game.titleId && g.disc==game.disc && !g.god && !DevicePath(g.path.substr(0,g.path.rfind('/'))).empty();
+        }
+        installed+=has;
+    }
+    if(!known) return std::string();
+    if(installed==known) return "installed";
+    if(installed && tiles==known) return "tile";
+    return std::string();
+}
+
 // POST /api/play {game, console}: starts a game on a console, its installed
 // copy if it has one, else its tile.
 bool Play(const web::Value& v, std::string& error) {
@@ -5928,6 +6029,21 @@ bool ChangeParty(const web::Value& v, std::string& error) {
     }
     if(!Whole(v,"teams",TeamsLeast,TeamsMost,next.teams,error) && !error.empty()) return false;
     if(!Whole(v,"idleOffMinutes",0,IdleOffMost,next.idleOffMinutes,error) && !error.empty()) return false;
+    if((f=v.Get("phoneRelay"))) {
+        if(f->type!=web::Value::String) { error="phoneRelay is the relay's address."; return false; }
+        text=f->text;
+        while(!text.empty() && (text.back()=='/' || text.back()==' ')) text.pop_back();
+        while(!text.empty() && text[0]==' ') text.erase(0,1);
+        if(!text.empty() && !relay::GoodUrl(text,error)) return false;
+        next.phoneRelay=text;
+    }
+    // A new code for each party (and on asking), so last time's QR codes don't join this one.
+    std::string code;
+    if(Text(v,"phoneCode",code) && code!="new") { error="phoneCode is \"new\" (a new party code)."; return false; }
+    if(!next.phoneRelay.empty()) {
+        if(next.phoneKey.empty()) next.phoneKey=web::NewSecret();
+        if(next.phoneCode.empty() || (next.active && !was.active) || code=="new") next.phoneCode=NewPartyCode();
+    }
     if(Text(v,"balance",text)) {
         int b=-1;
         for(int k=0;k<BalanceCount;++k) if(text==BalanceNames[k]) b=k;
@@ -6129,7 +6245,7 @@ void PartyRaffle(const web::Value& v, web::Reply& out) {
 // join it, and the teams are seated on these only. leadMs: how long before
 // the wheel moves (longer while the consoles open the wheel, see OpenWheel).
 bool StartSpin(bool pick, int teams, const std::string& title, int seed, const std::vector<std::string>* consoles, int leadMs,
-               Spin& out, std::string& note, std::string& error) {
+               Spin& out, std::string& note, std::string& error, const std::vector<std::pair<std::string,int> >* among) {
     std::lock_guard<std::mutex> changing(PartyChangeLock);
     Party p=CurrentParty();
     std::vector<std::string> on=consoles ? *consoles : p.consoles, joining;
@@ -6147,7 +6263,17 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, const s
     std::vector<Team> drawn;
     Seats seats;
     note.clear();
-    if(pick) {
+    if(pick && among) {
+        // One of these (games voted for), each as likely as its weight (votes).
+        if(among->size()<2) { error="The wheel needs two choices at least."; return false; }
+        std::vector<std::string> names;
+        int total=0;
+        for(size_t i=0;i<among->size();++i) { names.push_back((*among)[i].first); total+=std::max(1,(*among)[i].second); }
+        int roll=int(std::mt19937(from)()%unsigned(total));
+        size_t picked=0;
+        for(;picked+1<among->size() && roll>=std::max(1,(*among)[picked].second);++picked) roll-=std::max(1,(*among)[picked].second);
+        PlanPickSpin(names,picked,title,from,spin);
+    } else if(pick) {
         if(here.size()<2) { error=here.empty() ? "No one is here yet: tick the guests who are here." : "Tick at least two guests who are here, so the wheel has a choice."; return false; }
         PlanPickSpin(here,std::mt19937(from)()%here.size(),title,from,spin);
     } else {
@@ -6174,7 +6300,8 @@ bool StartSpin(bool pick, int teams, const std::string& title, int seed, const s
     Save();
     out=spin;
     for(size_t i=0;i<joining.size();++i) Log("%s joins the LAN party for the wheel.",joining[i].c_str());
-    if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
+    if(pick && among) Log("The raffle wheel is picking one of %d games: %s",int(among->size()),title.c_str());
+    else if(pick) Log("The raffle wheel is picking one of %d guests%s.",int(here.size()),title.empty() ? "" : (": "+title).c_str());
     else Log("The raffle wheel is drawing %d teams from %d guests.",teams,int(here.size()));
     PartyBusy();
     // Each guest's profile to the console they sit at, while the wheel turns.
@@ -6353,6 +6480,304 @@ std::vector<std::string> Fields(const std::string& text) {
 // openall (the party app opens on every console in Aurora, which join it).
 // reopen: this console's app went back to Aurora for this server's newer
 // one. "" or why not; said is a sentence for the screen.
+// Game vote (Marcus 2026-11-02): every player votes from their controller
+// for the next game, among those every party console can start; the wheel
+// then spins between the top picks (as likely as their votes), and the one
+// it stops on starts on every party console (Start on all).
+struct GameVote {
+    unsigned id;                          // 0: none since the server started.
+    bool open;
+    std::vector<std::string> games;
+    std::map<std::string,int> votes;      // By "console/controller": the game's index.
+    double endsAt;                        // Now() when it closes by itself.
+    std::string picked;                   // What the wheel stopped on, once it did.
+    GameVote() : id(0), open(false), endsAt(0) {}
+};
+GameVote Vote;
+std::mutex VoteLock;
+enum { VoteGamesMost = 10, VoteSecondsLeast = 15, VoteSecondsMost = 300, VoteSecondsUsual = 60, VoteTopMost = 4 };
+void PartyStart(const web::Value& v, web::Reply& out);
+// Start on all with the game the vote picked (games running end: the vote asked for it).
+void StartVoted(const std::string& game) {
+    web::Value v=Field(web::Value::Object);
+    Put(v,"game",TextValue(game));
+    Put(v,"confirm",BoolValue(true));
+    web::Reply out;
+    PartyStart(v,out);
+    if(out.status>=400) Log("LAN party: the voted game %s couldn't start: %s",game.c_str(),out.body.c_str());
+}
+// The games every party console can start (its tile or an installed copy),
+// System Link games first, then by name.
+std::vector<std::string> PartyGames(const Party& p) {
+    std::vector<IsoFile> games;
+    { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; }
+    std::vector<Console*> consoles;
+    for(size_t i=0;i<p.consoles.size();++i) { Console* c=ConsoleIfKnown(inet_addr(p.consoles[i].c_str())); if(c) consoles.push_back(c); }
+    std::vector<std::pair<int,std::string> > out;
+    if(consoles.empty()) return std::vector<std::string>();
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    for(size_t g=0;g<games.size();++g) {
+        if(games[g].disc>1) continue;  // A game's other discs.
+        bool all=true;
+        for(size_t i=0;i<consoles.size() && all;++i) {
+            const Console& c=*consoles[i];
+            bool has=c.tiles.count(Lower(games[g].name))>0;
+            for(size_t k=0;k<c.installed.size() && !has && games[g].titleId;++k) has=c.installed[k].titleId==games[g].titleId && !c.installed[k].god;
+            all=has;
+        }
+        if(!all) continue;
+        std::string name=config::ToUtf8(WithoutIso(games[g].name));
+        if(std::find_if(out.begin(),out.end(),[&name](const std::pair<int,std::string>& x) { return x.second==name; })!=out.end()) continue;
+        out.push_back(std::make_pair(games[g].titleId && FindSystemLink(games[g].titleId) ? 0 : 1,name));
+    }
+    std::sort(out.begin(),out.end());
+    std::vector<std::string> names;
+    for(size_t i=0;i<out.size();++i) names.push_back(out[i].second);
+    return names;
+}
+bool CloseVote(bool cancel, std::string& said, std::string& error);
+// Opens a vote among the party's games (or those given); seconds until it closes by itself.
+bool OpenVote(int seconds, const std::vector<std::string>* given, std::string& said, std::string& error) {
+    Party p=CurrentParty();
+    if(!p.active) { error="Start the party first."; return false; }
+    std::vector<std::string> games=given ? *given : PartyGames(p);
+    if(games.size()>VoteGamesMost) games.resize(VoteGamesMost);
+    if(games.size()<2) { error=games.empty() ? "No game is on every party console yet, so there's nothing to vote for." : "Only "+games[0]+" is on every party console: start it with Start on all."; return false; }
+    {
+        std::lock_guard<std::mutex> hold(VoteLock);
+        if(Vote.open) { error="A vote is on already."; return false; }
+        Vote.id=std::max(unsigned(time(NULL)),Vote.id+1);
+        Vote.open=true; Vote.games=games; Vote.votes.clear(); Vote.picked.clear();
+        Vote.endsAt=Now()+seconds;
+    }
+    said="Vote for the next game: "+Count(int(games.size()),"game","games")+", "+Number(seconds)+" seconds.";
+    Log("LAN party: a game vote opened (%s).",Count(int(games.size()),"game","games").c_str());
+    PartyFeed("vote","Vote for the next game on your controller!");
+    PartyNews();
+    return true;
+}
+// A controller's vote (console/pad), for game index (-1: taken back).
+bool CastVote(const std::string& console, int pad, int index, std::string& error) {
+    {
+        std::lock_guard<std::mutex> hold(VoteLock);
+        if(!Vote.open) { error="The vote is over."; return false; }
+        if(pad<0 || pad>3 || index<-1 || index>=int(Vote.games.size())) { error="That isn't a game of the vote."; return false; }
+        std::string key=console+"/"+Number(pad);
+        if(index<0) Vote.votes.erase(key); else Vote.votes[key]=index;
+    }
+    PartyBusy();
+    PartyNews();
+    return true;
+}
+void CloseVoteIfDue() {
+    bool due;
+    { std::lock_guard<std::mutex> hold(VoteLock); due=Vote.open && Now()>=Vote.endsAt; }
+    std::string said, error;
+    if(due && !CloseVote(false,said,error)) Log("LAN party: the game vote couldn't close: %s",error.c_str());
+}
+// The votes for each game of the vote now.
+std::vector<int> VoteCounts(const GameVote& v) {
+    std::vector<int> counts(v.games.size(),0);
+    for(std::map<std::string,int>::const_iterator i=v.votes.begin();i!=v.votes.end();++i) if(i->second>=0 && size_t(i->second)<counts.size()) ++counts[size_t(i->second)];
+    return counts;
+}
+// Closes the vote: the wheel spins between the top picks (no votes: all of
+// them), and the game it stops on starts on every party console after.
+bool CloseVote(bool cancel, std::string& said, std::string& error) {
+    GameVote v;
+    {
+        std::lock_guard<std::mutex> hold(VoteLock);
+        if(!Vote.open) { error="No vote is on."; return false; }
+        Vote.open=false;
+        v=Vote;
+    }
+    if(cancel) { said="The game vote is called off."; Log("LAN party: %s",said.c_str()); PartyNews(); return true; }
+    std::vector<int> counts=VoteCounts(v);
+    std::vector<std::pair<int,size_t> > ranked;
+    for(size_t i=0;i<counts.size();++i) ranked.push_back(std::make_pair(-counts[i],i));
+    std::stable_sort(ranked.begin(),ranked.end());
+    std::vector<std::pair<std::string,int> > top;
+    for(size_t i=0;i<ranked.size();++i) {
+        if(top.size()>=VoteTopMost) break;
+        if(ranked[0].first<0 && ranked[i].first==0) break;  // Games with no vote stay off the wheel when some got one.
+        top.push_back(std::make_pair(v.games[ranked[i].second],-ranked[i].first));
+    }
+    if(top.size()==1) {
+        // One game got every vote: no wheel, it starts.
+        said=top[0].first+" won the vote.";
+        { std::lock_guard<std::mutex> hold(VoteLock); Vote.picked=top[0].first; }
+        PartyFeed("vote","%s",said.c_str());
+        std::string game=top[0].first;
+        std::thread([game]() { Sleep(3000); StartVoted(game); }).detach();
+        return true;
+    }
+    Spin spin;
+    std::string note;
+    std::vector<Console*> others=WheelToOpen(std::string(),false);
+    if(!StartSpin(true,0,"Which game?",-1,NULL,others.empty() ? int(SpinLeadMs) : int(OpenLeadMs),spin,note,error,&top)) return false;
+    OpenWheels(others);
+    std::string game=spin.wheel[size_t(spin.steps.back().segment)];
+    { std::lock_guard<std::mutex> hold(VoteLock); Vote.picked=game; }
+    said="The wheel picks the game from the top "+Number(int(top.size()))+".";
+    Log("LAN party: the vote is over; %s",said.c_str());
+    // Once the wheel stopped (and the screens cheered), the game starts everywhere.
+    int wait=spin.TotalMs()+4000;
+    std::thread([game,wait]() { Sleep(DWORD(wait)); PartyFeed("vote","The wheel picked %s",game.c_str()); StartVoted(game); }).detach();
+    return true;
+}
+// POST /api/party/vote {action: open (seconds?), close or cancel}.
+void PartyVote(const web::Value& v, web::Reply& out) {
+    std::string action, error, said;
+    int seconds=VoteSecondsUsual;
+    if(!Text(v,"action",action) || (action!="open" && action!="close" && action!="cancel")) { out.Error(400,"Send action open, close or cancel."); return; }
+    if(!Whole(v,"seconds",VoteSecondsLeast,VoteSecondsMost,seconds,error) && !error.empty()) { out.Error(400,error); return; }
+    bool ok=action=="open" ? OpenVote(seconds,NULL,said,error) : CloseVote(action=="cancel",said,error);
+    if(!ok) { out.Error(400,error); return; }
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("said",said).Close('}');
+    out.body=j.Text();
+}
+// The vote as the page reads it (party.vote), or null.
+void VoteJson(web::Json& j) {
+    std::lock_guard<std::mutex> hold(VoteLock);
+    if(!Vote.id) { j.Null(); return; }
+    std::vector<int> counts=VoteCounts(Vote);
+    j.Open('{').Set("id",(long long)Vote.id).Set("open",Vote.open).Set("left",Vote.open ? std::max(0,int(Vote.endsAt-Now()+0.5)) : 0).Set("picked",Vote.picked).Key("games").Open('[');
+    for(size_t i=0;i<Vote.games.size();++i) j.Open('{').Set("name",Vote.games[i]).Set("votes",counts[i]).Close('}');
+    j.Close(']').Set("voters",int(Vote.votes.size())).Close('}');
+}
+
+// Join from a phone (relay/): while a party is on, NetDisc360 posts it to
+// the relay every 3 seconds, as phones see it (names, teams, the vote,
+// points, the feed; no addresses), and takes back what phones asked: a
+// name to join with, or a vote. Each join gets its answer back to the phone
+// on the next post. A party that ends is posted once more, as over.
+enum { RelayEveryMs = 3000, RelaySoonMs = 300, RelayFeedMost = 6, RelaySeconds = 10 };  // Every 3 s: a night of it fits Cloudflare's free plan.
+std::string PartyEdit(const std::string& peer, const std::string& text, std::string& said);
+std::string RelayBody(const Party& p, const std::vector<std::string>& answers) {
+    web::Json j;
+    j.Open('{').Key("party").Open('{').Set("active",p.active).Set("name",p.name).Set("accent",p.theme.accent).Set("game",p.game).Set("round",p.round);
+    j.Key("guests");
+    NamesJson(j,GuestsHere(p));
+    j.Key("teams").Open('[');
+    if(p.drawn)
+        for(size_t t=0;t<p.drawnTeams.size();++t) {
+            std::string consoles;
+            for(size_t s=0;s<p.seats.size();++s) {
+                bool theirs=false;
+                for(size_t m=0;m<p.seats[s].second.size() && !theirs;++m)
+                    theirs=std::find(p.drawnTeams[t].begin(),p.drawnTeams[t].end(),p.seats[s].second[m])!=p.drawnTeams[t].end();
+                if(!theirs) continue;
+                Console* c=ConsoleIfKnown(inet_addr(p.seats[s].first.c_str()));
+                consoles+=(consoles.empty() ? "" : ", ")+(c ? NameOf(*c) : p.seats[s].first);
+            }
+            const int colour=t<p.teamColours.size() ? p.teamColours[t] : 0;
+            j.Open('{').Set("name",TeamName(p.teamColours,int(t))).Set("colour",TeamPalette[colour].fill).Set("console",consoles).Key("players");
+            NamesJson(j,p.drawnTeams[t]);
+            j.Close('}');
+        }
+    j.Close(']').Key("vote");
+    {
+        std::lock_guard<std::mutex> hold(VoteLock);
+        if(!Vote.id) j.Null();
+        else {
+            std::vector<int> counts=VoteCounts(Vote);
+            j.Open('{').Set("id",(long long)Vote.id).Set("open",Vote.open).Set("left",Vote.open ? std::max(0,int(Vote.endsAt-Now()+0.5)) : 0).Set("picked",Vote.picked).Key("games").Open('[');
+            for(size_t i=0;i<Vote.games.size();++i) j.Open('{').Set("name",Vote.games[i]).Set("votes",counts[i]).Close('}');
+            j.Close(']').Close('}');
+        }
+    }
+    j.Key("points").Open('[');
+    std::vector<std::pair<std::string,int> > points=PartyPoints(p);
+    for(size_t i=0;i<points.size() && i<PartyTextPointsMost;++i) j.Open('{').Set("name",points[i].first).Set("points",points[i].second).Close('}');
+    j.Close(']').Key("feed").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(FeedLock);
+        int n=0;
+        for(std::deque<FeedItem>::const_reverse_iterator i=Feed.rbegin();i!=Feed.rend() && n<RelayFeedMost;++i,++n) j.Open('{').Set("text",i->text).Set("at",i->at).Close('}');
+    }
+    j.Close(']').Close('}').Key("answers").Open('[');
+    for(size_t i=0;i<answers.size();++i) j.Raw(answers[i]);
+    j.Close(']').Close('}');
+    return j.Text();
+}
+// What a phone asked for (an item of the relay's asks), done; its answer, if it gets one.
+std::string RelayAsk(const web::Value& ask) {
+    std::string kind, phone, name, id;
+    Text(ask,"kind",kind); Text(ask,"phone",phone); Text(ask,"id",id);
+    if(phone.empty() || phone.size()>40) return std::string();
+    Party p=CurrentParty();
+    if(kind=="vote") {
+        const web::Value* vote=ask.Get("vote"), * game=ask.Get("game");
+        if(!vote || !game || vote->type!=web::Value::Number || game->type!=web::Value::Number) return std::string();
+        { std::lock_guard<std::mutex> hold(VoteLock); if((double)Vote.id!=vote->number) return std::string(); }
+        std::string error;
+        if(!CastVote("phone "+phone.substr(0,12),0,int(game->number),error)) Log("LAN party: a phone's vote didn't count: %s",error.c_str());
+        return std::string();
+    }
+    if(kind!="join" || !Text(ask,"name",name)) return std::string();
+    std::string said, error=p.active ? PartyEdit("phone","join\t"+name,said) : std::string("The party hasn't started yet.");
+    std::string listed=GuestNamed(CurrentParty(),name);
+    if(error.empty()) {
+        Log("LAN party: %s joined from a phone.",listed.c_str());
+        std::lock_guard<std::mutex> hold(RelayLock);
+        ++RelayNow.joins;
+    }
+    web::Json j;
+    j.Open('{').Set("id",id).Set("phone",phone).Set("ok",error.empty()).Set("said",error.empty() ? said : error).Set("name",error.empty() ? listed : name).Close('}');
+    return j.Text();
+}
+void RelayLoop() {
+    std::vector<std::string> answers;
+    std::string over;  // The code last posted as over (the party ended).
+    std::string told;  // The problem last logged.
+    std::string posted;  // The room posted to last: a new one starts over (its joins too).
+    int failures=0;
+    for(;;) {
+        Party p=CurrentParty();
+        const std::string room=p.phoneRelay+"/api/room/"+p.phoneCode+"/host";
+        if(room!=posted) { std::lock_guard<std::mutex> hold(RelayLock); RelayNow=RelayState(); posted=room; }
+        if(p.phoneRelay.empty() || p.phoneCode.empty() || (!p.active && over==room)) {
+            Sleep(1000);
+            continue;
+        }
+        int status=0;
+        std::string reply, error;
+        bool ok=relay::Post(room,p.phoneKey,RelayBody(p,answers),RelaySeconds,status,reply,error);
+        web::Value v;
+        const bool parsed=ok && web::Parse(reply,v) && v.type==web::Value::Object;
+        if(ok && status!=200) {
+            ok=false;
+            std::string said;
+            if(parsed) Text(v,"error",said);
+            error=status==403 ? "Another NetDisc360 has this party code; make a new one." : "The relay answered HTTP "+Number(status)+(said.empty() ? "." : ": "+said);
+        } else if(ok && !parsed) { ok=false; error="The relay's answer isn't one NetDisc360 understands. Is the address right?"; }
+        {
+            std::lock_guard<std::mutex> hold(RelayLock);
+            RelayNow.ok=ok; RelayNow.error=ok ? std::string() : error;
+            if(ok) RelayNow.at=Now();
+        }
+        if(!ok) {
+            if(error!=told) { Log("LAN party: the phone page's relay %s: %s",p.phoneRelay.c_str(),error.c_str()); told=error; }
+            ++failures;
+            Sleep(DWORD(std::min(30000,RelayEveryMs<<std::min(failures,4))));
+            continue;
+        }
+        if(failures || !told.empty()) { Log("LAN party: phones reach the party again through %s.",p.phoneRelay.c_str()); told.clear(); }
+        failures=0;
+        answers.clear();
+        if(!p.active) over=room; else over.clear();
+        const web::Value* asks=v.Get("asks");
+        for(size_t i=0;asks && asks->type==web::Value::Array && i<asks->items.size();++i) {
+            if(asks->items[i].type!=web::Value::Object) continue;
+            std::string answer=RelayAsk(asks->items[i]);
+            if(!answer.empty()) answers.push_back(answer);
+        }
+        // Asks done: the phones see the party as it is now, soon.
+        Sleep(asks && asks->type==web::Value::Array && !asks->items.empty() ? RelaySoonMs : RelayEveryMs);
+    }
+}
+
 // "This is your 4th LAN: 12345 G so far." for a guest who was at earlier
 // LANs ("" for one who wasn't).
 std::string Ordinal(int n) {
@@ -6379,6 +6804,11 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
     std::string error;
     web::Value change=Field(web::Value::Object);
     if(what=="reopen") { ReopenWheel(peer); said="Updating the party app."; return ""; }
+    if(what=="vote") {
+        // A controller's vote: vote <controller> <game index or -1>.
+        int pad=f.size()>=3 ? atoi(f[1].c_str()) : -1, index=f.size()>=3 ? atoi(f[2].c_str()) : -2;
+        return CastVote(peer,pad,index,error) ? "" : error;
+    }
     if(what=="join" || what=="leave" || what=="add") {
         std::string name;
         if(f.size()<2 || !CleanName(f[1],1,GuestNameMost,"Your name",name,error)) return error.empty() ? "Type a name." : error;
@@ -6477,6 +6907,8 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
         Put(change,"balance",TextValue(f[1]));
         return ChangeParty(change,error) ? "" : error;
     }
+    if(what=="voteopen") return OpenVote(f.size()>=2 && atoi(f[1].c_str())>=VoteSecondsLeast ? std::min<int>(VoteSecondsMost,atoi(f[1].c_str())) : int(VoteSecondsUsual),NULL,said,error) ? "" : error;
+    if(what=="voteclose" || what=="votecancel") return CloseVote(what=="votecancel",said,error) ? "" : error;
     if(what=="backall") {
         // Back to the party on all (Marcus 2026-11-02): from a game too, which ends.
         std::vector<Console*> back=PartyConsolesAway(peer);
@@ -6626,6 +7058,31 @@ std::string PartyText(unsigned long long version, const std::string& address) {
     if(!p.gamemaster.empty()) line("gamemaster",{nameOf(p.gamemaster),p.gamemaster});
     line("teams",{Number(p.teams)});
     line("balance",{BalanceNames[p.balance]});
+    // The game vote: its id, open (1) or over, seconds left, what it picked;
+    // each game with its votes; and this console's controllers' votes.
+    {
+        std::lock_guard<std::mutex> hold(VoteLock);
+        if(Vote.id) {
+            std::vector<int> counts=VoteCounts(Vote);
+            line("vote",{Number((long long)Vote.id),Vote.open ? "1" : "0",Number(Vote.open ? std::max(0,int(Vote.endsAt-Now()+0.5)) : 0),Vote.picked});
+            for(size_t i=0;i<Vote.games.size();++i) line("votegame",{Vote.games[i],Number(counts[i])});
+            for(int pad=0;pad<4;++pad) {
+                std::map<std::string,int>::const_iterator mine=Vote.votes.find(address+"/"+Number(pad));
+                if(mine!=Vote.votes.end()) line("myvote",{Number(pad),Number(mine->second)});
+            }
+        }
+    }
+    // Readiness: how many of the party's consoles are ready, and the first thing in the way.
+    if(!p.consoles.empty()) {
+        int ready=0;
+        std::string first;
+        for(size_t i=0;i<p.consoles.size();++i) {
+            std::vector<std::string> problems=NotReady(p,p.consoles[i]);
+            if(problems.empty()) ++ready;
+            else if(first.empty()) first=nameOf(p.consoles[i])+": "+problems[0];
+        }
+        line("ready",{Number(ready),Number(int(p.consoles.size())),first});
+    }
     // The night's points (most first) and rounds won.
     {
         std::vector<std::pair<std::string,int> > points=PartyPoints(p);
@@ -6874,13 +7331,19 @@ void PartyStart(const web::Value& v, web::Reply& out) {
             return;
         }
     } else updates.join();
+    // The same copy on every console (Marcus 2026-11-02): when some have it
+    // installed and others don't, all start the network copy (its tile),
+    // the very same disc for everyone.
+    std::string copy=SameCopy(consoles,game);
+    const bool preferInstalled=copy!="tile";
+    if(copy=="tile") Log("Start on all: %s is installed on some of the consoles only, so every console starts the copy on this PC (the same one).",WithoutIso(game.name).c_str());
     struct Result { bool ok; std::string how, error; };
     std::vector<Result> results(consoles.size());
-    auto start=[&results,&consoles,&game](size_t i) {
+    auto start=[&results,&consoles,&game,preferInstalled](size_t i) {
         Result& r=results[i];
         r.ok=false;
         if(!consoles[i]) r.error="That console hasn't used NetDisc360 since it started.";
-        else r.ok=StartOn(*consoles[i],game,true,r.how,r.error);
+        else r.ok=StartOn(*consoles[i],game,preferInstalled,r.how,r.error);
     };
     start(0);
     std::vector<std::thread> starts;
@@ -6893,7 +7356,7 @@ void PartyStart(const web::Value& v, web::Reply& out) {
         j.Open('{').Set("address",addresses[i]).Set("ok",results[i].ok).Set("how",results[i].how).Set("error",results[i].error).Close('}');
         started+=results[i].ok;
     }
-    j.Close(']');
+    j.Close(']').Set("copy",copy);
     UpdatesJson(j,game,addresses);
     j.Close('}');
     out.body=j.Text();
@@ -8373,6 +8836,7 @@ void Api(const web::Request& r, web::Reply& out) {
     }
     else if(r.method=="POST" && r.path=="/api/party/start") PartyStart(body,out);
     else if(r.method=="POST" && r.path=="/api/party/winner") PartyWinner(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/vote") PartyVote(body,out);
     else if(r.method=="POST" && r.path=="/api/party/power") PartyPower(body,out);
     else if(r.method=="POST" && r.path=="/api/party/asset") PartyAsset(body,out);
     else if(r.method=="POST" && r.path=="/api/party/asset/remove") {
@@ -8800,6 +9264,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(RateLoop).detach();
     std::thread(AuroraLoop).detach();
     std::thread(LiveLoop).detach();
+    std::thread(RelayLoop).detach();
     std::thread(PingLoop).detach();
     std::thread(NamesLoop).detach();
     std::thread(SizeLoop).detach();

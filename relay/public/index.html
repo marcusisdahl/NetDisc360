@@ -1,0 +1,352 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT
+     NetDisc360's party page for phones, served by the party relay
+     (relay/src/worker.js). Open it from the QR code on the big screen:
+     /CODE, where CODE is the party code. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#107c10">
+<title>LAN party</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23107c10'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f3f4f6; --panel: #ffffff; --line: #e3e5e9; --text: #1c1e22; --muted: #5d6470; --faint: #959ca8;
+  --accent: #107c10; --on-accent: #ffffff; --accent-soft: #e5f2e5;
+  --good: #1e8a3a; --bad: #c42b1c; --bad-soft: #fde7e4; --warn: #9a5b00; --warn-soft: #fdf1dc;
+  --field: #ffffff; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121417; --panel: #1b1e22; --line: #2a2e34; --text: #e8eaed; --muted: #a0a7b1; --faint: #69707a;
+    --accent: #5cc35c; --on-accent: #0a1a0a; --accent-soft: #1d3020;
+    --good: #5cc35c; --bad: #f0675c; --bad-soft: #3d1d1a; --warn: #e7a43c; --warn-soft: #3a2c14;
+    --field: #15171a; --shadow: none;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  -webkit-text-size-adjust: 100%;
+}
+main { max-width: 480px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: flex; align-items: center; gap: 12px; padding: 4px 2px 6px; }
+header .mark { width: 40px; height: 40px; border-radius: 12px; background: var(--accent); flex: none; display: grid; place-items: center; }
+header .mark svg { width: 24px; height: 24px; }
+header h1 { font-size: 22px; line-height: 1.15; margin: 0; overflow-wrap: anywhere; }
+header p { margin: 0; color: var(--muted); font-size: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
+.card h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; display: flex; justify-content: space-between; gap: 8px; }
+.card h2 span { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--warn); }
+label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+input {
+  width: 100%; font: inherit; font-size: 18px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--field); color: var(--text);
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+button {
+  font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 13px 16px; cursor: pointer;
+  background: var(--accent); color: var(--on-accent); width: 100%; margin-top: 10px; min-height: 48px;
+}
+button:disabled { opacity: .55; cursor: default; }
+button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.row { display: flex; gap: 10px; align-items: center; }
+.note { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+.problem { background: var(--bad-soft); color: var(--bad); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-top: 10px; }
+.problem:empty { display: none; }
+.hello { font-size: 20px; font-weight: 650; margin: 0; }
+.team { border-radius: 12px; padding: 12px 14px; color: #fff; }
+.team b { display: block; font-size: 18px; }
+.team p { margin: 2px 0 0; opacity: .92; }
+.teams { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 10px; }
+.teams div { border-radius: 10px; padding: 8px 10px; border-left: 5px solid; background: var(--bg); font-size: 14px; }
+.teams div b { display: block; }
+.games { display: grid; gap: 8px; }
+.game {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; text-align: left;
+  background: var(--bg); color: var(--text); border: 2px solid transparent; margin: 0; padding: 12px 14px; font-weight: 500;
+}
+.game.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--bg)); }
+.game .votes { font-weight: 700; font-variant-numeric: tabular-nums; }
+.game .bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.game .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
+ol.points { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+ol.points li { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+ol.points li:last-child { border-bottom: 0; }
+ol.points li.me { font-weight: 700; color: var(--accent); }
+ul.feed { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 15px; }
+ul.feed li { padding-left: 14px; position: relative; }
+ul.feed li::before { content: ""; position: absolute; left: 0; top: .6em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.status { text-align: center; font-size: 13px; color: var(--faint); }
+.status.off { color: var(--warn); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg></div>
+    <div><h1 id="title">LAN party</h1><p id="subtitle">Join from your phone</p></div>
+  </header>
+
+  <section class="card" id="codeCard" hidden>
+    <h2>Party code</h2>
+    <form id="codeForm">
+      <label for="code">The code on the big screen</label>
+      <input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="6" placeholder="ABC234">
+      <button>Open the party</button>
+      <div class="problem" id="codeProblem" role="alert"></div>
+    </form>
+  </section>
+
+  <section class="card" id="joinCard" hidden>
+    <h2>Join the party</h2>
+    <form id="joinForm">
+      <label for="name">Your name, as it shows on the consoles</label>
+      <input id="name" autocomplete="nickname" maxlength="32" placeholder="Your name">
+      <button id="joinButton">Join</button>
+      <div class="problem" id="joinProblem" role="alert"></div>
+    </form>
+  </section>
+
+  <section class="card" id="youCard" hidden>
+    <p class="hello" id="hello"></p>
+    <p class="note" id="youNote"></p>
+    <div id="myTeam"></div>
+    <button class="quiet" id="notMe">Not you? Join with another name</button>
+  </section>
+
+  <section class="card" id="voteCard" hidden>
+    <h2>Vote for the next game <span id="voteLeft"></span></h2>
+    <div class="games" id="games"></div>
+    <p class="note" id="voteNote"></p>
+    <div class="problem" id="voteProblem" role="alert"></div>
+  </section>
+
+  <section class="card" id="teamsCard" hidden>
+    <h2>Teams <span id="round"></span></h2>
+    <div class="teams" id="teams"></div>
+  </section>
+
+  <section class="card" id="pointsCard" hidden>
+    <h2>Points tonight</h2>
+    <ol class="points" id="points"></ol>
+  </section>
+
+  <section class="card" id="feedCard" hidden>
+    <h2>Happening now</h2>
+    <ul class="feed" id="feed"></ul>
+  </section>
+
+  <p class="status" id="status"></p>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch {} },
+};
+const CODE = /^[A-HJ-NP-Z2-9]{6}$/;
+let code = (location.pathname.split("/").filter(Boolean)[0] || new URLSearchParams(location.search).get("c") || "").toUpperCase();
+let phone = store.get("phone");
+if (!phone || !/^[A-Za-z0-9_-]{8,40}$/.test(phone)) {
+  phone = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  store.set("phone", phone);
+}
+let me = store.get("name:" + code) || "";
+let waitingJoin = 0, myVote = { id: 0, game: -1 }, last = null, timer = 0, failures = 0;
+
+function text(el, value) { el.textContent = value; return el; }
+function make(tag, cls, value) { const el = document.createElement(tag); if (cls) el.className = cls; if (value != null) el.textContent = value; return el; }
+function same(a, b) { return a.localeCompare(b, undefined, { sensitivity: "accent" }) === 0; }
+function readable(hex) {
+  const n = parseInt(String(hex || "").replace("#", ""), 16);
+  if (Number.isNaN(n)) return "#fff";
+  const r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 160 ? "#111" : "#fff";
+}
+
+async function call(path, body) {
+  const r = await fetch("/api/room/" + code + path, body ? {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(Object.assign({ phone }, body)),
+  } : { cache: "no-store" });
+  let data = {};
+  try { data = await r.json(); } catch {}
+  if (!r.ok || !data.ok) throw Object.assign(new Error(data.error || "The party page can't be reached right now."), { status: r.status });
+  return data;
+}
+
+function showCode(problem) {
+  ["joinCard", "youCard", "voteCard", "teamsCard", "pointsCard", "feedCard"].forEach((id) => $(id).hidden = true);
+  $("codeCard").hidden = false;
+  text($("codeProblem"), problem || "");
+  $("code").value = code;
+  text($("status"), "");
+}
+
+async function poll() {
+  clearTimeout(timer);
+  try {
+    const data = await call("?phone=" + encodeURIComponent(phone));
+    failures = 0;
+    draw(data);
+  } catch (e) {
+    if (e.status === 404) { showCode(e.message); return; }
+    ++failures;
+    const s = text($("status"), failures > 2 ? "Can't reach the party right now; trying again." : $("status").textContent);
+    s.className = failures > 2 ? "status off" : "status";
+  }
+  timer = setTimeout(poll, document.hidden ? 15000 : 4000);
+}
+
+function draw(data) {
+  const p = data.party || {};
+  last = p;
+  $("codeCard").hidden = true;
+  document.title = (p.name || "LAN party") + " · join";
+  text($("title"), p.name || "LAN party");
+  text($("subtitle"), p.game ? "Playing " + p.game : p.active ? "Party code " + code : "The party is over. Thanks for coming!");
+  if (p.accent) {
+    document.documentElement.style.setProperty("--accent", p.accent);
+    document.documentElement.style.setProperty("--on-accent", readable(p.accent));
+    document.querySelector('meta[name="theme-color"]').content = p.accent;
+  }
+  // You: joined once NetDisc360 said so.
+  const you = data.you || {};
+  if (waitingJoin && you.at > waitingJoin) {
+    waitingJoin = 0;
+    $("joinButton").disabled = false;
+    if (you.ok) { me = you.name || me; store.set("name:" + code, me); }
+    else text($("joinProblem"), you.said || "That didn't work; try again.");
+  }
+  const joined = !!me && (p.guests || []).some((g) => same(g, me));
+  $("joinCard").hidden = joined || !p.active;
+  $("youCard").hidden = !joined;
+  if (joined) {
+    text($("hello"), you.ok && you.said && you.name && same(you.name, me) ? you.said : "You're in, " + me + "!");
+    const team = (p.teams || []).find((t) => (t.players || []).some((n) => same(n, me)));
+    const box = $("myTeam");
+    box.textContent = "";
+    if (team) {
+      const t = make("div", "team");
+      t.style.background = team.colour || "var(--accent)";
+      t.style.color = readable(team.colour);
+      t.append(make("b", null, "You're on " + team.name));
+      const mates = team.players.filter((n) => !same(n, me));
+      t.append(make("p", null, (mates.length ? "With " + mates.join(", ") : "On your own") + (team.console ? " · play on " + team.console : "")));
+      box.append(t);
+      text($("youNote"), "");
+    } else text($("youNote"), p.teams && p.teams.length ? "You're not in this round's teams." : "Teams show here when the wheel draws them.");
+  }
+  drawVote(p.vote, joined);
+  drawTeams(p);
+  drawPoints(p.points || []);
+  drawFeed(p.feed || []);
+  const ago = data.seenSecondsAgo || 0;
+  const s = text($("status"), ago > 20 ? "NetDisc360 was last heard " + ago + " s ago." : "Live from NetDisc360 · code " + code);
+  s.className = ago > 20 ? "status off" : "status";
+}
+
+function drawVote(v, joined) {
+  const card = $("voteCard");
+  card.hidden = !v || !v.open;
+  if (card.hidden) return;
+  if (myVote.id !== v.id) myVote = { id: v.id, game: -1 };
+  text($("voteLeft"), v.left + " s left");
+  const most = Math.max(1, ...v.games.map((g) => g.votes));
+  const list = $("games");
+  list.textContent = "";
+  v.games.forEach((g, i) => {
+    const b = make("button", "game" + (myVote.game === i ? " mine" : ""));
+    b.type = "button";
+    b.append(make("span", null, g.name), make("span", "votes", g.votes));
+    const bar = make("span", "bar"); const fill = make("i"); fill.style.width = (100 * g.votes / most) + "%"; bar.append(fill); b.append(bar);
+    b.setAttribute("aria-pressed", myVote.game === i ? "true" : "false");
+    b.onclick = () => vote(v.id, myVote.game === i ? -1 : i);
+    list.append(b);
+  });
+  text($("voteNote"), myVote.game >= 0 ? "Tap your pick again to take it back. The wheel spins between the top games." : "Tap a game. The wheel spins between the top games.");
+  if (!joined) text($("voteNote"), "Anyone at the party can vote.");
+}
+
+async function vote(id, game) {
+  text($("voteProblem"), "");
+  const was = myVote.game;
+  myVote = { id, game };
+  if (last) drawVote(last.vote, true);
+  try { await call("/vote", { vote: id, game }); }
+  catch (e) { myVote = { id, game: was }; text($("voteProblem"), e.message); if (last) drawVote(last.vote, true); }
+}
+
+function drawTeams(p) {
+  const teams = p.teams || [];
+  $("teamsCard").hidden = !teams.length;
+  text($("round"), p.round ? "Round " + p.round : "");
+  const box = $("teams");
+  box.textContent = "";
+  for (const t of teams) {
+    const d = make("div");
+    d.style.borderLeftColor = t.colour || "var(--accent)";
+    d.append(make("b", null, t.name + (t.console ? " · " + t.console : "")), make("span", null, (t.players || []).join(", ")));
+    box.append(d);
+  }
+}
+
+function drawPoints(points) {
+  $("pointsCard").hidden = !points.length;
+  const list = $("points");
+  list.textContent = "";
+  for (const x of points.slice(0, 10)) {
+    const li = make("li", me && same(x.name, me) ? "me" : "");
+    li.append(make("span", null, x.name), make("b", null, x.points + (x.points === 1 ? " point" : " points")));
+    list.append(li);
+  }
+}
+
+function drawFeed(feed) {
+  $("feedCard").hidden = !feed.length;
+  const list = $("feed");
+  list.textContent = "";
+  for (const x of feed.slice(0, 6)) list.append(make("li", null, x.text || x));
+}
+
+$("joinForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const name = $("name").value.trim();
+  text($("joinProblem"), "");
+  if (!name) { text($("joinProblem"), "Type your name."); return; }
+  $("joinButton").disabled = true;
+  try {
+    const sent = await call("/join", { name });
+    me = name;
+    waitingJoin = sent.at || 1;
+    setTimeout(() => { if (waitingJoin === sent.at) { waitingJoin = 0; $("joinButton").disabled = false; text($("joinProblem"), "NetDisc360 didn't answer yet; try again."); } }, 20000);
+    poll();
+  } catch (err) {
+    $("joinButton").disabled = false;
+    text($("joinProblem"), err.message);
+  }
+};
+$("notMe").onclick = () => { me = ""; store.set("name:" + code, ""); $("name").value = ""; if (last) draw({ party: last }); $("name").focus(); };
+$("codeForm").onsubmit = (e) => {
+  e.preventDefault();
+  const typed = $("code").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!CODE.test(typed)) { text($("codeProblem"), "A party code is 6 letters and numbers, like ABC234."); return; }
+  code = typed;
+  history.replaceState(null, "", "/" + code);
+  me = store.get("name:" + code) || "";
+  poll();
+};
+document.addEventListener("visibilitychange", () => { if (!document.hidden && CODE.test(code)) poll(); });
+if (CODE.test(code)) poll(); else showCode("");
+</script>
+</body>
+</html>

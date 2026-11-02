@@ -31,6 +31,8 @@ bool Parse(const char* text, unsigned length, State& s) {
     memset(&s,0,sizeof(s));
     s.accent=0x107C10; s.accent2=0xFFFFFF; s.teams=2;
     for(int t=0;t<TeamsMost;++t) s.teamColour[t]=t;
+    s.readyOf=-1;
+    for(int i=0;i<PerConsole;++i) s.myVote[i]=-1;
     const char* end=text+length;
     const char* at=text;
     bool header=false;
@@ -97,6 +99,10 @@ bool Parse(const char* text, unsigned length, State& s) {
         }
         else if(!strcmp(key,"makeprofiles") && n>=1) FIELD(0,s.profileJob);
         else if(!strcmp(key,"balance") && n>=1) FIELD(0,s.balance);
+        else if(!strcmp(key,"vote") && n>=4) { s.voteId=unsigned(strtoul(NUMBER(0),NULL,10)); s.voteOpen=atoi(NUMBER(1))==1; s.voteLeft=atoi(NUMBER(2)); FIELD(3,s.votePicked); }
+        else if(!strcmp(key,"votegame") && n>=2 && s.voteCount<VoteGamesMost) { FIELD(0,s.voteGame[s.voteCount]); s.voteVotes[s.voteCount++]=atoi(NUMBER(1)); }
+        else if(!strcmp(key,"myvote") && n>=2) { int pad=atoi(NUMBER(0)), game=atoi(NUMBER(1)); if(pad>=0 && pad<PerConsole) s.myVote[pad]=game; }
+        else if(!strcmp(key,"ready") && n>=3) { s.readyCount=atoi(NUMBER(0)); s.readyOf=atoi(NUMBER(1)); FIELD(2,s.readyNote); }
         else if(!strcmp(key,"points") && n>=2 && s.pointCount<GuestsMost) { FIELD(0,s.pointName[s.pointCount]); s.points[s.pointCount++]=atoi(NUMBER(1)); }
         else if(!strcmp(key,"won") && n>=3) { s.wonRound=atoi(NUMBER(0)); FIELD(1,s.wonTeam); FIELD(2,s.wonGame); }
         else if(!strcmp(key,"teamcolours")) { for(int t=0;t<n && t<TeamsMost;++t) s.teamColour[t]=atoi(NUMBER(t)); }

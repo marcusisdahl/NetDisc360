@@ -21,7 +21,7 @@ Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), askin
                    setup(false), setupTab(TabPlayers), setupRow(0), setupTop(0), hostRow(0), typing(-1), updating(false) {
     memset(&state,0,sizeof(state));
     server[0]=notice[0]=version[0]=0;
-    for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; }
+    for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; voteRow[i]=0; padOn[i]=true; }
 }
 
 static ImFont* Small; static ImFont* Body; static ImFont* Heading; static ImFont* Title; static ImFont* Names; static ImFont* Big;
@@ -459,6 +459,53 @@ static void DrawLobby(const Screen& screen, float px, float py, float pw) {
 }
 
 // The Gamemaster's setup, over the screen: Players, Teams and Consoles.
+// The game vote, over everything: every game with its votes; each of this
+// console's controllers has its own pick (its number at the left), and its
+// vote shows as its number at the right.
+static void DrawVote(const Screen& screen) {
+    const State& s=screen.state;
+    char text[200];
+    const float x=Left, y=Top+96, w=Right-Left, h=Bottom-60-y;
+    Box(0,0,1280,720,Hex(Background,215));
+    Box(x,y,w,h,Hex(Card),18);
+    Text(Heading,x+32,y+20,Hex(White),"Vote for the next game");
+    _snprintf_s(text,sizeof(text),_TRUNCATE,"%d s left",s.voteLeft);
+    TextRight(Heading,x+w-32,y+20,Hex(s.voteLeft<=10 ? 0xF2C811 : Muted),text);
+    TextFit(Small,x+32,y+66,w-64,Hex(Muted),"Each player picks with their own controller and presses A. The wheel then spins between the top games.");
+    int most=1;
+    for(int i=0;i<s.voteCount;++i) if(s.voteVotes[i]>most) most=s.voteVotes[i];
+    const float top=y+104, rowH=(h-120)/(s.voteCount>6 ? s.voteCount : 6);
+    for(int i=0;i<s.voteCount;++i) {
+        const float ry=top+i*rowH;
+        bool picked=false;
+        for(int pad=0;pad<PerConsole;++pad) if(screen.padOn[pad] && screen.voteRow[pad]==i) picked=true;
+        Box(x+24,ry,w-48,rowH-6,Hex(picked ? Raised : Mix(Card,Background,0.4f)),10);
+        // Controllers whose pick is here, at the left.
+        float cx=x+40;
+        for(int pad=0;pad<PerConsole;++pad) if(screen.padOn[pad] && screen.voteRow[pad]==i) {
+            List->AddCircleFilled(ImVec2(cx+12,ry+(rowH-6)/2),12,Hex(Mix(s.accent,0xFFFFFF,0.3f)),20);
+            char n[4]; _snprintf_s(n,sizeof(n),_TRUNCATE,"%d",pad+1);
+            TextCentred(Small,cx+12,ry+(rowH-6)/2-11,20,Hex(Ink),n);
+            cx+=28;
+        }
+        const float nx=x+160;
+        TextFit(Body,nx,ry+(rowH-6)/2-15,w*0.42f,Hex(White),s.voteGame[i]);
+        // Its votes: a bar and the number; this console's votes as numbers.
+        const float bx=x+w*0.58f, bw=w*0.26f;
+        Box(bx,ry+(rowH-6)/2-6,bw,12,Hex(Background),6);
+        if(s.voteVotes[i]) Box(bx,ry+(rowH-6)/2-6,bw*s.voteVotes[i]/most,12,Hex(Mix(s.accent,0xFFFFFF,0.35f)),6);
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"%d",s.voteVotes[i]);
+        TextRight(Body,x+w-110,ry+(rowH-6)/2-15,Hex(White),text);
+        float vx=x+w-48;
+        for(int pad=PerConsole-1;pad>=0;--pad) if(s.myVote[pad]==i) {
+            List->AddCircleFilled(ImVec2(vx-10,ry+(rowH-6)/2),10,Hex(Green),18);
+            char n[4]; _snprintf_s(n,sizeof(n),_TRUNCATE,"%d",pad+1);
+            TextCentred(Small,vx-10,ry+(rowH-6)/2-11,18,Hex(Ink),n);
+            vx-=24;
+        }
+    }
+}
+
 static void DrawSetup(const Screen& screen) {
     const State& s=screen.state;
     char text[200];
@@ -557,6 +604,14 @@ static void DrawSetup(const Screen& screen) {
             _snprintf_s(text,sizeof(text),_TRUNCATE,"%s%s",!strcmp(k.address,s.address) ? "This Xbox  /  " : "",StateText(k.state));
             TextRight(Small,x+w-48,ly+4,Hex(!strcmp(k.state,"off") ? Dim : Muted),text);
         }
+    }
+    // Consoles: how many are ready for the next game, and what's in the way.
+    if(screen.setupTab==TabConsoles && s.readyOf>0) {
+        float sy=top+(rows<SetupShown ? rows : SetupShown)*(rowH+6)+8;
+        const bool all=s.readyCount>=s.readyOf;
+        _snprintf_s(text,sizeof(text),_TRUNCATE,all ? "All %d consoles are ready" : "%d of %d consoles ready",all ? s.readyOf : s.readyCount,s.readyOf);
+        Text(Body,x+48,sy,Hex(all ? Green : 0xF2C811),text);
+        if(!all && s.readyNote[0]) TextFit(Small,x+48+Width(Body,text)+20,sy+4,w-140-Width(Body,text),Hex(Muted),s.readyNote);
     }
     // Scores: the night's points under the rows (or why there are no rows).
     if(screen.setupTab==TabScores) {
@@ -711,6 +766,12 @@ void DrawUi(const Screen& screen) {
             }
             if(used>0) TextRight(Small,px+pw,ty,Hex(0xF2C811),line);
         }
+        if(s.gamemaster && s.readyOf>0 && s.readyCount<s.readyOf) {
+            // The Gamemaster sees what's in the way before Start on all.
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"%d of %d consoles ready. %s",s.readyCount,s.readyOf,s.readyNote);
+            TextFit(Small,px,ty+26,pw,Hex(0xF2C811),text);
+            ty+=26;
+        }
         ty+=34;
         const int columns=s.teamCount>2 ? 2 : s.teamCount, rows=(s.teamCount+1)/2;
         const float gap=12, cw=(pw-gap*(columns-1))/columns, ch=((Bottom-80)-ty-gap*(rows-1))/rows;
@@ -739,8 +800,9 @@ void DrawUi(const Screen& screen) {
     }
     }
 
-    // The Gamemaster's setup, over the rest.
+    // The Gamemaster's setup, over the rest; the game vote over everything.
     if(screen.setup && s.valid) DrawSetup(screen);
+    else if(s.valid && s.voteOpen) DrawVote(screen);
 
     // A word back from the server: on the last spin or change (a problem), or good news.
     if(screen.notice[0]) {
@@ -771,7 +833,11 @@ void DrawUi(const Screen& screen) {
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
     const bool turning=s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s);
-    if(screen.setup && s.valid) {
+    if(s.valid && s.voteOpen && !screen.setup) {
+        bx=Button(bx,Bottom-40,"A",ButtonA,"Vote");
+        bx=Tag(bx,Bottom-40,"Up / Down","Choose");
+        if(s.gamemaster) bx=Tag(bx,Bottom-40,"START","Spin now");
+    } else if(screen.setup && s.valid) {
         bx=Button(bx,Bottom-40,"A",ButtonA,screen.setupTab==TabTeams ? "Next" : screen.setupTab==TabPlayers && screen.setupRow>0 ? "Playing or not" :
                   screen.setupTab==TabScores ? (screen.setupRow<s.teamCount ? "Won" : "Take back") : "Choose");
         if(screen.setupTab==TabTeams) bx=Tag(bx,Bottom-40,"< >","Change");
@@ -789,6 +855,7 @@ void DrawUi(const Screen& screen) {
             bx=Tag(bx,Bottom-40,"START","Spin");
             bx=Button(bx,Bottom-40,"X",ButtonX,"Pick one");
             bx=Tag(bx,Bottom-40,"RB","Set up");
+            bx=Tag(bx,Bottom-40,"LB","Game vote");
         }
         if(seat && seat->count>0 && !turning) bx=Button(bx,Bottom-40,"Y",ButtonY,"Sign in");
     }
@@ -797,7 +864,7 @@ void DrawUi(const Screen& screen) {
         Spinner(bx+16,Bottom-24,10,screen.time,Muted);
         Text(Body,bx+38,Bottom-39,Hex(Muted),"Copying profiles, please wait");
         bx+=38+Width(Body,"Copying profiles, please wait")+32;
-    } else if(!(screen.setup && s.valid)) bx=Button(bx,Bottom-40,"B",ButtonB,"Aurora");
+    } else if(!(screen.setup && s.valid) && !(s.valid && s.voteOpen)) bx=Button(bx,Bottom-40,"B",ButtonB,"Aurora");
     const char* where=screen.link==LinkConnected ? "Connected to NetDisc360 at %s" : screen.link==LinkLost ? "Lost NetDisc360 at %s, trying again" : screen.link==LinkWaiting ? "Waiting for the network" : "Looking for NetDisc360 %s";
     _snprintf_s(text,sizeof(text),_TRUNCATE,where,screen.server);
     float tw=Width(Small,text);

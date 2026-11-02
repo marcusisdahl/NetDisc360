@@ -37,6 +37,8 @@ struct Screen {
     int typing;         // The controller typing a name to join (-1: none).
     bool updating;      // Making way for the server's newer app: back to Aurora in a moment.
     char version[48];   // This app's version and build ("v1.1.0-dev  c9c9b76").
+    int voteRow[PerConsole];  // The game each controller has picked in the game vote (state.voteOpen).
+    bool padOn[PerConsole];   // Which controllers are connected.
     Screen();
 };
 // The setup's tabs, and how many rows each has: Players (Add a player, then

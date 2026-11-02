@@ -27,7 +27,7 @@ RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
         server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/system.cpp server/auroradb.cpp \
-        server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp \
+        server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
@@ -57,7 +57,7 @@ RUN fetch() { [ -n "$1" ] && curl -fsSL "$1" -o /tmp/launcher.zip \
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini tzdata \
+ && apt-get install -y --no-install-recommends tini tzdata curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1000 netdisc \
  && useradd --system --uid 1000 --gid 1000 --no-create-home netdisc \

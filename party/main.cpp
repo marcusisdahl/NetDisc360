@@ -421,9 +421,12 @@ bool ScreenStart() {
     return Screen!=NULL;
 }
 // A controller's buttons; the left stick counts as the d-pad.
+bool PadOn[4];  // Which controllers answered last time (Buttons).
+
 WORD Buttons(DWORD pad) {
     XINPUT_STATE state; ZeroMemory(&state,sizeof(state));
-    if(XInputGetState(pad,&state)!=ERROR_SUCCESS) return 0;
+    PadOn[pad]=XInputGetState(pad,&state)==ERROR_SUCCESS;
+    if(!PadOn[pad]) return 0;
     WORD b=state.Gamepad.wButtons;
     const SHORT x=state.Gamepad.sThumbLX, y=state.Gamepad.sThumbLY, edge=20000;
     if(y>edge) b|=XINPUT_GAMEPAD_DPAD_UP;
@@ -590,7 +593,7 @@ void __cdecl main() {
         while(Notifications && XNotifyGetNext(Notifications,0,&id,&param))
             if(id==XN_SYS_UI) { ChooserOpen=param!=0; if(!ChooserOpen) ChooserClosedAt=GetTickCount(); }
         WORD pressed[4], any=0;
-        for(DWORD pad=0;pad<4;++pad) { WORD b=Buttons(pad); pressed[pad]=WORD(b&~held[pad]); held[pad]=b; any|=pressed[pad]; }
+        for(DWORD pad=0;pad<4;++pad) { WORD b=Buttons(pad); pressed[pad]=WORD(b&~held[pad]); held[pad]=b; any|=pressed[pad]; frame.padOn[pad]=PadOn[pad]; }
         DWORD now=GetTickCount();
         bool newSpin=false;
         EnterCriticalSection(&Lock);
@@ -652,6 +655,19 @@ void __cdecl main() {
         }
         if(frame.updating) { if(now-updatingAt>2500) break; }
         else if(KeyPad>=0 || ChooserOpen) {}  // The Guide has the controllers.
+        else if(st.valid && st.voteOpen && !frame.setup) {
+            // The game vote: each controller its own pick, A votes; the Gamemaster's Start ends it.
+            static unsigned voteSeen=0;
+            if(st.voteId!=voteSeen) { voteSeen=st.voteId; for(int pad=0;pad<4;++pad) frame.voteRow[pad]=st.myVote[pad]>=0 ? st.myVote[pad] : 0; }
+            for(int pad=0;pad<4;++pad) {
+                if(pressed[pad]&XINPUT_GAMEPAD_DPAD_UP) --frame.voteRow[pad];
+                if(pressed[pad]&XINPUT_GAMEPAD_DPAD_DOWN) ++frame.voteRow[pad];
+                if(frame.voteRow[pad]>=st.voteCount) frame.voteRow[pad]=st.voteCount-1;
+                if(frame.voteRow[pad]<0) frame.voteRow[pad]=0;
+                if((pressed[pad]&XINPUT_GAMEPAD_A) && st.voteCount) QueueEdit("vote\t%d\t%d",pad,frame.voteRow[pad]);
+            }
+            if(st.gamemaster && (any&XINPUT_GAMEPAD_START) && now-askedAt>1000) { askedAt=now; QueueEdit("voteclose"); }
+        }
         else if(frame.setup && st.valid && st.gamemaster) {
             // The Gamemaster's setup: B closes it, LB and RB change tabs.
             if(any&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) frame.setup=false;
@@ -690,6 +706,7 @@ void __cdecl main() {
                 if(!turning) for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { OpenKeyboard(pad,KeyJoin); break; }
                 if(st.gamemaster && !turning) {
                     if(any&XINPUT_GAMEPAD_RIGHT_SHOULDER) { frame.setup=true; frame.setupTab=party::TabPlayers; frame.setupRow=frame.setupTop=0; }
+                    if((any&XINPUT_GAMEPAD_LEFT_SHOULDER) && now-askedAt>1000) { askedAt=now; QueueEdit("voteopen"); }
                     // The Gamemaster spins: Start for teams, X to pick one guest; once a second at most.
                     if((any&(XINPUT_GAMEPAD_START|XINPUT_GAMEPAD_X)) && now-askedAt>1000) {
                         askedAt=now;

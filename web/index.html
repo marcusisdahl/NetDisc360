@@ -621,7 +621,41 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .screen-feed li:first-child { background: rgba(255,255,255,.16); animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
 .screen-feed li .when { margin-left: auto; opacity: .7; font-size: .8em; font-weight: 600; }
 .idle-off { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.phone-join { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; display: flex; gap: 14px; align-items: flex-start; }
+.phone-join .qr { width: 112px; height: 112px; flex: none; border-radius: 6px; overflow: hidden; background: #fff; }
+.phone-join .qr svg { width: 100%; height: 100%; display: block; }
+.phone-join .info { display: grid; gap: 6px; min-width: 0; }
+.phone-join .code { font: 700 22px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
+.phone-join a { font-size: 13px; overflow-wrap: anywhere; }
+.phone-join .party-buttons { margin: 0; }
+details.phone-join { display: block; }
+details.phone-join summary { cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
+.screen-phone { align-self: flex-end; display: flex; align-items: center; gap: .7em; margin-top: auto;
+  background: rgba(0,0,0,.42); border-radius: clamp(10px, 1vw, 22px); padding: clamp(10px, 1vw, 20px); }
+.screen-phone + .screen-consoles { margin-top: 0; }
+.screen-phone .qr { width: clamp(96px, 9vw, 220px); aspect-ratio: 1; border-radius: .3em; overflow: hidden; background: #fff; }
+.screen-phone .qr svg { width: 100%; height: 100%; display: block; }
+.screen-phone small { display: block; opacity: .85; font-size: .7em; text-transform: uppercase; letter-spacing: .06em; }
+.screen-phone b { display: block; font-size: 1.5em; letter-spacing: .12em; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+@media (max-width: 700px) { .screen-phone { align-self: flex-start; } }
 .idle-off select { width: auto; }
+.vote-box { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0 0 12px; display: grid; gap: 8px; }
+.vote-box .vote-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vote-box .vote-head b { font-size: 14px; }
+.vote-box .vote-head .right { margin-left: auto; display: flex; gap: 6px; }
+.vote-row { display: grid; grid-template-columns: minmax(0, 12em) minmax(0, 1fr) 2.5em; align-items: center; gap: 10px; font-size: 13.5px; }
+.vote-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.vote-row .bar { height: 10px; border-radius: 99px; background: var(--hover); overflow: hidden; }
+.vote-row .bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .4s ease-out; }
+.vote-row b { text-align: right; font-variant-numeric: tabular-nums; }
+.screen-vote { background: rgba(0,0,0,.38); border-radius: clamp(12px, 1.2vw, 26px); padding: clamp(14px, 1.6vw, 34px); display: grid; gap: .45em; }
+.screen-vote h2 { margin: 0 0 .2em; font-size: 1.4em; display: flex; align-items: baseline; gap: .6em; }
+.screen-vote h2 small { font-size: .6em; opacity: .85; font-weight: 650; }
+.screen-vote .row { display: grid; grid-template-columns: minmax(0, 14em) minmax(0, 1fr) 2.2em; gap: .7em; align-items: center; font-size: clamp(18px, 1.8vw, 42px); font-weight: 700; }
+.screen-vote .row .bar { height: .55em; border-radius: 99px; background: rgba(255,255,255,.14); overflow: hidden; }
+.screen-vote .row .bar span { display: block; height: 100%; background: var(--glow); border-radius: 99px; transition: width .5s ease-out; }
+.screen-vote .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bests { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 14px; }
 .bests:empty { display: none; }
 .best { display: flex; flex-direction: column; padding: 10px 12px; border-radius: 9px; background: var(--field); border: 1px solid var(--line); min-width: 0; }
@@ -674,6 +708,9 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .pc-row .sub .dot { display: inline-block; margin-right: 6px; vertical-align: 1px; }
 .pc-row .gm { font-size: 13px; font-weight: 550; color: var(--muted); padding: 4px 8px; border-radius: 8px; white-space: nowrap; }
 .pc-row .gm.on { color: var(--accent-text); }
+.pc-ready { margin: 2px 0 6px 40px; padding: 0; list-style: none; font-size: 12.5px; color: var(--warn); display: grid; gap: 2px; }
+.ready-sum { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.ready-sum.ok { color: var(--good); } .ready-sum.not { color: var(--warn); }
 .pill.gm { background: var(--accent); color: var(--on-accent); }
 .guest-add { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .guest-add .input { flex: 1 1 220px; min-width: 0; }
@@ -2952,14 +2989,21 @@ Pages.party = root => {
     const list = S.consoles.map(c => c.address);
     for (const ip of p.consoles) if (!list.includes(ip)) list.push(ip);
     if (!list.length) return h('div.empty', ic('monitor'), h('h3', 'No console yet'), h('p', 'A console shows up here when its NetISO plugin connects to NetDisc360.'));
-    return [h('div.pc-list', list.map(ip => {
+    // Readiness check per console: what stands between it and the next game.
+    const ready = S.party.ready || {}, checked = p.consoles.filter(ip => ip in ready), fine = checked.filter(ip => !ready[ip].length);
+    const summary = p.active && checked.length ? h('p.ready-sum.' + (fine.length === checked.length ? 'ok' : 'not'), ic(fine.length === checked.length ? 'circle-check' : 'triangle-alert', 'sm'),
+      fine.length === checked.length ? (checked.length === 1 ? 'The party’s console is ready' : 'All ' + checked.length + ' party consoles are ready') : fine.length + ' of ' + checked.length + ' party consoles ready') : null;
+    return [summary, h('div.pc-list', list.map(ip => {
       const st = partyConsole(ip), on = p.consoles.includes(ip), gm = p.gamemaster === ip;
-      return h('div.pc-row' + (on ? '.on' : ''),
+      const problems = p.active && on && ready[ip] ? ready[ip] : null;
+      return [h('div.pc-row' + (on ? '.on' : ''),
         h('label.pick', h('input', { type: 'checkbox', checked: on, disabled: gm, 'data-focus': 'in-' + ip, title: gm ? 'The Gamemaster console is always in the party' : null,
           onchange: e => edit({ consoles: e.target.checked ? p.consoles.concat(ip) : p.consoles.filter(a => a !== ip) }) }),
         h('span.what', h('b', nameOf(ip)), nameOf(ip) !== ip ? h('span.muted', ' ' + ip) : null, h('span.sub', st.dot ? h('span.dot.' + st.dot) : null, st.text))),
         (S.party.wheelOn || []).includes(ip) ? h('span.pill.info', { title: 'NetDisc360 Party is open on it' }, ic('ferris-wheel', 'sm'), 'Party app') : null,
-        h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster'));
+        problems ? (problems.length ? h('span.pill.warn', { title: problems.join('\n') }, ic('triangle-alert', 'sm'), plural(problems.length, 'thing') + ' to fix') : h('span.pill.good', ic('circle-check', 'sm'), 'Ready')) : null,
+        h('label.gm' + (gm ? '.on' : ''), h('input', { type: 'radio', name: 'gamemaster', checked: gm, 'data-focus': 'gm-' + ip, onchange: () => change({ gamemaster: ip }) }), ic('crown', 'sm'), 'Gamemaster')),
+        problems && problems.length ? h('ul.pc-ready', problems.map(x => h('li', x))) : null];
     })), h('p.hint', 'Tick every console that plays; the Gamemaster’s is the host’s, seated first. Open on all consoles lets the players join from their own controller, and the Gamemaster run the party from there.')];
   }
 
@@ -3409,7 +3453,7 @@ Pages.party = root => {
       h('button.btn', { title: 'Opens the LAN party app on every party console, from a game too', onclick: e => powerAll('party', e.currentTarget) }, ic('party-popper', 'sm'), 'Back to the party on all'),
       h('button.btn', { onclick: e => powerAll('aurora', e.currentTarget) }, ic('rotate-ccw', 'sm'), 'Back to Aurora on all'),
       h('button.btn.danger', { onclick: e => powerAll('off', e.currentTarget) }, ic('power', 'sm'), 'Turn off all'));
-    if (!g) return [h('p.muted', { style: { margin: 0 } }, 'No game is on every party console yet. A console has a game once NetDisc360 added its tile there, or when it’s installed on it.'), buttons, idleOff(p)];
+    if (!g) return [h('p.muted', { style: { margin: 0 } }, 'No game is on every party console yet. A console has a game once NetDisc360 added its tile there, or when it’s installed on it.'), buttons, idleOff(p), phoneJoin(p)];
     const link = games.filter(x => x.systemLink), other = games.filter(x => !x.systemLink);
     const option = x => h('option', { value: x.name, selected: x === g }, x.name + (x.systemLink && x.perConsole ? ' · ' + x.perConsole + ' per console' : ''));
     const select = h('select.input', { 'aria-label': 'The game to start', 'data-focus': 'game', onchange: e => {
@@ -3426,23 +3470,70 @@ Pages.party = root => {
     // The party's consoles' title updates (those read), whether the party is on or not.
     const tus = g.titleUpdates || {}, differ = new Set(p.consoles.filter(ip => ip in tus).map(ip => tus[ip] || 'none')).size > 1;
     return [
+      drawVote(p),
       h('div.start-pick', select),
       h('div.game-facts',
         g.systemLink ? h('span.pill.good', ic('cable', 'sm'), 'System Link') : h('span.pill.off', 'No System Link'),
         g.systemLink ? h('span.pill.info', g.perConsole ? plural(g.perConsole, 'player') + ' per console' : 'Players per console not known') : null,
         g.systemLink && g.total ? h('span.pill.info', g.total + ' in all') : null,
-        installed.length ? h('span.pill.off', { title: 'Started from the copy installed on it' }, ic('hard-drive', 'sm'), 'Installed on ' + installed.map(nameOf).join(', ')) : null),
+        installed.length === p.consoles.length ? h('span.pill.off', { title: 'Started from the copy installed on each' }, ic('hard-drive', 'sm'), 'Installed on every console') : null,
+        installed.length && installed.length < p.consoles.length && p.consoles.every(ip => (g.tiles || []).includes(ip)) ? h('span.pill.info', { title: 'Installed on ' + installed.map(nameOf).join(', ') + ' only, so every console starts the copy on this PC: the same disc for everyone' },
+          ic('copy', 'sm'), 'Same copy on all') : null),
       // Before starting (after, Start on all's answer says it, below).
       differ && !(shown && shown.game === g.name && shown.titleUpdates) ? h('div.party-warn', ic('triangle-alert'), h('div', h('b', 'Different Title Updates'),
         h('p', 'These consoles run different title updates of ' + g.name + ', so they may not find each other over System Link.'),
         h('ul', p.consoles.map(ip => h('li', h('span', nameOf(ip)), h('span', ip in tus ? tus[ip] || 'None' : 'Not read yet')))))) : null,
+      installed.length && installed.length < p.consoles.length && !p.consoles.every(ip => (g.tiles || []).includes(ip)) ? h('div.party-note', ic('info', 'sm'),
+        h('span', g.name + ' is installed on ' + installed.map(nameOf).join(', ') + ', and the others play the copy on this PC. If they don’t find each other over System Link, the two copies may differ: install it on every console, or remove the installed copy.')) : null,
       crowded.length ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + plural(g.perConsole, 'player') + ' per console; ' +
         crowded.map((ip, i) => d.seats[ip].length + (i ? ' at ' : ' sit at ') + ip).join(', ') + '.')) : null,
       g.systemLink && g.total && here > g.total ? h('div.party-note', ic('info', 'sm'), h('span', g.name + ' takes ' + g.total + ' in all over System Link; ' + here + ' guests are here.')) : null,
       buttons,
       idleOff(p),
+      phoneJoin(p),
       h('p.hint', 'Let everyone sign in to their profile in Aurora first, then press Start on all. Nothing starts by itself.'),
     ];
+  }
+  // Game vote: everyone votes from their controller; the wheel spins between
+  // the top picks, and the game it stops on starts on every console.
+  function drawVote(p) {
+    const v = S.party.vote;
+    if (!p.active) return null;
+    if (!v || !v.open) return h('div.vote-box', h('div.vote-head', ic('dices', 'sm'), h('b', 'Game vote'),
+      v && v.picked ? h('span.muted', 'Last: ' + v.picked) : h('span.muted', 'everyone votes from their controller'),
+      h('div.right', h('button.btn.small', { 'data-focus': 'vote-open', onclick: e => vote('open', e.currentTarget) }, ic('dices', 'sm'), 'Vote on the next game'))));
+    const most = Math.max(1, ...v.games.map(g => g.votes));
+    return h('div.vote-box', h('div.vote-head', ic('dices', 'sm'), h('b', 'Game vote'), h('span.muted', plural(v.voters, 'vote') + ' · ' + v.left + ' s left'),
+      h('div.right', h('button.btn.small.primary', { 'data-focus': 'vote-close', onclick: e => vote('close', e.currentTarget) }, ic('ferris-wheel', 'sm'), 'Spin now'),
+        h('button.btn.small.ghost', { 'data-focus': 'vote-cancel', onclick: e => vote('cancel', e.currentTarget) }, 'Call off'))),
+      v.games.map(g => h('div.vote-row', h('span.name', g.name), h('span.bar', h('span', { style: { width: (g.votes / most * 100) + '%' } })), h('b', g.votes))));
+  }
+  async function vote(action, button) {
+    button.disabled = true;
+    try { const r = await api('party/vote', { action }); await refresh(); toast(r.said); }
+    catch (e) { toast(e.message, true); }
+    finally { button.disabled = false; }
+  }
+  // Join from a phone: guests open the party code's page (its QR code is on
+  // the big screen) to join and vote. NetDisc360 posts the party to its relay
+  // on Cloudflare (relay/ in the source), which phones reach.
+  function phoneJoin(p) {
+    const ph = p.phone || {};
+    if (!ph.relay) return h('details.phone-join', h('summary', ic('smartphone', 'sm'), 'Join from a phone'),
+      h('p.hint', 'Guests join the party and vote for the next game from their phone, through NetDisc360’s party relay on Cloudflare. Put the relay’s address here:'),
+      h('form', { onsubmit: e => { e.preventDefault(); const url = e.target.elements.relay.value.trim(); if (url) edit({ phoneRelay: url }); } },
+        h('input.input', { name: 'relay', type: 'url', placeholder: 'https://netdisc360-party.example.workers.dev', 'aria-label': 'The relay’s address', 'data-focus': 'phone-relay' }),
+        h('button.btn', 'Turn on')));
+    const status = ph.error ? h('span.pill.bad', { title: ph.error }, ic('triangle-alert', 'sm'), ph.error)
+      : ph.ok ? h('span.pill.good', ic('circle-check', 'sm'), p.active ? 'Phones can join' + (ph.joins ? ' · ' + plural(ph.joins, 'joined', 'joined') : '') : 'Ready for the party')
+      : h('span.pill.off', ic('loader-circle', 'sm'), 'Reaching the relay…');
+    const qr = h('div.qr', { 'aria-label': 'QR code for ' + ph.url, role: 'img' });
+    qr.innerHTML = qrSvg(ph.url);
+    return h('div.phone-join', qr, h('div.info', h('b', ic('smartphone', 'sm'), ' Join from a phone'), h('div.code', ph.code),
+      h('a', { href: ph.url, target: '_blank', rel: 'noopener' }, ph.url), h('div', status),
+      h('div.party-buttons',
+        h('button.btn.small', { title: 'A new code: the old QR code stops working', onclick: async e => { e.currentTarget.disabled = true; try { await api('party', { phoneCode: 'new' }); await refresh(); } catch (x) { toast(x.message, true); } } }, ic('refresh-cw', 'sm'), 'New code'),
+        h('button.btn.small.ghost', { onclick: () => edit({ phoneRelay: '' }) }, 'Turn off'))));
   }
   // Turn off all when idle: the party's consoles turn off once no one played or did anything for the party for that long.
   function idleOff(p) {
@@ -3521,7 +3612,7 @@ Pages.party = root => {
     facts.show(JSON.stringify([p.active, p.guests, p.consoles, p.round, statuses]), () => drawFacts(p));
     fill(rulesCount, p.together.length + p.apart.length ? String(p.together.length + p.apart.length) : 'keep two together, or apart');
     form.show(JSON.stringify([p.name, p.theme, pics.key, S.settings.saved]), () => drawForm(p, pics));
-    consoles.show(JSON.stringify([p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses, S.party.wheelOn]), () => drawConsoles(p));
+    consoles.show(JSON.stringify([p.active, p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses, S.party.wheelOn, S.party.ready]), () => drawConsoles(p));
     const named = S.consoles.map(c => c.address + '=' + c.name);
     guests.show(JSON.stringify([p.guests, prof && prof.profiles, profileConsoles(p), named]), () => drawGuests(p));
     profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), named, S.party.statsReading]), () => drawProfiles(p));
@@ -3531,7 +3622,7 @@ Pages.party = root => {
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
     raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn, p.balance]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
-    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes]), () => drawStart(p));
+    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes, p.active, S.party.vote, p.phone && [p.phone.relay, p.phone.code, p.phone.ok, p.phone.error, p.phone.joins]]), () => drawStart(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
   function route() {
@@ -3712,6 +3803,126 @@ function wheelColours(el, onDark) {
   };
 }
 
+// A QR code (byte mode, error correction M, versions 1-10) as rows of
+// booleans, for the phone page's address (Join from a phone).
+function qrModules(text) {
+  const data = Array.from(new TextEncoder().encode(text));
+  const EC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26], BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5];
+  const raw = (v) => { let r = (16 * v + 128) * v + 64; if (v >= 2) { const n = Math.floor(v / 7) + 2; r -= (25 * n - 10) * n - 55; if (v >= 7) r -= 36; } return r; };
+  let ver = 1;
+  for (; ver <= 10; ver++) if (Math.floor(raw(ver) / 8) - EC[ver] * BLOCKS[ver] >= data.length + 2 + (ver >= 10 ? 1 : 0)) break;
+  if (ver > 10) return null;
+  const total = Math.floor(raw(ver) / 8), ecLen = EC[ver], nBlocks = BLOCKS[ver], dataLen = total - ecLen * nBlocks;
+  // The bits: byte mode, the length, the bytes, then padding.
+  const bits = [];
+  const put = (value, n) => { for (let i = n - 1; i >= 0; i--) bits.push((value >>> i) & 1); };
+  put(4, 4); put(data.length, ver >= 10 ? 16 : 8); data.forEach((b) => put(b, 8));
+  put(0, Math.min(4, dataLen * 8 - bits.length)); put(0, (8 - bits.length % 8) % 8);
+  const words = [];
+  for (let i = 0; i < bits.length; i += 8) words.push(bits.slice(i, i + 8).reduce((a, b) => a * 2 + b, 0));
+  for (let pad = 0xEC; words.length < dataLen; pad ^= 0xEC ^ 0x11) words.push(pad);
+  // Reed-Solomon over GF(256), each block.
+  const mul = (x, y) => { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; } return z; };
+  const divisor = new Array(ecLen).fill(0); divisor[ecLen - 1] = 1;
+  for (let i = 0, root = 1; i < ecLen; i++) {
+    for (let j = 0; j < ecLen; j++) { divisor[j] = mul(divisor[j], root); if (j + 1 < ecLen) divisor[j] ^= divisor[j + 1]; }
+    root = mul(root, 2);
+  }
+  const short = nBlocks - total % nBlocks, shortLen = Math.floor(total / nBlocks) - ecLen;
+  const blocks = [], ecs = [];
+  for (let b = 0, at = 0; b < nBlocks; b++) {
+    const block = words.slice(at, at + shortLen + (b < short ? 0 : 1)); at += block.length;
+    const rem = new Array(ecLen).fill(0);
+    for (const w of block) { const f = w ^ rem.shift(); rem.push(0); divisor.forEach((d, i) => rem[i] ^= mul(d, f)); }
+    blocks.push(block); ecs.push(rem);
+  }
+  const all = [];
+  for (let i = 0; i <= shortLen; i++) blocks.forEach((b) => { if (i < b.length) all.push(b[i]); });
+  for (let i = 0; i < ecLen; i++) ecs.forEach((e) => all.push(e[i]));
+  // The grid: finders, timing, alignment, the dark module, then the data.
+  const size = ver * 4 + 17;
+  const grid = Array.from({ length: size }, () => new Array(size).fill(false));
+  const fixed = Array.from({ length: size }, () => new Array(size).fill(false));
+  const set = (x, y, dark) => { grid[y][x] = dark; fixed[y][x] = true; };
+  for (let i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+  const finder = (cx, cy) => {
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      const x = cx + dx, y = cy + dy, d = Math.max(Math.abs(dx), Math.abs(dy));
+      if (x >= 0 && x < size && y >= 0 && y < size) set(x, y, d !== 2 && d !== 4);
+    }
+  };
+  finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+  if (ver >= 2) {
+    const n = Math.floor(ver / 7) + 2, step = Math.ceil((ver * 4 + 4) / (n * 2 - 2)) * 2, at = [6];
+    for (let p = size - 7; at.length < n; p -= step) at.splice(1, 0, p);
+    at.forEach((x, i) => at.forEach((y, j) => {
+      if ((i === 0 && j === 0) || (i === 0 && j === n - 1) || (i === n - 1 && j === 0)) return;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }));
+  }
+  const format = (mask) => {
+    const value = mask;  // Level M is 00.
+    let rem = value;
+    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+    const b = ((value << 10) | rem) ^ 0x5412, bit = (i) => ((b >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6)); set(8, 8, bit(7)); set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+    set(8, size - 8, true);
+  };
+  format(0);
+  if (ver >= 7) {
+    let rem = ver;
+    for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+    const b = (ver << 12) | rem;
+    for (let i = 0; i < 18; i++) { const dark = ((b >>> i) & 1) === 1, a = size - 11 + i % 3, c = Math.floor(i / 3); set(a, c, dark); set(c, a, dark); }
+  }
+  let i = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let v = 0; v < size; v++) for (let j = 0; j < 2; j++) {
+      const x = right - j, y = ((right + 1) & 2) === 0 ? size - 1 - v : v;
+      if (!fixed[y][x] && i < all.length * 8) { grid[y][x] = ((all[i >>> 3] >>> (7 - (i & 7))) & 1) === 1; i++; }
+    }
+  }
+  // The mask with the fewest runs, blocks and imbalance.
+  const masks = [(x, y) => (x + y) % 2 === 0, (x, y) => y % 2 === 0, (x) => x % 3 === 0, (x, y) => (x + y) % 3 === 0,
+    (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0, (x, y) => x * y % 2 + x * y % 3 === 0,
+    (x, y) => (x * y % 2 + x * y % 3) % 2 === 0, (x, y) => ((x + y) % 2 + x * y % 3) % 2 === 0];
+  const apply = (m) => { for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (!fixed[y][x] && masks[m](x, y)) grid[y][x] = !grid[y][x]; };
+  const penalty = () => {
+    let p = 0, dark = 0;
+    for (let a = 0; a < size; a++) for (const row of [true, false]) {
+      let run = 1;
+      for (let b = 1; b <= size; b++) {
+        const same = b < size && (row ? grid[a][b] === grid[a][b - 1] : grid[b][a] === grid[b - 1][a]);
+        if (same) run++; else { if (run >= 5) p += run - 2; run = 1; }
+      }
+    }
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      if (grid[y][x]) dark++;
+      if (x + 1 < size && y + 1 < size && grid[y][x] === grid[y][x + 1] && grid[y][x] === grid[y + 1][x] && grid[y][x] === grid[y + 1][x + 1]) p += 3;
+    }
+    return p + Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size)) * 10;
+  };
+  let best = 0, least = Infinity;
+  for (let m = 0; m < 8; m++) { apply(m); format(m); const p = penalty(); if (p < least) { least = p; best = m; } apply(m); }
+  apply(best); format(best);
+  return grid;
+}
+
+// The code as an SVG (dark modules on white, with the quiet zone around).
+function qrSvg(text) {
+  const grid = qrModules(text);
+  if (!grid) return "";
+  const n = grid.length + 8;
+  let path = "";
+  grid.forEach((row, y) => row.forEach((dark, x) => { if (dark) path += `M${x + 4} ${y + 4}h1v1h-1z`; }));
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" shape-rendering="crispEdges"><rect width="${n}" height="${n}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+}
+
 // The big screen: the party's name and theme, its teams, who sits at which
 // console and what each plays, readable across a room on a TV, and on a phone.
 function bigScreen(parent) {
@@ -3789,10 +4000,17 @@ function bigScreen(parent) {
           h('p', plural(wins.length, 'round') + ' played · ' + plural(champions[0].points, 'win') + (champions.length > 1 ? ' each' : '') + '. Thanks for coming!')) : h('div.screen-soon', 'The LAN party starts soon'),
         pointsBox,
         feed,
-        sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls,
+        p.vote && p.vote.open && !sp ? h('div.screen-vote', h('h2', 'Vote for the next game', h('small', p.vote.left + ' s · ' + plural(p.vote.voters, 'vote'))),
+          p.vote.games.map(g => h('div.row', h('span.name', g.name), h('span.bar', h('span', { style: { width: (g.votes / Math.max(1, ...p.vote.games.map(x => x.votes)) * 100) + '%' } })), h('span', g.votes))))
+        : sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls,
           h('h2', teamName(i)), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
           : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,
             h('p', 'The teams are drawn soon.')),
+        p.active && p.phone && p.phone.url ? (() => {
+          const qr = h('div.qr', { role: 'img', 'aria-label': 'QR code for ' + p.phone.url });
+          qr.innerHTML = qrSvg(p.phone.url);
+          return h('div.screen-phone', qr, h('div', h('small', 'Join from your phone'), h('b', p.phone.code), h('small', p.phone.url.replace(/^https?:\/\//, '').replace(/\/[^/]*$/, ''))));
+        })() : null,
         p.consoles.length ? h('div.screen-consoles', p.consoles.map(ip => {
           const st = partyConsole(ip), names = d ? d.seats[ip] || [] : [], team = names.length ? d.teams.findIndex(t => t.includes(names[0])) : -1, gm = ip === p.gamemaster;
           return h('div.screen-console' + (team >= 0 ? '.' + teamLook(team).cls : ''),
