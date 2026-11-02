@@ -1316,8 +1316,9 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     return 0;
 }
 
-// The watcher: one system thread, started with the plugin, that keeps the
-// armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
+// The watcher: one system thread, started with the plugin, that puts System
+// Link's function in xam's export table once Nova's is there (WatchLink), and
+// keeps the armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
 // that Title ID runs, also after Nova changes it on a restart. (Watchers
 // created during the launch, as the first builds did, were parked in the
 // kernel and never ran; seen over xbdm.) ArmSwap gives it a new generation;
@@ -1329,10 +1330,12 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // notices from the game's own threads did. ArmSwap shows "ready" instead.
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
+static void WatchLink(); // System Link, below
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
+        WatchLink();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -1591,10 +1594,12 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // every frame that comes in, the game takes them all, and a disc streamed
 // over the network stops arriving (the game froze about 40 s in, and xbdm's
 // connection died with it; seen on both consoles).
-// So, before an original Xbox game starts (at the launch of its
-// default.xbe, while xam's export table can still be written, as Nova
-// writes it from Aurora; from the emulator's own launch the store faulted),
-// NetDisc360 puts its own function for 109 in that table in Nova's place.
+// So, once Nova has put its function for 109 in xam's export table (when
+// Aurora first starts after a boot), NetDisc360's watcher puts its own there
+// in Nova's place. It has to be the watcher: xam's export table can be
+// written from a system thread, as Nova does and as this plugin's hooks
+// write xam, but a store from a title's thread faults (the launch hooks run
+// on the title's; seen at the emulator's launch, from xbox.xex).
 // For the game (slot 1) it hands xam the game's callbacks itself, on the
 // game's thread, with its own callback in front that gives the game only
 // System Link frames (IPv4 from or to 0.0.0.1) and leaves every other frame
@@ -1706,7 +1711,13 @@ static void NoteKinds(FrameKinds& table,const char* what) {
 }
 
 static BYTE* volatile LinkNova=NULL;
+static NovaInstance LinkInstance=NULL;          // Nova's function that gives its instance
 static SetCallbacks NovaSet=NULL,RealSet=NULL; // Nova's function for 109; xam's own, through Nova's import
+static bool LinkToNova=false;                   // xbox_link=nova (or off) in NetDisc360.ini
+static char LinkSetting[96]="";
+static HANDLE LinkXam=NULL;
+static DWORD* LinkEntry=NULL;                   // xam's export table entry for 109
+static DWORD LinkBase=0;
 static TitleFrames volatile GameFrames=NULL;    // the game's callback for incoming frames, while xam has ours for it
 static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRegistered=false;
 static volatile LONG LinkOther=0; // what xam is told for frames left to the console (xbox_link_other)
@@ -1800,61 +1811,70 @@ static void StopLink() {
     LinkSeen=LinkXbox=LinkTaken=LinkLeft=LinkSets=0;
     LinkXamResult=LinkXamRetry=-1; LinkOdd=0;
 }
-// Before an original Xbox game starts, at the launch of its default.xbe (from
-// the launcher or Aurora): puts LinkSetCallbacks in xam's export table for
-// 109 in place of Nova's. Once per boot is enough; it stays.
-static void InstallLink() {
-    if(LinkInstalled || LinkTried) return;
+// When the plugin starts: whether System Link is left to Nova.
+static void ReadLinkSetting() {
     char value[16];
     const char* from=TuningValue("xbox_link",value,sizeof(value));
-    if(from && (!_stricmp(value,"nova") || !_stricmp(value,"off"))) { SwapNote("System Link: left to Nova (xbox_link=%s in %s).",value,from); return; }
-    HANDLE module=NULL;
-    DWORD base=0;
-    DWORD* entry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,base);
-    if(!entry) { SwapNote("System Link: xam's export table isn't where Nova's is found; left as it is."); return; }
-    DWORD at=base+*entry;
+    LinkToNova=from && (!_stricmp(value,"nova") || !_stricmp(value,"off"));
+    if(LinkToNova) sprintf_s(LinkSetting,"xbox_link=%s in %s",value,from);
+}
+// From the watcher (a system thread; no CRT calls here, see SwapNote), until
+// done once this boot: once Nova's function for 109 is in xam's export table,
+// puts LinkSetCallbacks there in its place.
+static void WatchLink() {
+    if(LinkInstalled || LinkTried || LinkToNova) return;
+    if(!LinkEntry) {
+        HANDLE module=NULL;
+        DWORD base=0;
+        DWORD* entry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,base);
+        if(!entry) { LinkTried=true; SwapNote("System Link: xam's export table isn't where Nova's is found; left to Nova."); return; }
+        LinkXam=module; LinkBase=base; LinkEntry=entry;
+    }
+    DWORD at=LinkBase+*LinkEntry;
+    if(at<0x90000000) return; // xam's own still: Nova isn't loaded yet
+    if(at==DWORD(LinkSetCallbacks)) { LinkInstalled=true; return; }
+    LinkTried=true;
     void* address=NULL;
-    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=at) {
-        SwapNote("System Link: xam's export table reads %X where xam says %X; left as it is.",at,DWORD(address));
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=at) {
+        SwapNote("System Link: xam's export table reads %X where xam says %X; left to Nova.",at,DWORD(address));
         return;
     }
-    if(at==DWORD(LinkSetCallbacks)) { LinkInstalled=true; return; }
     NovaFunction set;
-    if(!IsNovaFunction(at,set)) { SwapNote("System Link: xam's export 109 (%X) isn't Nova's function as known (is Nova loaded?); left as it is.",at); return; }
+    if(!IsNovaFunction(at,set)) { SwapNote("System Link: xam's export 109 (%X) isn't Nova's function as known; left as it is.",at); return; }
     NovaInstance instance=(NovaInstance)CallTarget(set.instance);
-    BYTE* nova=instance ? instance() : NULL;
-    if(!nova || !MmIsAddressValid(nova+NovaLinkOn)) { SwapNote("System Link: no Nova instance; left as it is."); return; }
-    if(*(DWORD*)(nova+NovaLinkOn)) { SwapNote("System Link: LiNK is on, so it's left to Nova."); return; }
     SetCallbacks real=(SetCallbacks)CallTarget(set.xam);
-    if(!real) { SwapNote("System Link: Nova's call to xam's own 109 isn't found; left as it is."); return; }
-    LinkNova=nova;
-    NovaSet=(SetCallbacks)at;
-    RealSet=real;
-    LinkTried=true; // a store that faults isn't tried again this boot
-    *entry=DWORD(LinkSetCallbacks)-base;
-    FlushCode(entry,4);
-    if(XexGetProcedureAddress(module,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks)) {
+    if(!instance || !real) { SwapNote("System Link: Nova's function for 109 (%X) doesn't call what it should; left to Nova.",at); return; }
+    LinkInstance=instance; NovaSet=(SetCallbacks)at; RealSet=real;
+    __sync(); // all of that before anyone can call LinkSetCallbacks
+    *LinkEntry=DWORD(LinkSetCallbacks)-LinkBase;
+    FlushCode(LinkEntry,4);
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks)) {
         SwapNote("System Link: xam's export 109 reads %X after the change, not NetDisc360's %X; left to Nova.",DWORD(address),DWORD(LinkSetCallbacks));
         return;
     }
     LinkInstalled=true;
-    SwapNote("System Link: xam's export 109 goes through NetDisc360 now (Nova's %X); original Xbox games get System Link frames from xam.",at);
+    SwapNote("System Link: xam's export 109 goes through NetDisc360 now (Nova's is %X); original Xbox games get System Link frames from xam.",at);
 }
-// When the emulator starts: System Link for this game, if installed.
+// When the emulator starts: System Link for this game, unless LiNK is on.
 // xbox_link_other=1 in NetDisc360.ini tells xam 1 instead of 0 for the
 // frames left to the console.
 static void StartLink() {
     StopLink();
-    if(!LinkInstalled) { SwapNote("System Link: not set up before the emulator started; left to Nova."); return; }
+    if(LinkToNova) { SwapNote("System Link: left to Nova (%s).",LinkSetting); return; }
+    if(!LinkInstalled) {
+        SwapNote(LinkTried ? "System Link: xam's export 109 doesn't go through NetDisc360 (see above); left to Nova."
+                           : "System Link: Nova's function for 109 never showed up in xam's export table (is Nova loaded?); left as it is.");
+        return;
+    }
+    BYTE* nova=LinkInstance();
+    if(!nova || !MmIsAddressValid(nova+NovaLinkOn)) { SwapNote("System Link: no Nova instance; left to Nova."); return; }
+    if(*(DWORD*)(nova+NovaLinkOn)) { SwapNote("System Link: LiNK is on, so it's left to Nova."); return; }
+    LinkNova=nova;
     char value[16];
     LinkOther=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
     GameFrames=NULL; LinkRegistered=false;
     LinkActive=true;
-}
-// An original Xbox game's default.xbe.
-static bool XbeStart(const char* path) {
-    size_t length=path ? strlen(path) : 0;
-    return length>4 && !_stricmp(path+length-4,".xbe");
+    SwapNote("System Link: on for this game; it gets System Link frames, the console keeps the rest.");
 }
 // The emulator starting, for a disc or a copy on a drive.
 static bool XefuStart(const char* path) {
@@ -2020,7 +2040,6 @@ static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     NoteLaunch(path,NULL,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
     StopLink();
-    if(XbeStart(path)) InstallLink();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -2037,10 +2056,7 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
         StartLink();
         path=Emulator(path,mountPath,emulator,sizeof(emulator));
     } else if(handling==NotTile && !disc && XefuStart(path)) StartLink();
-    else {
-        StopLink();
-        if(XbeStart(path)) InstallLink();
-    }
+    else StopLink();
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -2066,6 +2082,7 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         PatchReceiveBuffer();
         StartDrive();
         FindSwapExports();
+        ReadLinkSetting();
         StartWatcher();
     } else if(reason==DLL_PROCESS_DETACH) {
         disc::Stop();
