@@ -211,16 +211,27 @@ def write_god(folder, title_id, files, title="A Game", disc=1, discs=1, egdf=Fal
 
 class Discs(ServerTest):
     def start(self, *extra):
-        self.port = free_port()
-        self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push"] + list(extra),
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.startup = ""
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            line = self.server.stdout.readline()
-            self.startup += line
-            if "Listening on port" in line:
-                return
+        # free_port's port can be taken by someone else before the server
+        # binds it; then the server says so and stops, and gets another (as
+        # ServerTest.start does).
+        for _ in range(3):
+            self.port = free_port()
+            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push"] + list(extra),
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            self.startup = ""
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                line = self.server.stdout.readline()
+                self.startup += line
+                if "Listening on port" in line:
+                    return
+                if not line and self.server.poll() is not None:
+                    break
+            if "an't listen on" not in self.startup:
+                break
+            self.server.kill()
+            self.server.wait()
+            self.server.stdout.close()
         self.fail("server didn't start:\n" + self.startup)
 
     def log(self):
