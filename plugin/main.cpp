@@ -1601,7 +1601,8 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // write xam, but a store from a title's thread faults (the launch hooks run
 // on the title's; seen at the emulator's launch, from xbox.xex).
 // For the game (slot 1) it hands xam the game's callbacks itself, on the
-// game's thread, with its own callback in front that gives the game only
+// game's thread (taking Nova's own callbacks off xam while the game runs, as
+// xam takes one set at a time), with its own callback in front that gives the game only
 // System Link frames (IPv4 from or to 0.0.0.1) and leaves every other frame
 // to the console, so the disc stream keeps coming; for anything else, or
 // with LiNK on, it calls Nova's. Nova loads once per boot, so its own call
@@ -1614,6 +1615,15 @@ typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length);
 typedef BYTE* (*NovaInstance)();
 // Nova's CSystemLink: whether LiNK runs.
 static const DWORD NovaLinkOn=0xC0;
+// Nova registers callbacks of its own at xam (slot 2) at each title's load,
+// LiNK on or off, and takes them back when the title ends (+0xD0 is 1 while
+// they're registered). xam takes one set of callbacks at a time: with Nova's
+// there, it answered 2735 (WSAEALREADY) to the game's (seen on both
+// consoles). Its two callbacks, before its function for 109 (Nova 0.7b.2):
+static const DWORD NovaRegistered=0xD0;
+static const DWORD NovaFramesBefore=0x18A0,NovaOtherBefore=0x18B0;
+static const DWORD NovaFramesCode[4]={0x2B030000,0x409A0008,0x4E800020,0x4800006C}; // cmplwi cr6,r3,0; bne +8; blr; b
+static const DWORD NovaOtherCode[4]={0x2B030000,0x409A0008,0x4E800020,0x48000014};
 
 // Where a bl at at goes, or 0.
 static DWORD CallTarget(const DWORD* at) {
@@ -1723,6 +1733,10 @@ static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRe
 static volatile LONG LinkOther=0; // what xam is told for frames left to the console (xbox_link_other)
 static volatile DWORD LinkSeen=0,LinkXbox=0,LinkTaken=0,LinkLeft=0,LinkSets=0;
 static volatile LONG LinkXamResult=-1,LinkXamRetry=-1,LinkOdd=0;
+static void* LinkNovaFrames=NULL;               // Nova's own callbacks, to give back
+static void* LinkNovaOther=NULL;
+static volatile bool LinkMovedNova=false;
+static volatile LONG LinkNovaOff=-1,LinkNovaBack=-1; // what xam said to taking Nova's off and giving them back
 // An IPv4 frame from or to 0.0.0.1, as original Xbox consoles send System
 // Link. The frame may come with its Ethernet header or start at the IPv4
 // header, so both are looked at.
@@ -1775,6 +1789,25 @@ static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
 // xam's export 109 once installed: for the game while it runs, xam gets its
 // callbacks with LinkFrames in front, on the game's thread (without
 // callbacks it takes them back); everything else goes to Nova's, as before.
+// Takes Nova's own callbacks off xam, to make room for the game's; true if
+// it did.
+static bool MoveNova() {
+    BYTE* nova=LinkNova;
+    if(LinkMovedNova || !nova || *(DWORD*)(nova+NovaRegistered)!=1) return false;
+    LinkNovaOff=RealSet(2,NULL,NULL,NULL,0);
+    LinkMovedNova=true;
+    return true;
+}
+// Gives Nova its callbacks back at xam, as Nova registers them, unless it
+// has already let go of them itself (its title ended).
+static void GiveNovaBack() {
+    if(!LinkMovedNova) return;
+    LinkMovedNova=false;
+    BYTE* nova=LinkNova;
+    if(!nova || *(DWORD*)(nova+NovaRegistered)!=1) { LinkNovaBack=-2; return; }
+    if(!LinkNovaFrames || !LinkNovaOther) { LinkNovaBack=-3; return; } // Nova registers them again at the next title's load
+    LinkNovaBack=RealSet(2,LinkNovaFrames,LinkNovaOther,nova,0);
+}
 static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,DWORD more) {
     BYTE* nova=LinkNova;
     if(slot!=1 || !LinkActive || (nova && *(DWORD*)(nova+NovaLinkOn))) return NovaSet(slot,frames,other,context,more);
@@ -1782,18 +1815,21 @@ static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,D
     if(!frames) {
         if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
         GameFrames=NULL;
+        GiveNovaBack();
         return NovaSet(slot,frames,other,context,more);
     }
     GameFrames=(TitleFrames)frames;
-    LONG xam=RealSet(1,(void*)LinkFrames,other,context,more),retry=0;
-    if(xam) { // taken: once more after taking it back
+    LONG xam=RealSet(1,(void*)LinkFrames,other,context,more),retry=xam;
+    if(retry && MoveNova()) retry=RealSet(1,(void*)LinkFrames,other,context,more); // Nova's were in the way
+    if(retry) { // taken: once more after taking it back
         RealSet(1,NULL,NULL,NULL,0);
         retry=RealSet(1,(void*)LinkFrames,other,context,more);
     }
     LinkXamResult=xam; LinkXamRetry=retry;
-    LinkRegistered=!xam || !retry;
+    LinkRegistered=!retry;
     if(LinkRegistered) return 0;
     GameFrames=NULL;
+    GiveNovaBack();
     return NovaSet(slot,frames,other,context,more);
 }
 // On any launch: takes the game's callbacks back from xam (on the title's
@@ -1802,14 +1838,25 @@ static LONG LinkSetCallbacks(DWORD slot,void* frames,void* other,void* context,D
 static void StopLink() {
     if(!LinkActive) return;
     if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+    GiveNovaBack();
     LinkActive=false; GameFrames=NULL;
-    SwapNote("System Link: the game set its callbacks %u times; xam said %X (then %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
+    SwapNote("System Link: the game set its callbacks %u times; xam said %X (in the end %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
+    if(DWORD(LinkNovaOff)!=0xFFFFFFFF)
+        SwapNote("System Link: Nova's own callbacks were taken off xam (it said %X) and given back (%X; FFFFFFFE: Nova had let go of them, FFFFFFFD: not found).",
+                 DWORD(LinkNovaOff),DWORD(LinkNovaBack));
     SwapNote("System Link: %u frames came in, %u of them System Link, which the game got (it said 1 to %u, 0 to %u, last other %X); xam was told %u for the rest.",
              LinkSeen,LinkXbox,LinkTaken,LinkLeft,DWORD(LinkOdd),DWORD(LinkOther));
     NoteKinds(LinkHeardKinds,"heard");
     NoteDumps(LinkHeardDumps,"System Link");
     LinkSeen=LinkXbox=LinkTaken=LinkLeft=LinkSets=0;
     LinkXamResult=LinkXamRetry=-1; LinkOdd=0;
+    LinkNovaOff=LinkNovaBack=-1;
+}
+// Whether the four instructions at at are code's.
+static bool SameCode(const DWORD* at,const DWORD* code) {
+    if(!MmIsAddressValid((void*)at) || !MmIsAddressValid((void*)(at+3))) return false;
+    for(int i=0;i<4;++i) if(at[i]!=code[i]) return false;
+    return true;
 }
 // When the plugin starts: whether System Link is left to Nova.
 static void ReadLinkSetting() {
@@ -1845,6 +1892,11 @@ static void WatchLink() {
     SetCallbacks real=(SetCallbacks)CallTarget(set.xam);
     if(!instance || !real) { SwapNote("System Link: Nova's function for 109 (%X) doesn't call what it should; left to Nova.",at); return; }
     LinkInstance=instance; NovaSet=(SetCallbacks)at; RealSet=real;
+    const DWORD* novaFrames=(const DWORD*)(at-NovaFramesBefore);
+    const DWORD* novaOther=(const DWORD*)(at-NovaOtherBefore);
+    if(SameCode(novaFrames,NovaFramesCode) && SameCode(novaOther,NovaOtherCode)) {
+        LinkNovaFrames=(void*)novaFrames; LinkNovaOther=(void*)novaOther;
+    } else SwapNote("System Link: Nova's own callbacks aren't where Nova 0.7b.2 has them; while a game has System Link, Nova gets its back only at the next title.");
     __sync(); // all of that before anyone can call LinkSetCallbacks
     *LinkEntry=DWORD(LinkSetCallbacks)-LinkBase;
     FlushCode(LinkEntry,4);
