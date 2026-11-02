@@ -1715,8 +1715,36 @@ static volatile bool LinkActive=false,LinkXam=false,LinkSystemSend=false,LinkDon
 static volatile DWORD LinkSeen=0,LinkXbox=0,LinkGiven=0,LinkTaken=0,LinkSets=0,LinkSent=0,LinkSentXbox=0,LinkRefused=0;
 static volatile LONG LinkXamResult=-1,LinkLastRefusal=0,LinkSlotTwo=-1,LinkSlotTwoRetry=-1;
 // An IPv4 frame from 0.0.0.1, as original Xbox consoles send System Link.
+// The frame may come with its Ethernet header or start at the IPv4 header,
+// so both are looked at.
+static bool XboxIp(const BYTE* ip,DWORD length) {
+    return length>=20 && (ip[0]>>4)==4 && !ip[12] && !ip[13] && !ip[14] && ip[15]==1;
+}
 static bool XboxFrame(const BYTE* frame,DWORD length) {
-    return length>=34 && frame[12]==8 && !frame[13] && !frame[26] && !frame[27] && !frame[28] && frame[29]==1;
+    return (length>=34 && frame[12]==8 && !frame[13] && XboxIp(frame+14,length-14)) || XboxIp(frame,length);
+}
+
+// The first few frames each way, the first 64 bytes of each in hex, to see
+// how xam hands them over.
+static const int MaxDumps=6,DumpBytes=64;
+struct FrameDumps { BYTE bytes[MaxDumps][DumpBytes]; DWORD lengths[MaxDumps]; volatile LONG count; };
+static FrameDumps LinkHeardDumps,LinkSentDumps;
+static void DumpFrame(FrameDumps& dumps,const BYTE* frame,DWORD length) {
+    if(!frame || dumps.count>=MaxDumps) return;
+    LONG at=InterlockedIncrement(&dumps.count)-1;
+    if(at>=MaxDumps) return;
+    dumps.lengths[at]=length;
+    memcpy(dumps.bytes[at],frame,length<DWORD(DumpBytes) ? length : DWORD(DumpBytes));
+}
+static void NoteDumps(FrameDumps& dumps,const char* what) {
+    LONG count=dumps.count<MaxDumps ? dumps.count : MaxDumps;
+    for(LONG i=0;i<count;++i) {
+        char hex[DumpBytes*3+1]; hex[0]=0;
+        DWORD shown=dumps.lengths[i]<DWORD(DumpBytes) ? dumps.lengths[i] : DWORD(DumpBytes);
+        for(DWORD b=0;b<shown;++b) sprintf_s(hex+b*3,sizeof(hex)-b*3,"%02X ",dumps.bytes[i][b]);
+        SwapNote("System Link:   %s frame %u, %u bytes: %s",what,DWORD(i+1),dumps.lengths[i],hex);
+    }
+    dumps.count=0;
 }
 // xam's export 109 while the emulator runs: Nova's keeps the game's
 // callbacks; with xbox_link=xam xam gets them too, on the game's thread.
@@ -1735,6 +1763,7 @@ static LONG LinkXmit(DWORD slot,BYTE* frame,DWORD length) {
     ++LinkSent;
     if(frame && XboxFrame(frame,length)) ++LinkSentXbox;
     NoteKind(LinkSentKinds,frame,length);
+    DumpFrame(LinkSentDumps,frame,length);
     LONG result=LinkSystemSend ? RealXmit(2,frame,length) : NovaXmit(1,frame,length);
     if(result) { ++LinkRefused; LinkLastRefusal=result; }
     return result;
@@ -1747,6 +1776,7 @@ static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
     ++LinkSeen;
     if(!LinkActive) return 0;
     NoteKind(LinkHeardKinds,frame,length);
+    DumpFrame(LinkHeardDumps,frame,length);
     if(!XboxFrame(frame,length)) return 0;
     ++LinkXbox;
     BYTE* nova=LinkNova;
@@ -1774,6 +1804,8 @@ static void StopLink() {
                  LinkDone ? "registered" : "not registered",DWORD(LinkSlotTwo),DWORD(LinkSlotTwoRetry),LinkSeen,LinkXbox,LinkGiven,LinkTaken);
     NoteKinds(LinkSentKinds,"sent");
     NoteKinds(LinkHeardKinds,"heard");
+    NoteDumps(LinkSentDumps,"sent");
+    NoteDumps(LinkHeardDumps,"heard");
     LinkSeen=LinkXbox=LinkGiven=LinkTaken=LinkSets=LinkSent=LinkSentXbox=LinkRefused=0;
     LinkXamResult=LinkSlotTwo=LinkSlotTwoRetry=-1; LinkLastRefusal=0;
 }
