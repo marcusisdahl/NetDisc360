@@ -60,7 +60,7 @@ def build_server():
     subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_web.py")], check=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
-                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp",
+                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp", "server/http.cpp", "server/sync.cpp",
                                                "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
@@ -1715,8 +1715,8 @@ print('lua ok')
         self.assertFalse(os.path.exists(self.games))
 
 
-class Dashboard(ServerTest):
-    """The dashboard's web API, as web/index.html uses it."""
+class DashboardTest(ServerTest):
+    """A server with a settings file and the dashboard on port self.web."""
 
     def setUp(self):
         super().setUp()
@@ -1734,6 +1734,10 @@ class Dashboard(ServerTest):
         self.server.wait()
         self.server.stdout.close()
         self.start(*extra)
+
+
+class Dashboard(DashboardTest):
+    """The dashboard's web API, as web/index.html uses it."""
 
     def test_serves_the_page_and_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
@@ -2501,6 +2505,158 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("POST", "/api/password", {"password": "x"}, cookie=cookie)[0], 400)
         self.assertTrue(self.json("GET", "/api/state", cookie=cookie)["settings"]["passwordFixed"])
 
+
+NODE = shutil.which("node")
+SYNC_OWNER = "owner-key-for-the-sync-tests-0123"
+
+
+@unittest.skipUnless(NODE, "needs node, for the sync Worker")
+class Sync(DashboardTest):
+    """Sync between computers, against the sync Worker (sync/) run by
+    tests/sync_worker.mjs with a bucket in memory. The test plays the other
+    computer (a laptop) through the Worker's API."""
+
+    def setUp(self):
+        super().setUp()
+        self.worker = subprocess.Popen([NODE, os.path.join(HERE, "sync_worker.mjs"), SYNC_OWNER],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        line = self.worker.stdout.readline()
+        self.assertTrue(line.startswith("listening "), line)
+        self.sync_port = int(line.split()[1])
+        self.url = "http://127.0.0.1:%d" % self.sync_port
+        self.folder = os.path.dirname(self.config)
+
+    def tearDown(self):
+        self.worker.kill()
+        self.worker.wait()
+        self.worker.stdout.close()
+        super().tearDown()
+
+    def cloud(self, method, path, key, body=None, sha=None):
+        """(status, bytes) from the Worker, as another computer."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.sync_port, timeout=10)
+        headers = {"Authorization": "Bearer " + key}
+        if sha:
+            headers["X-Sha256"] = sha
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        conn.close()
+        return response.status, data
+
+    def cloud_put(self, key, path, data):
+        status, answer = self.cloud("PUT", "/v1/object/" + path, key, data, hashlib.sha256(data).hexdigest())
+        self.assertEqual(status, 200, answer)
+
+    def cloud_keys(self, key, prefix):
+        status, data = self.cloud("GET", "/v1/list?prefix=" + prefix, key)
+        self.assertEqual(status, 200, data)
+        return [i["key"] for i in json.loads(data)["items"]]
+
+    @staticmethod
+    def save_zip(game):
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("save.ini", "title_id=4D5307E6\ngame=%s\n" % game)
+            z.writestr("E000000000000001/savegame.dat", b"\x01" * 100)
+        return out.getvalue()
+
+    def synced(self, after=0):
+        """The state once a pass after time after is done."""
+        state = self.state_when(lambda s: s["sync"]["last"] > after and not s["sync"]["running"], 20)
+        self.assertGreater(state["sync"]["last"], after, state["sync"])
+        return state
+
+    def test_backups_and_play_history_follow_between_computers(self):
+        # The laptop: connected with the owner key, with a save backup, a
+        # profile backup and its play history in the cloud already.
+        status, data = self.cloud("POST", "/v1/devices", SYNC_OWNER, json.dumps({"name": "Laptop"}).encode())
+        self.assertEqual(status, 200, data)
+        laptop = json.loads(data)
+        from_laptop = "4D5307E6_2026-11-01_10-00-00.zip"
+        self.cloud_put(laptop["key"], "files/saves/" + from_laptop, self.save_zip("Halo 3"))
+        profile = "files/profiles/E000000000000001/2026-11-01_10-00-00_10.10.1.43.zip"
+        self.cloud_put(laptop["key"], profile, b"profile zip")
+        self.cloud_put(laptop["key"], "state/%s/plays.ini" % laptop["id"], b"2|600|1700000000|halo 3\n")
+        # This computer has a save backup of its own, and plays Halo 3 here.
+        saves = os.path.join(self.folder, "Saves")
+        os.makedirs(saves)
+        from_here = "4D5307E6_2026-11-02_20-00-00.zip"
+        with open(os.path.join(saves, from_here), "wb") as f:
+            f.write(self.save_zip("Halo 3"))
+        with open(os.path.join(self.folder, "plays.ini"), "w") as f:
+            f.write("1|60|1700001000|halo 3\n")
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start()
+        self.assertFalse(self.json("GET", "/api/state")["sync"]["on"])
+        # A wrong key or address says why, and changes nothing.
+        status, _, data = self.call("POST", "/api/sync/connect", {"url": self.url, "key": "not-the-key"})
+        self.assertEqual(status, 400)
+        self.assertIn(b"isn't one of this sync's", data)
+        status, _, data = self.call("POST", "/api/sync/connect", {"url": "ftp://x", "key": SYNC_OWNER})
+        self.assertEqual(status, 400)
+        self.assertIn(b"https://", data)
+        r = self.json("POST", "/api/sync/connect", {"url": self.url + "/", "key": SYNC_OWNER, "name": "Home PC"})
+        self.assertTrue(r["sync"]["on"])
+        self.assertEqual(r["sync"]["name"], "Home PC")
+        self.assertEqual(r["sync"]["url"], self.url)
+        state = self.synced()
+        self.assertEqual(state["sync"]["failed"], 0, state["sync"])
+        self.assertEqual(sorted((d["name"], d["self"]) for d in state["sync"]["devices"]), [("Home PC", True), ("Laptop", False)])
+        # The laptop's backups are here, this computer's in the cloud.
+        self.assertTrue(os.path.exists(os.path.join(saves, from_laptop)))
+        with open(os.path.join(self.folder, "Backups", "Profiles", "E000000000000001", "2026-11-01_10-00-00_10.10.1.43.zip"), "rb") as f:
+            self.assertEqual(f.read(), b"profile zip")
+        self.assertIn(from_laptop, [b["name"] for b in self.json("GET", "/api/saves")["saves"]])
+        self.assertIn("files/saves/" + from_here, self.cloud_keys(laptop["key"], "files/saves/"))
+        # The play history counts both computers.
+        self.state_when(lambda s: True)
+        games = self.json("GET", "/api/games")["games"]
+        halo = [g for g in games if g["name"] == "Halo 3"][0]
+        self.assertEqual((halo["plays"], halo["played"], halo["lastPlayed"]), (3, 660, 1700001000))
+        me = state["sync"]["id"]
+        status, data = self.cloud("GET", "/v1/object/state/%s/plays.ini" % me, laptop["key"])
+        self.assertEqual((status, data), (200, b"1|60|1700001000|halo 3\n"))
+        # The key is kept, not the owner key.
+        with open(self.config, encoding="utf-8") as f:
+            ini = f.read()
+        self.assertNotIn(SYNC_OWNER, ini)
+        self.assertIn("sync_id=" + me, ini)
+        # A backup deleted here isn't fetched again; a new one from the laptop is.
+        os.remove(os.path.join(saves, from_laptop))
+        newer = "4D5307E6_2026-11-03_09-00-00.zip"
+        self.cloud_put(laptop["key"], "files/saves/" + newer, self.save_zip("Halo 3"))
+        self.json("POST", "/api/sync/now", {})
+        self.synced(state["sync"]["last"])
+        self.assertFalse(os.path.exists(os.path.join(saves, from_laptop)))
+        self.assertTrue(os.path.exists(os.path.join(saves, newer)))
+        # After a restart it still syncs, as the same computer.
+        self.restart()
+        state = self.state_when(lambda s: s["sync"]["on"])
+        self.assertEqual(state["sync"]["id"], me)
+        # Off: this computer forgets its key; the backups stay.
+        r = self.json("POST", "/api/sync/off", {})
+        self.assertFalse(r["sync"]["on"])
+        self.assertTrue(os.path.exists(os.path.join(saves, newer)))
+        self.assertEqual(self.call("POST", "/api/sync/now", {})[0], 400)
+        halo = [g for g in self.json("GET", "/api/games")["games"] if g["name"] == "Halo 3"][0]
+        self.assertEqual(halo["plays"], 1)
+
+    def test_a_computer_can_be_taken_away(self):
+        self.start()
+        self.json("POST", "/api/sync/connect", {"url": self.url, "key": SYNC_OWNER, "name": "Home PC"})
+        status, data = self.cloud("POST", "/v1/devices", SYNC_OWNER, json.dumps({"name": "Old laptop"}).encode())
+        old = json.loads(data)
+        self.json("POST", "/api/sync/now", {})
+        state = self.state_when(lambda s: len(s["sync"]["devices"]) == 2, 20)
+        self.assertEqual(len(state["sync"]["devices"]), 2)
+        self.json("POST", "/api/sync/remove", {"id": old["id"]})
+        self.assertEqual(self.cloud("GET", "/v1/hello", old["key"])[0], 401)
+        state = self.state_when(lambda s: len(s["sync"]["devices"]) == 1, 20)
+        self.assertEqual([d["name"] for d in state["sync"]["devices"]], ["Home PC"])
+        # It can't take itself away.
+        status, _, data = self.call("POST", "/api/sync/remove", {"id": state["sync"]["id"]})
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

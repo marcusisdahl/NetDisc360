@@ -19,6 +19,7 @@
 #include "discs.h"
 #include "ftp.h"
 #include "saves.h"
+#include "sync.h"
 #include "installed.h"
 #include "system.h"
 #include "update.h"
@@ -129,6 +130,10 @@ struct Options {
     bool saveBackup;
     int saveKeep;
     double saveDelay;
+    // Sync between computers (SyncLoop, sync.h): the sync Worker's address,
+    // this computer's key there (kept protected like the passwords), and its
+    // device id and name there. No key: no sync.
+    std::string syncUrl, syncKey, syncId, syncName;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
@@ -687,6 +692,8 @@ std::mutex& FtpLockFor(DWORD address) {
     return *m;
 }
 void QueueSaves(DWORD address, const std::string& game);
+void SyncSoon();
+void SyncJson(::web::Json& j, const struct Options& o);
 void RefreshWake(const Console& console, FtpClient& ftp, const Options& o);
 
 // A console that has used the server, kept in the settings file so the
@@ -735,10 +742,7 @@ std::string PlaysPath(const std::string& configPath) {
 }
 
 // plays.ini: a line "times|seconds|last|name" for each game (last: time()).
-void LoadPlays(const std::string& configPath) {
-    std::string path=PlaysPath(configPath), text;
-    if(path.empty() || !config::ReadFile(path,text,16<<20)) return;
-    std::lock_guard<std::mutex> hold(PlaysLock);
+void ReadPlays(const std::string& text, std::map<std::string,Played>& plays) {
     for(size_t at=0;at<text.size();) {
         size_t end=text.find('\n',at);
         std::string line=text.substr(at,end==std::string::npos ? std::string::npos : end-at);
@@ -747,9 +751,21 @@ void LoadPlays(const std::string& configPath) {
         Played p={0,0,0};
         int name=0;
         if(sscanf(line.c_str(),"%d|%lf|%lld|%n",&p.times,&p.seconds,&p.last,&name)<3 || !name || !line[name]) continue;
-        Plays[line.substr(size_t(name))]=p;
+        plays[line.substr(size_t(name))]=p;
     }
 }
+
+void LoadPlays(const std::string& configPath) {
+    std::string path=PlaysPath(configPath), text;
+    if(path.empty() || !config::ReadFile(path,text,16<<20)) return;
+    std::lock_guard<std::mutex> hold(PlaysLock);
+    ReadPlays(text,Plays);
+}
+
+// The play history of this computer's other devices in the sync (their
+// plays.ini, kept in Sync\devices\<id>\), added up: the dashboard counts
+// it with this computer's own. Under PlaysLock.
+std::map<std::string,Played> OtherPlays;
 
 void SavePlays() {
     std::string path=PlaysPath(Current().configPath), text;
@@ -2380,6 +2396,10 @@ bool Save() {
     f.Set("wake_mac",o.wakeMac);
     f.Set("save_backup",o.saveBackup ? "1" : "0");
     f.Set("save_keep",Number(o.saveKeep));
+    f.Set("sync_url",o.syncUrl);
+    f.Set("sync_key",o.syncKey.empty() ? std::string() : config::Protect(o.syncKey));
+    f.Set("sync_id",o.syncId);
+    f.Set("sync_name",o.syncName);
     f.Set("skip_installed",o.skipInstalled ? "1" : "0");
     f.Set("installed_folders",o.installedFolders);
     f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
@@ -2498,6 +2518,10 @@ bool LoadConfig(Options& o) {
     o.restartAurora=Flag(f,"restart_aurora",o.restartAurora);
     if(!f.Get("aurora_web_user").empty()) o.auroraWebUser=f.Get("aurora_web_user");
     if(f.Has("aurora_web_password") && config::Unprotect(f.Get("aurora_web_password"),password)) o.auroraWebPassword=password;
+    // The sync's key only where it was made (it's protected for this Windows
+    // user): settings restored from another computer don't sync as that one.
+    o.syncUrl=f.Get("sync_url"); o.syncName=f.Get("sync_name"); o.syncKey.clear(); o.syncId.clear();
+    if(!f.Get("sync_key").empty() && config::Unprotect(f.Get("sync_key"),password) && !o.syncUrl.empty()) { o.syncKey=password; o.syncId=f.Get("sync_id"); }
     if(f.Has("aurora_web_port")) o.auroraWebPort=std::max(1,std::min(65535,int(f.Number("aurora_web_port",o.auroraWebPort))));
     o.followAddress=Flag(f,"follow_address",o.followAddress);
     o.keepAwake=Flag(f,"keep_awake",o.keepAwake);
@@ -2665,6 +2689,7 @@ bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::
     else {
         XboxLog(console,"backed up the saves of %s: %d file(s) of %d profile(s), %s.",game.c_str(),r.files,r.profiles,r.name.c_str());
         XboxEvent(console,EventGood,"Saves of "+game+" backed up",std::string("Saves of ")+game+" backed up from "+console.text);
+        SyncSoon();
     }
     return true;
 }
@@ -2972,6 +2997,7 @@ void State(web::Reply& out) {
     for(size_t i=0;i<addresses.size();++i) j.String(addresses[i]);
     j.Close(']');
 
+    SyncJson(j,o);
     j.Key("settings").Open('{');
     j.Key("xboxes").Open('[');
     for(size_t i=0;i<o.xboxes.size();++i) { char text[16]; AddressText(o.xboxes[i],text,sizeof(text)); j.String(text); }
@@ -3120,7 +3146,14 @@ void Games(web::Reply& out) {
     }
     // The play history, with the games being played now counted so far.
     std::map<std::string,Played> plays;
-    { std::lock_guard<std::mutex> hold(PlaysLock); plays=Plays; }
+    {
+        std::lock_guard<std::mutex> hold(PlaysLock);
+        plays=Plays;
+        for(std::map<std::string,Played>::const_iterator p=OtherPlays.begin();p!=OtherPlays.end();++p) {
+            Played& mine=plays[p->first];
+            mine.times+=p->second.times; mine.seconds+=p->second.seconds; mine.last=std::max(mine.last,p->second.last);
+        }
+    }
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
         for(size_t i=0;i<consoles.size();++i)
@@ -4097,6 +4130,185 @@ bool ChooseCopy(const web::Value& v, std::string& error) {
     return true;
 }
 
+// Sync between computers -------------------------------------------------------
+//
+// With a key (Settings, Sync between computers), the save backups (Saves\),
+// the profile backups (Backups\Profiles\) and the play history go to the
+// sync Worker on Cloudflare and come back on every other computer connected
+// to it (see sync.h): when NetDisc360 starts, every 5 minutes, after each
+// save backup and when asked. Each computer keeps its own settings.
+
+const double SyncEvery = 300;
+std::atomic<bool> SyncAsked(true);
+struct SyncState {
+    bool running;
+    long long last, lastOk;  // time() of the last pass, and of the last one without a failure.
+    int sent, got, failed;   // In the last pass.
+    std::string error;       // Its first failure.
+    std::vector<cloudsync::Device> devices;
+    std::string sentPlays;   // SHA-256 of the plays.ini last sent.
+    SyncState() : running(false), last(0), lastOk(0), sent(0), got(0), failed(0) {}
+};
+std::mutex SyncStateLock;
+SyncState SyncNow;  // Under SyncStateLock.
+
+void SyncSoon() { SyncAsked=true; }
+
+std::string CloudFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Sync"; }
+
+std::string InFolder(const std::string& folder, const std::string& name) {
+#ifdef _WIN32
+    return folder+"\\"+name;
+#else
+    return folder+"/"+name;
+#endif
+}
+
+// The other devices' play history, from Sync\devices\<id>\plays.ini.
+void LoadOtherPlays(const Options& o) {
+    std::map<std::string,Played> all;
+    std::string devices=InFolder(CloudFolder(o),"devices");
+    std::vector<std::string> ids=o.syncKey.empty() ? std::vector<std::string>() : config::Folders(devices);
+    for(size_t i=0;i<ids.size();++i) {
+        std::string text;
+        std::map<std::string,Played> one;
+        if(ids[i]==o.syncId || !config::ReadFile(InFolder(InFolder(devices,ids[i]),"plays.ini"),text,16<<20)) continue;
+        ReadPlays(text,one);
+        for(std::map<std::string,Played>::const_iterator p=one.begin();p!=one.end();++p) {
+            Played& sum=all[p->first];
+            sum.times+=p->second.times; sum.seconds+=p->second.seconds; sum.last=std::max(sum.last,p->second.last);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(PlaysLock);
+        OtherPlays.swap(all);
+    }
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    ++GamesVersion;
+}
+
+void SyncPass(const Options& o) {
+    const std::string folder=CloudFolder(o), url=o.syncUrl, key=o.syncKey;
+    config::MakeFolder(folder);
+    { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow.running=true; }
+    cloudsync::Report report;
+    std::string base=config::FolderOf(o.configPath);
+    cloudsync::Kind saves={"saves",base+"Saves",0};
+    cloudsync::Kind profiles={"profiles",InFolder(base+"Backups","Profiles"),1};
+    cloudsync::Files(url,key,saves,InFolder(folder,"saves.seen"),report);
+    int savesGot=report.got;
+    cloudsync::Files(url,key,profiles,InFolder(folder,"profiles.seen"),report);
+    // The play history: this computer's own goes up, the others' come down.
+    std::string plays, sent, error;
+    { std::lock_guard<std::mutex> hold(SyncStateLock); sent=SyncNow.sentPlays; }
+    std::string path=PlaysPath(o.configPath);
+    if(!path.empty() && config::ReadFile(path,plays,16<<20) && !cloudsync::PutState(url,key,o.syncId,"plays.ini",plays,sent,error)) {
+        ++report.failed; report.notes.push_back(error);
+    }
+    int before=report.got;
+    cloudsync::GetStates(url,key,o.syncId,"plays.ini",InFolder(folder,"devices"),report);
+    if(report.got>before) LoadOtherPlays(o);
+    std::vector<cloudsync::Device> devices;
+    bool listed=cloudsync::Devices(url,key,devices,error);
+    if(!listed) { ++report.failed; report.notes.push_back(error); }
+    {
+        std::lock_guard<std::mutex> hold(SyncStateLock);
+        SyncNow.running=false;
+        SyncNow.last=(long long)time(NULL);
+        if(!report.failed) SyncNow.lastOk=SyncNow.last;
+        SyncNow.sent=report.sent; SyncNow.got=report.got; SyncNow.failed=report.failed;
+        SyncNow.error=report.notes.empty() ? std::string() : report.notes[0];
+        SyncNow.sentPlays=sent;
+        if(listed) SyncNow.devices=devices;
+    }
+    if(report.sent || report.got) Log("Sync: sent %d and fetched %d backup(s) and play histories%s.",report.sent,report.got,
+                                      savesGot ? " (new save backups from your other computers are under Saves)" : "");
+    for(size_t i=0;i<report.notes.size() && i<5;++i) Log("Sync: %s",config::FromUtf8(report.notes[i]).c_str());
+}
+
+void SyncLoop() {
+    double next=0;
+    for(;;) {
+        Sleep(1000);
+        if(!SyncAsked && Now()<next) continue;
+        SyncAsked=false;
+        next=Now()+SyncEvery;
+        Options o=Current();
+        if(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty()) continue;
+        SyncPass(o);
+    }
+}
+
+std::string ComputerName() {
+    char name[256]={0};
+    if(gethostname(name,sizeof(name)-1) || !name[0]) return "NetDisc360";
+    return config::ToUtf8(name);
+}
+
+void SyncJson(web::Json& j, const Options& o) {
+    std::lock_guard<std::mutex> hold(SyncStateLock);
+    j.Key("sync").Open('{');
+    j.Set("on",!o.syncKey.empty()).Set("url",o.syncUrl).Set("id",o.syncId).Set("name",o.syncName).Set("computer",ComputerName());
+    j.Set("saved",!o.configPath.empty()).Set("running",SyncNow.running).Set("last",SyncNow.last).Set("lastOk",SyncNow.lastOk);
+    j.Set("sent",SyncNow.sent).Set("got",SyncNow.got).Set("failed",SyncNow.failed).Set("error",SyncNow.error);
+    j.Key("devices").Open('[');
+    for(size_t i=0;i<SyncNow.devices.size();++i)
+        j.Open('{').Set("id",SyncNow.devices[i].id).Set("name",SyncNow.devices[i].name).Set("added",SyncNow.devices[i].added)
+         .Set("self",SyncNow.devices[i].id==o.syncId).Close('}');
+    j.Close(']').Close('}');
+}
+
+// The dashboard's Sync between computers: connect (url, key: the owner key
+// or another computer's, name), off, now, remove (id).
+void SyncApi(const std::string& what, const web::Value& v, web::Reply& out) {
+    Options o=Current();
+    std::string error;
+    if(what=="connect") {
+        std::string url, key, name;
+        Text(v,"url",url); Text(v,"key",key); Text(v,"name",name);
+        url=cloudsync::Base(url); key=Trim(key); name=Trim(name);
+        if(name.empty()) name=ComputerName();
+        if(o.configPath.empty()) { out.Error(400,"The settings aren't kept in a file (start NetDisc360 with --config), so there's nowhere to sync to."); return; }
+        if(key.empty()) { out.Error(400,"Paste the sync's key: the owner key, or a key from another computer's NetDisc360."); return; }
+        std::string id, deviceKey;
+        if(!cloudsync::Connect(url,key,name,id,deviceKey,error)) { out.Error(400,error); return; }
+        {
+            std::lock_guard<std::mutex> hold(SettingsLock);
+            Settings.syncUrl=url; Settings.syncKey=deviceKey; Settings.syncId=id; Settings.syncName=name;
+        }
+        { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow=SyncState(); }
+        Save();
+        Log("Sync: this computer is connected to %s as \"%s\".",url.c_str(),config::FromUtf8(name).c_str());
+        Event(EventGood,"Sync between computers is on");
+        SyncSoon();
+    } else if(what=="off") {
+        {
+            std::lock_guard<std::mutex> hold(SettingsLock);
+            Settings.syncKey.clear(); Settings.syncId.clear();
+        }
+        { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow=SyncState(); }
+        { std::lock_guard<std::mutex> hold(PlaysLock); OtherPlays.clear(); }
+        { std::lock_guard<std::mutex> hold(GamesListLock); ++GamesVersion; }
+        Save();
+        Log("Sync: turned off on this computer (its backups stay here and in the cloud).");
+    } else if(what=="now") {
+        if(o.syncKey.empty()) { out.Error(400,"Sync isn't on."); return; }
+        SyncSoon();
+    } else if(what=="remove") {
+        std::string id;
+        Text(v,"id",id);
+        if(o.syncKey.empty()) { out.Error(400,"Sync isn't on."); return; }
+        if(!cloudsync::Remove(o.syncUrl,o.syncKey,id,error)) { out.Error(400,error); return; }
+        Log("Sync: a computer's key was taken away (%s).",id.c_str());
+        SyncSoon();
+    } else { out.Error(404,"Not here."); return; }
+    web::Json j;
+    j.Open('{').Set("ok",true);
+    SyncJson(j,Current());
+    j.Close('}');
+    out.body=j.Text();
+}
+
 // Backups of the settings ---------------------------------------------------------
 
 std::mutex BackupLock;
@@ -4819,7 +5031,8 @@ void Api(const web::Request& r, web::Reply& out) {
         Options o=Current();
         if(SavesFolder(o).empty() || !saves::Named(name) || !config::RemoveFile(SavePath(o,name))) out.Error(404,"That save backup isn't there any more.");
         else { Log("Deleted the save backup %s.",name.c_str()); out.body="{\"ok\":true}"; }
-    } else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
+    } else if(r.method=="POST" && !r.path.compare(0,10,"/api/sync/")) SyncApi(r.path.substr(10),body,out);
+    else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
     else if(r.method=="POST" && r.path=="/api/update/check") {
         if(!ChecksUpdates(Current())) out.Error(400,"The dashboard checks for updates itself here.");
         else { CheckForUpdate(error); UpdateInfo(out); }
@@ -5094,6 +5307,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
 
     LoadPlays(o.configPath);
+    LoadOtherPlays(o);
     std::string where;
     for(size_t i=0;i<o.folders.size();++i) where+=(i ? ", " : "")+o.folders[i];
     std::vector<IsoFile> isos=Isos();
@@ -5151,6 +5365,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(AwakeLoop).detach();
 #endif
     std::thread(BackupLoop).detach();
+    std::thread(SyncLoop).detach();
     std::thread(SaveLoop).detach();
     std::thread(UpdateLoop).detach();
     Serve(listener);

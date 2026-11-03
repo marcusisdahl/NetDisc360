@@ -49,5 +49,6 @@ bool RemoveFile(const std::string& utf8Path);
 bool MakeFolder(const std::string& utf8Path);
 struct Entry { std::string name; long long size, time; };
 std::vector<Entry> Files(const std::string& utf8Folder);  // The files directly in it.
+std::vector<std::string> Folders(const std::string& utf8Folder);  // The folders directly in it, by name.
 std::string FolderOf(const std::string& path);            // Up to and with the last separator; "" if none.
 }

@@ -1823,6 +1823,7 @@ const Sections = [
   ['dashboard', 'Dashboard', 'layout-dashboard'],
   ['updates', 'Updates', 'refresh-cw'],
   ['backups', 'Backups', 'archive'],
+  ['sync', 'Sync', 'folder-sync'],
   ['windows', 'Windows', 'power'],
   ['about', 'About', 'info'],
 ];
@@ -2072,6 +2073,70 @@ Pages.settings = root => {
       update() {
         // Checked again elsewhere (by itself, or another browser): its notes too.
         if (S.update.checks && !busy && S.update.latest && !(U && U.latest && U.latest.version === S.update.latest.version)) load(false);
+        draw();
+      },
+    };
+  };
+
+  // Sync between computers: the save and profile backups and the play
+  // history, through NetDisc360's sync on Cloudflare (sync/ in the source).
+  Parts.sync = () => {
+    let shownAs = '';
+    const Guide = 'https://github.com/marcusisdahl/NetDisc360/blob/dev/sync/README.md';
+    function draw() {
+      const y = S.sync;
+      shownAs = JSON.stringify(y);
+      const lead = head('Sync between computers', 'Your game save backups, profile backups and play history follow you between this computer and your others, such as a laptop you take along. Each computer keeps its own game folders, consoles and settings.');
+      if (!y.saved) { fill(body, lead, card('folder-sync', 'Sync', null, h('p.muted', { style: { margin: 0 } }, 'The settings aren’t kept in a file (start NetDisc360 with --config), so there’s nothing here to sync.'))); return; }
+      if (!y.on) {
+        const url = h('input.input.mono', { value: y.url, placeholder: 'https://netdisc360-sync.you.workers.dev', autocomplete: 'off' });
+        const key = h('input.input.mono', { type: 'password', placeholder: 'Owner key, or a key from another computer', autocomplete: 'off' });
+        const name = h('input.input', { value: y.name || y.computer, placeholder: y.computer });
+        const go = h('button.btn.primary', { onclick: async () => {
+          if (!url.value.trim()) { toast('Paste the sync’s address first.', true); url.focus(); return; }
+          if (!key.value.trim()) { toast('Paste the key first.', true); key.focus(); return; }
+          go.disabled = true;
+          try { await api('sync/connect', { url: url.value.trim(), key: key.value.trim(), name: name.value.trim() }); await refresh(); toast('This computer syncs now'); draw(); }
+          catch (e) { toast(e.message, true); }
+          go.disabled = false;
+        } }, ic('plug', 'sm'), 'Connect');
+        fill(body, lead,
+          card('plug', 'Connect this computer', null,
+            h('p', { style: { margin: '0 0 12px' } }, 'The sync runs on your own Cloudflare account and keeps everything in your R2 bucket. Set it up once with ',
+              h('a', { href: Guide, target: '_blank', rel: 'noopener noreferrer' }, 'these steps'), ', then connect each computer with its address and the owner key. Each computer gets a key of its own, so you can take one away later.'),
+            h('div.form',
+              h('label.field', h('span', 'Sync address'), url),
+              h('label.field', h('span', 'Key'), key, h('span.help', 'Only sent to the sync once; this computer keeps its own key from it.')),
+              h('label.field', h('span', 'This computer’s name'), name, h('span.help', 'How your other computers list it.')),
+              h('div.form-actions', go))));
+        return;
+      }
+      const state = y.running ? h('span.pill', ic('loader-circle', 'sm spin'), 'Syncing') : y.failed ? h('span.pill.warn', ic('triangle-alert', 'sm'), 'Had a problem') : y.last ? h('span.pill.good', ic('circle-check', 'sm'), 'In sync') : h('span.pill', 'Starting');
+      const now = h('button.btn', { disabled: y.running, onclick: async () => { try { await api('sync/now', {}); toast('Syncing…'); setTimeout(refresh, 1500); } catch (e) { toast(e.message, true); } } }, ic('refresh-cw', 'sm'), 'Sync now');
+      const off = h('button.btn.ghost', { onclick: async () => {
+        if (!(await confirmBox('Turn sync off on this computer?', 'This computer stops syncing. Its backups stay here and in the cloud, and your other computers go on syncing. To sync again, connect it again with the owner key.', 'Turn off'))) return;
+        try { await api('sync/off', {}); await refresh(); toast('Sync is off on this computer'); draw(); } catch (e) { toast(e.message, true); }
+      } }, 'Turn off');
+      fill(body, lead,
+        card('folder-sync', 'Sync', y.url,
+          row('This computer', 'Listed as ' + y.name + ' on your other computers.', state),
+          row('Last sync', y.last ? (ago(y.last) + (y.last ? ': sent ' + plural(y.sent, 'file') + ', fetched ' + plural(y.got, 'file') : '') + (y.failed ? '. ' + y.error : '.')) : 'When NetDisc360 starts, every 5 minutes, and after each save backup.', now),
+          row('What syncs', 'Game save backups (restore them from Backups, Game saves), profile backups and play history. Not your games, game folders, consoles or passwords.', null),
+          row('Turn off on this computer', 'Its backups stay here and in the cloud.', off)),
+        card('monitor', 'Your computers', plural(y.devices.length, 'computer'),
+          y.devices.length ? y.devices.map(d => h('div.backup-row', h('div.kindmark.k-xbox', ic('monitor')),
+            h('div.grow', h('div.when', d.name + (d.self ? ' (this computer)' : '')), h('div.sub', 'Connected ' + (d.added ? fullDate(d.added / 1000) : ''))),
+            h('div.actions', d.self ? null : h('button.btn.small.ghost', { title: 'Take this computer’s key away', onclick: async () => {
+              if (!(await confirmBox('Remove ' + d.name + '?', 'Its key stops working, so it stops syncing. What it synced stays. To sync it again, connect it with the owner key.', 'Remove', true))) return;
+              try { await api('sync/remove', { id: d.id }); toast(d.name + ' removed'); setTimeout(refresh, 1500); } catch (e) { toast(e.message, true); }
+            } }, ic('trash-2', 'sm'), 'Remove'))))
+          : h('p.muted', { style: { margin: 0 } }, 'Listed after the first sync.')));
+    }
+    draw();
+    return {
+      update() {
+        if (JSON.stringify(S.sync) === shownAs) return;
+        if (body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
         draw();
       },
     };
