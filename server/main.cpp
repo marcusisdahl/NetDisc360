@@ -5060,7 +5060,7 @@ bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::strin
     config::MakeFolder(root); config::MakeFolder(root+"/"+Hex8(titleId)); config::MakeFolder(folder);
     path=folder+"/"+name;
     if(!config::WriteFile(path,data,false)) { error="Couldn't keep the download in "+folder+"."; return false; }
-    Log("Downloaded %s (%s) for %s from XboxUnity to %s.",offer.name.c_str(),SizeText(data.size()).c_str(),Hex8(titleId).c_str(),path.c_str());
+    Log("Downloaded title update %d (%s) for %s from XboxUnity to %s.",offer.version,SizeText(data.size()).c_str(),Hex8(titleId).c_str(),path.c_str());
     return true;
 }
 
@@ -5196,7 +5196,7 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
             else EndCopy(c,console,"failed","Sending "+remote+" stopped: "+why);
             return;
         }
-        Log("Xbox %s: put %s for %s on it, at %s.",c.console.c_str(),offer.name.c_str(),c.game.c_str(),remote.c_str());
+        Log("Xbox %s: put %s for %s on it, at %s.",c.console.c_str(),c.label.c_str(),c.game.c_str(),remote.c_str());
     }
     // What it has now.
     files.clear();
