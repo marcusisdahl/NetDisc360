@@ -14,6 +14,14 @@
 // of known games or else from what the discs carry, at the end of the file.
 // It never changes a section that is there, so what the user writes stays;
 // a section deleted is added again.
+//
+// A section can also say which emulator version an original Xbox game
+// starts in (see xefu.h), over NetDisc360's own list; empty for the
+// console's own pick:
+//
+//   [5454000E]
+//   name=Grand Theft Auto III
+//   xefu=xefu2021c
 #include "discs.h"
 #include <map>
 #include <string>
@@ -29,7 +37,8 @@ namespace nia {
 bool KnownRole(const std::string& role);
 
 struct MapDisc { std::string role, label; };
-struct MapGame { std::string name; std::map<int,MapDisc> discs; };
+struct MapGame { std::string name; std::map<int,MapDisc> discs; bool hasXefu; std::string xefu;
+                 MapGame() : hasXefu(false) {} };
 
 class DiscMap {
 public:
@@ -42,7 +51,8 @@ public:
     // to the file. added gets one line per game for the log; error why the
     // file couldn't be written, if so.
     void Learn(const std::vector<IsoFile>& discs, std::vector<std::string>& added, std::string& error);
-    // Sets role and label on each disc the map knows.
+    // Sets role and label on each disc the map knows, and on each original
+    // Xbox game the emulator version from the map or else NetDisc360's list.
     void Apply(std::vector<IsoFile>& discs) const;
     bool Has(DWORD titleId) const { return games_.count(titleId)!=0; }
 private:

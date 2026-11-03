@@ -2,6 +2,7 @@
 // The disc map (see discmap.h).
 #include "discmap.h"
 #include "config.h"
+#include "xefu.h"
 #include <ctype.h>
 #include <set>
 #include <stdio.h>
@@ -87,7 +88,11 @@ static const char Header[]=
     ";   own      a game of its own that never asks for another disc\r\n"
     ";\r\n"
     "; NetDisc360 adds each game it finds once and never changes it after, so\r\n"
-    "; change any line here. Delete a game's section to have it added again.\r\n";
+    "; change any line here. Delete a game's section to have it added again.\r\n"
+    ";\r\n"
+    "; An original Xbox game's section can say which emulator it starts in, over\r\n"
+    "; NetDisc360's list: xefu=xefu7 (or xefu2021c, config_loader_xefu7, ...), or\r\n"
+    "; xefu= with nothing for the one the console picks.\r\n";
 
 static std::string Trim(const std::string& text) {
     size_t start=0,end=text.size();
@@ -137,8 +142,14 @@ static void Parse(const std::string& text, std::map<DWORD,MapGame>& games, std::
         size_t equals=line.find('=');
         std::string key=Lower(Trim(line.substr(0,equals))),value=equals==std::string::npos ? "" : Trim(line.substr(equals+1));
         if(key=="name") { games[current].name=value; continue; }
+        if(key=="xefu") {
+            std::string xefu=Lower(value);
+            if(!xefu.empty() && !XefuName(xefu)) { problems.push_back(where+"\""+value+"\" isn't an emulator's name (xefu7, xefu2021c, config_loader_xefu7, ...)"); continue; }
+            games[current].hasXefu=true; games[current].xefu=xefu;
+            continue;
+        }
         int disc=key.size()==5 && !key.compare(0,4,"disc") && key[4]>='1' && key[4]<='9' ? key[4]-'0' : 0;
-        if(!disc || equals==std::string::npos) { problems.push_back(where+line+" isn't name= or disc1= to disc9="); continue; }
+        if(!disc || equals==std::string::npos) { problems.push_back(where+line+" isn't name=, xefu= or disc1= to disc9="); continue; }
         MapDisc parsed=ParseDisc(value);
         if(!KnownRole(parsed.role)) { problems.push_back(where+"\""+parsed.role+"\" isn't a role (install, play, content, next or own)"); continue; }
         games[current].discs[disc]=parsed;
@@ -250,8 +261,13 @@ void DiscMap::Learn(const std::vector<IsoFile>& discs, std::vector<std::string>&
 void DiscMap::Apply(std::vector<IsoFile>& discs) const {
     for(size_t i=0;i<discs.size();++i) {
         IsoFile& d=discs[i];
-        d.role.clear(); d.roleLabel.clear();
+        d.role.clear(); d.roleLabel.clear(); d.xefu.clear(); d.xefuWhy.clear();
         std::map<DWORD,MapGame>::const_iterator g=games_.find(d.titleId);
+        if(d.xbe) {
+            const KnownXefu* known=XefuFor(d.titleId);
+            if(g!=games_.end() && g->second.hasXefu) { d.xefu=g->second.xefu; d.xefuWhy="set in discs.ini"; }
+            else if(known) { d.xefu=known->xefu; d.xefuWhy=known->why; }
+        }
         if(g==games_.end()) continue;
         std::map<int,MapDisc>::const_iterator disc=g->second.discs.find(d.disc);
         if(disc==g->second.discs.end()) continue;
