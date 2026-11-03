@@ -4851,6 +4851,18 @@ std::string ToLowerAscii(std::string text) {
 // its full size, so a copy stopped part way goes on where it was, and the
 // header last, so Aurora never lists a package that isn't whole. A file cut
 // short is deleted.
+// A game a copy just put on the console, in its installed games, so the
+// dashboard shows it there before the next look (the push's).
+void MarkInstalled(DWORD address, DWORD titleId, int disc, const std::string& path, bool god) {
+    Console* known=ConsoleIfKnown(address);
+    if(!known || !titleId) return;
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    std::vector<InstalledGame>& list=known->installed;
+    for(size_t i=0;i<list.size();++i) if(!_stricmp(list[i].path.c_str(),path.c_str())) return;
+    InstalledGame game; game.titleId=titleId; game.disc=disc ? disc : 1; game.path=path; game.god=god;
+    list.push_back(game);
+}
+
 void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     ContentCopy& c=*job;
     Options o=Current();
@@ -4934,6 +4946,7 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
         Log("Xbox %s: asked Aurora to scan %s, so it lists %s.",c.console.c_str(),folder.c_str(),c.game.c_str());
     else Log("Xbox %s: Aurora didn't start a scan of %s: %s",c.console.c_str(),folder.c_str(),reply.empty() ? ftp.Error() : reply.c_str());
     ftp.Close();
+    MarkInstalled(c.address,disc.titleId,disc.disc,header,true);
     EndCopy(c,console,"done","");
 }
 
@@ -5022,6 +5035,7 @@ void CopyGameFiles(std::shared_ptr<ContentCopy> job, IsoFile disc) {
         Log("Xbox %s: asked Aurora to scan %s, so it lists %s.",c.console.c_str(),GamesRoot,c.game.c_str());
     else Log("Xbox %s: Aurora didn't start a scan of %s: %s (add it under Settings, Content, Scan paths if Aurora doesn't list the game).",c.console.c_str(),GamesRoot,reply.empty() ? ftp.Error() : reply.c_str());
     ftp.Close();
+    MarkInstalled(c.address,disc.titleId,1,root+"/default.xbe",false);
     EndCopy(c,console,"done","");
 }
 
