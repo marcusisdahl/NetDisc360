@@ -733,6 +733,33 @@ details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
 .gp-work { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .gp-work .i { flex: none; margin-top: 2px; }
 .gp-work.bad { color: var(--bad); }
+.add-row { display: flex; gap: 8px; }
+.add-row .input { flex: 1; min-width: 0; max-width: 360px; }
+.users-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.user-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; min-width: 0; }
+.user-row + .user-row { border-top: 1px solid var(--line); }
+.user-row .who { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.user-row .who b { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-row .who .tag { color: var(--muted); font-weight: 500; }
+.user-row .who b .pill { height: 18px; padding: 0 7px; font-size: 11px; margin-left: 8px; vertical-align: 1px; }
+.user-row .who b .pill .i { width: 12px; height: 12px; }
+.user-row .who .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.user-row .who .sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-row .who .sub .dot { width: 6px; height: 6px; box-shadow: none; flex: none; }
+.user-row .who .xuid { font-size: 11.5px; color: var(--faint); }
+.user-row .player-stats { grid-template-columns: 92px 74px 44px; }
+.user-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.user-acts .btn.icon { width: 30px; padding: 0; justify-content: center; }
+.console-picks { display: grid; gap: 8px; }
+.signed-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.signed-row + .signed-row { margin-top: 8px; }
+.signed-row .grow { flex: 1; min-width: 0; }
+.signed-row .sub { font-size: 12px; color: var(--muted); }
+@media (max-width: 760px) {
+  .user-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
+  .user-row .player-stats { grid-column: 2; grid-template-columns: repeat(3, auto); justify-content: start; gap: 16px; text-align: left; }
+  .user-acts { grid-column: 2; justify-content: flex-start; }
+}
 @media (max-width: 560px) { .gp { flex-wrap: wrap; } .gp-on { max-width: none; justify-content: flex-start; margin-left: 48px; } }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 99px; background: var(--panel); color: var(--text); }
@@ -1258,6 +1285,7 @@ const Nav = [
   ['games', 'Games', 'gamepad-2'],
   ['consoles', 'Consoles', 'monitor'],
   ['party', 'LAN party', 'party-popper'],
+  ['users', 'Users', 'users'],
   ['folders', 'Game folders', 'folder'],
   ['log', 'Log', 'scroll-text'],
   ['settings', 'Settings', 'settings'],
@@ -2776,6 +2804,26 @@ function livePart(el) {
   };
 }
 
+// A name's initials (the blank picture), and the gamer picture a profile NetDisc360
+// makes gets on the consoles (initials on a colour), fetched once per gamertag.
+const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => [...w][0].toUpperCase()).join('');
+const GamerPictures = {};
+function gamerPicture(tag) {
+  const img = h('img.gp-pic', { alt: '', width: 36, height: 36, title: 'Its gamer picture on the consoles' });
+  const known = GamerPictures[tag] || (GamerPictures[tag] = fetchImage('party/profiles/picture?gamertag=' + encodeURIComponent(tag)));
+  known.then(url => { img.src = url; }, () => { delete GamerPictures[tag]; });
+  return img;
+}
+// The users' names (the Users page), for the party's "Add players" to offer.
+const UserNames = { list: [], at: 0, busy: false };
+function userNames() {
+  if (!UserNames.busy && Date.now() - UserNames.at > 15000) {
+    UserNames.busy = true;
+    api('users').then(d => { UserNames.list = d.users.map(u => u.name); }).catch(() => {}).finally(() => { UserNames.busy = false; UserNames.at = Date.now(); });
+  }
+  return UserNames.list;
+}
+
 Pages.party = root => {
   const wrap = h('div.party');
   let tab = 'party', screen = null, colours = '', previewing = false, shuffling = false, reveal = false, pick = null, chosen = store('party.game') || '', shown = null;
@@ -2791,7 +2839,8 @@ Pages.party = root => {
   const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results];
   const guestCount = h('span.sub'), rulesCount = h('span.muted');
   const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
-  const typed = h('input.input', { placeholder: 'Add players: names, with commas between', 'aria-label': 'Guests to add', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
+  const typed = h('input.input', { placeholder: 'Add players: names, with commas between', 'aria-label': 'Guests to add', list: 'party-users', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
+  const usersOffered = h('datalist#party-users');
   // A card; step numbers the party's order (consoles, players, teams, seats, play).
   const card = (icon, title, sub, right, ...content) => h('div.card', h('div.card-head', typeof icon === 'number' ? h('span.step-n', { 'aria-hidden': 'true' }, String(icon)) : ic(icon), h('h2', title), sub, right ? h('div.right', right) : null), h('div.card-body', content));
   seats.el.addEventListener('keydown', e => { if (e.key === 'Escape' && pick) { e.stopPropagation(); pick = null; update(); } });
@@ -2808,7 +2857,7 @@ Pages.party = root => {
         card(1, 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), openAll, consoles.el),
         h('div.card.players-card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '2'), h('h2', 'Players'), guestCount,
           h('div.right', h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here'))),
-          h('div.card-body', h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
+          h('div.card-body', usersOffered, h('div.guest-add', typed, h('button.btn', { onclick: () => addGuests(false) }, ic('user-plus', 'sm'), 'Add'),
             h('button.btn.ghost', { title: 'The names typed take the place of the guest list kept from before', onclick: () => addGuests(true) }, ic('list', 'sm'), 'New list')), guests.el),
           h('div.card-foot', profiles.el)),
         card('trophy', 'Scoreboard', h('span.sub', 'rounds won, gamerscore and play time'), null, scores.el)),
@@ -3041,7 +3090,6 @@ Pages.party = root => {
   const setGuests = list => edit({ guests: list });
   const everyone = here => setGuests(shownParty().guests.map(g => ({ name: g.name, here })));
   const profileOf = name => prof && prof.profiles ? prof.profiles.find(x => sameName(x.name, name)) : null;
-  const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => [...w][0].toUpperCase()).join('');
   // A guest's profile in a few words: on which consoles, or kept on this PC.
   function profileSaid(g, ips) {
     const pr = profileOf(g.name);
@@ -3072,7 +3120,8 @@ Pages.party = root => {
           stat(st && st.parties ? String(st.parties) : '0', st && st.parties === 1 ? 'LAN' : 'LANs', st && st.lastParty ? 'Last at a LAN ' + ago(st.lastParty) : 'No LAN yet')),
         h('button.x', { type: 'button', title: 'Take off the list', 'aria-label': 'Take ' + g.name + ' off the list', onclick: e => { e.stopPropagation(); setGuests(p.guests.filter(x => x !== g)); } }, ic('x', 'sm')));
     })),
-    h('p.hint', 'Tick who plays tonight. Everyone stays on the list for the next LAN, with their gamerscore, play time and LANs; no one has to join again.')];
+    h('p.hint', 'Tick who plays tonight. Everyone stays on the list for the next LAN, with their gamerscore, play time and LANs; no one has to join again. Each player is one of the ',
+      h('a', { href: '#users' }, 'Users'), ', whose profile and saves follow them to any console.')];
   }
 
   // Guest profiles: one console makes each guest's profile, the server
@@ -3094,15 +3143,7 @@ Pages.party = root => {
     loadProfiles();
   }
   function profileConsoles(p) { return p.consoles.length ? p.consoles : S.consoles.map(c => c.address); }
-  // The gamer picture a guest's profile gets on the consoles (initials on a
-  // colour), fetched once per gamertag.
-  const guestPictures = {};
-  function guestPicture(tag) {
-    const img = h('img.gp-pic', { alt: '', width: 36, height: 36, title: 'Its gamer picture on the consoles' });
-    const known = guestPictures[tag] || (guestPictures[tag] = fetchImage('party/profiles/picture?gamertag=' + encodeURIComponent(tag)));
-    known.then(url => { img.src = url; }, () => { delete guestPictures[tag]; });
-    return img;
-  }
+  const guestPicture = gamerPicture;
   async function readScores(button) {
     button.disabled = true;
     try { await api('party/stats', {}); toast('Reading the gamerscores from the consoles'); await refresh(); }
@@ -3620,6 +3661,8 @@ Pages.party = root => {
     consoles.show(JSON.stringify([p.active, p.consoles, p.gamemaster, S.consoles.map(c => c.address + '=' + c.name), statuses, S.party.wheelOn, S.party.ready]), () => drawConsoles(p));
     const named = S.consoles.map(c => c.address + '=' + c.name);
     guests.show(JSON.stringify([p.guests, prof && prof.profiles, profileConsoles(p), named]), () => drawGuests(p));
+    const offered = userNames().filter(n => !p.guests.some(g => sameName(g.name, n)));
+    if (usersOffered.dataset.key !== offered.join('|')) { usersOffered.dataset.key = offered.join('|'); fill(usersOffered, offered.map(n => h('option', { value: n }))); }
     profiles.show(JSON.stringify([prof, p.guests.map(g => g.name), profileConsoles(p), named, S.party.statsReading]), () => drawProfiles(p));
     scores.show(JSON.stringify([p.active, p.guests, p.wins, p.points, p.drawn, p.teamColours, p.game]), () => drawScores(p));
     rules.show(JSON.stringify([p.guests.map(g => g.name), p.together, p.apart]), () => drawRules(p));
@@ -4134,6 +4177,174 @@ async function titleUpdateList() {
 }
 
 // Game folders ------------------------------------------------------------------------
+
+// Users --------------------------------------------------------------------------
+// Everyone NetDisc360 knows, apart from any LAN party (the party's players are
+// some of them), each with one Xbox profile: the same XUID on every console
+// it's put on, so their saves and achievements follow them. NetDisc360's
+// profiles are marked in Hdd1:\NetISO\NetDisc360\profiles.ini on each console.
+
+Pages.users = root => {
+  let data = null, loadedAt = 0, loading = false;
+  const typed = h('input.input', { placeholder: 'Name', maxlength: 32, 'aria-label': 'The new user’s name', onkeydown: e => { if (e.key === 'Enter') addUser(); } });
+  const importer = h('input', { type: 'file', accept: '.ini,text/plain', hidden: true, onchange: e => { const f = e.target.files[0]; e.target.value = ''; if (f) importUsers(f); } });
+  const count = h('span.sub'), backAll = h('button.btn.small', { onclick: () => run('backup', withProfile().map(u => u.id), null, 'Backing up every profile on the consoles') }, ic('archive', 'sm'), 'Back up all');
+  const work = livePart(h('div')), list = livePart(h('div')), signed = livePart(h('div'));
+  root.append(header('Users', 'Everyone who plays, each with one Xbox profile that follows them from console to console, saves and achievements too.',
+    h('button.btn', { title: 'Merge the users from another computer’s NetDisc360 (its users.ini)', onclick: () => importer.click() }, ic('upload', 'sm'), 'Import'), importer),
+    h('div.stack',
+      h('div.card', h('div.card-head', ic('user-plus'), h('h2', 'Add a user')), h('div.card-body',
+        h('div.add-row', typed, h('button.btn.primary', { onclick: addUser }, ic('plus', 'sm'), 'Add')),
+        h('p.hint', 'Put on consoles gives them a profile: one console makes it, then it’s copied, so it’s the same profile everywhere. Anyone on a LAN party’s list is a user too.'))),
+      h('div.card', h('div.card-head', ic('users'), h('h2', 'Users'), count, h('div.right', backAll)), h('div.card-body', work.el, list.el)),
+      h('div.card', h('div.card-head', ic('gamepad-2'), h('h2', 'Signed in on the consoles'), h('span.sub', 'offline profiles that aren’t a user’s yet')), h('div.card-body', signed.el))));
+
+  async function load() {
+    loading = true;
+    try { data = await api('users'); }
+    catch (e) { if (!data) data = { error: e.message }; }
+    loading = false; loadedAt = Date.now();
+    UserNames.list = data.users ? data.users.map(u => u.name) : UserNames.list; UserNames.at = loadedAt;
+    update();
+  }
+  async function change(body, said) {
+    try { data = await api('users', body); loadedAt = Date.now(); if (said) toast(said); update(); return true; }
+    catch (e) { toast(e.message, true); return false; }
+  }
+  async function run(action, ids, consoles, said) {
+    if (!ids.length) return;
+    try { data = await api('users/profiles', consoles ? { action, ids, consoles } : { action, ids }); loadedAt = Date.now(); toast(said); update(); }
+    catch (e) { toast(e.message, true); }
+  }
+  async function addUser() {
+    const name = typed.value.trim();
+    if (!name) { typed.focus(); return; }
+    if (await change({ action: 'add', name }, name + ' is a user now. Put on consoles gives them a profile.')) { typed.value = ''; typed.focus(); }
+  }
+  async function importUsers(file) {
+    if (file.size > 1 << 20) { toast(file.name + ' is too big for a users file.', true); return; }
+    change({ action: 'import', text: await file.text() }, 'Merged the users from ' + file.name);
+  }
+  const users = () => data && data.users ? data.users : [];
+  const withProfile = () => users().filter(u => u.xuid && u.on.length);
+  const consoleList = () => S.consoles.map(c => c.address);
+  const everywhere = u => !!u.xuid && S.consoles.length > 0 && S.consoles.every(c => u.on.includes(c.address));
+
+  // Which consoles, in a box: the ones it's on (remove) or every one (put).
+  function pickConsoles(u, action) {
+    const all = consoleList(), choices = action === 'put' ? all.concat(u.on.filter(ip => !all.includes(ip))) : u.on;
+    if (!choices.length) { toast(action === 'put' ? 'No console has used NetDisc360 yet.' : u.name + '’s profile is on no console.', true); return; }
+    // Put: the consoles that have it already are ticked, and stay so.
+    const ticked = new Set(action === 'put' ? choices.filter(ip => !u.on.includes(ip)) : choices), has = ip => action === 'put' && u.on.includes(ip);
+    const go = h('button.btn' + (action === 'put' ? '.primary' : '.danger'), { onclick: () => {
+      close();
+      run(action, [u.id], [...ticked], action === 'put' ? 'Putting ' + u.name + '’s profile on ' + plural(ticked.size, 'console') : 'Removing ' + u.name + '’s profile from ' + plural(ticked.size, 'console'));
+    } }, action === 'put' ? 'Put on' : 'Remove');
+    const close = modal(action === 'put' ? 'Put ' + u.name + '’s profile on' : 'Remove ' + u.name + '’s profile from', () => [
+      h('div.modal-body', h('div.console-picks', choices.map(ip => {
+        const c = S.consoles.find(x => x.address === ip), st = c ? consoleStatus(c) : null;
+        return h('label.radio', h('input', { type: 'checkbox', checked: ticked.has(ip) || has(ip), disabled: has(ip), onchange: e => { if (e.target.checked) ticked.add(ip); else ticked.delete(ip); go.disabled = !ticked.size; } }),
+          h('div', h('div.title', nameOf(ip), nameOf(ip) !== ip ? h('span.muted', ' ' + ip) : null),
+            h('div.help', u.on.includes(ip) ? (u.stale.includes(ip) ? 'Has an older copy of it' : 'Has it now') : action === 'put' ? (u.xuid ? 'Gets it' : 'Gets their new profile') : '',
+              st && st.text ? ' · ' + st.text : '')));
+      })),
+      h('p.hint', action === 'put' ? (u.xuid ? (u.best ? 'From a console that has it, or the copy kept on this PC with the most achievements.' : 'Copied from a console that has it.')
+        : 'One console makes it (Aurora is away for a few seconds there), then it’s copied to the others.') + ' Aurora must be running on them.'
+        : 'A copy with their saves is kept on this PC first, so it can go back on later.')),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: () => close() }, 'Cancel'), go),
+    ], true);
+    go.disabled = !ticked.size;
+  }
+  async function forget(u) {
+    if (u.on.length) { toast('Remove ' + u.name + '’s profile from the consoles first.', true); return; }
+    if (!(await confirmBox('Forget ' + u.name + '?', [h('p', { style: { marginTop: 0 } }, u.name + ' leaves the users' + (u.guest ? ' and the LAN party’s list' : '') + ', on the other computers too.'),
+      u.copies ? h('p', { style: { marginBottom: 0 } }, 'The ' + plural(u.copies, 'copy', 'copies') + ' of their profile kept on this PC stay, in ' + data.folder + '.') : null], 'Forget', true))) return;
+    change({ action: 'remove', id: u.id }, u.name + ' is forgotten');
+  }
+  function said(u) {
+    if (!u.xuid) return { dot: 'off', text: 'No profile yet' };
+    if (!u.on.length) return { dot: 'off', text: u.copies ? 'Kept on this PC, on no console' : 'On no console' };
+    const older = u.on.filter(ip => u.stale.includes(ip));
+    return { dot: older.length ? 'warn' : 'good', text: 'On ' + u.on.map(nameOf).join(', ') + (older.length ? ' (older on ' + older.map(nameOf).join(', ') + ')' : '') };
+  }
+  function drawUsers() {
+    const list = users();
+    if (!list.length) return h('div.players-empty', ic('users'), h('p', 'No users yet. Add one above, or put a name on a LAN party’s list.'));
+    const stat = (value, label, title) => h('span.stat', { title }, h('b', value), h('small', label));
+    const busy = data.work && data.work.running;
+    return h('div.users-list', { role: 'list' }, list.map(u => {
+      const st = u.stats, s = said(u), tag = u.gamertag && u.gamertag !== u.name ? u.gamertag : '';
+      const kept = u.newest ? 'Backed up ' + ago(u.newest) + ' (' + plural(u.copies, 'copy', 'copies') + ')' : '';
+      return h('div.user-row', { role: 'listitem' },
+        u.xuid && u.gamertag && !u.adopted ? gamerPicture(u.gamertag) : h('span.gp-pic.blank', { 'aria-hidden': 'true' }, initials(u.name)),
+        h('div.who', h('b', u.name, tag ? h('span.tag', ' · ' + tag) : null, u.here ? h('span.pill.info', { title: 'On the LAN party’s list, and here' }, ic('party-popper', 'sm'), 'Party') : null),
+          h('span.sub', { title: s.text + (kept ? '. ' + kept : '') }, h('span.dot.' + s.dot), h('span', s.text + (kept ? ' · ' + kept : ''))),
+          u.xuid ? h('span.xuid.mono', { title: u.adopted ? 'Made on ' + nameOf(u.madeOn) + ' by hand, theirs now' : 'Made by NetDisc360' + (u.madeOn ? ' on ' + nameOf(u.madeOn) : '') + (u.made ? ', ' + ago(u.made) : '') },
+            'XUID ' + u.xuid + (u.adopted ? ' · their own' : '')) : null),
+        h('div.player-stats',
+          stat(st.readAt ? st.gamerscore.toLocaleString() : (u.best && u.best.gamerscore >= 0 ? u.best.gamerscore.toLocaleString() : '–'), 'gamerscore',
+            st.readAt ? 'Read ' + ago(st.readAt) + (st.achievements > 0 ? '; ' + plural(st.achievements, 'achievement') : '') : u.best ? 'In the copy kept from ' + nameOf(u.best.console) : 'Not read yet'),
+          stat(st.playSeconds ? duration(st.playSeconds) : '–', 'played', st.plays ? plural(st.plays, 'game') + (st.lastGame ? '; last ' + st.lastGame : '') : 'Nothing played at a LAN yet'),
+          stat(String(st.parties || 0), st.parties === 1 ? 'LAN' : 'LANs', st.lastParty ? 'Last at a LAN ' + ago(st.lastParty) : 'No LAN yet')),
+        h('div.user-acts',
+          h('button.btn.small', { disabled: busy || everywhere(u), title: everywhere(u) ? 'On every console already' : u.xuid ? 'Their profile on more consoles' : 'Make their profile and put it on consoles',
+            onclick: () => pickConsoles(u, 'put') }, ic('download', 'sm'), 'Put on'),
+          h('button.btn.small', { disabled: busy || !u.on.length, title: 'Keeps a copy of their profile and saves from each console it’s on, on this PC', onclick: () => run('backup', [u.id], null, 'Backing up ' + u.name + '’s profile') }, ic('archive', 'sm'), 'Back up'),
+          h('button.btn.small.ghost', { disabled: busy || !u.on.length, title: 'Takes their profile off consoles (a copy is kept on this PC first)', onclick: () => pickConsoles(u, 'remove') }, ic('log-out', 'sm'), 'Remove'),
+          h('button.btn.small.ghost.icon', { disabled: busy, title: u.on.length ? 'Remove their profile from the consoles first' : 'Forget ' + u.name, 'aria-label': 'Forget ' + u.name, onclick: () => forget(u) }, ic('trash-2', 'sm'))));
+    }));
+  }
+  function drawWork() {
+    const w = data.work || {};
+    const what = { put: 'Putting the profiles on the consoles…', backup: 'Backing up the profiles…', remove: 'Removing the profiles…' }[w.what] || 'Working on the profiles…';
+    return w.running ? h('div.gp-work', { style: { marginTop: 0, marginBottom: '12px' } }, ic('loader-circle', 'sm spin'), h('span', w.step || what))
+      : w.error ? h('div.gp-work.bad', { style: { marginTop: 0, marginBottom: '12px' } }, ic('circle-alert', 'sm'), h('span', (w.result ? w.result + ' ' : '') + w.error))
+      : w.result && w.at && S.time - w.at < 600 ? h('div.gp-work', { style: { marginTop: 0, marginBottom: '12px' } }, ic('info', 'sm'), h('span', w.result)) : null;
+  }
+  // The offline profiles signed in on each console (its Aurora says), that are no user's.
+  function signedIn() {
+    const known = new Set(users().map(u => u.xuid).filter(Boolean)), out = [];
+    for (const c of S.consoles) {
+      const l = liveStatus(c, update), d = l && l.data;
+      for (const p of d && Array.isArray(d.profiles) ? d.profiles : []) {
+        const xuid = String(p.xuid || '').toUpperCase();
+        if (p.signedin && /^E[0-9A-F]{15}$/.test(xuid) && !known.has(xuid)) out.push({ console: c, xuid, gamertag: p.gamertag || '' });
+      }
+    }
+    return out;
+  }
+  function drawSigned(list) {
+    if (!S.consoles.length) return h('p.muted', { style: { margin: 0 } }, 'A console shows up when its NetISO plugin connects to NetDisc360.');
+    if (!list.length) return h('p.muted', { style: { margin: 0 } }, 'None now. A profile someone made on a console by hand shows up here while it’s signed in, to make it a user’s.');
+    return [list.map(x => h('div.signed-row', gamerPictureOrBlank(x.gamertag),
+      h('div.grow', h('b', x.gamertag || x.xuid), h('div.sub', 'Signed in on ' + cName(x.console) + ' · XUID ' + x.xuid)),
+      h('button.btn.small', { title: 'It becomes a user’s profile, copied to the other consoles when you put it on them', onclick: () => adopt(x) }, ic('user-plus', 'sm'), 'Make it a user'))),
+      h('p.hint', 'Only profiles NetDisc360 made or was given are ever copied or removed; a console’s other profiles are left alone.')];
+  }
+  const gamerPictureOrBlank = tag => h('span.gp-pic.blank', { 'aria-hidden': 'true' }, initials(tag || '?'));
+  async function adopt(x) {
+    const name = h('input.input', { value: x.gamertag, maxlength: 32 });
+    const close = modal('Make ' + (x.gamertag || 'this profile') + ' a user’s', () => [
+      h('div.modal-body', h('label.field', h('span', 'Whose it is'), name, h('span.help', 'Their name in NetDisc360. A user with that name and no profile gets this one.'))),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: () => close() }, 'Cancel'),
+        h('button.btn.primary', { onclick: async () => { if (await change({ action: 'adopt', console: x.console.address, xuid: x.xuid, gamertag: x.gamertag, name: name.value.trim() }, name.value.trim() + '’s profile is ' + (x.gamertag || x.xuid))) close(); } }, 'Make it theirs')),
+    ], true);
+  }
+  function update() {
+    if (!loading && (!data || Date.now() - loadedAt > (data.work && data.work.running ? 2000 : 15000))) load();
+    if (!data) { list.show('loading', () => h('p.muted', { style: { margin: 0 } }, 'Looking for the users…')); return; }
+    if (data.error) { list.show('error' + data.error, () => h('p.muted', { style: { margin: 0 } }, data.error)); return; }
+    const named = S.consoles.map(c => c.address + '=' + c.name + '=' + consoleStatus(c).text);
+    fill(count, plural(users().length, 'user'));
+    backAll.disabled = !withProfile().length || !!(data.work && data.work.running);
+    work.show(JSON.stringify([data.work, Math.floor(S.time / 60)]), drawWork);
+    list.show(JSON.stringify([data.users, named]), drawUsers);
+    const strays = signedIn();
+    signed.show(JSON.stringify([strays.map(x => [x.console.address, x.xuid, x.gamertag]), S.consoles.length]), () => drawSigned(strays));
+  }
+  load();
+  return { update };
+};
 
 Pages.folders = root => {
   const list = h('div.card');

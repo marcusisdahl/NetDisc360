@@ -387,14 +387,15 @@ std::string ProfileCopyName(long long time, const std::string& console) {
 std::string ProfileCopyIni(const ProfileCopy& c) {
     return "; A guest profile's content folder from one console, kept by NetDisc360.\r\nfile="+OneLine(c.file)+"\r\nname="+OneLine(c.name)+
            "\r\ngamertag="+OneLine(c.gamertag)+"\r\nxuid="+c.xuid+"\r\nconsole="+OneLine(c.console)+"\r\ntime="+Number(c.time)+
-           "\r\nsize="+Number(c.size)+"\r\ngamerscore="+Number(c.gamerscore)+"\r\nachievements="+Number(c.achievements)+"\r\n";
+           "\r\nsize="+Number(c.size)+"\r\ngamerscore="+Number(c.gamerscore)+"\r\nachievements="+Number(c.achievements)+"\r\n"+
+           (c.user.empty() ? std::string() : "user="+OneLine(c.user)+"\r\n");
 }
 
 bool ReadProfileCopyIni(const std::string& text, ProfileCopy& c) {
     c=ProfileCopy();
     std::map<std::string,std::string> lines=Lines(text);
     if(lines["file"].empty() || !OfflineXuid(lines["xuid"],c.xuid)) return false;
-    c.file=lines["file"]; c.name=lines["name"]; c.gamertag=lines["gamertag"]; c.console=lines["console"];
+    c.file=lines["file"]; c.name=lines["name"]; c.gamertag=lines["gamertag"]; c.console=lines["console"]; c.user=lines["user"];
     c.time=atoll(lines["time"].c_str()); c.size=atoll(lines["size"].c_str());
     c.gamerscore=lines.count("gamerscore") ? atoi(lines["gamerscore"].c_str()) : -1;
     c.achievements=lines.count("achievements") ? atoi(lines["achievements"].c_str()) : -1;

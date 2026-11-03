@@ -63,7 +63,7 @@ def build_server():
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/system.cpp", "server/auroradb.cpp",
-                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -2548,6 +2548,167 @@ print('lua ok')
             aurora2.close()
             server.kill()
             server.communicate()
+
+    def test_users_keep_one_profile_each_on_any_console(self):
+        # The Users page: everyone NetDisc360 knows, apart from the party (its
+        # guests are users too). A user's profile goes on the consoles asked
+        # for, is backed up and removed there; profiles.ini on each console
+        # says which of its profiles are NetDisc360's and whose; users.ini
+        # (beside the settings) merges another computer's.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        other, ftp2 = self.second_console()
+        for root in (self.xbox, other):
+            os.makedirs(os.path.join(root, "Hdd1", "Content", "0000000000000000"))
+        aurora = AuroraWeb()
+        aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
+        self.addCleanup(aurora.close)
+        self.addCleanup(aurora2.close)
+        made = []
+
+        def helper(path, exe):
+            folder = os.path.join(other, "Hdd1", "NetISO", "NetDisc360")
+            with open(os.path.join(folder, "profiles.job")) as f:
+                job = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line and not line.startswith(";"))
+            os.remove(os.path.join(folder, "profiles.job"))
+            answer = "job=" + job["job"] + "\r\n"
+            for key in sorted(k for k in job if k.startswith("guest")):
+                xuid = "E000%04X5EEDF00D" % (0x200 + len(made))
+                made.append((job[key], xuid))
+                content = os.path.join(other, "Hdd1", "Content", xuid)
+                os.makedirs(os.path.join(content, "FFFE07D1", "00010000"))
+                name = job[key].encode("utf-16-be")
+                with open(os.path.join(content, "FFFE07D1", "00010000", xuid), "wb") as f:
+                    f.write(b"CON " + bytes(0x411 - 4) + name + bytes(0xA000 - 0x411 - len(name)))
+                answer += key + "=" + xuid + "\r\n"
+            with open(os.path.join(folder, "profiles.done"), "w", newline="") as f:
+                f.write(answer)
+        aurora2.on_launch = helper
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        users_ini = os.path.join(self.tmp.name, "users.ini")
+        self.web = free_port()
+
+        def stop(server):
+            server.kill()
+            try:
+                server.communicate()
+            except ValueError:  # Stopped already.
+                pass
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+
+        def users():
+            return {u["name"]: u for u in self.json("GET", "/api/users")["users"]}
+
+        def finished():
+            self.assertTrue(self.wait_for(lambda: not self.json("GET", "/api/users")["work"]["running"], 60))
+            r = self.json("GET", "/api/users")
+            self.assertEqual(r["work"]["error"], "")
+            return {u["name"]: u for u in r["users"]}
+
+        def lines():
+            with open(users_ini, encoding="utf-8") as f:
+                return {v.split("|")[0]: v.split("|") for k, v in (l.split("=", 1) for l in f.read().splitlines() if l.startswith("user"))}
+
+        def marks(root):
+            path = os.path.join(root, "Hdd1", "NetISO", "NetDisc360", "profiles.ini")
+            if not os.path.exists(path):
+                return {}
+            with open(path, encoding="utf-8") as f:
+                return {k: v for k, v in (l.split("=", 1) for l in f.read().splitlines() if l[:1] == "E" and "=" in l)}
+        self.assertTrue(self.wait_for(lambda: self.ftp.scans and ftp2.scans, 20))
+        # The party's guests are users (the list made them).
+        self.json("POST", "/api/party", {"gamemaster": "127.0.0.2", "guests": [{"name": "Ola", "here": True}, {"name": "Kari", "here": False}]})
+        u = users()
+        self.assertEqual(sorted(u), ["Kari", "Ola"])
+        self.assertTrue(all(re.match(r"^u[0-9a-f]{16}$", x["id"]) for x in u.values()))
+        self.assertEqual((u["Ola"]["guest"], u["Ola"]["here"], u["Kari"]["here"], u["Ola"]["xuid"], u["Ola"]["gamertag"]), (True, True, False, "", "Ola"))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(users_ini) and len(lines()) == 2, 10))
+        # One apart from the party; a name can't be two users.
+        nora = self.json("POST", "/api/users", {"action": "add", "name": "Nora"})
+        nora = next(x for x in nora["users"] if x["name"] == "Nora")
+        self.assertFalse(nora["guest"])
+        for body, code in (({"action": "add", "name": "nora"}, 409), ({"action": "add", "name": ""}, 400), ({"action": "nap"}, 400),
+                           ({"action": "remove", "id": "u0000000000000000"}, 404), ({"action": "import", "text": "hello"}, 400)):
+            self.assertEqual(self.call("POST", "/api/users", body)[0], code, body)
+        self.assertEqual(self.call("POST", "/api/users/profiles", {"action": "backup", "ids": [nora["id"]]})[0], 400)  # No profile yet.
+        self.assertEqual(self.call("POST", "/api/users/profiles", {"action": "put", "ids": [nora["id"]], "consoles": ["10.9.9.9"]})[0], 400)
+        # Nora's profile on one console: it makes it.
+        self.json("POST", "/api/users/profiles", {"action": "put", "ids": [nora["id"]], "consoles": ["127.0.0.2"]})
+        u = finished()
+        self.assertEqual(made, [("Nora", u["Nora"]["xuid"])])
+        xuid = u["Nora"]["xuid"]
+        self.assertEqual((u["Nora"]["on"], u["Nora"]["madeOn"], u["Nora"]["adopted"]), (["127.0.0.2"], "127.0.0.2", False))
+        self.assertEqual(marks(other), {xuid: nora["id"] + "|Nora|Nora|" + str(u["Nora"]["made"]) + "|0"})
+        self.assertEqual(marks(self.xbox), {})
+        self.assertTrue(self.wait_for(lambda: lines()[nora["id"]][3] == xuid, 10))
+        # Then on the other: copied, not made again; both say whose it is.
+        self.json("POST", "/api/users/profiles", {"action": "put", "ids": [nora["id"]], "consoles": ["127.0.0.1"]})
+        u = finished()
+        self.assertEqual(len(made), 1)
+        self.assertEqual(sorted(u["Nora"]["on"]), ["127.0.0.1", "127.0.0.2"])
+        self.assertTrue(os.path.exists(os.path.join(self.xbox, "Hdd1", "Content", xuid, "FFFE07D1", "00010000", xuid)))
+        self.assertEqual(list(marks(self.xbox)), [xuid])
+        # Backed up from both: each copy says whose it is.
+        self.json("POST", "/api/users/profiles", {"action": "backup", "ids": [nora["id"]]})
+        u = finished()
+        self.assertEqual(u["Nora"]["copies"], 2)
+        kept = os.path.join(self.tmp.name, "Backups", "Profiles", xuid)
+        for name in os.listdir(kept):
+            if name.endswith(".ini"):
+                with open(os.path.join(kept, name), encoding="utf-8") as f:
+                    self.assertIn("user=" + nora["id"], f.read())
+        # Not forgotten while it's on a console; removed from one, the other keeps it.
+        self.assertEqual(self.call("POST", "/api/users", {"action": "remove", "id": nora["id"]})[0], 409)
+        self.json("POST", "/api/users/profiles", {"action": "remove", "ids": [nora["id"]], "consoles": ["127.0.0.1"]})
+        u = finished()
+        self.assertEqual(u["Nora"]["on"], ["127.0.0.2"])
+        self.assertFalse(os.path.exists(os.path.join(self.xbox, "Hdd1", "Content", xuid)))
+        self.assertEqual(marks(self.xbox), {})
+        # A line another computer wrote on the console stays.
+        path = os.path.join(other, "Hdd1", "NetISO", "NetDisc360", "profiles.ini")
+        with open(path, "a", encoding="utf-8", newline="") as f:
+            f.write("E0000000000AB0CD=u00000000000000aa|Per|Per|1|1\r\n")
+        self.json("POST", "/api/users/profiles", {"action": "remove", "ids": [nora["id"]]})
+        u = finished()
+        self.assertEqual(u["Nora"]["on"], [])
+        self.assertEqual(marks(other), {"E0000000000AB0CD": "u00000000000000aa|Per|Per|1|1"})
+        # Forgotten: off the users, the line stays (removed, no profile) so the
+        # other computers forget them too; the kept copies stay.
+        self.json("POST", "/api/users", {"action": "remove", "id": nora["id"]})
+        self.assertNotIn("Nora", users())
+        self.assertTrue(self.wait_for(lambda: lines()[nora["id"]][7] != "0", 10))
+        self.assertEqual(lines()[nora["id"]][1:4], ["Nora", "", ""])
+        # Backed up from both, and before each removal (a copy from the same second and console is the same one).
+        self.assertGreaterEqual(len([n for n in os.listdir(kept) if n.endswith(".zip")]), 3)
+        # Another computer's users.ini: Per is new (with a profile), Ola was
+        # renamed there later, Kari was forgotten there.
+        ola, kari = users()["Ola"]["id"], users()["Kari"]["id"]
+        later = int(time.time()) + 100
+        text = ("[Users]\r\ncount=3\r\n"
+                "user1=u00000000000000aa|Per|Per|E0000000000AB0CD|1700000000|0|%d|0|1200|30|0|3600|2|1|0|Halo 3\r\n"
+                "user2=%s|Ola Nordmann||||0|%d|0|-1|-1|0|0|0|0|0|\r\n"
+                "user3=%s|Kari||||0|%d|%d|-1|-1|0|0|0|0|0|\r\n") % (later, ola, later, kari, later, later)
+        self.json("POST", "/api/users", {"action": "import", "text": text})
+        u = users()
+        self.assertEqual(sorted(u), ["Ola Nordmann", "Per"])
+        self.assertEqual((u["Per"]["xuid"], u["Per"]["stats"]["gamerscore"], u["Per"]["stats"]["playSeconds"], u["Per"]["on"]), ("E0000000000AB0CD", 1200, 3600, []))
+        self.assertEqual(u["Ola Nordmann"]["id"], ola)
+        self.assertEqual([g["name"] for g in self.json("GET", "/api/state")["party"]["guests"]], ["Ola Nordmann"])
+        # A profile made on a console by hand (signed in there) becomes a user's.
+        r = self.json("POST", "/api/users", {"action": "adopt", "console": "127.0.0.1", "xuid": "e0000000000ab0ce", "gamertag": "Vik"})
+        viktor = next(x for x in r["users"] if x["name"] == "Vik")
+        self.assertEqual((viktor["xuid"], viktor["on"], viktor["adopted"], viktor["madeOn"]), ("E0000000000AB0CE", ["127.0.0.1"], True, "127.0.0.1"))
+        self.assertEqual(marks(self.xbox), {"E0000000000AB0CE": viktor["id"] + "|Vik|Vik|" + str(viktor["made"]) + "|1"})
+        for body, code in (({"console": "127.0.0.1", "xuid": "E0000000000AB0CE", "gamertag": "Vik", "name": "Someone"}, 409),
+                           ({"console": "127.0.0.1", "xuid": "0009000000000001", "gamertag": "Online"}, 400),
+                           ({"console": "10.9.9.9", "xuid": "E0000000000AB0CF", "gamertag": "Who"}, 400)):
+            self.assertEqual(self.call("POST", "/api/users", dict(body, action="adopt"))[0], code, body)
+        # Kept across a restart: the records come from users.ini.
+        stop(server)
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+        self.assertEqual(sorted(users()), ["Ola Nordmann", "Per", "Vik"])
+        self.assertEqual((users()["Per"]["xuid"], users()["Vik"]["on"]), ("E0000000000AB0CD", ["127.0.0.1"]))
 
     def test_the_plugin_makes_profiles_with_aurora_on_screen(self):
         # A console whose NetDisc360.xex plugin takes the job (NetDisc360.job

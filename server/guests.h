@@ -87,6 +87,7 @@ bool ReadProfileStats(const std::string& package, ProfileStats& stats);
 struct ProfileCopy {
     std::string file;             // The zip's file name.
     std::string name, gamertag, xuid, console;
+    std::string user;             // Its user's id (users.h); "" in copies kept before there were users.
     long long time, size;
     int gamerscore, achievements;
     ProfileCopy() : time(0), size(0), gamerscore(-1), achievements(-1) {}

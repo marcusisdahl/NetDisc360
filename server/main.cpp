@@ -26,6 +26,7 @@
 #include "system.h"
 #include "systemlink.h"
 #include "update.h"
+#include "users.h"
 #include "version.h"
 #include "../shared/build_id.h"
 #include "web.h"
@@ -772,6 +773,23 @@ Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return ThePa
 std::vector<GuestProfile> GuestProfiles;
 std::mutex GuestLock;
 std::vector<GuestProfile> GuestProfilesNow() { std::lock_guard<std::mutex> hold(GuestLock); return GuestProfiles; }
+// The users (see users.h), kept in users.ini beside the settings file, also
+// under GuestLock. UsersSaved: each one's line (UserContent) as users.ini
+// last had it, by id, so a user whose line changes gets a new "changed";
+// UsersWritten: the file's text as last written or read.
+std::vector<User> Users;
+std::map<std::string,std::string> UsersSaved;
+std::string UsersWritten;
+// The user called name, made if there's none (under GuestLock).
+User& UserFor(const std::string& name) {
+    User* u=UserNamed(Users,name);
+    if(u) return *u;
+    User fresh;
+    fresh.id=NewUserId(); fresh.name=name; fresh.changed=(long long)time(NULL);
+    Users.push_back(fresh);
+    return Users.back();
+}
+std::string UserIdOf(const std::string& name) { std::lock_guard<std::mutex> hold(GuestLock); User* u=UserNamed(Users,name); return u ? u->id : std::string(); }
 // The seated guests' profiles going to their consoles after a spin or a
 // swap (PushSeatProfiles), by console address: what NetDiscParty.xex and
 // the page show meanwhile. Under GuestLock.
@@ -974,6 +992,91 @@ std::map<std::string,Played> Plays;  // Under PlaysLock.
 std::string PlaysPath(const std::string& configPath) {
     std::string map=DiscMapPath(configPath);
     return map.empty() ? std::string() : map.substr(0,map.size()-9)+"plays.ini";
+}
+std::string UsersPath(const std::string& configPath) {
+    std::string map=DiscMapPath(configPath);
+    return map.empty() ? std::string() : map.substr(0,map.size()-9)+"users.ini";
+}
+
+// The users brought up to date with what they're kept from (under GuestLock;
+// stats read before, as StatsLock isn't taken under it): every guest on the
+// party's list and every profile made is a user, and each user's profile
+// and stats are the records' (GuestProfiles, GuestStatsList). A user whose
+// line changed gets "changed" now.
+void RefreshUsers(const Party& party, const std::vector<GuestStats>& stats) {
+    long long now=(long long)time(NULL);
+    for(size_t i=0;i<party.guests.size();++i) UserFor(party.guests[i].name);
+    for(size_t i=0;i<GuestProfiles.size();++i) if(!GuestProfiles[i].xuid.empty()) UserFor(GuestProfiles[i].name);
+    for(size_t i=0;i<Users.size();++i) {
+        User& u=Users[i];
+        if(u.removed) continue;
+        GuestProfile* p=GuestProfileNamed(GuestProfiles,u.name);
+        if(p && !p->xuid.empty()) { u.gamertag=p->gamertag; u.xuid=p->xuid; u.made=p->made; u.adopted=p->adopted; }
+        else { u.gamertag.clear(); u.xuid.clear(); u.made=0; u.adopted=false; }
+        for(size_t k=0;k<stats.size();++k) {
+            if(!SameName(stats[k].name,u.name)) continue;
+            const GuestStats& g=stats[k];
+            u.gamerscore=g.gamerscore; u.achievements=g.achievements; u.readAt=g.readAt; u.playSeconds=g.playSeconds;
+            u.plays=g.plays; u.parties=g.parties; u.lastParty=g.lastParty; u.lastGame=g.lastGame;
+            break;
+        }
+        std::string content=UserContent(u);
+        std::string& saved=UsersSaved[u.id];
+        if(saved!=content) { u.changed=std::max(now,u.changed+1); saved=content; }
+    }
+}
+// A user's profile into the records (under GuestLock): the record of the
+// same XUID takes the user's name (renamed on another computer), and the
+// record named takes the profile. Which consoles have it is this computer's.
+void UserIntoRecords(const User& u) {
+    if(u.xuid.empty()) return;  // Not made yet: the record (if any) says what's planned.
+    for(size_t i=0;i<GuestProfiles.size();++i)
+        if(GuestProfiles[i].xuid==u.xuid && !SameName(GuestProfiles[i].name,u.name) && !GuestProfileNamed(GuestProfiles,u.name)) GuestProfiles[i].name=u.name;
+    GuestProfile* p=GuestProfileNamed(GuestProfiles,u.name);
+    if(!p) { GuestProfile fresh; fresh.name=u.name; GuestProfiles.push_back(fresh); p=&GuestProfiles.back(); }
+    if(p->xuid!=u.xuid) { p->on.clear(); p->stale.clear(); p->playedOn.clear(); p->madeOn.clear(); }
+    p->gamertag=u.gamertag; p->xuid=u.xuid; p->made=u.made; p->adopted=u.adopted;
+}
+// A user's stats into GuestStatsList (under StatsLock).
+GuestStats& StatsOf(const std::string& name);
+void UserIntoStats(const User& u) {
+    if(u.gamerscore<0 && u.achievements<0 && !u.readAt && !u.playSeconds && !u.plays && !u.parties && !u.lastParty && u.lastGame.empty()) return;
+    GuestStats& g=StatsOf(u.name);
+    g.gamerscore=u.gamerscore; g.achievements=u.achievements; g.readAt=u.readAt; g.playSeconds=u.playSeconds;
+    g.plays=u.plays; g.parties=u.parties; g.lastParty=u.lastParty; g.lastGame=u.lastGame;
+}
+// users.ini into the records (LoadConfig); the first time there's none, the
+// users are made from the party's guest list and the records at the next Save.
+void LoadUsers(const std::string& configPath) {
+    std::string path=UsersPath(configPath), text;
+    std::vector<User> users;
+    bool had=!path.empty() && config::ReadFile(path,text,16<<20);
+    if(had) ReadUsers(text,users);
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        Users=users;
+        UsersSaved.clear();
+        UsersWritten=had ? text : std::string();
+        for(size_t i=0;i<Users.size();++i) {
+            UsersSaved[Users[i].id]=UserContent(Users[i]);
+            if(!Users[i].removed) UserIntoRecords(Users[i]);
+        }
+    }
+    std::lock_guard<std::mutex> hold(StatsLock);
+    for(size_t i=0;i<users.size();++i) if(!users[i].removed) UserIntoStats(users[i]);
+}
+// users.ini written (Save), if it changed.
+void SaveUsers(const std::string& configPath, const Party& party) {
+    std::vector<GuestStats> stats=GuestStatsNow();
+    std::string path=UsersPath(configPath), text;
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        RefreshUsers(party,stats);
+        text=UsersText(Users);
+        if(path.empty() || text==UsersWritten) return;
+        UsersWritten=text;
+    }
+    if(!config::WriteFile(path,text,false)) Log("Couldn't save the users in %s.",config::FromUtf8(path).c_str());
 }
 
 // plays.ini: a line "times|seconds|last|name" for each game (last: time()).
@@ -3199,6 +3302,7 @@ bool Save() {
     SaveParty(f,party);
     SaveGuestProfiles(f,GuestProfilesNow());
     SaveGuestStats(f,GuestStatsNow());
+    SaveUsers(o.configPath,party);
     if(f.Save(o.configPath)) return true;
     static bool told;
     if(!told) Log("Couldn't save the settings in %s; changes last until the server stops.",config::FromUtf8(o.configPath).c_str());
@@ -3337,6 +3441,7 @@ bool LoadConfig(Options& o) {
     std::vector<GuestStats> stats;
     LoadGuestStats(f,stats);
     { std::lock_guard<std::mutex> hold(StatsLock); GuestStatsList.swap(stats); }
+    LoadUsers(o.configPath);
     party.gamemaster=CanonicalAddress(party.gamemaster);
     for(size_t i=party.consoles.size();i-->0;)
         if(CanonicalAddress(party.consoles[i]).empty()) party.consoles.erase(party.consoles.begin()+long(i));
@@ -7673,6 +7778,54 @@ std::vector<Console*> ProfileConsoles() {
     return out;
 }
 std::string ConsoleWord(const Console& c) { std::string name=NameOf(c); return name.empty() ? std::string(c.text) : name; }
+// The consoles at these addresses that NetDisc360 knows.
+std::vector<Console*> ConsolesAt(const std::vector<std::string>& addresses) {
+    std::vector<Console*> out;
+    for(size_t i=0;i<addresses.size();++i) {
+        Console* c=ConsoleIfKnown(inet_addr(addresses[i].c_str()));
+        if(c && std::find(out.begin(),out.end(),c)==out.end()) out.push_back(c);
+    }
+    return out;
+}
+// profiles.ini in NetDisc360's folder on the console (users.h): the profiles
+// the records say are on it, and whose they are, so another NetDisc360 that
+// meets the console knows them. The lines of profiles this computer has no
+// record of (another computer's) stay. False if it couldn't be written.
+bool WriteProfileMarks(FtpClient& ftp, const Console& c, const Options& o) {
+    std::vector<ProfileMark> marks, had;
+    std::vector<unsigned char> data;
+    if(ftp.Retrieve((o.xboxFolder+"/"+HelperFolder+"/profiles.ini").c_str(),data,1<<20)) ReadProfileMarks(std::string(data.begin(),data.end()),had);
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        for(size_t i=0;i<had.size();++i) {
+            bool ours=false;
+            for(size_t k=0;k<GuestProfiles.size() && !ours;++k) ours=GuestProfiles[k].xuid==had[i].xuid;
+            if(!ours) marks.push_back(had[i]);
+        }
+        for(size_t i=0;i<GuestProfiles.size();++i) {
+            const GuestProfile& p=GuestProfiles[i];
+            if(p.xuid.empty() || std::find(p.on.begin(),p.on.end(),std::string(c.text))==p.on.end()) continue;
+            ProfileMark m;
+            m.xuid=p.xuid; m.name=p.name; m.gamertag=p.gamertag; m.made=p.made; m.adopted=p.adopted;
+            User* u=UserNamed(Users,p.name);
+            if(u) m.user=u->id;
+            marks.push_back(m);
+        }
+    }
+    std::map<std::string,std::string> files;
+    files["profiles.ini"]=ProfileMarksText(marks);
+    std::string error;
+    if(WriteTree(ftp,o.xboxFolder+"/"+HelperFolder,files,error)) return true;
+    Log("%s: couldn't write the list of NetDisc360's profiles there: %s",ConsoleWord(c).c_str(),error.c_str());
+    return false;
+}
+void MarkProfilesOn(const std::vector<Console*>& consoles, const Options& o) {
+    for(size_t k=0;k<consoles.size();++k) {
+        Busy busy(consoles[k]);
+        FtpClient ftp(consoles[k]->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        if(ftp.Open()) WriteProfileMarks(ftp,*consoles[k],o);
+    }
+}
 
 // The NetDisc360.xex plugin's way (plugin/profiles_job.h): the job on the
 // hard drive's root, which the plugin takes within seconds and does while
@@ -7858,7 +8011,7 @@ bool KeepProfileCopy(const GuestProfile& p, const Console& c, const Options& o, 
     copy=ProfileCopy();
     copy.time=(long long)time(NULL);
     copy.file=ProfileCopyName(copy.time,c.text);
-    copy.name=p.name; copy.gamertag=p.gamertag; copy.xuid=p.xuid; copy.console=c.text; copy.size=size;
+    copy.name=p.name; copy.gamertag=p.gamertag; copy.xuid=p.xuid; copy.console=c.text; copy.size=size; copy.user=UserIdOf(p.name);
     std::map<std::string,std::string>::const_iterator package=files.find("FFFE07D1/00010000/"+p.xuid);
     ProfileStats stats;
     if(package!=files.end() && ReadProfileStats(package->second,stats)) { copy.gamerscore=stats.gamerscore; copy.achievements=stats.achievements; }
@@ -7886,12 +8039,13 @@ bool OpenProfileCopy(const Options& o, const ProfileCopy& copy, std::map<std::st
 }
 
 // Makes, puts back or copies the guests' profiles so each of the guests
-// named has one on every console (ProfileConsoles): a kept copy goes back
-// if there is one, else one console makes it; then it's copied to the
-// others. Runs on its own thread; Work tells the page how it goes.
-void MakeGuestProfiles(std::vector<std::string> names) {
+// named has one on every console (ProfileConsoles, or only those at these
+// addresses: the Users page's "Put on"): a kept copy goes back if there is
+// one, else one console makes it; then it's copied to the others. Runs on
+// its own thread; Work tells the page how it goes.
+void MakeGuestProfilesOn(std::vector<std::string> names, std::vector<std::string> only) {
     Options o=Current();
-    std::vector<Console*> consoles=ProfileConsoles();
+    std::vector<Console*> consoles=only.empty() ? ProfileConsoles() : ConsolesAt(only);
     std::vector<std::string> notes, failed;
     if(consoles.empty()) failed.push_back("No console has used NetDisc360 yet.");
     // Who needs what: the record for each name (made if it's new).
@@ -7984,18 +8138,24 @@ void MakeGuestProfiles(std::vector<std::string> names) {
             if(std::find(p.on.begin(),p.on.end(),std::string(c.text))!=p.on.end()) continue;
             std::string error;
             if(files.empty()) {
-                // Read from a console that has it, the one that made it first.
-                std::vector<Console*> from;
+                // Read from a console that has it, the one that made it first;
+                // those looked at just now first, then the others it's on
+                // (the Users page puts it on one console from another).
+                std::vector<Console*> from, more=ConsolesAt(p.on);
                 for(size_t s=0;s<open.size();++s) if(std::find(p.on.begin(),p.on.end(),std::string(open[s]->text))!=p.on.end()) from.insert(open[s]->text==p.madeOn ? from.begin() : from.end(),open[s]);
+                for(size_t s=0;s<more.size();++s) if(std::find(open.begin(),open.end(),more[s])==open.end()) from.push_back(more[s]);
                 if(from.empty()) { notes.push_back(p.name+" is on no console in Aurora now, so it's copied later"); break; }
-                WorkStep("Reading %s's profile from %s",p.name.c_str(),ConsoleWord(*from[0]).c_str());
-                Busy busy(from[0]);
-                FtpClient ftp(from[0]->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
-                if(!ftp.Open() || !ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,error)) {
-                    failed.push_back("Couldn't read "+p.name+"'s profile on "+ConsoleWord(*from[0])+": "+(error.empty() ? std::string(ftp.Error()) : error));
+                std::string tried;
+                for(size_t s=0;s<from.size() && files.empty();++s) {
+                    WorkStep("Reading %s's profile from %s",p.name.c_str(),ConsoleWord(*from[s]).c_str());
+                    Busy busy(from[s]);
+                    FtpClient ftp(from[s]->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+                    error.clear();
+                    if(ftp.Open() && ReadTree(ftp,ContentFolderFtp(p.xuid),std::string(),files,error)) break;
+                    tried+=(tried.empty() ? "" : "; ")+ConsoleWord(*from[s])+": "+(error.empty() ? std::string(ftp.Error()) : error);
                     files.clear();
-                    break;
                 }
+                if(files.empty()) { failed.push_back("Couldn't read "+p.name+"'s profile on "+tried); break; }
             }
             WorkStep("Copying %s's profile to %s",p.name.c_str(),ConsoleWord(c).c_str());
             Busy busy(&c);
@@ -8010,6 +8170,7 @@ void MakeGuestProfiles(std::vector<std::string> names) {
         if(!p.made) p.made=(long long)time(NULL);
         KeepGuestProfile(p);
     }
+    MarkProfilesOn(open,o);
     int ready=0;
     for(size_t i=0;i<todo.size();++i) if(!todo[i].xuid.empty() && todo[i].on.size()>=open.size() && !open.empty()) ++ready;
     std::string result=Count(ready,"guest has a profile","guests have a profile")+" on "+(open.size()==consoles.size() ? "every console" : Count(int(open.size()),"console","consoles"));
@@ -8022,12 +8183,14 @@ void MakeGuestProfiles(std::vector<std::string> names) {
     for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+(failed[i].empty() || failed[i][failed[i].size()-1]=='.' ? "" : ".");
 }
 
+void MakeGuestProfiles(std::vector<std::string> names) { MakeGuestProfilesOn(names,std::vector<std::string>()); }
+
 // Keeps a copy of each named guest's content folder from every console that
 // has it, then removes it there: never one the server didn't make (its
 // package must have the record's gamertag), nor one signed in now.
-void RemoveGuestProfiles(std::vector<std::string> names) {
+void RemoveGuestProfilesFrom(std::vector<std::string> names, std::vector<std::string> only) {
     Options o=Current();
-    std::vector<Console*> consoles=ProfileConsoles();
+    std::vector<Console*> consoles=only.empty() ? ProfileConsoles() : ConsolesAt(only), touched;
     std::vector<std::string> failed, notes;
     int removed=0, kept=0;
     for(size_t i=0;i<names.size();++i) {
@@ -8038,9 +8201,9 @@ void RemoveGuestProfiles(std::vector<std::string> names) {
             if(!had || had->xuid.empty()) continue;
             p=*had;
         }
-        // Its consoles: the party's, and any other it was put on.
+        // Its consoles: the party's, and any other it was put on (or only those asked for).
         std::vector<Console*> where=consoles;
-        for(size_t k=0;k<p.on.size();++k) {
+        for(size_t k=0;k<p.on.size() && only.empty();++k) {
             Console* c=ConsoleIfKnown(inet_addr(p.on[k].c_str()));
             if(c && std::find(where.begin(),where.end(),c)==where.end()) where.push_back(c);
         }
@@ -8074,14 +8237,70 @@ void RemoveGuestProfiles(std::vector<std::string> names) {
             if(!DeleteTree(ftp,folder,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error+" (a copy is kept)"); continue; }
             ++removed;
             SetOn(p,c.text,false);
+            if(std::find(touched.begin(),touched.end(),&c)==touched.end()) touched.push_back(&c);
             XboxLog(c,"guest profile %s (%s) for %s kept as %s and removed.",p.gamertag.c_str(),p.xuid.c_str(),p.name.c_str(),copy.file.c_str());
         }
         KeepGuestProfile(p);
     }
+    MarkProfilesOn(touched,o);
     std::string result=Count(removed,"guest profile removed","guest profiles removed")+", "+Count(kept,"copy","copies")+" kept in "+config::FromUtf8(ProfilesFolder(o));
     for(size_t i=0;i<notes.size();++i) result+=". "+notes[i];
     Log("Guest profiles: %s.",result.c_str());
     if(removed) Event(EventInfo,"%s",Count(removed,"guest profile removed from the consoles","guest profiles removed from the consoles").c_str());
+    std::lock_guard<std::mutex> hold(GuestLock);
+    Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
+    Work.result=result+".";
+    Work.error.clear();
+    for(size_t i=0;i<failed.size();++i) Work.error+=(i ? " " : "")+failed[i]+".";
+}
+
+void RemoveGuestProfiles(std::vector<std::string> names) { RemoveGuestProfilesFrom(names,std::vector<std::string>()); }
+
+// Keeps a copy of each named user's content folder (their profile and
+// saves) from each console that has it, or only those at these addresses,
+// and leaves it there (the Users page's "Back up").
+void BackUpGuestProfiles(std::vector<std::string> names, std::vector<std::string> only) {
+    Options o=Current();
+    std::vector<std::string> failed, notes;
+    std::vector<Console*> touched;
+    int kept=0;
+    for(size_t i=0;i<names.size();++i) {
+        GuestProfile p;
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            GuestProfile* had=GuestProfileNamed(GuestProfiles,names[i]);
+            if(!had || had->xuid.empty()) continue;
+            p=*had;
+        }
+        std::vector<Console*> where=ConsolesAt(only.empty() ? p.on : only);
+        if(where.empty()) { notes.push_back(p.name+"'s profile is on no console NetDisc360 knows now"); continue; }
+        for(size_t k=0;k<where.size();++k) {
+            Console& c=*where[k];
+            WorkStep("Backing up %s's profile from %s",p.name.c_str(),ConsoleWord(c).c_str());
+            Busy busy(&c);
+            FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),20);
+            if(!ftp.Open()) { notes.push_back(ConsoleWord(c)+" isn't in Aurora, so "+p.name+"'s profile there isn't backed up"); continue; }
+            std::string folder=ContentFolderFtp(p.xuid), error;
+            if(!ftp.Enters(folder.c_str())) {
+                if(std::find(p.on.begin(),p.on.end(),std::string(c.text))!=p.on.end()) notes.push_back(p.name+"'s profile isn't on "+ConsoleWord(c)+" any more");
+                SetOn(p,c.text,false);
+                continue;
+            }
+            SetOn(p,c.text,true);
+            if(std::find(touched.begin(),touched.end(),&c)==touched.end()) touched.push_back(&c);
+            std::map<std::string,std::string> files;
+            if(!ReadTree(ftp,folder,std::string(),files,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error); continue; }
+            ProfileCopy copy;
+            if(!KeepProfileCopy(p,c,o,files,copy,error)) { failed.push_back(p.name+" on "+ConsoleWord(c)+": "+error); continue; }
+            ++kept;
+            XboxLog(c,"%s's profile %s (%s) and saves kept as %s.",p.name.c_str(),p.gamertag.c_str(),p.xuid.c_str(),copy.file.c_str());
+        }
+        KeepGuestProfile(p);
+    }
+    MarkProfilesOn(touched,o);
+    std::string result=Count(kept,"copy","copies")+" kept in "+config::FromUtf8(ProfilesFolder(o));
+    for(size_t i=0;i<notes.size();++i) result+=". "+notes[i];
+    Log("Profiles backed up: %s.",result.c_str());
     std::lock_guard<std::mutex> hold(GuestLock);
     Work.running=false; Work.step.clear(); Work.at=(long long)time(NULL);
     Work.result=result+".";
@@ -8565,6 +8784,248 @@ void GuestProfilesChange(const web::Value& v, web::Reply& out) {
     GuestProfilesJson(out);
 }
 
+// The users page (Marcus 2026-11-03: a users or gamertags function apart
+// from the LAN party, so each one's profile and saves follow them) -------
+
+// Names off the party's guest list (a user removed), and names changed there
+// (a user renamed on another computer), with their rules.
+void PartyNamesChanged(const std::vector<std::string>& dropped, const std::vector<std::pair<std::string,std::string> >& renamed) {
+    if(dropped.empty() && renamed.empty()) return;
+    {
+        std::lock_guard<std::mutex> change(PartyChangeLock);
+        std::lock_guard<std::mutex> hold(PartyLock);
+        Party& p=TheParty;
+        for(size_t i=p.guests.size();i-->0;)
+            for(size_t k=0;k<dropped.size();++k) if(SameName(p.guests[i].name,dropped[k])) { p.guests.erase(p.guests.begin()+long(i)); break; }
+        for(size_t k=0;k<renamed.size();++k) {
+            for(size_t i=0;i<p.guests.size();++i) if(SameName(p.guests[i].name,renamed[k].first)) p.guests[i].name=renamed[k].second;
+            for(size_t i=0;i<p.together.size();++i) {
+                if(SameName(p.together[i].first,renamed[k].first)) p.together[i].first=renamed[k].second;
+                if(SameName(p.together[i].second,renamed[k].first)) p.together[i].second=renamed[k].second;
+            }
+            for(size_t i=0;i<p.apart.size();++i) {
+                if(SameName(p.apart[i].first,renamed[k].first)) p.apart[i].first=renamed[k].second;
+                if(SameName(p.apart[i].second,renamed[k].first)) p.apart[i].second=renamed[k].second;
+            }
+        }
+        TidyParty(p);
+    }
+    PartyNews();
+}
+
+bool MergeUsersFile(const std::string& text, std::string& error) {
+    std::vector<User> other;
+    ReadUsers(text,other);
+    if(other.empty() && text.find("[Users]")==std::string::npos) { error="That isn't a NetDisc360 users file (users.ini)."; return false; }
+    Party party=CurrentParty();
+    std::vector<GuestStats> stats=GuestStatsNow();
+    std::vector<User> changedUsers;
+    std::vector<std::string> dropped;
+    std::vector<std::pair<std::string,std::string> > renamed;
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        RefreshUsers(party,stats);
+        std::map<std::string,std::string> namesBefore;
+        for(size_t i=0;i<Users.size();++i) if(!Users[i].removed) namesBefore[Users[i].id]=Users[i].name;
+        std::vector<std::string> ids=MergeUsers(Users,other,(long long)time(NULL));
+        for(size_t i=0;i<ids.size();++i) {
+            User* u=UserWithId(Users,ids[i]);
+            if(!u) continue;
+            std::map<std::string,std::string>::const_iterator was=namesBefore.find(u->id);
+            if(u->removed) {
+                // Removed on another computer: its record goes, unless its profile is on a console here.
+                if(was==namesBefore.end()) continue;
+                GuestProfile* p=GuestProfileNamed(GuestProfiles,was->second);
+                if(p && !p->on.empty()) { u->removed=0; u->changed=(long long)time(NULL)+1; continue; }
+                if(p) GuestProfiles.erase(GuestProfiles.begin()+(p-&GuestProfiles[0]));
+                dropped.push_back(was->second);
+                UsersSaved[u->id]=UserContent(*u);
+                continue;
+            }
+            if(was!=namesBefore.end() && was->second!=u->name) {
+                renamed.push_back(std::make_pair(was->second,u->name));
+                GuestProfile* p=GuestProfileNamed(GuestProfiles,was->second);
+                if(p && !GuestProfileNamed(GuestProfiles,u->name)) p->name=u->name;
+            }
+            UserIntoRecords(*u);
+            UsersSaved[u->id]=UserContent(*u);
+            changedUsers.push_back(*u);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(StatsLock);
+        for(size_t i=0;i<renamed.size();++i)
+            for(size_t k=0;k<GuestStatsList.size();++k) if(SameName(GuestStatsList[k].name,renamed[i].first)) GuestStatsList[k].name=renamed[i].second;
+        for(size_t i=0;i<dropped.size();++i)
+            for(size_t k=GuestStatsList.size();k-->0;) if(SameName(GuestStatsList[k].name,dropped[i])) GuestStatsList.erase(GuestStatsList.begin()+long(k));
+        for(size_t i=0;i<changedUsers.size();++i) UserIntoStats(changedUsers[i]);
+    }
+    PartyNamesChanged(dropped,renamed);
+    Save();
+    Log("Users: merged another computer's users (%s changed here).",Count(int(changedUsers.size()+dropped.size()),"user","users").c_str());
+    return true;
+}
+
+// GET /api/users: every user (not removed), with their profile, the consoles
+// it's on, their stats and the copies kept here, and the work under way.
+void UsersJson(web::Reply& out) {
+    Options o=Current();
+    Party party=CurrentParty();
+    std::vector<GuestStats> stats=GuestStatsNow();
+    std::vector<User> users;
+    std::vector<GuestProfile> records;
+    ProfileWork work;
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        RefreshUsers(party,stats);
+        users=Users; records=GuestProfiles; work=Work;
+    }
+    std::vector<std::string> taken;
+    for(size_t i=0;i<records.size();++i) taken.push_back(records[i].gamertag);
+    web::Json j;
+    j.Open('{').Key("work").Open('{').Set("running",work.running).Set("what",work.what).Set("step",work.step).Set("result",work.result)
+     .Set("error",work.error).Set("at",work.at).Close('}').Set("folder",config::FromUtf8(ProfilesFolder(o))).Set("file",config::FromUtf8(UsersPath(o.configPath)))
+     .Key("users").Open('[');
+    for(size_t i=0;i<users.size();++i) {
+        const User& u=users[i];
+        if(u.removed) continue;
+        GuestProfile* p=GuestProfileNamed(records,u.name);
+        std::string gamertag=p ? p->gamertag : std::string();
+        if(gamertag.empty()) { gamertag=GuestGamertag(u.name,taken); taken.push_back(gamertag); }
+        std::string guest=GuestNamed(party,u.name);
+        bool here=false;
+        for(size_t k=0;k<party.guests.size();++k) if(SameName(party.guests[k].name,u.name)) here=party.guests[k].here;
+        std::vector<ProfileCopy> copies=u.xuid.empty() ? std::vector<ProfileCopy>() : ProfileCopies(KitPath(ProfilesFolder(o),u.xuid));
+        const ProfileCopy* best=BestProfileCopy(copies);
+        j.Open('{').Set("id",u.id).Set("name",u.name).Set("gamertag",gamertag).Set("xuid",u.xuid).Set("made",u.made).Set("adopted",u.adopted)
+         .Set("madeOn",p ? p->madeOn : std::string()).Set("playedOn",p ? p->playedOn : std::string()).Set("changed",u.changed)
+         .Set("guest",!guest.empty()).Set("here",here).Key("on").Open('[');
+        for(size_t k=0;p && k<p->on.size();++k) j.String(p->on[k]);
+        j.Close(']').Key("stale").Open('[');
+        for(size_t k=0;p && k<p->stale.size();++k) j.String(p->stale[k]);
+        j.Close(']').Key("stats").Open('{').Set("gamerscore",u.gamerscore).Set("achievements",u.achievements).Set("readAt",u.readAt)
+         .Set("playSeconds",u.playSeconds).Set("plays",u.plays).Set("parties",u.parties).Set("lastParty",u.lastParty).Set("lastGame",u.lastGame).Close('}')
+         .Set("copies",int(copies.size())).Set("newest",copies.empty() ? 0LL : copies[0].time).Key("best");
+        if(best) j.Open('{').Set("gamerscore",best->gamerscore).Set("achievements",best->achievements).Set("time",best->time).Set("console",best->console).Close('}');
+        else j.Null();
+        j.Close('}');
+    }
+    out.body=j.Close(']').Close('}').Text();
+}
+
+// POST /api/users {action, ...}: add {name}; remove {id} (their profile must
+// be on no console: its kept copies stay); adopt {console, xuid, gamertag,
+// name?} (a profile someone made on a console becomes a user's); import
+// {text} (another computer's users.ini, merged in).
+void UsersChange(const web::Value& v, web::Reply& out) {
+    std::string action, name, id, error;
+    Text(v,"action",action);
+    if(action=="add") {
+        Text(v,"name",name);
+        if(!CleanName(name,1,GuestNameMost,"The name",name,error)) { out.Error(400,error); return; }
+        std::lock_guard<std::mutex> hold(GuestLock);
+        if(UserNamed(Users,name)) { out.Error(409,"There's a user called "+name+" already."); return; }
+        if(Users.size()>=UsersMost) { out.Error(409,"NetDisc360 keeps "+Number(UsersMost)+" users at most."); return; }
+        UserFor(name);
+    } else if(action=="remove") {
+        Text(v,"id",id);
+        std::string named;
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            User* u=UserWithId(Users,id);
+            if(!u || u->removed) { out.Error(404,"There's no such user."); return; }
+            GuestProfile* p=GuestProfileNamed(GuestProfiles,u->name);
+            if(p && !p->xuid.empty() && !p->on.empty()) {
+                std::string where;
+                for(size_t k=0;k<p->on.size();++k) {
+                    Console* c=ConsoleIfKnown(inet_addr(p->on[k].c_str()));
+                    where+=(k ? ", " : "")+(c ? ConsoleWord(*c) : p->on[k]);
+                }
+                out.Error(409,u->name+"'s profile is still on "+where+": remove it from the consoles first (a copy is kept on this computer).");
+                return;
+            }
+            if(p) GuestProfiles.erase(GuestProfiles.begin()+(p-&GuestProfiles[0]));
+            named=u->name;
+            u->removed=(long long)time(NULL);
+            u->xuid.clear(); u->gamertag.clear(); u->made=0; u->adopted=false;
+            u->changed=std::max(u->removed,u->changed+1);
+            UsersSaved[u->id]=UserContent(*u);
+        }
+        {
+            std::lock_guard<std::mutex> hold(StatsLock);
+            for(size_t k=GuestStatsList.size();k-->0;) if(SameName(GuestStatsList[k].name,named)) GuestStatsList.erase(GuestStatsList.begin()+long(k));
+        }
+        PartyNamesChanged(std::vector<std::string>(1,named),std::vector<std::pair<std::string,std::string> >());
+        Log("Users: %s removed (their kept profile copies stay).",named.c_str());
+    } else if(action=="adopt") {
+        std::string console, xuidText, gamertag, xuid;
+        Text(v,"console",console); Text(v,"xuid",xuidText); Text(v,"gamertag",gamertag); Text(v,"name",name);
+        if(!OfflineXuid(xuidText,xuid)) { out.Error(400,"That isn't an offline profile's XUID (16 hex digits starting with E)."); return; }
+        if(!ConsoleIfKnown(inet_addr(console.c_str()))) { out.Error(400,console+" isn't a console NetDisc360 knows."); return; }
+        if(name.empty()) name=gamertag;
+        if(!CleanName(name,1,GuestNameMost,"The name",name,error)) { out.Error(400,error); return; }
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            for(size_t k=0;k<GuestProfiles.size();++k)
+                if(GuestProfiles[k].xuid==xuid) { out.Error(409,"That profile is "+GuestProfiles[k].name+"'s already."); return; }
+            GuestProfile* p=GuestProfileNamed(GuestProfiles,name);
+            if(p && !p->xuid.empty()) { out.Error(409,name+" has a profile already; give this one another name."); return; }
+            UserFor(name);
+        }
+        AdoptGuestProfile(name,strtoull(xuid.c_str(),NULL,16),gamertag,console);
+        GuestProfile* got;
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            got=GuestProfileNamed(GuestProfiles,name);
+            if(!got || got->xuid!=xuid) { out.Error(409,"That profile couldn't be "+name+"'s."); return; }
+        }
+        Options o=Current();
+        MarkProfilesOn(ConsolesAt(std::vector<std::string>(1,console)),o);
+    } else if(action=="import") {
+        std::string text;
+        Text(v,"text",text);
+        if(!MergeUsersFile(text,error)) { out.Error(400,error); return; }
+    } else { out.Error(400,"Send action add, remove, adopt or import."); return; }
+    Save();
+    UsersJson(out);
+}
+
+// POST /api/users/profiles {action, ids, consoles?}: put (each user's
+// profile on the consoles: made if they have none, else their kept copy or
+// another console's), backup (a copy of it and their saves kept here) or
+// remove (a copy kept, then removed from them). consoles: addresses; without
+// it, the party's consoles (or every one) for put, where it is for the others.
+void UserProfilesChange(const web::Value& v, web::Reply& out) {
+    std::string action;
+    Text(v,"action",action);
+    std::vector<std::string> ids, consoles, names;
+    const web::Value* f=v.Get("ids");
+    if(!f || !Strings(*f,ids) || ids.empty()) { out.Error(400,"ids is a list of users' ids."); return; }
+    if((f=v.Get("consoles")) && !Strings(*f,consoles)) { out.Error(400,"consoles is a list of consoles' addresses."); return; }
+    for(size_t i=0;i<consoles.size();++i)
+        if(!ConsoleIfKnown(inet_addr(consoles[i].c_str()))) { out.Error(400,consoles[i]+" isn't a console NetDisc360 knows."); return; }
+    if(action!="put" && action!="backup" && action!="remove") { out.Error(400,"Send action put, backup or remove."); return; }
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        for(size_t i=0;i<ids.size();++i) {
+            User* u=UserWithId(Users,ids[i]);
+            if(!u || u->removed) { out.Error(404,"There's no user with the id "+ids[i]+"."); return; }
+            GuestProfile* p=GuestProfileNamed(GuestProfiles,u->name);
+            if(action!="put" && (!p || p->xuid.empty())) { out.Error(400,u->name+" has no profile yet."); return; }
+            names.push_back(u->name);
+        }
+        if(Work.running) { out.Error(409,"The profiles are busy: "+(Work.step.empty() ? Work.what : Work.step)+"."); return; }
+        Work=ProfileWork();
+        Work.running=true; Work.what=action; Work.at=(long long)time(NULL);
+    }
+    if(action=="put") std::thread(MakeGuestProfilesOn,names,consoles).detach();
+    else if(action=="backup") std::thread(BackUpGuestProfiles,names,consoles).detach();
+    else std::thread(RemoveGuestProfilesFrom,names,consoles).detach();
+    Log("Users: %s %s's profile%s (asked on the dashboard).",action=="put" ? "putting" : action=="backup" ? "backing up" : "removing",
+        names.size()==1 ? names[0].c_str() : Count(int(names.size()),"user","users").c_str(),names.size()==1 ? "" : "s");
+    UsersJson(out);
+}
+
 // The library's games by Title ID: the first one's name, and the listed name
 // of each (in lower case, as a console's tiles have them).
 void LibraryByTitle(std::map<DWORD,std::string>& names, std::map<DWORD,std::vector<std::string> >& listed) {
@@ -8848,6 +9309,9 @@ void Api(const web::Request& r, web::Reply& out) {
     }
     else if(r.method=="GET" && r.path=="/api/party/asset") PartyAssetFile(r,out);
     else if(r.method=="GET" && r.path=="/api/party/profiles") GuestProfilesJson(out);
+    else if(r.method=="GET" && r.path=="/api/users") UsersJson(out);
+    else if(r.method=="POST" && r.path=="/api/users") UsersChange(body,out);
+    else if(r.method=="POST" && r.path=="/api/users/profiles") UserProfilesChange(body,out);
     else if(r.method=="GET" && r.path=="/api/party/profiles/picture") GuestPictureFile(r,out);
     else if(r.method=="POST" && r.path=="/api/party/profiles") GuestProfilesChange(body,out);
     else if(r.method=="GET" && r.path=="/api/systemlink") SystemLinkList(out);
