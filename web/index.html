@@ -830,7 +830,8 @@ function header(title, lead, ...actions) {
 let charts = [];
 function redrawCharts() { for (const c of charts) c.draw(); }
 window.addEventListener('resize', redrawCharts);
-// The bandwidth chart: each console's last two minutes, stacked.
+// The bandwidth chart: each console's last two minutes, each line its own rate
+// from zero (overlaid, not stacked), so two consoles streaming 7.8 MB/s each both read 7.8.
 function bandwidthChart(wrap) {
   const canvas = h('canvas'), tip = h('div.chart-tip.hidden');
   wrap.append(canvas, tip);
@@ -844,9 +845,7 @@ function bandwidthChart(wrap) {
       const g = canvas.getContext('2d');
       g.scale(ratio, ratio);
       const n = 120, left = 64, right = 8, top = 10, bottom = 22;
-      const totals = new Array(n).fill(0);
-      for (const s of series) s.values.forEach((v, i) => totals[i + n - s.values.length] += v);
-      const peak = Math.max(...totals, 0);
+      const peak = Math.max(0, ...series.map(s => Math.max(0, ...s.values)));
       const mb = 1048576;
       let step = [0.5, 1, 2, 5, 10, 20, 50, 100, 200].find(x => x * mb * 4 >= peak) || 500;
       const max = step * mb * 4;
@@ -864,20 +863,17 @@ function bandwidthChart(wrap) {
       g.textAlign = 'right'; g.fillText('now', w - right, hgt - 4);
       const x = i => left + (w - left - right) * i / (n - 1);
       const y = v => top + (hgt - top - bottom) * (1 - Math.min(v, max) / max);
-      const base = new Array(n).fill(0);
-      series.forEach((s, k) => {
-        const values = new Array(n - s.values.length).fill(0).concat(s.values);
-        const color = seriesColor(s.color);
-        const tops = values.map((v, i) => base[i] + v);
-        g.beginPath();
-        tops.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
-        for (let i = n - 1; i >= 0; i--) g.lineTo(x(i), y(base[i]));
-        g.closePath();
-        g.globalAlpha = 0.22; g.fillStyle = color; g.fill(); g.globalAlpha = 1;
-        g.beginPath();
-        tops.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
-        g.strokeStyle = color; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
-        tops.forEach((v, i) => base[i] = v);
+      const lines = series.map(s => ({ color: seriesColor(s.color), values: new Array(n - s.values.length).fill(0).concat(s.values) }));
+      const path = values => { g.beginPath(); values.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))); };
+      // Light fills first, then the lines on top of every fill.
+      for (const l of lines) {
+        path(l.values); g.lineTo(x(n - 1), y(0)); g.lineTo(x(0), y(0)); g.closePath();
+        g.globalAlpha = 0.14; g.fillStyle = l.color; g.fill(); g.globalAlpha = 1;
+      }
+      // Earlier lines are drawn wider, so where consoles get the same rate each color still shows.
+      lines.forEach((l, k) => {
+        path(l.values);
+        g.strokeStyle = l.color; g.lineWidth = Math.min(2 + 1.5 * (lines.length - 1 - k), 6.5); g.lineJoin = 'round'; g.stroke();
       });
       if (!series.length || peak === 0) {
         g.fillStyle = css('--panel');
@@ -891,6 +887,8 @@ function bandwidthChart(wrap) {
         g.strokeStyle = css('--line-strong'); g.lineWidth = 1;
         g.beginPath(); g.moveTo(Math.round(x(hover)) + .5, top); g.lineTo(Math.round(x(hover)) + .5, hgt - bottom); g.stroke();
         const rows = series.map(s => { const v = s.values[hover - (n - s.values.length)] || 0; return h('div.row', h('i', { style: { width: '8px', height: '8px', borderRadius: '2px', background: seriesColor(s.color), display: 'inline-block' } }), s.name, h('b', rate(v))); });
+        const sum = series.reduce((t, s) => t + (s.values[hover - (n - s.values.length)] || 0), 0);
+        if (series.length > 1) rows.push(h('div.row.muted', h('i', { style: { width: '8px', display: 'inline-block' } }), 'All together', h('b', rate(sum))));
         fill(tip, h('div.muted', { style: { marginBottom: '4px' } }, (n - 1 - hover) ? (n - 1 - hover) + ' s ago' : 'now'), rows);
         tip.classList.remove('hidden');
         const tx = x(hover) + 14;
@@ -1040,11 +1038,13 @@ Pages.dashboard = root => {
         h('div', h('button.btn' + (all ? '.primary' : '.ghost') + '.small', { onclick: () => save({ setupDone: true }, 'Setup steps hidden') }, all ? 'Done' : 'Hide')),
         h('div.steps', steps.map((s, i) => h('div.step' + (s.done ? '.done' : ''), h('div.n', s.done ? ic('check', 'sm') : String(i + 1)), h('div.t', s.t), h('div.d', s.d), s.done ? null : s.a)))));
       const online = S.consoles.filter(c => c.connections > 0), playingNow = online.filter(c => c.playing);
+      // The tile adds up every console; the chart below shows each one's own rate.
+      const streaming = S.consoles.filter(c => c.rate.length && c.rate[c.rate.length - 1] > 0).length;
       const missing = S.folders.filter(f => !f.found || f.emptied).length;
       fill(tiles,
         tile('gamepad-2', 'Games served', S.library.games, missing ? plural(missing, 'folder') + ' can\u2019t be opened' : S.library.conflicts ? choosePhrase(S.library.conflicts) : S.library.duplicates ? plural(S.library.duplicates, 'extra copy', 'extra copies') + ' not served' : 'in ' + plural(S.folders.length, 'folder'), missing || S.library.conflicts),
         tile('monitor', 'Consoles connected', h('span', online.length, h('small', '/ ' + S.consoles.length)), playingNow.length ? plural(playingNow.length, 'console') + ' playing' : S.consoles.length ? 'none playing' : 'none yet'),
-        tile('gauge', 'Streaming now', rate(S.totals.rate), 'peak ' + rate(S.totals.peak)),
+        tile('gauge', 'Streaming now', rate(S.totals.rate), (streaming > 1 ? plural(streaming, 'console') + ' \u00b7 ' : '') + 'peak ' + rate(S.totals.peak)),
         tile('arrow-down-up', 'Sent since start', bytes(S.totals.sent), 'up ' + duration(S.uptime)));
       const list = S.consoles.map((c, i) => ({ c, i })).filter(x => x.c.rate.length);
       chart.set(list.map(x => ({ name: x.c.address, values: x.c.rate, color: x.i })));
