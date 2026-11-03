@@ -2473,7 +2473,8 @@ class Dashboard(ServerTest):
             self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
             with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
                 self.assertEqual(f.read(), newest)
-            with open(os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360", "Title updates", "4D5307E6", "tu00000001_00000000"), "rb") as f:
+            aside = os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360", "Title updates", "4D5307E6")
+            with open(os.path.join(aside, content_id(older), "tu00000001_00000000"), "rb") as f:
                 self.assertEqual(f.read(), older)
             kept = os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6", "111", "tu00000002_00000000")
             with open(kept, "rb") as f:
@@ -2487,6 +2488,52 @@ class Dashboard(ServerTest):
             self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": "127.0.0.2", "id": "111"})
             self.assertEqual(wait_queue()[-1]["skipped"], 1)
             self.assertFalse([a for a in unity.asked[asked:] if "TitleUpdate.php" in a])
+            # Like Aurora's manager: every update the console has, on or off,
+            # Aurora's own store too (only read), and switched by moving files.
+            store = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data", "TitleUpdates", "3930383034", "4D5307E6")
+            for package in (older, newest):
+                os.makedirs(os.path.join(store, content_id(package).upper()))
+                with open(os.path.join(store, content_id(package).upper(), "tu0000000%d_00000000" % (1 if package is older else 2)), "wb") as f:
+                    f.write(package)
+            stored = sorted(os.listdir(store))
+
+            def switched():
+                self.json("POST", "/api/titleupdates/check", {"address": "127.0.0.2"})
+                wait_queue()
+                console = self.json("GET", "/api/titleupdates?game=Halo%203")["consoles"][0]
+                return console, sorted((f["where"], f["offer"]) for f in console["files"])
+            console, files = switched()
+            self.assertEqual(files, [("aside", "110"), ("aurora", "110"), ("aurora", "111"), ("live", "111")])
+            self.assertEqual(console["has"], "111")
+            # Off: the game starts without one.
+            self.json("POST", "/api/titleupdates/off", {"game": "Halo 3", "address": "127.0.0.2"})
+            job = wait_queue()[-1]
+            self.assertEqual((job["kind"], job["state"]), ("tuoff", "done"), job["error"])
+            self.assertEqual(os.listdir(updates), [])
+            console, files = switched()
+            self.assertEqual(files, [("aside", "110"), ("aside", "111"), ("aurora", "110"), ("aurora", "111")])
+            self.assertEqual(console["has"], "")
+            # The one moved aside, moved back.
+            path = next(f["path"] for f in console["files"] if f["where"] == "aside" and f["offer"] == "110")
+            self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
+            self.assertEqual(wait_queue()[-1]["state"], "done", wait_queue()[-1]["error"])
+            self.assertEqual(os.listdir(updates), ["tu00000001_00000000"])
+            console, files = switched()
+            self.assertEqual(files, [("aside", "111"), ("aurora", "110"), ("aurora", "111"), ("live", "110")])
+            # The one in Aurora's store, copied; Aurora's stays as it is.
+            path = next(f["path"] for f in console["files"] if f["where"] == "aurora" and f["offer"] == "111")
+            self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
+            job = wait_queue()[-1]
+            self.assertEqual((job["state"], job["label"]), ("done", "tu00000002_00000000"), job["error"])
+            self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+            with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
+                self.assertEqual(f.read(), newest)
+            self.assertEqual(sorted(os.listdir(store)), stored)
+            console, files = switched()
+            self.assertEqual(files, [("aside", "110"), ("aside", "111"), ("aurora", "110"), ("aurora", "111"), ("live", "111")])
+            self.assertEqual(console["has"], "111")
+            # Only a switched-off update it listed.
+            self.assertEqual(self.call("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": "/Hdd1/Apps/Aurora/Aurora.xex"})[0], 400)
             # An update with an upper-case TU_ name goes in the Cache.
             self.json("POST", "/api/titleupdates/install", {"game": "Forza 4", "address": "127.0.0.2"})
             self.assertEqual(wait_queue()[-1]["state"], "done")

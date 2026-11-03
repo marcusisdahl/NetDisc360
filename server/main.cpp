@@ -4306,6 +4306,10 @@ void EndCopy(ContentCopy& c, const Console* console, const char* state, const st
         if(done) text=c.game+" is on the hard drive ("+SizeText(c.total)+")";
         else if(stopped) { text="Stopped copying "+c.game+" to the hard drive"; kind=EventInfo; }
         else { text="Copying "+c.game+" to the hard drive stopped; the log says why"; kind=EventWarning; }
+    } else if(c.kind=="tuoff") {
+        if(done) text=c.game+" starts without a title update";
+        else if(stopped) { text="Didn't turn "+c.game+"'s title updates off"; kind=EventInfo; }
+        else { text="Turning "+c.game+"'s title updates off stopped; the log says why"; kind=EventWarning; }
     } else if(c.kind=="check") {
         if(stopped) { text="Didn't check its title updates"; kind=EventInfo; }
         else { text="Couldn't read its title updates; the log says why"; kind=EventWarning; }
@@ -4966,7 +4970,10 @@ bool StartRemove(const web::Value& body, std::string& error) {
 // (a check, also queued); an update is known as XboxUnity's by its size, or
 // by the name it was downloaded under. Older updates of the same disc are
 // moved out of the way (to <NetISO folder>\NetDisc360\Title updates), never
-// deleted, so the console uses the one put there.
+// deleted, so the console uses the one put there. Like Aurora's title update
+// manager, a console's updates can be switched: one moved aside, or one in
+// Aurora's own store (Data\TitleUpdates, only read), is made the one it
+// uses, or the game's updates are all moved aside. Only the PC goes online.
 struct TuTitle {
     std::vector<tu::Offer> offers;
     double fetchedAt;  // Now(); 0: never.
@@ -4979,7 +4986,9 @@ struct TuFile {
     U64 size;
     DWORD titleId, mediaId;  // From its header (0 if it has none that says).
     std::string displayName, contentId;  // contentId: see tu::PackageHeader.
-    TuFile() : size(0), titleId(0), mediaId(0) {}
+    std::string where;  // "live": where the console loads it; "aside": moved out of the way by this server; "aurora": in Aurora's own store.
+    DWORD version;      // From its header.
+    TuFile() : size(0), titleId(0), mediaId(0), where("live"), version(0) {}
 };
 struct ConsoleTus {
     long long checkedAt;  // time(); 0: never.
@@ -5064,9 +5073,39 @@ bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::strin
     return true;
 }
 
+// A file's header, into f (Cache updates have none).
+void ReadTuHeader(FtpClient& ftp, TuFile& f) {
+    std::vector<unsigned char> head;
+    tu::PackageHeader h;
+    if(ftp.RetrieveHead(f.path.c_str(),head,tu::PackageHeaderBytes) && tu::ReadPackageHeader(head.data(),head.size(),h)) {
+        if(h.titleId) f.titleId=h.titleId;
+        f.mediaId=h.mediaId; f.displayName=h.displayName; f.contentId=h.contentId; f.version=h.version;
+    }
+}
+
+// The files in folder (none if it isn't there), and in its folders one level down.
+void TuFilesIn(FtpClient& ftp, const std::string& folder, DWORD titleId, const char* where, std::vector<TuFile>& out, int depth) {
+    if(!ftp.Enters(folder.c_str())) return;  // Aurora's FTP lists its top for a folder that isn't there.
+    std::vector<FtpEntry> there;
+    if(!ftp.List(folder.c_str(),there)) return;
+    for(size_t i=0;i<there.size() && out.size()<1000;++i) {
+        std::string path=folder+"/"+there[i].name;
+        if(there[i].folder) { if(depth>0) TuFilesIn(ftp,path,titleId,where,out,depth-1); continue; }
+        TuFile f; f.path=path; f.name=there[i].name; f.size=there[i].size; f.titleId=titleId; f.where=where;
+        ReadTuHeader(ftp,f);
+        out.push_back(f);
+    }
+}
+
+std::string TuAsideFolder(const Options& o, DWORD titleId) {
+    return o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+"/"+Hex8(titleId);
+}
+
 // Reads the update files of the titles on a console: each title's 000B0000
-// and the Cache's TU_ files, with each one's header (Cache updates have none).
-bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<TuFile>& out, std::string& error) {
+// and the Cache's TU_ files, with each one's header (Cache updates have
+// none). With o, also those switched off: moved aside by this server, and in
+// Aurora's store (Data\TitleUpdates\<console>\<Title ID>\<Content ID>\).
+bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<TuFile>& out, std::string& error, const Options* o=NULL) {
     out.clear();
     for(std::set<DWORD>::const_iterator t=titles.begin();t!=titles.end();++t) {
         std::string folder=tu::ContentFolder(*t);
@@ -5079,14 +5118,27 @@ bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<T
         for(size_t i=0;i<there.size();++i) {
             if(there[i].folder) continue;
             TuFile f; f.path=folder+"/"+there[i].name; f.name=there[i].name; f.size=there[i].size; f.titleId=*t;
-            std::vector<unsigned char> head;
-            tu::PackageHeader h;
-            if(ftp.RetrieveHead(f.path.c_str(),head,tu::PackageHeaderBytes) && tu::ReadPackageHeader(head.data(),head.size(),h)) {
-                if(h.titleId) f.titleId=h.titleId;
-                f.mediaId=h.mediaId; f.displayName=h.displayName; f.contentId=h.contentId;
-            }
+            ReadTuHeader(ftp,f);
             out.push_back(f);
         }
+    }
+    if(o) {
+        for(std::set<DWORD>::const_iterator t=titles.begin();t!=titles.end();++t) TuFilesIn(ftp,TuAsideFolder(*o,*t),*t,"aside",out,1);
+        std::string store=o->aurora+"/Data/TitleUpdates";
+        std::vector<FtpEntry> devices;
+        if(ftp.Enters(store.c_str()) && ftp.List(store.c_str(),devices))
+            for(size_t d=0;d<devices.size();++d) {
+                if(!devices[d].folder) continue;
+                std::string device=store+"/"+devices[d].name;
+                std::vector<FtpEntry> games;
+                if(!ftp.Enters(device.c_str()) || !ftp.List(device.c_str(),games)) continue;
+                for(size_t g=0;g<games.size();++g) {
+                    bool ok=false;
+                    DWORD titleId=games[g].folder ? DWORD(strtoul(games[g].name.c_str(),NULL,16)) : 0;
+                    ok=titleId && titles.count(titleId);
+                    if(ok) TuFilesIn(ftp,device+"/"+games[g].name,titleId,"aurora",out,1);
+                }
+            }
     }
     std::vector<FtpEntry> cache;
     if(ftp.Enters(tu::CacheFolder) && ftp.List(tu::CacheFolder,cache))
@@ -5115,7 +5167,7 @@ void CheckTus(std::shared_ptr<ContentCopy> job) {
     FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
     std::vector<TuFile> files;
     std::string error;
-    bool ok=OpenFor(c,ftp,console) && ReadConsoleTus(ftp,titles,files,error);
+    bool ok=OpenFor(c,ftp,console) && ReadConsoleTus(ftp,titles,files,error,&o);
     ftp.Close();
     {
         std::lock_guard<std::mutex> hold(TuLock);
@@ -5134,6 +5186,63 @@ bool QueueTuCheck(DWORD at, std::string& error) {
     job->kind="check"; job->game="Title updates"; job->label="Check its title updates";
     job->run=CheckTus;
     return AddCopy(job,at,error);
+}
+
+// The names (in lower case) of the updates of titleId downloaded to this PC.
+std::set<std::string> TuCachedNames(const Options& o, DWORD titleId) {
+    std::set<std::string> names;
+    std::string root=TuCacheFolder(o);
+    if(root.empty()) return names;
+    std::string folder=root+"/"+Hex8(titleId);
+    std::vector<config::Entry> ids=config::Files(folder);
+    for(size_t i=0;i<ids.size();++i) {
+        std::vector<config::Entry> files=config::Files(folder+"/"+ids[i].name);
+        for(size_t k=0;k<files.size();++k) if(!files[k].name.empty() && files[k].name[0]!='.') names.insert(Lower(tu::FatxName(files[k].name)));
+    }
+    return names;
+}
+
+// Moves the updates of the disc the console loads (but keep) aside, each to
+// <NetISO folder>\NetDisc360\Title updates\<Title ID>\<its Content ID>\, so
+// two of the same name don't meet. A Cache update counts when it was
+// downloaded here for the game (it has no header that says).
+void MoveTusAside(FtpClient& ftp, const Options& o, ContentCopy& c, DWORD titleId, DWORD mediaId, const std::string& keep, std::vector<std::string>& moved) {
+    std::vector<TuFile> files;
+    std::set<DWORD> one; one.insert(titleId);
+    std::string error;
+    if(!ReadConsoleTus(ftp,one,files,error)) { Log("Xbox %s: couldn't read its title updates (%s).",c.console.c_str(),error.c_str()); return; }
+    std::set<std::string> cached=TuCachedNames(o,titleId);
+    std::string backup=TuAsideFolder(o,titleId);
+    for(size_t i=0;i<files.size();++i) {
+        const TuFile& f=files[i];
+        if(!_stricmp(f.path.c_str(),keep.c_str())) continue;
+        bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+        if(cache ? !cached.count(Lower(f.name)) : (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
+        std::string to=backup+"/"+(f.contentId.empty() ? tu::FatxName(Lower(f.name)+"-"+std::to_string(f.size)) : f.contentId)+"/"+f.name;
+        std::string why;
+        if(RemoteSize(ftp,to)>=0) to=backup+"/"+tu::FatxName(f.contentId.substr(0,8)+"-"+std::to_string((long long)time(NULL)))+"/"+f.name;  // That one's there already.
+        if(!MakeFolders(ftp,to,o.xboxFolder.size()-1,why) || !ftp.Rename(f.path.c_str(),to.c_str())) {
+            Log("Xbox %s: couldn't move the update %s out of the way (%s); it stays.",c.console.c_str(),f.path.c_str(),why.empty() ? ftp.Error() : why.c_str());
+            continue;
+        }
+        Log("Xbox %s: moved the update %s to %s.",c.console.c_str(),f.path.c_str(),to.c_str());
+        moved.push_back(f.name);
+    }
+}
+
+// What the console has of titleId's updates now, into TuConsoles.
+void RefreshTus(FtpClient& ftp, const Options& o, DWORD address, DWORD titleId) {
+    std::vector<TuFile> files;
+    std::set<DWORD> one; one.insert(titleId);
+    std::string error;
+    if(!ReadConsoleTus(ftp,one,files,error,&o)) return;
+    std::lock_guard<std::mutex> hold(TuLock);
+    ConsoleTus& t=TuConsoles[address];
+    std::vector<TuFile> kept;
+    for(size_t i=0;i<t.files.size();++i) if(t.files[i].titleId!=titleId && t.files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(t.files[i]);
+    for(size_t i=0;i<files.size();++i) if(files[i].titleId==titleId || !files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(files[i]);
+    t.files.swap(kept);
+    if(!t.checkedAt) t.checkedAt=(long long)time(NULL);
 }
 
 // The update on the console, made the one it uses: older updates of the
@@ -5159,24 +5268,8 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
     if(!OpenFor(c,ftp,console)) return;
     if(!MakeFolders(ftp,remote,strlen("/Hdd1")-1,error)) { EndCopy(c,console,"failed",error); return; }
     // Older updates of this disc, out of the way, unless asked to keep them.
-    std::vector<TuFile> files;
-    std::set<DWORD> one; one.insert(titleId);
     std::vector<std::string> moved;
-    if(!c.key.empty() && ReadConsoleTus(ftp,one,files,error)) {
-        std::string backup=o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+"/"+Hex8(titleId);
-        for(size_t i=0;i<files.size();++i) {
-            const TuFile& f=files[i];
-            if(!_stricmp(f.path.c_str(),remote.c_str()) || f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)==0) continue;
-            if(f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId)) continue;
-            std::string why;
-            if(!MakeFolders(ftp,backup+"/"+f.name,o.xboxFolder.size()-1,why) || !ftp.Rename(f.path.c_str(),(backup+"/"+f.name).c_str())) {
-                Log("Xbox %s: couldn't move the older update %s out of the way (%s); it stays.",c.console.c_str(),f.path.c_str(),why.empty() ? ftp.Error() : why.c_str());
-                continue;
-            }
-            Log("Xbox %s: moved the older update %s to %s.",c.console.c_str(),f.path.c_str(),backup.c_str());
-            moved.push_back(f.name);
-        }
-    }
+    if(!c.key.empty()) MoveTusAside(ftp,o,c,titleId,mediaId,remote,moved);
     if(RemoteSize(ftp,remote)==(long long)data.size()) {
         Log("Xbox %s: %s is there already.",c.console.c_str(),remote.c_str());
         std::lock_guard<std::mutex> hold(CopyLock);
@@ -5198,21 +5291,75 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
         }
         Log("Xbox %s: put %s for %s on it, at %s.",c.console.c_str(),c.label.c_str(),c.game.c_str(),remote.c_str());
     }
-    // What it has now.
-    files.clear();
-    if(ReadConsoleTus(ftp,one,files,error)) {
-        std::lock_guard<std::mutex> hold(TuLock);
-        ConsoleTus& t=TuConsoles[c.address];
-        std::vector<TuFile> kept;
-        for(size_t i=0;i<t.files.size();++i) if(t.files[i].titleId!=titleId && t.files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(t.files[i]);
-        for(size_t i=0;i<files.size();++i) if(files[i].titleId==titleId || !files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(files[i]);
-        t.files.swap(kept);
-        if(!t.checkedAt) t.checkedAt=(long long)time(NULL);
-    }
+    RefreshTus(ftp,o,c.address,titleId);
     ftp.Close();
     if(!moved.empty()) {
         std::lock_guard<std::mutex> hold(CopyLock);
         c.note="Moved the older "+std::string(moved.size()==1 ? "update" : "updates")+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".";
+    }
+    EndCopy(c,console,"done","");
+}
+
+// Puts an update the console has switched off back where it loads it: one
+// moved aside is moved back, one in Aurora's store is copied (Aurora's stays).
+// The game's other updates are moved aside first.
+void UseTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, TuFile from) {
+    ContentCopy& c=*job;
+    Options o=Current();
+    const Console* console=ConsoleIfKnown(c.address);
+    std::string remote=tu::ConsolePath(titleId,from.name), error;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        c.phase="send"; c.total=from.size; c.done=0; c.files=1; c.file=1; c.current=from.name; c.folder=remote.substr(0,remote.find_last_of('/')); c.began=Now();
+    }
+    FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
+    if(!OpenFor(c,ftp,console)) return;
+    if(!MakeFolders(ftp,remote,strlen("/Hdd1")-1,error)) { EndCopy(c,console,"failed",error); return; }
+    std::vector<unsigned char> data;
+    if(from.where=="aurora" && !ftp.Retrieve(from.path.c_str(),data,size_t(1)<<30)) { EndCopy(c,console,"failed","Couldn't read "+from.path+": "+ftp.Error()); return; }
+    if(from.where=="aurora" && data.size()!=from.size) { EndCopy(c,console,"failed","Got "+std::to_string(data.size())+" bytes of "+from.path+", not "+std::to_string(from.size)+"."); return; }
+    std::vector<std::string> moved;
+    MoveTusAside(ftp,o,c,titleId,mediaId,from.where=="aside" ? from.path : remote,moved);
+    if(RemoteSize(ftp,remote)==(long long)from.size) {
+        Log("Xbox %s: %s is there already.",c.console.c_str(),remote.c_str());
+        std::lock_guard<std::mutex> hold(CopyLock);
+        ++c.skipped;
+    } else if(from.where=="aside") {
+        if(!ftp.Rename(from.path.c_str(),remote.c_str())) { EndCopy(c,console,"failed","Couldn't move "+from.path+" back: "+ftp.Error()); return; }
+        Log("Xbox %s: moved %s back to %s.",c.console.c_str(),from.path.c_str(),remote.c_str());
+    } else {
+        bool ok=ftp.StoreFrom(remote.c_str(),data.size(),
+            [&](U64 offset, unsigned char* bytes, DWORD length) { memcpy(bytes,data.data()+size_t(offset),length); return true; },
+            [&](U64 sent) { std::lock_guard<std::mutex> hold(CopyLock); c.done=sent; return !c.stop.load(); });
+        if(!ok) {
+            std::string why=ftp.Error();
+            if(!ftp.Delete(remote.c_str()) && !ftp.Missing()) Log("Xbox %s: couldn't delete the part of %s that was sent: %s",c.console.c_str(),remote.c_str(),ftp.Error());
+            if(c.stop) EndCopy(c,console,"stopped",""); else EndCopy(c,console,"failed","Sending "+remote+" stopped: "+why);
+            return;
+        }
+        Log("Xbox %s: copied %s from Aurora's store to %s.",c.console.c_str(),from.path.c_str(),remote.c_str());
+    }
+    { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; }
+    RefreshTus(ftp,o,c.address,titleId);
+    ftp.Close();
+    EndCopy(c,console,"done","");
+}
+
+// Moves the game's updates aside, so it starts without one.
+void OffTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId) {
+    ContentCopy& c=*job;
+    Options o=Current();
+    const Console* console=ConsoleIfKnown(c.address);
+    FtpClient ftp(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
+    if(!OpenFor(c,ftp,console)) return;
+    std::vector<std::string> moved;
+    MoveTusAside(ftp,o,c,titleId,mediaId,std::string(),moved);
+    RefreshTus(ftp,o,c.address,titleId);
+    ftp.Close();
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        c.done=c.total; c.skipped=moved.empty() ? 1 : 0;
+        c.note=moved.empty() ? std::string("It had no update of it on.") : "Moved "+std::to_string(moved.size())+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".";
     }
     EndCopy(c,console,"done","");
 }
@@ -5245,6 +5392,7 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
     int best=-1;
     for(size_t i=0;i<t.files.size();++i) {
         const TuFile& f=t.files[i];
+        if(f.where!="live") continue;  // Switched off.
         bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
         if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
         bool known=false;
@@ -5307,7 +5455,11 @@ void TitleUpdates(const std::string& name, bool refresh, web::Reply& out) {
                 }
                 if(!mine) continue;
             }
-            j.Open('{').Set("path",f.path).Set("name",f.name).Set("size",(unsigned long long)f.size).Set("title",f.displayName).Set("mediaId",f.mediaId ? Hex8(f.mediaId) : std::string()).Close('}');
+            if(!cache && f.mediaId && f.mediaId!=g.mediaId) continue;  // Another version of the game's.
+            std::string offer;
+            for(size_t u=0;u<offers.size() && offer.empty();++u) if(!f.contentId.empty() && f.contentId==offers[u].hash) offer=offers[u].id;
+            j.Open('{').Set("path",f.path).Set("name",f.name).Set("size",(unsigned long long)f.size).Set("title",f.displayName).Set("mediaId",f.mediaId ? Hex8(f.mediaId) : std::string());
+            j.Set("where",f.where).Set("on",f.where=="live").Set("version",int(f.version)).Set("contentId",f.contentId).Set("offer",offer).Close('}');
         }
         j.Close(']').Close('}');
     }
@@ -5325,6 +5477,42 @@ bool QueueTu(const IsoFile& g, const tu::Offer& offer, DWORD at, bool replace, s
     job->run=[titleId,mediaId,offer](std::shared_ptr<ContentCopy> j) { PutTu(j,titleId,mediaId,offer); };
     if(!AddCopy(job,at,error)) return false;
     Log("Xbox %s: queued %s for %s (XboxUnity %s).",job->console.c_str(),job->label.c_str(),job->game.c_str(),offer.id.c_str());
+    return true;
+}
+
+// POST /api/titleupdates/use {game, address, path}: the switched-off update at
+// path (as the console's last check listed it) made the one the game uses.
+// POST /api/titleupdates/off {game, address}: none of the game's updates on.
+bool SwitchTitleUpdate(const web::Value& body, bool off, std::string& error) {
+    std::string name, address, path;
+    Text(body,"game",name); Text(body,"address",address); Text(body,"path",path);
+    IsoFile g;
+    DWORD at=INADDR_NONE;
+    if(!TuGame(name,g,error) || !CopyTarget(address,at,error)) return false;
+    std::shared_ptr<ContentCopy> job(new ContentCopy);
+    job->game=config::ToUtf8(WithoutIso(g.name)); job->disc=job->game; job->files=1;
+    DWORD titleId=g.titleId, mediaId=g.mediaId;
+    if(off) {
+        job->kind="tuoff"; job->label="Title updates off";
+        job->run=[titleId,mediaId](std::shared_ptr<ContentCopy> j) { OffTu(j,titleId,mediaId); };
+    } else {
+        TuFile from;
+        bool found=false;
+        {
+            std::lock_guard<std::mutex> hold(TuLock);
+            std::map<DWORD,ConsoleTus>::const_iterator t=TuConsoles.find(at);
+            if(t!=TuConsoles.end())
+                for(size_t i=0;i<t->second.files.size() && !found;++i) {
+                    const TuFile& f=t->second.files[i];
+                    if(f.path==path && f.where!="live" && f.titleId==titleId && (!f.mediaId || f.mediaId==mediaId)) { from=f; found=true; }
+                }
+        }
+        if(!found) { error="The console's last check has no switched-off update of "+name+" at "+path+"; check it again."; return false; }
+        job->kind="update"; job->label=from.version ? "Title update "+std::to_string(from.version) : from.name; job->total=from.size;
+        job->run=[titleId,mediaId,from](std::shared_ptr<ContentCopy> j) { UseTu(j,titleId,mediaId,from); };
+    }
+    if(!AddCopy(job,at,error)) return false;
+    Log("Xbox %s: queued %s for %s.",job->console.c_str(),off ? "title updates off" : job->label.c_str(),job->game.c_str());
     return true;
 }
 
@@ -5758,6 +5946,9 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="POST" && r.path=="/api/titleupdates/install") {
         int queued=0;
         if(InstallTitleUpdates(body,error,queued)) out.body="{\"ok\":true,\"queued\":"+std::to_string(queued)+"}";
+        else out.Error(400,error);
+    } else if(r.method=="POST" && (r.path=="/api/titleupdates/use" || r.path=="/api/titleupdates/off")) {
+        if(SwitchTitleUpdate(body,r.path=="/api/titleupdates/off",error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
     } else if(r.method=="POST" && r.path=="/api/titleupdates/scan") {
         if(StartTuScan(error)) out.body="{\"ok\":true}";

@@ -360,6 +360,9 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .install-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
 .install-line.good { color: var(--good); justify-content: flex-start; } .install-line.bad { color: var(--bad); justify-content: flex-start; } .install-line.muted { justify-content: flex-start; }
 .install-box .progress { margin-top: 0; }
+.tu-files { display: grid; gap: 4px; margin: 2px 0 6px 14px; padding-left: 10px; border-left: 2px solid var(--line); }
+.tu-files .install-line { font-size: 13px; }
+.tu-on { color: var(--good); font-weight: 600; } .tu-off { color: var(--muted); }
 .install-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 .install-actions .muted { margin-right: auto; font-size: 12.5px; }
 
@@ -1322,6 +1325,35 @@ function tuBox(g) {
     catch (e) { toast(e.message, true); }
     button.disabled = false;
   }
+  async function switchTo(button, address, path) {
+    button.disabled = true;
+    try { await api(path ? 'titleupdates/use' : 'titleupdates/off', { game: g.name, address, path: path || undefined }); toast(path ? 'Switching it' : 'Turning them off'); await refresh(); }
+    catch (e) { toast(e.message, true); button.disabled = false; }
+  }
+  // Every update the console has of the game, on or switched off, one line
+  // per version (a copy moved aside is used before Aurora's).
+  function managed(c, offers, busy) {
+    const where = { live: 'on the console', aside: 'moved aside', aurora: 'in Aurora’s store' };
+    const lines = new Map();
+    for (const f of c.files || []) {
+      const key = f.contentId || f.path;
+      const had = lines.get(key);
+      if (!had || f.on || (!had.on && f.where === 'aside' && had.where === 'aurora')) lines.set(key, f);
+    }
+    const list = [...lines.values()].sort((a, b) => (b.on - a.on) || (b.version - a.version));
+    if (!list.length) return null;
+    const anyOn = list.some(f => f.on);
+    return h('div.tu-files',
+      list.map(f => {
+        const offer = offers.find(o => o.id === f.offer);
+        const name = f.version ? 'Title update ' + f.version : offer ? offer.name : f.title || f.name;
+        return h('div.install-line',
+          h('span', h(f.on ? 'span.tu-on' : 'span.tu-off', f.on ? 'On' : 'Off'), ' ', h('b', name), h('span.muted', ' ' + where[f.where] + (f.size ? ', ' + bytes(f.size, 1) : '') + (offer ? '' : ', not on XboxUnity for this disc'))),
+          f.on ? null : h('button.btn.small', { disabled: busy, title: f.where === 'aurora' ? 'Copies it from Aurora’s store to where the game loads it; Aurora’s copy stays' : 'Moves it back to where the game loads it', onclick: e => switchTo(e.target, c.address, f.path) }, ic('check', 'sm'), 'Use this one'));
+      }),
+      anyOn ? h('div.install-line', h('span.muted', 'Turning updates off moves them aside, so the game starts as it is on the disc.'),
+        h('button.btn.small', { disabled: busy, onclick: e => switchTo(e.target, c.address, '') }, ic('power', 'sm'), 'Turn updates off')) : null);
+  }
   async function check(button, address) {
     button.disabled = true;
     try { await api('titleupdates/check', { address }); await refresh(); }
@@ -1344,28 +1376,29 @@ function tuBox(g) {
       offers.map((o, i) => h('option', { value: o.id, selected: o.id === chosen.id }, o.name + (i ? '' : ' (newest)')))) : null;
     const queue = S.installs || [];
     const rows = data.consoles.map(c => {
-      const busy = queue.some(j => j.address === c.address && (j.state === 'queued' || j.state === 'copying') && ((j.kind === 'update' && j.game === g.name) || j.kind === 'check'));
+      const busy = queue.some(j => j.address === c.address && (j.state === 'queued' || j.state === 'copying') && (((j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name) || j.kind === 'check'));
       const [text, tone] = busy ? ['Working on it…', 'muted'] : tuState(c, offers);
-      return h('div.install-line', h('span', h('b', c.address), ' ', h('span', { style: { color: tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : 'var(--muted)' } }, text), c.hasGame ? null : h('span.muted', ' (no tile of it there)')),
+      return [h('div.install-line', h('span', h('b', c.address), ' ', h('span', { style: { color: tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : 'var(--muted)' } }, text), c.hasGame ? null : h('span.muted', ' (no tile of it there)')),
         h('span', { style: { display: 'flex', gap: '6px' } },
           h('button.btn.small', { disabled: busy, title: 'Reads which updates it has, over Aurora’s FTP', onclick: e => check(e.target, c.address) }, ic('scan', 'sm'), 'Check'),
-          c.has === chosen.id ? null : h('button.btn.small.primary', { disabled: busy, onclick: e => put(e.target, { address: c.address }) }, ic('download', 'sm'), 'Put ' + chosen.name + ' on it')));
+          c.has === chosen.id ? null : h('button.btn.small.primary', { disabled: busy, onclick: e => put(e.target, { address: c.address }) }, ic('download', 'sm'), 'Put ' + chosen.name + ' on it'))),
+        managed(c, offers, busy)];
     });
     const withGame = data.consoles.filter(c => c.hasGame).length;
     fill(box, head,
       h('p', ['Newest for this disc on XboxUnity: ', h('b', offers[0].name), offers[0].size ? ' (' + bytes(offers[0].size, 1) + ')' : '', offers[0].onPc ? ', kept on this computer.' : '.',
         ' Putting one on a console moves its older updates of the game aside (to Hdd1:\\NetISO\\NetDisc360\\Title updates), so the game uses it.']),
       rows.length ? rows : h('p.muted', 'No console yet.'),
-      h('div.install-actions', h('span.muted', 'Downloaded once from XboxUnity, checked against its SHA-1, then sent over Aurora’s FTP.'), picker,
+      h('div.install-actions', h('span.muted', 'This computer downloads each update once from XboxUnity, checks it, and sends it over Aurora’s FTP: the consoles never go online for it.'), picker,
         withGame > 1 ? h('button.btn.small', { onclick: e => put(e.target, { all: true }) }, ic('download', 'sm'), 'Put on all ' + withGame + ' consoles') : null));
   }
   // Loads again when one of its jobs, or a check, has ended.
   function follow() {
-    const sign = JSON.stringify((S.installs || []).filter(j => (j.kind === 'update' && j.game === g.name) || j.kind === 'check').map(j => [j.id, j.state]));
+    const sign = JSON.stringify((S.installs || []).filter(j => ((j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name) || j.kind === 'check').map(j => [j.id, j.state]));
     if (sign !== seen) { const first = !seen; seen = sign; if (!first && data) load(); }
     if (data) draw();
   }
-  seen = JSON.stringify((S.installs || []).filter(j => (j.kind === 'update' && j.game === g.name) || j.kind === 'check').map(j => [j.id, j.state]));
+  seen = JSON.stringify((S.installs || []).filter(j => ((j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name) || j.kind === 'check').map(j => [j.id, j.state]));
   load();
   return [box, follow];
 }
@@ -1702,7 +1735,7 @@ Pages.updates = root => {
 function queueCard(drawnKey) {
   const jobs = (S.installs || []).filter(j => j.state === 'queued' || j.state === 'copying' || (j.ended && S.time - j.ended < 600));
   if (!jobs.length) return null;
-  const kinds = { game: 'Copy', content: 'Content', files: 'Copy', update: 'Title update', check: 'Check', package: 'Package', remove: 'Remove' };
+  const kinds = { game: 'Copy', content: 'Content', files: 'Copy', update: 'Title update', tuoff: 'Title updates off', check: 'Check', package: 'Package', remove: 'Remove' };
   async function stop(button, j) {
     button.disabled = true;
     try { await api('install/stop', j.state === 'queued' ? { id: j.id } : { address: j.address }); await refresh(); }
