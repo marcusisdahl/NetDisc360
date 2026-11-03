@@ -2705,6 +2705,8 @@ class Sync(DashboardTest):
         profile = "files/profiles/E000000000000001/2026-11-01_10-00-00_10.10.1.43.zip"
         self.cloud_put(laptop["key"], profile, b"profile zip")
         self.cloud_put(laptop["key"], "state/%s/plays.ini" % laptop["id"], b"2|600|1700000000|halo 3\n")
+        laptop_users = b"[Users]\r\ncount=1\r\nuser1=u0123456789abcdef|Ola|Ola|E000000000000002|1700000000|0|1700000000|0\r\n"
+        self.cloud_put(laptop["key"], "state/%s/users.ini" % laptop["id"], laptop_users)
         # This computer has a save backup of its own, and plays Halo 3 here.
         saves = os.path.join(self.folder, "Saves")
         os.makedirs(saves)
@@ -2713,6 +2715,9 @@ class Sync(DashboardTest):
             f.write(self.save_zip("Halo 3"))
         with open(os.path.join(self.folder, "plays.ini"), "w") as f:
             f.write("1|60|1700001000|halo 3\n")
+        users = b"[Users]\r\ncount=1\r\nuser1=ufedcba9876543210|Marcus|Marcus|E000000000000001|1700000000|0|1700000000|0\r\n"
+        with open(os.path.join(self.folder, "users.ini"), "wb") as f:
+            f.write(users)
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.start()
         self.assertFalse(self.json("GET", "/api/state")["sync"]["on"])
@@ -2745,6 +2750,10 @@ class Sync(DashboardTest):
         me = state["sync"]["id"]
         status, data = self.cloud("GET", "/v1/object/state/%s/plays.ini" % me, laptop["key"])
         self.assertEqual((status, data), (200, b"1|60|1700001000|halo 3\n"))
+        # The users go both ways too (merged by the Users page).
+        self.assertEqual(self.cloud("GET", "/v1/object/state/%s/users.ini" % me, laptop["key"]), (200, users))
+        with open(os.path.join(self.folder, "Sync", "devices", laptop["id"], "users.ini"), "rb") as f:
+            self.assertEqual(f.read(), laptop_users)
         # The key is kept, not the owner key.
         with open(self.config, encoding="utf-8") as f:
             ini = f.read()

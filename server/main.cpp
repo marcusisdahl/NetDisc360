@@ -4465,7 +4465,7 @@ struct SyncState {
     int sent, got, failed;   // In the last pass.
     std::string error;       // Its first failure.
     std::vector<cloudsync::Device> devices;
-    std::string sentPlays;   // SHA-256 of the plays.ini last sent.
+    std::map<std::string,std::string> sentDocs;  // SHA-256 of each document last sent (plays.ini, users.ini).
     long long stored;        // Bytes kept in the cloud, as of the last pass that listed everything.
     SyncState() : running(false), last(0), lastOk(0), sent(0), got(0), failed(0), stored(0) {}
 };
@@ -4507,6 +4507,23 @@ void LoadOtherPlays(const Options& o) {
     ++GamesVersion;
 }
 
+// The users of the other computers (Sync\devices\<id>\users.ini, see
+// users.h on the party branch) merged into this one's users.ini: the same
+// XUID is the same user, the line changed last wins, removals carry over.
+// A merge that changed users.ini sends it up on the next pass.
+// TODO(party branch): once users.h is in dev, call MergeUsersFile(text, error)
+// for each copy here; until then the copies are only kept.
+void MergeOtherUsers(const Options& o) {
+    std::string devices=InFolder(CloudFolder(o),"devices");
+    std::vector<std::string> ids=config::Folders(devices);
+    int copies=0;
+    for(size_t i=0;i<ids.size();++i) {
+        std::string text;
+        if(ids[i]!=o.syncId && config::ReadFile(InFolder(InFolder(devices,ids[i]),"users.ini"),text,16<<20)) ++copies;
+    }
+    if(copies) Log("Sync: the users of %d other computer(s) are kept under %s.",copies,config::FromUtf8(devices).c_str());
+}
+
 void SyncPass(const Options& o) {
     const std::string folder=CloudFolder(o), url=o.syncUrl, key=o.syncKey;
     config::MakeFolder(folder);
@@ -4518,16 +4535,25 @@ void SyncPass(const Options& o) {
     cloudsync::Files(url,key,saves,InFolder(folder,"saves.seen"),report);
     int savesGot=report.got;
     cloudsync::Files(url,key,profiles,InFolder(folder,"profiles.seen"),report);
-    // The play history: this computer's own goes up, the others' come down.
-    std::string plays, sent, error;
-    { std::lock_guard<std::mutex> hold(SyncStateLock); sent=SyncNow.sentPlays; }
-    std::string path=PlaysPath(o.configPath);
-    if(!path.empty() && config::ReadFile(path,plays,16<<20) && !cloudsync::PutState(url,key,o.syncId,"plays.ini",plays,sent,error)) {
-        ++report.failed; report.notes.push_back(error);
+    // The play history and the users: this computer's own go up, the
+    // others' come down (to Sync\devices\<id>\).
+    std::map<std::string,std::string> sent;
+    std::string error;
+    { std::lock_guard<std::mutex> hold(SyncStateLock); sent=SyncNow.sentDocs; }
+    const std::string devicesFolder=InFolder(folder,"devices");
+    const std::string map=DiscMapPath(o.configPath), configFolder=map.substr(0,map.size()-9);
+    const char* const docs[]={"plays.ini","users.ini"};
+    for(size_t d=0;d<sizeof(docs)/sizeof(docs[0]);++d) {
+        std::string text;
+        if(config::ReadFile(configFolder+docs[d],text,16<<20) && !cloudsync::PutState(url,key,o.syncId,docs[d],text,sent[docs[d]],error)) {
+            ++report.failed; report.notes.push_back(error);
+        }
+        int before=report.got;
+        cloudsync::GetStates(url,key,o.syncId,docs[d],devicesFolder,report);
+        if(report.got==before) continue;
+        if(d==0) LoadOtherPlays(o);
+        else MergeOtherUsers(o);
     }
-    int before=report.got;
-    cloudsync::GetStates(url,key,o.syncId,"plays.ini",InFolder(folder,"devices"),report);
-    if(report.got>before) LoadOtherPlays(o);
     if(savesGot) FollowAllSoon();
     std::vector<cloudsync::Device> devices;
     bool listed=cloudsync::Devices(url,key,devices,error);
@@ -4539,7 +4565,7 @@ void SyncPass(const Options& o) {
         if(!report.failed) SyncNow.lastOk=SyncNow.last;
         SyncNow.sent=report.sent; SyncNow.got=report.got; SyncNow.failed=report.failed;
         SyncNow.error=report.notes.empty() ? std::string() : report.notes[0];
-        SyncNow.sentPlays=sent;
+        SyncNow.sentDocs=sent;
         if(listed) SyncNow.devices=devices;
         if(!report.failed || report.stored>SyncNow.stored) SyncNow.stored=report.stored;
     }
