@@ -203,8 +203,7 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
         elif name == "temperature":
             self.answer(200, {"celsius": True, "cpu": 51.25, "gpu": 48.0, "memory": 45.5, "case": 40.0})
         elif name == "profiles":
-            self.answer(200, [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
-                              {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}])
+            self.answer(200, self.server.profiles)
         elif name == "memory":
             self.answer(200, {"total": 536870912, "used": 268435456, "free": 268435456})
         elif name == "shots":
@@ -231,8 +230,10 @@ class AuroraWebHandler(http.server.BaseHTTPRequestHandler):
 class AuroraWeb(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, running=AURORA_XEX, basic=False, old=False):
-        super().__init__(("127.0.0.1", 0), AuroraWebHandler)
+    def __init__(self, running=AURORA_XEX, basic=False, old=False, host="127.0.0.1", port=0):
+        super().__init__((host, port), AuroraWebHandler)
+        self.profiles = [{"index": 0, "gamertag": "Player One", "gamerscore": 1000, "signedin": 1, "xuid": "0009000000000001"},
+                         {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}]
         self.running = running
         self.basic = basic
         self.old = old
@@ -1926,9 +1927,17 @@ class Dashboard(ServerTest):
         with open(self.config, "w") as f:
             f.write("[Server]\nsave_delay=0\n")
         ftp_port = free_port()
-        self.start("--xbox", "127.0.0.2", "-v", "--ftp-port", str(ftp_port))
+        # The profile is signed in: the console won't hand out its package
+        # over FTP, so its gamertag comes from Aurora's web server.
+        aurora = AuroraWeb(host="127.0.0.2")
+        aurora.profiles = [{"index": 0, "gamertag": "Marcus", "gamerscore": 20, "signedin": 1, "xuid": "E0000123456789AB"},
+                           {"index": 1, "gamertag": "", "gamerscore": 0, "signedin": 0, "xuid": "0000000000000000"}]
+        self.addCleanup(aurora.close)
+        self.start("--xbox", "127.0.0.2", "-v", "--ftp-port", str(ftp_port), "--aurora-web-port", str(aurora.port))
         xbox = os.path.join(self.tmp.name, "xbox")
         save = self.save_console(xbox)
+        package = os.path.join(xbox, "Hdd1", "Content", "E0000123456789AB", "FFFE07D1", "00010000", "E0000123456789AB")
+        self.assertTrue(os.path.isfile(package))
         console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
         with connect_from("127.0.0.2", self.port) as plugin:
             c = Client.__new__(Client)
@@ -1936,6 +1945,7 @@ class Dashboard(ServerTest):
             self.assertEqual(c.mount("Halo 3.iso"), 1)
             self.state_when(lambda s: console(s)["playing"])
             ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+            ftp.locked.add(os.path.normcase(os.path.abspath(package)))
             threading.Thread(target=ftp.serve_forever, daemon=True).start()
             try:
                 state = self.state_when(lambda s: "Saves of Halo 3 backed up" in [e["text"] for e in console(s)["events"]], 30)

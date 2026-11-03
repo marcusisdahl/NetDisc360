@@ -2634,8 +2634,29 @@ std::string GameOf(DWORD titleId) {
 
 // One game's saves from a console into the Saves folder; false if the console
 // couldn't be read. Logs what happened.
+// The gamertags of the profiles signed in on a console, by XUID, from
+// Aurora's web server: the console won't hand their packages out over FTP
+// while they're signed in. Empty if Aurora doesn't answer.
+std::map<std::string,std::string> SignedInTags(const Console& console, const Options& o) {
+    std::map<std::string,std::string> tags;
+    AuroraWeb aurora(console.address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,4);
+    std::string body;
+    web::Value v;
+    if(!aurora.Get("/profile","/getProfileInfo",body) || !web::Parse(body,v) || v.type!=web::Value::Array) return tags;
+    for(size_t i=0;i<v.items.size();++i) {
+        const web::Value* xuid=v.items[i].Get("xuid");
+        const web::Value* tag=v.items[i].Get("gamertag");
+        if(!xuid || !tag || xuid->type!=web::Value::String || tag->type!=web::Value::String || tag->text.empty()) continue;
+        std::string id=xuid->text;
+        if(id.size()>2 && id[0]=='0' && (id[1]=='x' || id[1]=='X')) id.erase(0,2);
+        for(size_t c=0;c<id.size();++c) id[c]=char(toupper((unsigned char)id[c]));
+        if(id.size()==16 && id!="0000000000000000") tags[id]=tag->text;
+    }
+    return tags;
+}
+
 bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::string& game, const Options& o, saves::Result& r, std::string& error) {
-    if(!saves::Take(ftp,SavesFolder(o),titleId,config::ToUtf8(game),o.saveKeep,r,error)) {
+    if(!saves::Take(ftp,SavesFolder(o),titleId,config::ToUtf8(game),o.saveKeep,r,error,SignedInTags(console,o))) {
         XboxLog(console,"couldn't back up the saves of %s: %s",game.c_str(),config::FromUtf8(error).c_str());
         return false;
     }

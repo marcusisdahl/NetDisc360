@@ -51,11 +51,21 @@ bool Has(const std::vector<nia::FtpEntry>& entries, const std::string& wanted, s
 std::mutex TagLock;
 std::map<std::string,std::string> Tags;
 
-std::string TagOf(nia::FtpClient& ftp, const std::string& profile) {
+// A profile's gamertag: as known (signed in, from Aurora), else from its
+// package. A signed-in profile's package is open on the console, which
+// then refuses it over FTP (550, error 5), so a miss isn't kept: the next
+// backup asks again.
+std::string TagOf(nia::FtpClient& ftp, const std::string& profile, const std::map<std::string,std::string>& known) {
+    std::map<std::string,std::string>::const_iterator k=known.find(Upper(profile));
+    if(k!=known.end() && !k->second.empty()) {
+        std::lock_guard<std::mutex> hold(TagLock);
+        return Tags[profile]=k->second;
+    }
     { std::lock_guard<std::mutex> hold(TagLock); if(Tags.count(profile)) return Tags[profile]; }
     std::vector<unsigned char> package;
     std::string tag;
     if(ftp.Retrieve((std::string(ContentFolder)+"/"+profile+"/"+ProfileFolder+"/"+profile).c_str(),package,4<<20)) tag=Gamertag(package);
+    if(tag.empty()) return tag;
     std::lock_guard<std::mutex> hold(TagLock);
     Tags[profile]=tag;
     return tag;
@@ -141,7 +151,7 @@ bool Titles(nia::FtpClient& ftp, std::set<DWORD>& titles, std::string& error) {
 }
 
 bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const std::string& game, int keep,
-          Result& result, std::string& error) {
+          Result& result, std::string& error, const std::map<std::string,std::string>& known) {
     result=Result(); result.profiles=0; result.files=0; result.bytes=0; result.same=false;
     std::vector<std::string> profiles;
     if(!Profiles(ftp,profiles,error)) return false;
@@ -171,7 +181,7 @@ bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const s
         }
         if(result.files==before) continue;
         ++result.profiles;
-        std::string tag=TagOf(ftp,profiles[p]);
+        std::string tag=TagOf(ftp,profiles[p],known);
         ini+="profile_"+Upper(profiles[p])+"="+tag+"\r\n";
     }
     result.bytes=(long long)total;

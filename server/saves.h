@@ -12,6 +12,7 @@
 // A backup the same as the newest one of that game isn't kept twice.
 #include "ftp.h"
 #include <set>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,12 @@ struct Result { std::string name; int profiles, files; long long bytes; bool sam
 
 // Backs up the saves of titleId (game names it in save.ini) into folder, made
 // if need be, then deletes the oldest of that game's backups beyond keep.
-// With no saves, nothing is made and result.files is 0.
+// With no saves, nothing is made and result.files is 0. known: gamertags by
+// profile (XUID, 16 upper-case hex digits) known already, such as the signed-in
+// ones, whose packages the console won't hand out over FTP.
 bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const std::string& game, int keep,
-          Result& result, std::string& error);
+          Result& result, std::string& error,
+          const std::map<std::string,std::string>& known=std::map<std::string,std::string>());
 // The Title IDs that have saves on the console, in any profile.
 bool Titles(nia::FtpClient& ftp, std::set<DWORD>& titles, std::string& error);
 // Puts a backup's saves back on the console, file by file (profiles that
