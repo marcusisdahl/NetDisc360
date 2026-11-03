@@ -1829,7 +1829,7 @@ function tileChooser(c) {
         h('div', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.name, g.xbe ? h('span.muted', ' \u00b7 original Xbox') : null), pick);
     }) : h('p.muted', { style: { margin: 0 } }, G.games.length ? 'No game matches.' : 'No games yet.'));
   }
-  const radios = [['', 'As new consoles get them', TileModes[fallback].title + ', as set above.'], ...Object.keys(TileModes).map(m => [m, TileModes[m].title, TileModes[m].help])].map(([m, title, help]) =>
+  const radios = [['', 'As new consoles get them', TileModes[fallback].title + ', as \u201cWhich consoles get your games\u201d sets for new consoles.'], ...Object.keys(TileModes).map(m => [m, TileModes[m].title, TileModes[m].help])].map(([m, title, help]) =>
     h('label.radio', h('input', { type: 'radio', name: 'tile-mode', checked: mode === m, onchange: () => { mode = m; draw(); } }), h('div', h('div.title', title), h('div.help', help))));
   modal('Games on ' + c.address, close => {
     const go = h('button.btn.primary', { onclick: async () => {
