@@ -1603,20 +1603,25 @@ static const char* Emulator(const char* path,const char* mountPath,char* chosen,
 // on the title's; seen at the emulator's launch, from xbox.xex).
 // For the game (slot 1) it hands xam the game's callbacks itself, on the
 // game's thread (taking Nova's own callbacks off xam while the game runs, as
-// xam takes one set at a time), with its own callback in front of the
-// game's for frames that come in, which gives the game only
-// System Link frames (IPv4 from or to 0.0.0.1) and leaves every other frame
-// to the console, so the disc stream keeps coming; for anything else, or
+// xam takes one set at a time), with its own callbacks in front of both of
+// the game's, which give the game only System Link frames (IPv4 from or to
+// 0.0.0.1) and leave every other frame to the console, so the disc stream
+// keeps coming. (With the game's first callback in front of the console's
+// frames, v13d, or its second, v13c, the console froze 9 to 43 s in, as
+// with Nova not loaded.) For anything else, or
 // with LiNK on, it calls Nova's. Nova loads once per boot, so its own call
 // to xam stays bound to xam's. xbox_link=nova (or off) in NetDisc360.ini
 // leaves it all to Nova.
 static const DWORD SetCallbacksOrdinal=109;
 static const DWORD SlotOneCompare=0x2F030001;
-// sent: called with the frames the console sends; received: with those that
-// come in (Nova hands a title the frames LiNK receives through the second,
-// and its own second one takes LiNK's packets and leaves the rest, 0).
+// sent: xam's first callback (seen with the frames the console sends);
+// received: its second, with those that come in (Nova's own second one
+// takes LiNK's packets and leaves the rest, 0, and Nova hands a title the
+// frames LiNK receives through the title's second; its own first calls the
+// title's first). Nova registers its pair as (2, first, second, instance, 0).
 typedef LONG (*SetCallbacks)(DWORD slot,void* sent,void* received,void* context,DWORD more);
-typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length);
+// A title's callback; whatever xam passes after the frame goes on as it came.
+typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10);
 typedef BYTE* (*NovaInstance)();
 // Nova's CSystemLink: whether LiNK runs.
 static const DWORD NovaLinkOn=0xC0;
@@ -1680,7 +1685,6 @@ static DWORD* ExportEntry(HANDLE module,DWORD ordinal,DWORD& base) {
 struct FrameKind { BYTE source[6],broadcast,protocol; WORD type,fromPort,toPort; DWORD from,to,count; };
 static const int MaxKinds=16;
 struct FrameKinds { FrameKind kinds[MaxKinds]; volatile LONG count,lock; volatile DWORD left; };
-static FrameKinds LinkHeardKinds;
 static void NoteKind(FrameKinds& table,const BYTE* frame,DWORD length) {
     if(!frame || length<14 || InterlockedCompareExchange(&table.lock,1,0)) return;
     FrameKind kind; memset(&kind,0,sizeof(kind));
@@ -1708,21 +1712,40 @@ static void NoteKind(FrameKinds& table,const BYTE* frame,DWORD length) {
     else ++table.left;
     InterlockedExchange(&table.lock,0);
 }
+static size_t PutIp(char* out,size_t at,size_t capacity,DWORD ip,DWORD port) {
+    for(int i=0;i<4;++i) { if(i) at=Put(out,at,capacity,"."); at=PutNumber(out,at,capacity,(ip>>(24-8*i))&255,10,1); }
+    at=Put(out,at,capacity,":");
+    return PutNumber(out,at,capacity,port,10,1);
+}
+// Says which kinds of frames came, and starts over. Without the CRT's
+// formatting, so the watcher can too (see SwapNote).
 static void NoteKinds(FrameKinds& table,const char* what) {
+    FrameKind kinds[MaxKinds];
     while(InterlockedCompareExchange(&table.lock,1,0)) Sleep(1);
-    for(LONG i=0;i<table.count;++i) {
-        const FrameKind& k=table.kinds[i];
-        char text[160];
-        int at=sprintf_s(text,"from %02X-%02X-%02X-%02X-%02X-%02X%s, type %04X",k.source[0],k.source[1],k.source[2],k.source[3],k.source[4],k.source[5],
-                         k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "",k.type);
-        if(at>0 && k.type==0x0800)
-            sprintf_s(text+at,sizeof(text)-at,", %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, protocol %u",
-                      k.from>>24,(k.from>>16)&255,(k.from>>8)&255,k.from&255,k.fromPort,k.to>>24,(k.to>>16)&255,(k.to>>8)&255,k.to&255,k.toPort,k.protocol);
-        SwapNote("System Link:   %s %u frames %s.",what,k.count,text);
-    }
-    if(table.left) SwapNote("System Link:   %s %u frames of other kinds.",what,table.left);
+    LONG count=table.count<MaxKinds ? table.count : MaxKinds;
+    DWORD left=table.left;
+    memcpy(kinds,table.kinds,sizeof(FrameKind)*count);
     table.count=0; table.left=0;
     InterlockedExchange(&table.lock,0);
+    for(LONG i=0;i<count;++i) {
+        const FrameKind& k=kinds[i];
+        char text[160];
+        size_t at=Put(text,0,sizeof(text),"from ");
+        for(int b=0;b<6;++b) { if(b) at=Put(text,at,sizeof(text),"-"); at=PutNumber(text,at,sizeof(text),k.source[b],16,2); }
+        at=Put(text,at,sizeof(text),k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "");
+        at=Put(text,at,sizeof(text),", type ");
+        at=PutNumber(text,at,sizeof(text),k.type,16,4);
+        if(k.type==0x0800) {
+            at=Put(text,at,sizeof(text),", ");
+            at=PutIp(text,at,sizeof(text),k.from,k.fromPort);
+            at=Put(text,at,sizeof(text)," to ");
+            at=PutIp(text,at,sizeof(text),k.to,k.toPort);
+            at=Put(text,at,sizeof(text),", protocol ");
+            at=PutNumber(text,at,sizeof(text),k.protocol,10,1);
+        }
+        SwapNote("System Link:   %s: %u frames %s.",what,k.count,text);
+    }
+    if(left) SwapNote("System Link:   %s: %u frames of other kinds.",what,left);
 }
 
 static BYTE* volatile LinkNova=NULL;
@@ -1733,16 +1756,16 @@ static char LinkSetting[96]="";
 static HANDLE LinkXam=NULL;
 static DWORD* LinkEntry=NULL;                   // xam's export table entry for 109
 static DWORD LinkBase=0;
-static TitleFrames volatile GameFrames=NULL;    // the game's callback for frames that come in, while xam has ours in front of it
 static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRegistered=false;
-static volatile LONG LinkOther=0; // what xam is told for frames left to the console (xbox_link_other)
-static volatile DWORD LinkSeen=0,LinkXbox=0,LinkTaken=0,LinkLeft=0,LinkSets=0;
-static volatile LONG LinkXamResult=-1,LinkXamRetry=-1,LinkOdd=0;
+static volatile DWORD LinkSets=0;
+static volatile LONG LinkXamResult=-1,LinkXamRetry=-1;
+static int LinkFirstMode=0;                     // xbox_link_first: 0 filter, 1 raw (the game's own), 2 none
 static void* LinkNovaFrames=NULL;               // Nova's own callbacks, to give back
 static void* LinkNovaOther=NULL;
 static volatile bool LinkMovedNova=false;
 static volatile LONG LinkNovaOff=-1,LinkNovaBack=-1; // what xam said to taking Nova's off and giving them back
-static DWORD LinkNotedAt=0,LinkNotedSeen=0;     // the watcher's last progress note
+static DWORD LinkNotedAt=0,LinkNotedSeen=0,LinkRegisteredAt=0; // the watcher's last progress note; when xam took the game's
+static int LinkNotes=0;
 // An IPv4 frame from or to 0.0.0.1, as original Xbox consoles send System
 // Link. The frame may come with its Ethernet header or start at the IPv4
 // header, so both are looked at.
@@ -1754,10 +1777,9 @@ static bool XboxFrame(const BYTE* frame,DWORD length) {
 }
 
 // The first few frames each way, the first 64 bytes of each in hex, to see
-// how xam hands them over.
-static const int MaxDumps=6,DumpBytes=64;
-struct FrameDumps { BYTE bytes[MaxDumps][DumpBytes]; DWORD lengths[MaxDumps]; volatile LONG count; };
-static FrameDumps LinkHeardDumps;
+// how xam hands them over; each said once.
+static const int MaxDumps=4,DumpBytes=64;
+struct FrameDumps { BYTE bytes[MaxDumps][DumpBytes]; DWORD lengths[MaxDumps]; volatile LONG count,noted; };
 static void DumpFrame(FrameDumps& dumps,const BYTE* frame,DWORD length) {
     if(!frame || dumps.count>=MaxDumps) return;
     LONG at=InterlockedIncrement(&dumps.count)-1;
@@ -1767,33 +1789,66 @@ static void DumpFrame(FrameDumps& dumps,const BYTE* frame,DWORD length) {
 }
 static void NoteDumps(FrameDumps& dumps,const char* what) {
     LONG count=dumps.count<MaxDumps ? dumps.count : MaxDumps;
-    for(LONG i=0;i<count;++i) {
-        char hex[DumpBytes*3+1]; hex[0]=0;
+    for(LONG i=dumps.noted;i<count;++i) {
+        char hex[DumpBytes*3+1]; size_t at=0; hex[0]=0;
         DWORD shown=dumps.lengths[i]<DWORD(DumpBytes) ? dumps.lengths[i] : DWORD(DumpBytes);
-        for(DWORD b=0;b<shown;++b) sprintf_s(hex+b*3,sizeof(hex)-b*3,"%02X ",dumps.bytes[i][b]);
+        for(DWORD b=0;b<shown;++b) { at=PutNumber(hex,at,sizeof(hex),dumps.bytes[i][b],16,2); at=Put(hex,at,sizeof(hex)," "); }
         SwapNote("System Link:   %s frame %u, %u bytes: %s",what,DWORD(i+1),dumps.lengths[i],hex);
     }
-    dumps.count=0;
+    if(count>dumps.noted) dumps.noted=count;
 }
-// What xam calls with each frame that comes in, in front of the game's own
-// callback: hands the game the System Link ones and says what it did with
-// them; every other frame is left to the console (0), for the disc stream.
-static LONG LinkFrames(void* context,BYTE* frame,DWORD length) {
-    TitleFrames game=GameFrames;
-    if(!frame || !game || !LinkActive) return LinkOther;
-    ++LinkSeen;
-    if(length>=14) NoteKind(LinkHeardKinds,frame,length);
-    if(!XboxFrame(frame,length)) return LinkOther;
-    ++LinkXbox;
-    DumpFrame(LinkHeardDumps,frame,length);
-    LONG result=game(context,frame,length);
-    if(result==1) ++LinkTaken;
-    else if(!result) ++LinkLeft;
-    else LinkOdd=result;
+// Each of the game's two callbacks while xam has ours in front of them, and
+// what came through: [0] xam's first, [1] its second.
+struct LinkWay {
+    TitleFrames volatile game;
+    volatile LONG other;                        // what xam is told for the frames left to the console (xbox_link_other)
+    volatile DWORD seen,unreadable,xbox,taken,left;
+    volatile LONG odd;
+    FrameKinds kinds;
+    FrameDumps first,link;                      // the first frames, and the first System Link ones
+};
+static LinkWay LinkWays[2];
+static const char* const LinkWayNames[2]={"first callback","second callback"};
+static void ResetWay(LinkWay& way) {
+    way.game=NULL;
+    way.seen=way.unreadable=way.xbox=way.taken=way.left=0; way.odd=0;
+    while(InterlockedCompareExchange(&way.kinds.lock,1,0)) Sleep(1);
+    way.kinds.count=0; way.kinds.left=0;
+    InterlockedExchange(&way.kinds.lock,0);
+    way.first.count=way.first.noted=0; way.link.count=way.link.noted=0;
+}
+static void NoteWay(int w) {
+    const LinkWay& way=LinkWays[w];
+    SwapNote("System Link: %s: %u frames (%u unreadable), %u of them System Link, which the game got (it said 1 to %u, 0 to %u, last other %X); xam was told %u for the rest.",
+             LinkWayNames[w],way.seen,way.unreadable,way.xbox,way.taken,way.left,DWORD(way.odd),DWORD(way.other));
+}
+// What xam calls with each frame, in front of one of the game's callbacks:
+// hands the game the System Link ones and says what it did with them; every
+// other frame is left to the console (0), for the disc stream.
+static LONG LinkFrame(LinkWay& way,void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    TitleFrames game=way.game;
+    if(!game) return way.other;
+    ++way.seen;
+    if(!frame || length<14 || length>0x4000 || !MmIsAddressValid(frame) || !MmIsAddressValid(frame+length-1)) { ++way.unreadable; return way.other; }
+    NoteKind(way.kinds,frame,length);
+    DumpFrame(way.first,frame,length);
+    if(!LinkActive || !XboxFrame(frame,length)) return way.other;
+    ++way.xbox;
+    DumpFrame(way.link,frame,length);
+    LONG result=game(context,frame,length,r6,r7,r8,r9,r10);
+    if(result==1) ++way.taken;
+    else if(!result) ++way.left;
+    else way.odd=result;
     return result;
 }
+static LONG LinkFirst(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[0],context,frame,length,r6,r7,r8,r9,r10);
+}
+static LONG LinkSecond(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[1],context,frame,length,r6,r7,r8,r9,r10);
+}
 // xam's export 109 once installed: for the game while it runs, xam gets its
-// callbacks with LinkFrames in front, on the game's thread (without
+// callbacks with LinkFirst and LinkSecond in front, on the game's thread (without
 // callbacks it takes them back); everything else goes to Nova's, as before.
 // Takes Nova's own callbacks off xam, to make room for the game's; true if
 // it did.
@@ -1820,26 +1875,29 @@ static LONG LinkSetCallbacks(DWORD slot,void* sent,void* received,void* context,
     ++LinkSets;
     if(!sent && !received) {
         if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
-        GameFrames=NULL;
+        LinkWays[0].game=LinkWays[1].game=NULL;
         GiveNovaBack();
         return NovaSet(slot,sent,received,context,more);
     }
-    // The frames that come in go through LinkFrames; the console's own go to
-    // the game as they would without Nova.
-    GameFrames=(TitleFrames)received;
-    void* front=received ? (void*)LinkFrames : NULL;
-    LONG xam=RealSet(1,sent,front,context,more),retry=xam;
-    if(retry && MoveNova()) retry=RealSet(1,sent,front,context,more); // Nova's were in the way
+    // Both go through ours (xbox_link_first=raw gives xam the game's first
+    // as it is, none leaves it out).
+    LinkWays[0].game=(TitleFrames)sent; LinkWays[1].game=(TitleFrames)received;
+    void* first=!sent || LinkFirstMode==2 ? NULL : LinkFirstMode==1 ? sent : (void*)LinkFirst;
+    void* second=received ? (void*)LinkSecond : NULL;
+    LinkRegisteredAt=GetTickCount(); LinkNotes=0;
+    LONG xam=RealSet(1,first,second,context,more),retry=xam;
+    if(retry && MoveNova()) retry=RealSet(1,first,second,context,more); // Nova's were in the way
     if(retry) { // taken: once more after taking it back
         RealSet(1,NULL,NULL,NULL,0);
-        retry=RealSet(1,sent,front,context,more);
+        retry=RealSet(1,first,second,context,more);
     }
     LinkXamResult=xam; LinkXamRetry=retry;
     LinkRegistered=!retry;
-    SwapNote("System Link: xam said %X (in the end %X) to the game's callbacks as slot 1; Nova's own were %s (%X).",
-             DWORD(xam),DWORD(retry),LinkMovedNova ? "taken off" : "left",DWORD(LinkNovaOff));
+    SwapNote("System Link: xam said %X (in the end %X) to the game's callbacks as slot 1 (first %X %s, second %X %s); Nova's own were %s (%X).",
+             DWORD(xam),DWORD(retry),DWORD(sent),first==(void*)LinkFirst ? "behind ours" : first ? "as it is" : "left out",
+             DWORD(received),second ? "behind ours" : "none",LinkMovedNova ? "taken off" : "left",DWORD(LinkNovaOff));
     if(LinkRegistered) return 0;
-    GameFrames=NULL;
+    LinkWays[0].game=LinkWays[1].game=NULL;
     GiveNovaBack();
     return NovaSet(slot,sent,received,context,more);
 }
@@ -1850,18 +1908,20 @@ static void StopLink() {
     if(!LinkActive) return;
     if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
     GiveNovaBack();
-    LinkActive=false; GameFrames=NULL;
+    LinkActive=false; LinkWays[0].game=LinkWays[1].game=NULL;
     SwapNote("System Link: the game set its callbacks %u times; xam said %X (in the end %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
     if(DWORD(LinkNovaOff)!=0xFFFFFFFF)
         SwapNote("System Link: Nova's own callbacks were taken off xam (it said %X) and given back (%X; FFFFFFFE: Nova had let go of them, FFFFFFFD: not found).",
                  DWORD(LinkNovaOff),DWORD(LinkNovaBack));
-    SwapNote("System Link: %u frames came in, %u of them System Link, which the game got (it said 1 to %u, 0 to %u, last other %X); xam was told %u for the rest.",
-             LinkSeen,LinkXbox,LinkTaken,LinkLeft,DWORD(LinkOdd),DWORD(LinkOther));
-    NoteKinds(LinkHeardKinds,"heard");
-    NoteDumps(LinkHeardDumps,"System Link");
-    LinkSeen=LinkXbox=LinkTaken=LinkLeft=LinkSets=0;
-    LinkNotedSeen=0;
-    LinkXamResult=LinkXamRetry=-1; LinkOdd=0;
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+        ResetWay(LinkWays[w]);
+    }
+    LinkSets=0; LinkNotedSeen=0; LinkNotes=0;
+    LinkXamResult=LinkXamRetry=-1;
     LinkNovaOff=LinkNovaBack=-1;
 }
 // Whether the four instructions at at are code's.
@@ -1870,15 +1930,22 @@ static bool SameCode(const DWORD* at,const DWORD* code) {
     for(int i=0;i<4;++i) if(at[i]!=code[i]) return false;
     return true;
 }
-// From the watcher, while xam has the game's callbacks: the counts so far,
-// every 5 s while they change (a console that freezes never gets to
-// StopLink).
+// From the watcher, while xam has the game's callbacks: the counts so far
+// every 5 s (a console that freezes never gets to StopLink), for the first
+// two minutes whether they change or not, so the last note says when it
+// froze; the kinds of frames for the first 30 s, and the first frames once.
 static void NoteLinkProgress() {
     if(!LinkActive || !LinkRegistered) return;
-    DWORD now=GetTickCount(),seen=LinkSeen;
-    if(now-LinkNotedAt<5000 || seen==LinkNotedSeen) return;
-    LinkNotedAt=now; LinkNotedSeen=seen;
-    SwapNote("System Link: so far %u frames came in, %u of them System Link (the game said 1 to %u, 0 to %u).",seen,LinkXbox,LinkTaken,LinkLeft);
+    DWORD now=GetTickCount(),seen=LinkWays[0].seen+LinkWays[1].seen;
+    if(now-LinkNotedAt<5000 || (seen==LinkNotedSeen && now-LinkRegisteredAt>120000)) return;
+    LinkNotedAt=now; LinkNotedSeen=seen; ++LinkNotes;
+    SwapNote("System Link: %u s in:",(now-LinkRegisteredAt)/1000);
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        if(LinkNotes<=6) NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+    }
 }
 // When the plugin starts: whether System Link is left to Nova.
 static void ReadLinkSetting() {
@@ -1945,8 +2012,11 @@ static void StartLink() {
     if(*(DWORD*)(nova+NovaLinkOn)) { SwapNote("System Link: LiNK is on, so it's left to Nova."); return; }
     LinkNova=nova;
     char value[16];
-    LinkOther=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
-    GameFrames=NULL; LinkRegistered=false;
+    for(int w=0;w<2;++w) ResetWay(LinkWays[w]);
+    LinkWays[0].other=LinkWays[1].other=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
+    if(TuningValue("xbox_link_first_other",value,sizeof(value))) LinkWays[0].other=!strcmp(value,"1") ? 1 : 0;
+    LinkFirstMode=!TuningValue("xbox_link_first",value,sizeof(value)) ? 0 : !_stricmp(value,"raw") ? 1 : !_stricmp(value,"none") ? 2 : 0;
+    LinkRegistered=false;
     LinkActive=true;
     SwapNote("System Link: on for this game; it gets System Link frames, the console keeps the rest.");
 }
