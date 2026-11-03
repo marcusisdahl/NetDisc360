@@ -619,7 +619,12 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 .screen-feed { list-style: none; margin: 0; padding: 0; display: grid; gap: .35em; }
 .screen-feed li { display: flex; align-items: center; gap: .5em; padding: .35em .7em; border-radius: .5em; background: rgba(0,0,0,.3); font-size: clamp(16px, 1.35vw, 32px); font-weight: 650; }
 .screen-feed li:first-child { background: rgba(255,255,255,.16); animation: callout-pop .32s cubic-bezier(.2,1.6,.4,1); }
-.screen-feed li .when { margin-left: auto; opacity: .7; font-size: .8em; font-weight: 600; }
+.screen-feed li > span:not(.when) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The points and the feed side by side, so the teams and the consoles fit a TV too. */
+.screen-now { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: clamp(10px, 1.6vw, 34px); align-items: start; }
+.screen-now > :only-child { grid-column: 1 / -1; }
+@media (max-width: 900px) { .screen-now { grid-template-columns: minmax(0, 1fr); } }
+.screen-feed li .when { margin-left: auto; flex: none; white-space: nowrap; opacity: .7; font-size: .8em; font-weight: 600; }
 .idle-off { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
 .phone-join { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; display: flex; gap: 14px; align-items: flex-start; }
 .phone-join .qr { width: 112px; height: 112px; flex: none; border-radius: 6px; overflow: hidden; background: #fff; }
@@ -631,14 +636,13 @@ code, .code { font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospac
 details.phone-join { display: block; }
 details.phone-join summary { cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
-.screen-phone { align-self: flex-end; display: flex; align-items: center; gap: .7em; margin-top: auto;
-  background: rgba(0,0,0,.42); border-radius: clamp(10px, 1vw, 22px); padding: clamp(10px, 1vw, 20px); }
-.screen-phone + .screen-consoles { margin-top: 0; }
-.screen-phone .qr { width: clamp(96px, 9vw, 220px); aspect-ratio: 1; border-radius: .3em; overflow: hidden; background: #fff; }
+.screen-phone { display: flex; align-items: center; gap: .6em; flex: none;
+  background: rgba(0,0,0,.42); border-radius: clamp(10px, 1vw, 22px); padding: clamp(8px, .8vw, 16px); font-size: .8em; }
+.screen-phone .qr { width: clamp(84px, 7vw, 170px); aspect-ratio: 1; border-radius: .3em; overflow: hidden; background: #fff; }
 .screen-phone .qr svg { width: 100%; height: 100%; display: block; }
 .screen-phone small { display: block; opacity: .85; font-size: .7em; text-transform: uppercase; letter-spacing: .06em; }
 .screen-phone b { display: block; font-size: 1.5em; letter-spacing: .12em; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-@media (max-width: 700px) { .screen-phone { align-self: flex-start; } }
+@media (max-width: 700px) { .screen-phone { order: 3; } }
 .idle-off select { width: auto; }
 .vote-box { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0 0 12px; display: grid; gap: 8px; }
 .vote-box .vote-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -849,7 +853,7 @@ body.on-screen { overflow: hidden; }
 .screen.retro .screen-pattern { background: repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 2px, transparent 2px 5px); }
 .screen.retro { font-family: "Cascadia Mono", Consolas, "Courier New", monospace; }
 .screen.retro h1 { text-transform: uppercase; letter-spacing: .03em; text-shadow: .06em .06em 0 var(--p2), 0 0 .5em var(--p1); }
-.screen-body { position: relative; min-height: 100%; padding: clamp(18px, 3vw, 64px); padding-bottom: calc(clamp(18px, 3vw, 64px) + 44px); display: flex; flex-direction: column; gap: clamp(16px, 2.6vw, 52px); }
+.screen-body { position: relative; min-height: 100%; padding: clamp(18px, 3vw, 64px); padding-bottom: calc(clamp(18px, 3vw, 64px) + 44px); display: flex; flex-direction: column; gap: clamp(14px, 2vw, 44px); }
 .screen-head { display: flex; align-items: center; gap: clamp(14px, 2vw, 40px); }
 .screen-logo { width: clamp(64px, 9vw, 190px); height: clamp(64px, 9vw, 190px); flex: none; border-radius: clamp(12px, 1.2vw, 24px); background: #fff; padding: clamp(6px, .7vw, 16px); display: grid; place-items: center; box-shadow: 0 10px 34px rgba(0,0,0,.4); }
 .screen-logo img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
@@ -3968,7 +3972,7 @@ function bigScreen(parent) {
       const key = JSON.stringify([p, pics.key, p.consoles.map(ip => partyConsole(ip).text), sp && [sp.id, got.length, spinDone(sp), spinWait(sp), spinAt(sp, spinNow(sp)).stopped]]);
       if (key === drawn) return;
       drawn = key;
-      const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p);
+      const d = p.drawn && p.drawn.teams.length ? p.drawn : null, here = guestsHere(p), voting = p.vote && p.vote.open && !sp;
       const where = team => p.consoles.filter(ip => (d.seats[ip] || []).some(n => team.includes(n))).map(ip => label(p, ip));
       if (sp) wheel.set(sp);
       // While the wheel turns: the wheel, and the teams as it fills them (or the one it picks).
@@ -3990,27 +3994,28 @@ function bigScreen(parent) {
         h('ol', points.slice(0, 12).map(x => h('li', x.name, h('b', x.points)))),
         lastWin ? h('div.last', 'Round ' + lastWin.round + ': ' + lastWin.team + ' won' + (lastWin.game ? ' (' + lastWin.game + ')' : '')) : null) : null;
       const feedIcon = { join: 'user-plus', win: 'trophy', game: 'play', score: 'medal' };
-      const feed = p.active && (p.feed || []).length ? h('ul.screen-feed', { 'aria-live': 'polite' }, p.feed.slice(0, 4).map(x => h('li', ic(feedIcon[x.kind] || 'sparkles'), h('span', x.text),
+      // Join from a phone: the party code and its QR code, in the header.
+      const phone = p.active && p.phone && p.phone.url ? (() => {
+        const qr = h('div.qr', { role: 'img', 'aria-label': 'QR code for ' + p.phone.url });
+        qr.innerHTML = qrSvg(p.phone.url);
+        return h('div.screen-phone', qr, h('div', h('small', 'Join from your phone'), h('b', p.phone.code), h('small', p.phone.url.replace(/^https?:\/\//, '').replace(/\/[^/]*$/, ''))));
+      })() : null;
+      const feed = p.active && (p.feed || []).length ? h('ul.screen-feed', { 'aria-live': 'polite' }, p.feed.slice(0, 3).map(x => h('li', ic(feedIcon[x.kind] || 'sparkles'), h('span', x.text),
         h('span.when', new Date(x.at * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))))) : null;
       fill(body,
         h('header.screen-head', pics.logo ? h('div.screen-logo', h('img', { src: pics.logo, alt: '' })) : null,
-          h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), time),
+          h('div.screen-title', h('h1', partyTitle(p)), partyLine(p) ? h('p', partyLine(p)) : null), phone, time),
         p.active ? null : wins.length && champions.length ? h('div.screen-recap', h('small', 'Champion' + (champions.length > 1 ? 's' : '') + ' of the night'),
           h('h2', champions.map(x => x.name).join(' & ')),
           h('p', plural(wins.length, 'round') + ' played · ' + plural(champions[0].points, 'win') + (champions.length > 1 ? ' each' : '') + '. Thanks for coming!')) : h('div.screen-soon', 'The LAN party starts soon'),
-        pointsBox,
-        feed,
-        p.vote && p.vote.open && !sp ? h('div.screen-vote', h('h2', 'Vote for the next game', h('small', p.vote.left + ' s · ' + plural(p.vote.voters, 'vote'))),
+        // While the wheel turns or a vote is on, it has the room; the points and the feed wait.
+        sp || voting || !(pointsBox || feed) ? null : h('div.screen-now', pointsBox, feed),
+        voting ? h('div.screen-vote', h('h2', 'Vote for the next game', h('small', p.vote.left + ' s · ' + plural(p.vote.voters, 'vote'))),
           p.vote.games.map(g => h('div.row', h('span.name', g.name), h('span.bar', h('span', { style: { width: (g.votes / Math.max(1, ...p.vote.games.map(x => x.votes)) * 100) + '%' } })), h('span', g.votes))))
         : sp ? spinning() : d ? h('div.screen-teams', { style: { '--n': d.teams.length } }, d.teams.map((team, i) => h('div.screen-team.' + teamLook(i).cls,
           h('h2', teamName(i)), h('ul', team.map(n => h('li', n))), where(team).length ? h('div.where', ic('monitor'), where(team).join(', ')) : null)))
           : h('div.screen-waiting', h('h2', here.length ? plural(here.length, 'player') + ' here' : 'Waiting for players'), here.length ? h('ul.screen-names', here.map(n => h('li', n))) : null,
             h('p', 'The teams are drawn soon.')),
-        p.active && p.phone && p.phone.url ? (() => {
-          const qr = h('div.qr', { role: 'img', 'aria-label': 'QR code for ' + p.phone.url });
-          qr.innerHTML = qrSvg(p.phone.url);
-          return h('div.screen-phone', qr, h('div', h('small', 'Join from your phone'), h('b', p.phone.code), h('small', p.phone.url.replace(/^https?:\/\//, '').replace(/\/[^/]*$/, ''))));
-        })() : null,
         p.consoles.length ? h('div.screen-consoles', p.consoles.map(ip => {
           const st = partyConsole(ip), names = d ? d.seats[ip] || [] : [], team = names.length ? d.teams.findIndex(t => t.includes(names[0])) : -1, gm = ip === p.gamemaster;
           return h('div.screen-console' + (team >= 0 ? '.' + teamLook(team).cls : ''),
