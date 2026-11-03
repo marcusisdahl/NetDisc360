@@ -43,7 +43,8 @@ try {
     # NetDisc360.xex: the DashLaunch plugin, the console's disc drive for games
     # from the server (plugin/disc.cpp, in NetISO.xex's place) that also
     # handles tiles and disc swaps (plugin/main.cpp). NetIsoTiles.xex before.
-    # It is linked at its system base (0x91380000), which the public imagexex
+    # It is linked at its system base (0x91C00000; not 0x91380000, which is
+    # aac.xex's, loaded before the plugins on some consoles), which the public imagexex
     # refuses, so its PE header is patched to a title base for imagexex and
     # tools/sysdll.py then moves the XEX back to the system base, as a system
     # DLL like NetISO.xex. The code itself is never relocated.
@@ -53,7 +54,7 @@ try {
     if ($LASTEXITCODE) { throw 'sysdll.py pe-base failed.' }
     & $imagexex.FullName /IN:build\xbox\NetDisc360-title.dll /OUT:build\xbox\NetDisc360-title.xex /CONFIG:plugin\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for NetDisc360.xex.' }
-    & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91380000
+    & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91C00000
     if ($LASTEXITCODE) { throw 'sysdll.py failed for NetDisc360.xex.' }
     if ($Tests) {
         & python tests\test_generator.py
