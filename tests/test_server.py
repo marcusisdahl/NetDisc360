@@ -123,9 +123,19 @@ OWN_ADDRESS = own_address()
 
 
 def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A port free on 127.0.0.1 and on 127.0.0.2, where the tests' consoles are:
+    one free on the first alone can be in use on the second (a fake FTP
+    server's data connection), and the console's FTP server then can't start."""
+    for _ in range(50):
+        with socket.socket() as s, socket.socket() as other:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+            try:
+                other.bind(("127.0.0.2", port))
+            except OSError:
+                continue
+            return port
+    raise OSError("no port free on both 127.0.0.1 and 127.0.0.2")
 
 
 AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
@@ -2177,8 +2187,8 @@ class Dashboard(ServerTest):
         db.execute("CREATE TABLE ScanPaths (Id INTEGER PRIMARY KEY AUTOINCREMENT, Path TEXT, DeviceId TEXT, Depth INTEGER, ScriptData TEXT)")
         db.executemany("INSERT INTO ScanPaths (Path, DeviceId, Depth) VALUES (?, ?, ?)", [("\\Games\\", "A1B2", 2), ("\\Apps", "C3D4", 1), ("\\Gone", "FFFF", 1)])
         db.commit(); db.close()
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2243,8 +2253,8 @@ class Dashboard(ServerTest):
             os.makedirs(folder)
             with open(os.path.join(folder, "GC%08X.asset" % title), "wb") as f:
                 f.write(b"RXEA" + bytes(size - 4))
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2297,8 +2307,8 @@ class Dashboard(ServerTest):
         xbox = os.path.join(self.tmp.name, "xbox")
         os.makedirs(os.path.join(xbox, "Hdd1"))
         content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2357,8 +2367,8 @@ class Dashboard(ServerTest):
         xbox = os.path.join(self.tmp.name, "xbox")
         os.makedirs(os.path.join(xbox, "Hdd1"))
         content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2415,8 +2425,8 @@ class Dashboard(ServerTest):
         xbox = os.path.join(self.tmp.name, "xbox")
         os.makedirs(os.path.join(xbox, "Hdd1"))
         content = os.path.join(xbox, "Hdd1", "Content", "0000000000000000")
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2450,8 +2460,8 @@ class Dashboard(ServerTest):
                 f.write(data)
         xbox = os.path.join(self.tmp.name, "xbox")
         os.makedirs(os.path.join(xbox, "Hdd1"))
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
@@ -2497,8 +2507,8 @@ class Dashboard(ServerTest):
             f.write(xex(execution_info(0x11112222, 0x4D530910)))
         with open(os.path.join(forza, "media", "cars.bin"), "wb") as f:
             f.write(b"cars")
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         launcher, boot = os.path.join(self.tmp.name, "launcher.xex"), os.path.join(self.tmp.name, "boot.xex")
         for path in (launcher, boot):
@@ -2557,8 +2567,8 @@ class Dashboard(ServerTest):
         # The console has Title Update 1, put there by Aurora.
         with open(os.path.join(updates, "tu00000001_00000000"), "wb") as f:
             f.write(older)
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port), "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
@@ -3009,8 +3019,8 @@ class Dashboard(ServerTest):
     def test_speed_test_over_aurora_ftp(self):
         xbox = os.path.join(self.tmp.name, "xbox")
         os.makedirs(os.path.join(xbox, "Hdd1"))
-        ftp_port = free_port()
-        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")  # A port free on 127.0.0.2 itself.
+        ftp_port = ftp.server_address[1]
         threading.Thread(target=ftp.serve_forever, daemon=True).start()
         try:
             self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp_port))
