@@ -27,7 +27,7 @@ NetISO.xex 1.0 and the FreestylePlugin Nova.xex, see --check):
 - header digest (+0x164), as in shared/library.cpp FixHeaderDigest.
 
   python tools/sysdll.py pe-base IN.dll OUT.dll 0x88000000
-  python tools/sysdll.py xex IN.xex OUT.xex 0x91380000
+  python tools/sysdll.py xex IN.xex OUT.xex 0x91C00000
   python tools/sysdll.py check FILE.xex
 """
 import hashlib
