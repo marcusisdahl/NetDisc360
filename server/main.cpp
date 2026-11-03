@@ -4978,7 +4978,7 @@ struct TuFile {
     std::string path, name;  // FTP path, and its name.
     U64 size;
     DWORD titleId, mediaId;  // From its header (0 if it has none that says).
-    std::string displayName;
+    std::string displayName, contentId;  // contentId: see tu::PackageHeader.
     TuFile() : size(0), titleId(0), mediaId(0) {}
 };
 struct ConsoleTus {
@@ -5035,7 +5035,7 @@ bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std:
 }
 
 // The update's file on this PC, downloading it from XboxUnity first if it
-// isn't here; checked against XboxUnity's size and SHA-1 when it gives them.
+// isn't here; checked against XboxUnity's size and checksum when it gives them.
 bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::string& path, std::string& name, std::string& error,
              const std::function<void(U64)>& got) {
     if(TuCached(o,titleId,offer.id,path,name)) return true;
@@ -5043,9 +5043,13 @@ bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::strin
     if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error)) return false;
     if(got) got(data.size());
     if(offer.size && !tu::SameSize(data.size(),offer.size)) { error="XboxUnity's file isn't the size it lists ("+std::to_string(data.size())+" bytes, not "+std::to_string(offer.size)+"); try again later."; return false; }
-    if(offer.hash.size()==40 && tu::Sha1Hex(data.data(),data.size())!=offer.hash) { error="XboxUnity's file doesn't match its SHA-1; try again later."; return false; }
     tu::PackageHeader header;
     bool package=tu::ReadPackageHeader(reinterpret_cast<const unsigned char*>(data.data()),data.size(),header);
+    // XboxUnity's hash is a package's Content ID (the SHA-1 in its header);
+    // for a file that isn't a package, the SHA-1 of the file.
+    if(offer.hash.size()==40 && !(package && header.contentId==offer.hash) && tu::Sha1Hex(data.data(),data.size())!=offer.hash) {
+        error="XboxUnity's file doesn't match the checksum it lists; try again later."; return false;
+    }
     if(!offer.size && offer.hash.size()!=40 && !package) { error="XboxUnity sent something that isn't a title update."; return false; }
     if(package && header.titleId && header.titleId!=titleId) { error="XboxUnity's file is for another game ("+Hex8(header.titleId)+")."; return false; }
     name=tu::FatxName(name);
@@ -5079,7 +5083,7 @@ bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<T
             tu::PackageHeader h;
             if(ftp.RetrieveHead(f.path.c_str(),head,tu::PackageHeaderBytes) && tu::ReadPackageHeader(head.data(),head.size(),h)) {
                 if(h.titleId) f.titleId=h.titleId;
-                f.mediaId=h.mediaId; f.displayName=h.displayName;
+                f.mediaId=h.mediaId; f.displayName=h.displayName; f.contentId=h.contentId;
             }
             out.push_back(f);
         }
@@ -5246,7 +5250,7 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
         bool known=false;
         for(size_t k=0;k<offers.size();++k) {
             std::string path, name;
-            bool same=(offers[k].size && tu::SameSize(f.size,offers[k].size) && !cache) ||
+            bool same=(!f.contentId.empty() && f.contentId==offers[k].hash) || (offers[k].size && tu::SameSize(f.size,offers[k].size) && !cache) ||
                       (TuCached(o,titleId,offers[k].id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
             if(!same) continue;
             known=true;

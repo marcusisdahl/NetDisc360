@@ -66,6 +66,7 @@ struct PackageHeader {
     char magic[5];
     DWORD contentType, titleId, mediaId, version, baseVersion;
     std::string displayName;  // UTF-8.
+    std::string contentId;    // The header's SHA-1 at 0x32C, in lower-case hex: XboxUnity's "hash".
 };
 enum { PackageHeaderBytes = 0x971 };
 bool ReadPackageHeader(const unsigned char* data, size_t size, PackageHeader& out);

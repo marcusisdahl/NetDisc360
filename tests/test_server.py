@@ -326,7 +326,12 @@ def tu_package(title_id, media_id, name, size=0x3000):
     encoded = name.encode("utf-16-be")
     data[0x411:0x411 + len(encoded)] = encoded
     data[-16:] = os.urandom(16)
+    data[0x32C:0x340] = hashlib.sha1(bytes(data[0x344:])).digest()  # Its Content ID, XboxUnity's "hash".
     return bytes(data)
+
+
+def content_id(package):
+    return package[0x32C:0x340].hex()
 
 
 def god_header(media_id, title_id, disc=1):
@@ -2424,11 +2429,11 @@ class Dashboard(ServerTest):
         unity.titles = {
             "4D5307E6": {"Type": 1, "MediaIDS": [
                 {"MediaID": "1A2B3C4D", "Updates": [
-                    {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(kb(older)), "hash": hashlib.sha1(older).hexdigest()},
-                    {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(kb(newest)), "hash": hashlib.sha1(newest).hexdigest().upper()}]},
+                    {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(kb(older)), "hash": content_id(older)},
+                    {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(kb(newest)), "hash": content_id(newest).upper()}]},
                 {"MediaID": "99999999", "Updates": [{"TitleUpdateID": "120", "Version": "3", "Name": "Title Update 3"}]}]},
             # The other shape: each update says its disc.
-            "4D530910": {"Type": 2, "Updates": [{"TitleUpdateID": "130", "Version": "4", "MediaID": "11112222", "Size": str(kb(cache_tu))}]}}
+            "4D530910": {"Type": 2, "Updates": [{"TitleUpdateID": "130", "Version": "4", "MediaID": "11112222", "Size": str(kb(cache_tu)), "hash": hashlib.sha1(cache_tu).hexdigest()}]}}
         unity.files = {"111": ("tu00000002_00000000", newest), "110": ("tu00000001_00000000", older), "130": ("TU_16L61V6_0000014000000.00000000000O9", cache_tu)}
         threading.Thread(target=unity.serve_forever, daemon=True).start()
         xbox = os.path.join(self.tmp.name, "xbox")

@@ -429,6 +429,9 @@ bool ReadPackageHeader(const unsigned char* data, size_t size, PackageHeader& ou
     out.version=Big32(data+0x358);
     out.baseVersion=Big32(data+0x35C);
     out.titleId=Big32(data+0x360);
+    static const char digits[]="0123456789abcdef";
+    out.contentId.clear();
+    for(size_t i=0x32C;i<0x340;++i) { out.contentId+=digits[data[i]>>4]; out.contentId+=digits[data[i]&15]; }
     out.displayName.clear();
     // The first display name: UTF-16 big-endian, 0x80 bytes from 0x411.
     for(size_t i=0x411;i+1<size && i<0x411+0x80;i+=2) {
