@@ -2352,6 +2352,9 @@ class Dashboard(ServerTest):
                 with open(os.path.join(xbox, "Hdd1", "Games", "Halo - Combat Evolved", name), "rb") as f:
                     self.assertEqual(f.read(), data, name)
             self.assertEqual(ftp.scans[-1], "/Hdd1/Games")
+            # The dashboard shows it installed there right away.
+            game = next(g for g in self.json("GET", "/api/games")["games"] if g["name"] == "Halo - Combat Evolved")
+            self.assertEqual(game["installedOn"], ["127.0.0.2"])
             # Again: every file is there.
             self.json("POST", "/api/copy", {"game": "Halo - Combat Evolved", "address": "127.0.0.2"})
             job = self.state_when(lambda s: s["installs"][-1]["id"] != job["id"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
