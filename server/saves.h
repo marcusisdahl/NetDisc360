@@ -25,15 +25,34 @@ struct Result { std::string name; int profiles, files; long long bytes; bool sam
 // if need be, then deletes the oldest of that game's backups beyond keep.
 // With no saves, nothing is made and result.files is 0. known: gamertags by
 // profile (XUID, 16 upper-case hex digits) known already, such as the signed-in
-// ones, whose packages the console won't hand out over FTP.
+// ones, whose packages the console won't hand out over FTP. extra: more
+// save.ini lines ("key=value\r\n" each), such as where the saves came from.
 bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const std::string& game, int keep,
           Result& result, std::string& error,
-          const std::map<std::string,std::string>& known=std::map<std::string,std::string>());
+          const std::map<std::string,std::string>& known=std::map<std::string,std::string>(),
+          const std::string& extra=std::string());
 // The Title IDs that have saves on the console, in any profile.
 bool Titles(nia::FtpClient& ftp, std::set<DWORD>& titles, std::string& error);
 // Puts a backup's saves back on the console, file by file (profiles that
 // aren't on the console any more are skipped); files counts those written.
 bool Put(nia::FtpClient& ftp, const std::string& data, int& files, std::string& error);
+// Puts the saves in files (a backup's, unpacked) on the console; only one
+// profile's (its XUID) unless only is "".
+bool PutFiles(nia::FtpClient& ftp, const std::map<std::string,std::string>& files, const std::string& only, int& written, std::string& error);
+// The profiles on the console (XUIDs in upper case).
+bool ProfilesOn(nia::FtpClient& ftp, std::vector<std::string>& xuids, std::string& error);
+// A game's saves on the console now, as Take keeps them ("<XUID>/<file>").
+bool Collect(nia::FtpClient& ftp, DWORD titleId, std::map<std::string,std::string>& files, std::string& error);
+// One profile's saves among files (a backup's or Collect's) as one string,
+// equal when the saves are; "" when it has none.
+std::string ProfileSaves(const std::map<std::string,std::string>& files, const std::string& xuid);
+// A backup in folder, unpacked.
+bool Read(const std::string& folder, const std::string& name, std::map<std::string,std::string>& files, std::string& error);
+// A save.ini value.
+std::string IniValue(const std::string& ini, const std::string& key);
+// A copy of backup name made now (its save.ini without the line of key drop,
+// plus extra lines): made is its name.
+bool Copy(const std::string& folder, const std::string& name, const std::string& drop, const std::string& extra, std::string& made, std::string& error);
 // The backups in folder, newest first.
 std::vector<Backup> List(const std::string& folder);
 // The game and profiles a backup's save.ini names.

@@ -615,6 +615,12 @@ function bytes(n, digits) {
   return (i ? n.toFixed(digits == null ? (n < 10 ? 1 : 0) : digits) : n) + ' ' + units[i];
 }
 const rate = n => n < 1024 ? (n ? Math.round(n) + ' B/s' : '0 MB/s') : bytes(n, 1) + '/s';
+// Where saves came from ("console@computer"): "10.10.1.44 on Laptop", or just the console when it's this computer.
+function placeText(from) {
+  const [where, computer] = String(from || '').split('@');
+  const here = S.sync && (S.sync.name || S.sync.computer);
+  return computer && computer !== here ? where + ' on ' + computer : where;
+}
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'));
 function ago(t) {
   if (!t) return 'never';
@@ -766,7 +772,7 @@ function frame() {
       h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
       h('nav.nav', nav),
       h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
-        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'))),
+        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'), h('a.row.muted#sync-state', { href: '#settings/sync', hidden: true }))),
     h('main',
       h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label)),
         h('a', { href: '#', title: 'Latest releases', onclick: e => { e.preventDefault(); releases(); } }, ic('download', 'sm'), 'Releases')),
@@ -800,6 +806,12 @@ function updateFrame(problem) {
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
+  // Sync between computers, when it's on: how it went last.
+  const sync = $('#sync-state'), y = S.sync;
+  if (sync) {
+    sync.hidden = !y || !y.on;
+    if (y && y.on) fill(sync, ic(y.failed ? 'triangle-alert' : 'folder-sync', 'sm'), y.running ? 'Syncing\u2026' : y.failed ? 'Sync had a problem' : y.last ? 'Synced ' + ago(y.last) : 'Sync starting');
+  }
   document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (online ? '\u25b6 ' : '') + 'NetDisc360';
 }
 
@@ -994,11 +1006,11 @@ const EventIcons = { good: 'circle-check', play: 'play', xbox: 'monitor', info: 
 // Dashboard -----------------------------------------------------------------------
 
 Pages.dashboard = root => {
-  const open = h('div'), news = h('div'), copies = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
+  const open = h('div'), news = h('div'), copies = h('div'), savesNote = h('div'), setup = h('div'), tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap'), legend = h('div.legend');
   const consoles = h('div.consoles'), events = h('ul.events');
   root.append(
     header('Dashboard', null),
-    h('div.stack', open, news, copies, setup, tiles,
+    h('div.stack', open, news, copies, savesNote, setup, tiles,
       h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to each console, last 2 minutes')),
         h('div.card-body', chartWrap, legend)),
       h('div.grid.two',
@@ -1026,6 +1038,11 @@ Pages.dashboard = root => {
       if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
       else if (cut.length) fill(copies, h('div.notice', ic('triangle-alert'), h('span', (cut.length === 1 ? cut[0].name + ' is' : plural(cut.length, 'ISO') + ' are') + ' incomplete: a download or copy that stopped. A game crashes where it reads the missing part, so copy ' + (cut.length === 1 ? 'it' : 'them') + ' again.'), h('a.btn.small', { href: '#games' }, 'See which')));
       else copies.replaceChildren();
+      // Two consoles played the same game with the same profile: which saves to keep.
+      const sc = S.saveConflicts || [];
+      if (sc.length) fill(savesNote, h('div.notice', ic('gamepad-2'), h('span', sc.length === 1 ? (sc[0].gamertag || sc[0].xuid) + '\u2019s saves of ' + sc[0].game + ' on ' + sc[0].address + ' differ from the newest from ' + placeText(sc[0].from) + '. Both are kept; choose which to use.' : plural(sc.length, 'game\u2019s saves differ', 'games\u2019 saves differ') + ' between consoles. Both are kept; choose which to use.'),
+        h('a.btn.small', { href: '#settings/backups' }, 'Choose')));
+      else savesNote.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell the Xbox where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetDisc360.ini'), ' next to NetDisc360.xex on your USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || 'this computer\u2019s address')), '. Then restart the Xbox.'] },
@@ -2121,7 +2138,8 @@ Pages.settings = root => {
         card('folder-sync', 'Sync', y.url,
           row('This computer', 'Listed as ' + y.name + ' on your other computers.', state),
           row('Last sync', y.last ? (ago(y.last) + (y.last ? ': sent ' + plural(y.sent, 'file') + ', fetched ' + plural(y.got, 'file') : '') + (y.failed ? '. ' + y.error : '.')) : 'When NetDisc360 starts, every 5 minutes, and after each save backup.', now),
-          row('What syncs', 'Game save backups (restore them from Backups, Game saves), profile backups and play history. Not your games, game folders, consoles or passwords.', null),
+          y.stored ? row('In the cloud', bytes(y.stored) + ' in your R2 bucket. Cloudflare\u2019s free tier holds 10 GB.', null) : null,
+          row('What syncs', 'Game save backups, profile backups and play history. With \u201cSaves follow the profile\u201d on (Backups, Game saves), a profile\u2019s newest saves go onto whichever console it\u2019s on. Not your games, game folders, consoles or passwords.', null),
           row('Turn off on this computer', 'Its backups stay here and in the cloud.', off)),
         card('monitor', 'Your computers', plural(y.devices.length, 'computer'),
           y.devices.length ? y.devices.map(d => h('div.backup-row', h('div.kindmark.k-xbox', ic('monitor')),
@@ -2257,10 +2275,26 @@ Pages.settings = root => {
       h('div.card-body',
         row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it.',
           toggle(st.saveBackup, (v, i) => flip('saveBackup', v, i, v ? 'Saves backed up after each game' : 'Saves not backed up'))),
+        row('Saves follow the profile', 'When a console is in Aurora, a profile on it gets that game\u2019s newest saves from your other consoles and computers. What was on the console is backed up first; when both played since, you choose here.',
+          toggle(st.saveFollow, (v, i) => flip('saveFollow', v, i, v ? 'Saves follow the profile' : 'Saves stay on their console'))),
         row('Keep the newest', 'Of each game. A backup the same as the one before isn\u2019t kept twice.', keep),
         row('Back up every game\u2019s saves now', consoles.length ? 'From the console you choose, while it\u2019s in Aurora. Restore puts saves back on that console too.' : 'Once a console has used NetDisc360.',
           h('div', { style: { display: 'flex', gap: '8px' } }, consoles.length > 1 ? which : null, now))),
-      list, foot);
+      conflictsBox(), list, foot);
+  }
+  // Saves of one profile that differ between two consoles that both played: which to keep.
+  function conflictsBox() {
+    const sc = S.saveConflicts || [];
+    if (!sc.length) return null;
+    async function choose(c, keep) {
+      try { await api('saves/conflict', { address: c.address, title: c.title, xuid: c.xuid, keep }); await refresh(); toast(keep === 'console' ? 'Keeping the saves from ' + c.address : 'Using the saves from ' + placeText(c.from)); }
+      catch (e) { toast(e.message, true); }
+    }
+    return h('div', sc.map(c => h('div.backup-row', h('div.kindmark.k-warning', ic('triangle-alert')),
+      h('div.grow', h('div.when', (c.gamertag || c.xuid) + ' \u00b7 ' + c.game), h('div.sub', 'Played on ' + c.address + ' and on ' + placeText(c.from) + ' since they last matched. Both are kept.')),
+      h('div.actions',
+        h('button.btn.small', { onclick: () => choose(c, 'console') }, 'Keep ' + c.address + '\u2019s'),
+        h('button.btn.small', { onclick: () => choose(c, 'other') }, 'Use ' + placeText(c.from).split(' on ')[0] + '\u2019s')))));
   }
 
   Parts.windows = () => {

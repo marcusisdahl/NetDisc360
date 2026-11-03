@@ -26,8 +26,9 @@ struct Kind { std::string name, folder; int depth; };
 
 struct Report {
     int sent, got, failed;
+    long long stored;                // Bytes in the cloud, of what was listed.
     std::vector<std::string> notes;  // What went wrong, for the log.
-    Report() : sent(0), got(0), failed(0) {}
+    Report() : sent(0), got(0), failed(0), stored(0) {}
 };
 
 // Connects this computer with a key: the owner key (the Worker's OWNER_KEY)

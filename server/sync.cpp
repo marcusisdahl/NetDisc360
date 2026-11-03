@@ -202,6 +202,7 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
     std::vector<Remote> remote;
     std::string error;
     if(!List(base,key,prefix,remote,error)) { ++report.failed; report.notes.push_back(error); return; }
+    for(size_t i=0;i<remote.size();++i) report.stored+=remote[i].size;
     // This computer's files, by path below the kind ("<XUID>/<file>" at depth 1).
     std::set<std::string> here;
     std::vector<std::string> folders;
@@ -260,6 +261,7 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
         }
         seen.insert(*h);
         ++report.sent;
+        report.stored+=(long long)data.size();
     }
     if(seen.size()!=wasSeen) {
         std::string text;
@@ -285,6 +287,7 @@ void GetStates(const std::string& url, const std::string& key, const std::string
     std::vector<Remote> remote;
     std::string error;
     if(!List(base,key,"state/",remote,error)) { ++report.failed; report.notes.push_back(error); return; }
+    for(size_t i=0;i<remote.size();++i) report.stored+=remote[i].size;
     for(size_t i=0;i<remote.size();++i) {
         const std::string& k=remote[i].key;  // state/<device>/<name>
         size_t slash=k.find('/',6);

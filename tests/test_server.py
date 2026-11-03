@@ -1993,13 +1993,140 @@ class Dashboard(DashboardTest):
             with open(save, "rb") as f:
                 self.assertEqual(f.read(), b"halo save 1")
             saves = self.json("GET", "/api/saves")["saves"]
-            self.assertEqual(len(saves), 2)  # The save before was kept already.
+            # The save before was kept already; the restored ones are the
+            # newest now (for the other consoles: saves follow the profile).
+            self.assertEqual(len(saves), 3)
+            status, _, data = self.call("GET", "/api/save?name=" + saves[0]["name"])
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+                self.assertIn(("restored_from=%s\r\n" % name).encode(), z.read("save.ini"))
             self.assertEqual(self.json("POST", "/api/saves/delete", {"name": saves[-1]["name"]}), {"ok": True})
-            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 1)
+            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 2)
             self.assertEqual(self.call("POST", "/api/saves/restore", {"name": name, "address": "127.0.0.9"})[0], 400)
         finally:
             ftp.shutdown()
             ftp.server_close()
+
+    @staticmethod
+    def other_console_backup(folder, name, save, console="10.10.1.43", computer="Laptop"):
+        """A Halo 3 save backup made from another console (synced from another computer)."""
+        os.makedirs(folder, exist_ok=True)
+        with zipfile.ZipFile(os.path.join(folder, name), "w") as z:
+            z.writestr("save.ini", "title_id=4D5307E6\r\ngame=Halo 3\r\nprofile_E0000123456789AB=Marcus\r\n"
+                                   "time=0\r\nconsole=%s\r\ncomputer=%s\r\n" % (console, computer))
+            z.writestr("E0000123456789AB/Campaign", save)
+
+    def test_saves_follow_the_profile(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)  # Marcus played here: "halo save 1".
+        other = os.path.join(xbox, "Hdd1", "Content", "E0000123456789AB", "41560817", "00000001", "Save")
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        # Marcus played on another console too since: both played, so which to keep is asked.
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        state = self.state_when(lambda s: s["saveConflicts"], 30)
+        c = state["saveConflicts"][0]
+        self.assertEqual([c[k] for k in ("address", "title", "xuid", "gamertag", "game", "newest", "from")],
+                         ["127.0.0.2", "4D5307E6", "E0000123456789AB", "Marcus", "Halo 3", "4D5307E6_2026-11-01_10-00-00.zip", "10.10.1.43@Laptop"])
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 1")  # Nothing changed on the console before the answer.
+        held = c["held"]
+        self.assertIn(held, [b["name"] for b in self.json("GET", "/api/saves")["saves"]])
+        with zipfile.ZipFile(os.path.join(saves, held)) as z:
+            self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+            self.assertIn(b"held=1\r\n", z.read("save.ini"))
+        # Kept after a restart, and asked once.
+        self.restart("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        state = self.state_when(lambda s: s["consoles"] and s["consoles"][0].get("answers"), 20)
+        self.assertEqual(len(state["saveConflicts"]), 1)
+        self.assertEqual(self.call("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6",
+                                                                   "xuid": "E0000123456789AB", "keep": "both"})[0], 400)
+        # The other console's go on this one; this one's stay in their backup.
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "other"})
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 2")
+        with open(other, "rb") as f:
+            self.assertEqual(f.read(), b"other game")  # Other games' saves aren't touched.
+        self.assertEqual(self.call("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6",
+                                                                   "xuid": "E0000123456789AB", "keep": "other"})[0], 400)
+        # Newer saves from the other console (synced in): nothing here is lost,
+        # so they go on the console without asking.
+        self.other_console_backup(saves, "4D5307E6_2026-11-02_10-00-00.zip", b"halo save 3")
+        self.restart("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            with open(save, "rb") as f:
+                if f.read() == b"halo save 3":
+                    break
+            time.sleep(0.2)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 3")
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        self.assertIn("Marcus's newest saves of Halo 3 are on 127.0.0.2 now", [e["text"] for e in self.json("GET", "/api/state")["events"]])
+
+    def test_saves_of_this_console_can_be_kept(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        held = self.state_when(lambda s: s["saveConflicts"], 30)["saveConflicts"][0]["held"]
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "console"})
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        # A new backup of this console's saves, the newest for every console now.
+        names = [b["name"] for b in self.json("GET", "/api/saves")["saves"]]
+        self.assertEqual(len(names), 3)
+        newest = [n for n in names if n not in (held, "4D5307E6_2026-11-01_10-00-00.zip")][0]
+        with zipfile.ZipFile(os.path.join(saves, newest)) as z:
+            ini = z.read("save.ini")
+            self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+        self.assertIn(("restored_from=%s\r\n" % held).encode(), ini)
+        self.assertNotIn(b"held=1", ini)
+        time.sleep(3)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 1")
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+
+    def test_saves_follow_only_when_asked(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        with open(self.config, "w") as f:
+            f.write("[Server]\nsave_follow=0\n")
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        with open(save, "wb") as f:
+            f.write(b"")  # No saves of Halo 3 yet: the backup's would go on.
+        os.remove(save)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        self.assertFalse(self.json("GET", "/api/state")["settings"]["saveFollow"])
+        time.sleep(4)
+        self.assertFalse(os.path.exists(save))
+        # On: the profile has no saves of it here, so the newest go on.
+        self.json("POST", "/api/settings", {"saveFollow": True})
+        deadline = time.time() + 30
+        while time.time() < deadline and not os.path.exists(save):
+            time.sleep(0.2)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 2")
 
     def test_pings_each_console(self):
         # A ping now and then (a connect to its FTP port, refused here) shows
@@ -2602,6 +2729,7 @@ class Sync(DashboardTest):
         self.assertEqual(r["sync"]["url"], self.url)
         state = self.synced()
         self.assertEqual(state["sync"]["failed"], 0, state["sync"])
+        self.assertGreater(state["sync"]["stored"], 0)
         self.assertEqual(sorted((d["name"], d["self"]) for d in state["sync"]["devices"]), [("Home PC", True), ("Laptop", False)])
         # The laptop's backups are here, this computer's in the cloud.
         self.assertTrue(os.path.exists(os.path.join(saves, from_laptop)))
