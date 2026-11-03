@@ -5042,7 +5042,7 @@ bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::strin
     std::string data;
     if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error)) return false;
     if(got) got(data.size());
-    if(offer.size && data.size()!=offer.size) { error="XboxUnity's file isn't the size it lists ("+std::to_string(data.size())+" bytes, not "+std::to_string(offer.size)+"); try again later."; return false; }
+    if(offer.size && !tu::SameSize(data.size(),offer.size)) { error="XboxUnity's file isn't the size it lists ("+std::to_string(data.size())+" bytes, not "+std::to_string(offer.size)+"); try again later."; return false; }
     if(offer.hash.size()==40 && tu::Sha1Hex(data.data(),data.size())!=offer.hash) { error="XboxUnity's file doesn't match its SHA-1; try again later."; return false; }
     tu::PackageHeader header;
     bool package=tu::ReadPackageHeader(reinterpret_cast<const unsigned char*>(data.data()),data.size(),header);
@@ -5246,7 +5246,7 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
         bool known=false;
         for(size_t k=0;k<offers.size();++k) {
             std::string path, name;
-            bool same=(offers[k].size && f.size==offers[k].size && !cache) ||
+            bool same=(offers[k].size && tu::SameSize(f.size,offers[k].size) && !cache) ||
                       (TuCached(o,titleId,offers[k].id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
             if(!same) continue;
             known=true;
@@ -5315,12 +5315,12 @@ void TitleUpdates(const std::string& name, bool refresh, web::Reply& out) {
 bool QueueTu(const IsoFile& g, const tu::Offer& offer, DWORD at, bool replace, std::string& error) {
     std::shared_ptr<ContentCopy> job(new ContentCopy);
     job->kind="update"; job->game=config::ToUtf8(WithoutIso(g.name)); job->disc=job->game;
-    job->label=offer.name; job->key=replace ? offer.id : std::string();
+    job->label=offer.version>0 ? "Title update "+std::to_string(offer.version) : offer.name; job->key=replace ? offer.id : std::string();
     job->total=offer.size; job->files=1;
     DWORD titleId=g.titleId, mediaId=g.mediaId;
     job->run=[titleId,mediaId,offer](std::shared_ptr<ContentCopy> j) { PutTu(j,titleId,mediaId,offer); };
     if(!AddCopy(job,at,error)) return false;
-    Log("Xbox %s: queued %s for %s.",job->console.c_str(),offer.name.c_str(),job->game.c_str());
+    Log("Xbox %s: queued %s for %s (XboxUnity %s).",job->console.c_str(),job->label.c_str(),job->game.c_str(),offer.id.c_str());
     return true;
 }
 

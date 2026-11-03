@@ -54,7 +54,7 @@ void AddUpdate(const web::Value& u, const std::string& mediaId, std::vector<Offe
     o.uploaded=AsText(u.Get("UploadDate"));
     o.baseVersion=AsText(u.Get("BaseVersion"));
     o.version=atoi(AsText(u.Get("Version")).c_str());
-    o.size=strtoull(AsText(u.Get("Size")).c_str(),NULL,10);
+    o.size=strtoull(AsText(u.Get("Size")).c_str(),NULL,10)*1024;  // XboxUnity lists KB (SSX v3: 9100 for 9,318,400 bytes).
     if(o.name.empty()) o.name="Title Update "+std::to_string(o.version);
     out.push_back(o);
 }

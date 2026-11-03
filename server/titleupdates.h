@@ -32,7 +32,7 @@ struct Offer {
     std::string uploaded;   // UploadDate, as given.
     std::string baseVersion;
     int version;            // XboxUnity's number (5 for Title Update 5).
-    U64 size;               // 0 if not given.
+    U64 size;               // In bytes, from XboxUnity's KB; 0 if not given.
     Offer() : version(0), size(0) {}
 };
 
@@ -82,4 +82,6 @@ enum : DWORD { TypeSavedGame = 0x1, TypeMarketplace = 0x2, TypePublisher = 0x3, 
 
 // SHA-1 of data, as 40 lower-case hex digits.
 std::string Sha1Hex(const void* data, size_t size);
+// A file of bytes is the size XboxUnity lists (whole KB, rounded up).
+inline bool SameSize(U64 bytes, U64 listed) { return (bytes+1023)/1024*1024==listed; }
 }
