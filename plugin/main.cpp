@@ -1760,6 +1760,7 @@ static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRe
 static volatile DWORD LinkSets=0;
 static volatile LONG LinkXamResult=-1,LinkXamRetry=-1;
 static int LinkFirstMode=0;                     // xbox_link_first: 0 filter, 1 raw (the game's own), 2 none
+static volatile bool LinkDetail=false;          // xbox_link_log=1: the kinds of frames, the first ones, and notes every 5 s
 static void* LinkNovaFrames=NULL;               // Nova's own callbacks, to give back
 static void* LinkNovaOther=NULL;
 static volatile bool LinkMovedNova=false;
@@ -1830,11 +1831,10 @@ static LONG LinkFrame(LinkWay& way,void* context,BYTE* frame,DWORD length,DWORD 
     if(!game) return way.other;
     ++way.seen;
     if(!frame || length<14 || length>0x4000 || !MmIsAddressValid(frame) || !MmIsAddressValid(frame+length-1)) { ++way.unreadable; return way.other; }
-    NoteKind(way.kinds,frame,length);
-    DumpFrame(way.first,frame,length);
+    if(LinkDetail) { NoteKind(way.kinds,frame,length); DumpFrame(way.first,frame,length); }
     if(!LinkActive || !XboxFrame(frame,length)) return way.other;
     ++way.xbox;
-    DumpFrame(way.link,frame,length);
+    if(LinkDetail) DumpFrame(way.link,frame,length);
     LONG result=game(context,frame,length,r6,r7,r8,r9,r10);
     if(result==1) ++way.taken;
     else if(!result) ++way.left;
@@ -1930,12 +1930,13 @@ static bool SameCode(const DWORD* at,const DWORD* code) {
     for(int i=0;i<4;++i) if(at[i]!=code[i]) return false;
     return true;
 }
-// From the watcher, while xam has the game's callbacks: the counts so far
-// every 5 s (a console that freezes never gets to StopLink), for the first
-// two minutes whether they change or not, so the last note says when it
-// froze; the kinds of frames for the first 30 s, and the first frames once.
+// From the watcher, with xbox_link_log=1, while xam has the game's
+// callbacks: the counts so far every 5 s (a console that freezes never gets
+// to StopLink), for the first two minutes whether they change or not, so the
+// last note says when it froze; the kinds of frames for the first 30 s, and
+// the first frames once.
 static void NoteLinkProgress() {
-    if(!LinkActive || !LinkRegistered) return;
+    if(!LinkDetail || !LinkActive || !LinkRegistered) return;
     DWORD now=GetTickCount(),seen=LinkWays[0].seen+LinkWays[1].seen;
     if(now-LinkNotedAt<5000 || (seen==LinkNotedSeen && now-LinkRegisteredAt>120000)) return;
     LinkNotedAt=now; LinkNotedSeen=seen; ++LinkNotes;
@@ -2016,6 +2017,7 @@ static void StartLink() {
     LinkWays[0].other=LinkWays[1].other=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
     if(TuningValue("xbox_link_first_other",value,sizeof(value))) LinkWays[0].other=!strcmp(value,"1") ? 1 : 0;
     LinkFirstMode=!TuningValue("xbox_link_first",value,sizeof(value)) ? 0 : !_stricmp(value,"raw") ? 1 : !_stricmp(value,"none") ? 2 : 0;
+    LinkDetail=TuningValue("xbox_link_log",value,sizeof(value)) && !strcmp(value,"1");
     LinkRegistered=false;
     LinkActive=true;
     SwapNote("System Link: on for this game; it gets System Link frames, the console keeps the rest.");
