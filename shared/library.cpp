@@ -643,7 +643,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!removeGone && !installed) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
         if(!storage.RemoveGame(folder)) { Say(note,"Couldn't remove %s.",folder); ++result.failed; continue; }
-        if(installed) Say(note,"Removed %s: the game on %s is installed on this console.",folders[k].name,folders[k].iso);
+        if(installed) Say(note,"Removed %s: %s gets no folder here on this console (it's installed there, or set so).",folders[k].name,folders[k].iso);
         else Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso);
         folders[k].game=false;
         ++result.removed;

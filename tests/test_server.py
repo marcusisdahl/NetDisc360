@@ -658,6 +658,99 @@ class Push(ServerTest):
         self.assertIn("0 added, 0 removed, 2 kept (0 updated)", out)
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
 
+    def read_god_files(self, header_path):
+        """The files at the top of a GOD package's disc, its hashes checked on the way."""
+        import hashlib
+        sha = lambda b: hashlib.sha1(b).digest()
+        with open(header_path, "rb") as f:
+            h = f.read()
+        self.assertEqual(h[0x32C:0x340], sha(h[0x344:0x344 + 0xACBC]))
+        blocks = int.from_bytes(h[0x392:0x395], "big")
+        self.assertEqual(int.from_bytes(h[0x3A0:0x3A4], "little"), 1)
+        with open(os.path.join(header_path + ".data", "Data0000"), "rb") as f:
+            part = f.read()
+        master = part[:4096]
+        self.assertEqual(sha(master), h[0x37D:0x37D + 20])
+        data = bytearray()
+        at = 4096
+        for g in range((blocks + 0xCB) // 0xCC):
+            hashes = part[at:at + 4096]
+            self.assertEqual(master[g * 20:g * 20 + 20], sha(hashes))
+            n = min(0xCC, blocks - g * 0xCC)
+            for b in range(n):
+                block = part[at + 4096 * (1 + b):at + 4096 * (2 + b)]
+                self.assertEqual(hashes[b * 20:b * 20 + 20], sha(block))
+                data += block
+            at += 4096 * (1 + n)
+        self.assertEqual(at, len(part))
+        self.assertEqual(bytes(data[0x10000:0x10014]), b"MICROSOFT*XBOX*MEDIA")
+        root, size = struct.unpack_from("<II", data, 0x10014)
+        files, table = {}, bytes(data[root * 2048:root * 2048 + size])
+        at = 0
+        while at + 14 <= len(table):
+            if table[at:at + 2] == b"\xff\xff":
+                at = (at // 2048 + 1) * 2048
+                continue
+            sector, length, _, n = struct.unpack_from("<IIBB", table, at + 4)
+            files[table[at + 14:at + 14 + n].decode()] = bytes(data[sector * 2048:sector * 2048 + length])
+            at += (14 + n + 3) & ~3
+        return h, files
+
+    def test_gives_a_console_its_games_as_games_on_demand_where_set(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        # A real copy of another game, which stays.
+        os.makedirs(os.path.join(content, "41560817", "00007000"))
+        with open(os.path.join(content, "41560817", "00007000", "AABBCCDD"), "wb") as f:
+            f.write(god_header(0xAABBCCDD, 0x41560817))
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("tile_choices=1\ntile_choice1=127.0.0.1|god|folder:Skate 3.iso\n")
+        out = self.push(extra=("--config", config))
+        # Halo 3 as Games on Demand: its game folder where Aurora doesn't look, and a package in Content.
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "Skate 3"])
+        home = os.path.join(self.xbox, "Hdd1", "NetDisc360", "GOD")
+        self.assertEqual(sorted(os.listdir(home)), ["Halo 3", "NetDisc360"])
+        self.assertEqual(sorted(os.listdir(os.path.join(home, "Halo 3"))), ["default.xex", "netiso.ini"])
+        with open(os.path.join(home, "NetDisc360", "boot.xex"), "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER")
+        packages = os.path.join(content, "4D5307E6", "00007000")
+        name = "4E443301" + "1A2B3C4D"
+        self.assertEqual(sorted(os.listdir(packages)), [name, name + ".data"])
+        self.assertEqual(os.listdir(os.path.join(packages, name + ".data")), ["Data0000"])
+        header, files = self.read_god_files(os.path.join(packages, name))
+        self.assertEqual(header[:4], b"LIVE")
+        be = lambda at: int.from_bytes(header[at:at + 4], "big")
+        self.assertEqual((be(0x344), be(0x354), be(0x360)), (0x7000, 0x1A2B3C4D, 0x4D5307E6))
+        self.assertEqual(header[0x411:0x411 + 12].decode("utf-16-be"), "Halo 3")
+        with open(os.path.join(home, "Halo 3", "default.xex"), "rb") as f:
+            self.assertEqual(files["default.xex"], f.read())
+        self.assertIn(b"tile=Hdd1:\\NetDisc360\\GOD\\Halo 3\r\n", files["netiso.ini"])
+        self.assertLess(os.path.getsize(os.path.join(packages, name + ".data", "Data0000")), 1 << 20)
+        self.assertIn("put Halo 3 in as Games on Demand", out)
+        self.assertIn("/Hdd1/Content/0000000000000000", self.ftp.scans)
+        # Nothing new: nothing written. The tile is no installed copy, so Halo 3 keeps its game folder.
+        self.ftp.stored.clear()
+        out = self.push(extra=("--config", config))
+        self.assertEqual([p for p in self.ftp.stored if "Content" in p or "NetDisc360/GOD" in p], [])
+        self.assertTrue(os.path.isdir(os.path.join(home, "Halo 3")))
+        # Back to folders: the package and the game folder in GOD go; the other game's copy stays.
+        with open(config, "w") as f:
+            f.write("tile_choices=1\ntile_choice1=127.0.0.1|folder\n")
+        out = self.push(extra=("--config", config))
+        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3", "NetDisc360", "Skate 3"])
+        self.assertEqual(os.listdir(home), ["NetDisc360"])
+        self.assertFalse(os.path.exists(packages))
+        self.assertEqual(os.listdir(os.path.join(content, "41560817", "00007000")), ["AABBCCDD"])
+        # None: no folder or package at all for that game.
+        with open(config, "w") as f:
+            f.write("tile_mode=god\ntile_choices=1\ntile_choice1=127.0.0.1||none:Skate 3.iso\n")
+        out = self.push(extra=("--config", config))
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360"])
+        self.assertEqual(sorted(os.listdir(home)), ["Halo 3", "NetDisc360"])
+        self.assertFalse(os.path.exists(os.path.join(content, "454108E6")))
+
     def test_takes_the_ftp_password_from_the_environment(self):
         # The Docker image passes the password this way.
         self.ftp.password = "s3cret pass"
@@ -1771,6 +1864,35 @@ class Dashboard(ServerTest):
         self.server.wait()
         self.server.stdout.close()
         self.start(*extra)
+
+    def test_sets_how_each_console_gets_the_games(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        with open(self.config, "w") as f:
+            f.write("consoles=1\nconsole1=192.168.1.20|1700000000\n")
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        tiles = lambda: {c["address"]: c["tiles"] for c in self.json("GET", "/api/state")["consoles"]}
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "", "games": {}})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "folder")
+        self.json("POST", "/api/consoles/tiles", {"address": "192.168.1.20", "mode": "god", "games": {"Skate 3": "none", "Halo 3": ""}})
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "god", "games": {"Skate 3": "none"}})
+        self.json("POST", "/api/settings", {"tileMode": "none"})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "none")
+        for bad in ({"address": "192.168.1.20", "mode": "disc"}, {"address": "192.168.1.20", "games": {"Halo 3": "iso"}},
+                    {"address": "192.168.1.20", "games": {"Halo 4": "god"}}, {"mode": "god"}):
+            self.assertEqual(self.call("POST", "/api/consoles/tiles", bad)[0], 400, bad)
+        self.assertEqual(self.call("POST", "/api/settings", {"tileMode": "usb"})[0], 400)
+        # Kept in the settings file.
+        self.restart()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "god", "games": {"Skate 3": "none"}})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "none")
+        # Back to the default, with no game of its own: nothing kept.
+        self.json("POST", "/api/consoles/tiles", {"address": "192.168.1.20", "mode": "", "games": {}})
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "", "games": {}})
+        with open(self.config) as f:
+            self.assertIn("tile_choices=0", f.read())
 
     def test_serves_the_page_and_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

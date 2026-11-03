@@ -383,6 +383,29 @@ public:
         double started=Seconds();
         Node root; root.folder=true; root.size=0; root.file=-1;
         if(!Walk(folder,root,true,error)) return false;
+        if(!Place(root,true,error)) return false;
+        char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"folder, %d file(s), read in %.1f s",int(paths_.size()),Seconds()-started);
+        description_=text;
+        return true;
+    }
+    // A disc of the files given (names at its top, and their bytes), kept here.
+    bool Open(const std::vector<std::pair<std::string,std::vector<unsigned char> > >& files, std::string& error) {
+        Node root; root.folder=true; root.size=0; root.file=-1;
+        for(size_t i=0;i<files.size();++i) {
+            if(files[i].first.empty() || files[i].first.size()>MaxName) { error="a file has no name, or one too long for a disc"; return false; }
+            Node child; child.name=files[i].first; child.folder=false; child.size=files[i].second.size(); child.file=int(memory_.size()); child.sector=child.bytes=0;
+            memory_.push_back(files[i].second); paths_.push_back(files[i].first);
+            root.children.push_back(child);
+        }
+        std::sort(root.children.begin(),root.children.end(),[](const Node& a, const Node& b) { return NameLess(a.name,b.name); });
+        // Made again the same, byte for byte: no date in it.
+        if(!Place(root,false,error)) return false;
+        char text[64]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%d file(s) made here",int(memory_.size()));
+        description_=text;
+        return true;
+    }
+private:
+    bool Place(Node& root, bool dated, std::string& error) {
         DWORD next=VolumeSector+1;
         if(!PlaceTables(root,next,error)) return false;
         metaEnd_=next;
@@ -392,16 +415,15 @@ public:
         memset(volume,0,Sector);
         memcpy(volume,Magic,MagicSize);
         PutLittle32(volume+20,root.sector); PutLittle32(volume+24,root.bytes);
-        U64 now=(U64(time(NULL))+11644473600ULL)*10000000ULL;  // FILETIME.
+        U64 now=dated ? (U64(time(NULL))+11644473600ULL)*10000000ULL : 0;  // FILETIME.
         PutLittle32(volume+28,DWORD(now)); PutLittle32(volume+32,DWORD(now>>32));
         memcpy(volume+0x7EC,Magic,MagicSize);
         WriteTables(root);
         partition_=PartitionStart(U64(next)*Sector);
         size_=ImageSize(partition_,partition_+U64(next)*Sector);
-        char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"folder, %d file(s), read in %.1f s",int(paths_.size()),Seconds()-started);
-        description_=text;
         return true;
     }
+public:
     U64 Size() const { return size_; }
     bool Read(U64 offset, unsigned char* data, DWORD length) {
         memset(data,0,length);
@@ -422,6 +444,7 @@ public:
         for(;e!=extents_.end() && e->start<to;++e) {
             if(e->start+e->size<=from) continue;
             U64 a=from>e->start ? from : e->start, b=to<e->start+e->size ? to : e->start+e->size;
+            if(!memory_.empty()) { memcpy(out+(a-from),&memory_[size_t(e->file)][size_t(a-e->start)],size_t(b-a)); continue; }
             File* f=Opened(e->file);
             // A file that got shorter since the mount reads as zeros past its end.
             if(!f || f->Read(a-e->start,out+(a-from),DWORD(b-a))<0) { failed_=paths_[size_t(e->file)]; return false; }
@@ -521,6 +544,7 @@ private:
         return open_[0].second.get();
     }
     std::vector<std::string> paths_;
+    std::vector<std::vector<unsigned char> > memory_;  // The files' bytes, for a disc made here.
     std::vector<Extent> extents_;
     std::vector<unsigned char> meta_;
     std::vector<std::pair<int,std::unique_ptr<File> > > open_;
@@ -1080,6 +1104,15 @@ bool IsoReader::Open(const IsoFile& disc) {
     return true;
 }
 
+bool IsoReader::Open(const std::vector<std::pair<std::string,std::vector<unsigned char> > >& files) {
+    Close();
+    std::unique_ptr<FolderImage> image(new FolderImage);
+    if(!image->Open(files,note_)) return false;
+    note_=image->Description();
+    image_.reset(image.release());
+    return true;
+}
+
 bool IsoReader::Locate(const std::string& path, U64& at, U64& size) {
     Volume volume;
     if(!image_.get() || !ImageVolume(*image_,volume)) return false;
@@ -1195,6 +1228,7 @@ std::string GodPackage::Folder() const {
 }
 
 std::string GodPackage::Name() const {
+    if(!name_.empty()) return name_;
     char text[16]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",mediaId_);
     return text;
 }
