@@ -29,15 +29,18 @@
 // mounts from inside Aurora.
 //
 // A game started from a tile that asks for another of its discs gets that
-// disc's ISO mounted (see Disc swaps below), and, with NetISO.xex loaded,
-// NetISO's read size and receive buffer are raised at start-up (see
-// NetDisc360.ini below).
+// disc's ISO mounted (see Disc swaps below), an original Xbox game starts in
+// the emulator version its netiso.ini names (see Original Xbox emulator
+// below) and finds System Link games with Aurora's LiNK off (see Original
+// Xbox System Link below), and, with NetISO.xex loaded, NetISO's read size
+// and receive buffer are raised at start-up (see NetDisc360.ini below).
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include "../shared/isvr.h"
 #include "../server/version.h"
 #include "../shared/build_id.h"
@@ -879,9 +882,10 @@ static __declspec(naked) void SwapPreviousStub() {
         li r3,0x408
     }
 }
-// The tile a launch came from, for the disc start that follows it.
+// The tile a launch came from, for the disc start that follows it, and the
+// emulator its netiso.ini names for an original Xbox game (see Emulator).
 static char TileDevice[MAX_PATH];
-static struct { char folder[MAX_PATH]; DWORD titleId,at; } LastTile;
+static struct { char folder[MAX_PATH]; DWORD titleId,at; char xefu[32]; } LastTile;
 static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.at<10*60*1000; }
 // The armed game: its tile folder, Title ID and discs (by number), set on
 // the launching title's thread before the watcher is told; and the module
@@ -1315,8 +1319,9 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     return 0;
 }
 
-// The watcher: one system thread, started with the plugin, that keeps the
-// armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
+// The watcher: one system thread, started with the plugin, that puts System
+// Link's function in xam's export table once Nova's is there (WatchLink), and
+// keeps the armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
 // that Title ID runs, also after Nova changes it on a restart. (Watchers
 // created during the launch, as the first builds did, were parked in the
 // kernel and never ran; seen over xbdm.) ArmSwap gives it a new generation;
@@ -1328,10 +1333,13 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // notices from the game's own threads did. ArmSwap shows "ready" instead.
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
+static void WatchLink(),NoteLinkProgress(); // System Link, below
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
+        WatchLink();
+        NoteLinkProgress();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -1438,6 +1446,604 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
     SwapNote("Launch %s%s%s (flags %X): %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",flags,what);
 }
 
+// ---- Original Xbox emulator ----
+//
+// An original Xbox disc starts the console's xbox.xex, which picks the
+// emulator version from its own list of games and starts it for the disc:
+// XamLoaderLaunchTitleEx("X:\xefu.xex","\Device\Cdrom0",...) for a game it
+// doesn't know, xefu6.xex for Burnout 3 (seen in the logs). A tile's
+// netiso.ini can name another one, xefu= (from the server's list, see
+// server/xefu.h): when the emulator starts for that tile's disc, the one it
+// names starts instead, from the same folder, if it's there. The files in
+// HddX:\Compatibility stay as they are, but for one: xefu2019 and xefu2021a
+// to c load xefutitle.xex, which the Hacked Xefu Pack has as
+// xefutitle2019.xex and xefutitle2021.xex. Xefu Spoofer copies the one that
+// goes with the version to xefutitle.xex, and so does this.
+
+// The Title ID in the certificate of the disc's default.xbe (little-endian,
+// at the certificate's address less the base address).
+static DWORD Little32(const BYTE* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
+static const char DiscXbe[]="\\Device\\Cdrom0\\default.xbe";
+static bool XbeTitle(DWORD& titleId) {
+    HANDLE file;
+    if(OpenPath(DiscXbe,false,file)<0) return false;
+    static BYTE header[0x120];
+    BYTE cert[12];
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,header,sizeof(header),&offset);
+    bool found=false;
+    if(read>=0 && status.information==sizeof(header) && !memcmp(header,"XBEH",4)) {
+        DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+        offset.QuadPart=certificate-base;
+        IoStatusBlock more={0,0};
+        if(certificate>=base && NtReadFile(file,NULL,NULL,NULL,&more,cert,sizeof(cert),&offset)>=0 && more.information==sizeof(cert)) {
+            titleId=Little32(cert+8); found=titleId!=0;
+        }
+    }
+    NtClose(file);
+    return found;
+}
+// The emulator's folder as a device path for the kernel's calls, found by
+// opening name in it: xam's own path (X:\) through \??, or else where
+// HddX:\Compatibility is (xefu.xex names it).
+static const char CompatibilityDevice[]="\\Device\\Harddisk0\\SystemPartition\\Compatibility\\";
+static bool EmulatorFolder(const char* folder,const char* name,char* device,size_t capacity) {
+    char candidates[2][MAX_PATH];
+    if(sprintf_s(candidates[0],folder[0]=='\\' ? "%s" : "\\??\\%s",folder)<0) candidates[0][0]=0;
+    strcpy_s(candidates[1],CompatibilityDevice);
+    for(int i=0;i<2;++i) {
+        char path[MAX_PATH]; HANDLE file;
+        if(!candidates[i][0] || sprintf_s(path,"%s%s",candidates[i],name)<0 || OpenPath(path,false,file)<0) continue;
+        NtClose(file);
+        return strcpy_s(device,capacity,candidates[i])==0;
+    }
+    return false;
+}
+// Up to TitleChunk bytes of file from at: how many (0 at the end), or -1.
+// Small buffers keep the plugin's image at the size DashLaunch loads: with
+// two 64 KB ones here it grew by 128 KB and didn't load at all.
+static const DWORD TitleChunk=0x1000;
+static BYTE TitleFrom[TitleChunk],TitleNow[TitleChunk];
+static int ReadChunk(HANDLE file,BYTE* data,DWORD at) {
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=at;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,data,TitleChunk,&offset);
+    if(read==LONG(0xC0000011)) return 0; // STATUS_END_OF_FILE
+    return read>=0 && status.information<=TitleChunk ? int(status.information) : -1;
+}
+// Whether the files at two device paths hold the same bytes.
+static bool SameFile(const char* first,const char* second) {
+    HANDLE one,two;
+    if(OpenPath(first,false,one)<0) return false;
+    if(OpenPath(second,false,two)<0) { NtClose(one); return false; }
+    bool same=false;
+    for(DWORD at=0;;) {
+        int a=ReadChunk(one,TitleFrom,at),b=ReadChunk(two,TitleNow,at);
+        if(a<0 || a!=b || memcmp(TitleFrom,TitleNow,size_t(a))) break;
+        if(!a) { same=true; break; }
+        at+=DWORD(a);
+    }
+    NtClose(one); NtClose(two);
+    return same;
+}
+// Makes xefutitle.xex in the emulator's folder (a device path) a copy of
+// from there, unless it is one already.
+static bool PutTitleFile(const char* folder,const char* from) {
+    char source[MAX_PATH],target[MAX_PATH];
+    if(sprintf_s(source,"%s%s",folder,from)<0 || sprintf_s(target,"%sxefutitle.xex",folder)<0) return false;
+    HANDLE in;
+    if(OpenPath(source,false,in)<0) { SwapNote("Can't read %s.",source); return false; }
+    if(SameFile(source,target)) { NtClose(in); return true; }
+    KernelString name={USHORT(strlen(target)),USHORT(sizeof(target)),target};
+    ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+    IoStatusBlock io={0,0}; HANDLE file=NULL;
+    // GENERIC_WRITE with SYNCHRONIZE, FILE_OVERWRITE_IF, a synchronous file.
+    LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,0,5,0x60);
+    if(status>=0) {
+        for(DWORD done=0;;) {
+            int size=ReadChunk(in,TitleFrom,done);
+            if(size<=0) { if(size<0 || !done) status=-1; break; }
+            LARGE_INTEGER at; at.QuadPart=done;
+            status=NtWriteFile(file,NULL,NULL,NULL,&io,TitleFrom,DWORD(size),&at);
+            if(status>=0 && io.information!=DWORD(size)) status=-1;
+            if(status<0) break;
+            done+=DWORD(size);
+        }
+        NtClose(file);
+    }
+    NtClose(in);
+    if(status<0) { SwapNote("Can't write %s (status %08X).",target,status); return false; }
+    SwapNote("Copied %s to %s, which %s loads.",from,target,LastTile.xefu);
+    return true;
+}
+// What the emulator start for path from mountPath starts instead: the tile's
+// xefu in chosen, or path itself.
+static const char* Emulator(const char* path,const char* mountPath,char* chosen,size_t capacity) {
+    if(!path || !mountPath || _stricmp(mountPath,DiscDevice) || !TileFresh() || !LastTile.xefu[0]) return path;
+    const char* name=strrchr(path,'\\');
+    if(!name || _strnicmp(name+1,"xefu",4) || !_strnicmp(name+1,"xefutitle",9)) return path;
+    size_t folder=size_t(name+1-path);
+    char leaf[48];
+    if(folder>=MAX_PATH || folder+sizeof(leaf)>=capacity || sprintf_s(leaf,"%s.xex",LastTile.xefu)<0) return path;
+    memcpy(chosen,path,folder); chosen[folder]=0;
+    strcat_s(chosen,capacity,leaf);
+    if(!_stricmp(chosen,path)) return path; // What the console picked.
+    DWORD titleId=0;
+    if(!XbeTitle(titleId) || titleId!=LastTile.titleId) {
+        SwapNote("The disc isn't the tile's game (Title ID %08X), so %s starts as the console picked.",titleId,path);
+        return path;
+    }
+    char folderPath[MAX_PATH],device[MAX_PATH]; memcpy(folderPath,path,folder); folderPath[folder]=0;
+    if(!EmulatorFolder(folderPath,leaf,device,sizeof(device))) {
+        SwapNote("%s isn't there, so %s starts as the console picked.",chosen,path);
+        return path;
+    }
+    const char* title=!_strnicmp(LastTile.xefu,"xefu2019",8) ? "xefutitle2019.xex" : !_strnicmp(LastTile.xefu,"xefu2021",8) ? "xefutitle2021.xex" : NULL;
+    if(title && !PutTitleFile(device,title)) { SwapNote("So %s starts as the console picked.",path); return path; }
+    SwapNote("Starting %s instead of %s, as the tile's netiso.ini says.",chosen,path);
+    return chosen;
+}
+// ---- Original Xbox System Link ----
+//
+// The emulator sends and receives the game's LAN frames through xam's
+// NetDll_XnpEthernetInterceptSetCallbacks (109) and
+// NetDll_XnpEthernetInterceptXmit (110), as slot 1 (the title). Aurora's
+// Nova.xex puts its own function for each in xam's export table, for LiNK.
+// Nova's 110 passes the game's frames on to xam, so they go out (seen in a
+// capture on the PC). Its 109 keeps the game's callbacks to itself instead
+// of passing them on, and only LiNK hands the game frames, so with LiNK off
+// an original Xbox game hears nothing and no console finds another's System
+// Link game (read from Nova.xex 0.7b.2; seen with Halo and Halo 2).
+// With Nova not loaded, xam gets the game's callbacks and System Link works,
+// but only from a copy on the console's own drive: xam then hands the game
+// every frame that comes in, the game takes them all, and a disc streamed
+// over the network stops arriving (the game froze about 40 s in, and xbdm's
+// connection died with it; seen on both consoles).
+// So, once Nova has put its function for 109 in xam's export table (when
+// Aurora first starts after a boot), NetDisc360's watcher puts its own there
+// in Nova's place. It has to be the watcher: xam's export table can be
+// written from a system thread, as Nova does and as this plugin's hooks
+// write xam, but a store from a title's thread faults (the launch hooks run
+// on the title's; seen at the emulator's launch, from xbox.xex).
+// For the game (slot 1) it hands xam the game's callbacks itself, on the
+// game's thread (taking Nova's own callbacks off xam while the game runs, as
+// xam takes one set at a time), with its own callbacks in front of both of
+// the game's, which give the game only System Link frames (IPv4 from or to
+// 0.0.0.1) and leave every other frame to the console, so the disc stream
+// keeps coming. (With the game's first callback in front of the console's
+// frames, v13d, or its second, v13c, the console froze 9 to 43 s in, as
+// with Nova not loaded.) For anything else, or
+// with LiNK on, it calls Nova's. Nova loads once per boot, so its own call
+// to xam stays bound to xam's. xbox_link=nova (or off) in NetDisc360.ini
+// leaves it all to Nova.
+static const DWORD SetCallbacksOrdinal=109;
+static const DWORD SlotOneCompare=0x2F030001;
+// sent: xam's first callback (seen with the frames the console sends);
+// received: its second, with those that come in (Nova's own second one
+// takes LiNK's packets and leaves the rest, 0, and Nova hands a title the
+// frames LiNK receives through the title's second; its own first calls the
+// title's first). Nova registers its pair as (2, first, second, instance, 0).
+typedef LONG (*SetCallbacks)(DWORD slot,void* sent,void* received,void* context,DWORD more);
+// A title's callback; whatever xam passes after the frame goes on as it came.
+typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10);
+typedef BYTE* (*NovaInstance)();
+// Nova's CSystemLink: whether LiNK runs.
+static const DWORD NovaLinkOn=0xC0;
+// Nova registers callbacks of its own at xam (slot 2) at each title's load,
+// LiNK on or off, and takes them back when the title ends (+0xD0 is 1 while
+// they're registered). xam takes one set of callbacks at a time: with Nova's
+// there, it answered 2735 (WSAEALREADY) to the game's (seen on both
+// consoles). Its two callbacks, before its function for 109 (Nova 0.7b.2):
+static const DWORD NovaRegistered=0xD0;
+static const DWORD NovaFramesBefore=0x18A0,NovaOtherBefore=0x18B0;
+static const DWORD NovaFramesCode[4]={0x2B030000,0x409A0008,0x4E800020,0x4800006C}; // cmplwi cr6,r3,0; bne +8; blr; b
+static const DWORD NovaOtherCode[4]={0x2B030000,0x409A0008,0x4E800020,0x48000014};
+
+// Where a bl at at goes, or 0.
+static DWORD CallTarget(const DWORD* at) {
+    DWORD word=*at;
+    if((word&0xFC000003)!=0x48000001) return 0;
+    DWORD offset=word&0x03FFFFFC;
+    if(offset&0x02000000) offset|=0xFC000000;
+    return DWORD(at)+offset;
+}
+// Nova's function at address: where it compares the slot, the call it makes
+// for slot 1 first (Nova's instance), and its call to xam's own for other
+// slots.
+struct NovaFunction { const DWORD* compare; const DWORD* instance; const DWORD* xam; };
+static bool IsNovaFunction(DWORD address,NovaFunction& function) {
+    const DWORD* code=(const DWORD*)address;
+    // xam's own code is at 0x81..., plugins like Nova at 0x91....
+    if(address<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+40)) || code[0]!=0x7D8802A6) return false; // mflr r12
+    for(int i=1;i<14;++i) {
+        if(code[i]!=SlotOneCompare) continue;
+        if((code[i+1]&0xFFFF8003)!=0x409A0000) return false; // bne cr6, forward
+        const DWORD* other=code+i+1+((code[i+1]&0xFFFC)>>2);
+        if(other>code+32 || !CallTarget(code+i+2)) return false;
+        function.compare=code+i; function.instance=code+i+2; function.xam=NULL;
+        for(const DWORD* call=other;call<other+6;++call) if(CallTarget(call)) { function.xam=call; break; }
+        return function.xam!=NULL;
+    }
+    return false;
+}
+// The entry for ordinal in a module's export table, as Nova finds xam's: the
+// security info's export table (+0x160), whose entries are addresses less
+// the image base (its high half at +0x20); NULL if there is none.
+static DWORD* ExportEntry(HANDLE module,DWORD ordinal,DWORD& base) {
+    const BYTE* entry=(const BYTE*)module;
+    if(!entry || !MmIsAddressValid((void*)(entry+0x58))) return NULL;
+    const BYTE* header=*(const BYTE* const*)(entry+0x58);
+    if(!header || !MmIsAddressValid((void*)(header+0x10))) return NULL;
+    const BYTE* security=*(const BYTE* const*)(header+0x10);
+    if(!security || !MmIsAddressValid((void*)(security+0x160))) return NULL;
+    DWORD* table=*(DWORD* const*)(security+0x160);
+    if(!table || !MmIsAddressValid(table) || !MmIsAddressValid(table+10)) return NULL;
+    DWORD count=table[9],first=table[10];
+    if(ordinal<first || ordinal-first>=count || !MmIsAddressValid(table+11+(ordinal-first))) return NULL;
+    base=table[8]<<16;
+    return table+11+(ordinal-first);
+}
+
+// The kinds of frames, for the log: source MAC, type, and for IPv4 the
+// addresses, protocol and ports.
+struct FrameKind { BYTE source[6],broadcast,protocol; WORD type,fromPort,toPort; DWORD from,to,count; };
+static const int MaxKinds=16;
+struct FrameKinds { FrameKind kinds[MaxKinds]; volatile LONG count,lock; volatile DWORD left; };
+static void NoteKind(FrameKinds& table,const BYTE* frame,DWORD length) {
+    if(!frame || length<14 || InterlockedCompareExchange(&table.lock,1,0)) return;
+    FrameKind kind; memset(&kind,0,sizeof(kind));
+    memcpy(kind.source,frame+6,6);
+    kind.broadcast=frame[0]==0xFF ? 1 : (frame[0]&1) ? 2 : 0;
+    kind.type=WORD(frame[12]<<8|frame[13]);
+    if(kind.type==0x0800 && length>=34) {
+        kind.protocol=frame[23];
+        kind.from=DWORD(frame[26])<<24|DWORD(frame[27])<<16|DWORD(frame[28])<<8|frame[29];
+        kind.to=DWORD(frame[30])<<24|DWORD(frame[31])<<16|DWORD(frame[32])<<8|frame[33];
+        size_t header=size_t(frame[14]&15)*4;
+        if((kind.protocol==6 || kind.protocol==17) && header>=20 && 14+header+4<=length) {
+            kind.fromPort=WORD(frame[14+header]<<8|frame[15+header]);
+            kind.toPort=WORD(frame[16+header]<<8|frame[17+header]);
+        }
+    }
+    LONG count=table.count,i=0;
+    for(;i<count;++i) {
+        const FrameKind& k=table.kinds[i];
+        if(!memcmp(k.source,kind.source,6) && k.broadcast==kind.broadcast && k.type==kind.type && k.protocol==kind.protocol
+           && k.from==kind.from && k.to==kind.to && k.fromPort==kind.fromPort && k.toPort==kind.toPort) break;
+    }
+    if(i<count) ++table.kinds[i].count;
+    else if(count<MaxKinds) { kind.count=1; table.kinds[count]=kind; table.count=count+1; }
+    else ++table.left;
+    InterlockedExchange(&table.lock,0);
+}
+static size_t PutIp(char* out,size_t at,size_t capacity,DWORD ip,DWORD port) {
+    for(int i=0;i<4;++i) { if(i) at=Put(out,at,capacity,"."); at=PutNumber(out,at,capacity,(ip>>(24-8*i))&255,10,1); }
+    at=Put(out,at,capacity,":");
+    return PutNumber(out,at,capacity,port,10,1);
+}
+// Says which kinds of frames came, and starts over. Without the CRT's
+// formatting, so the watcher can too (see SwapNote).
+static void NoteKinds(FrameKinds& table,const char* what) {
+    FrameKind kinds[MaxKinds];
+    while(InterlockedCompareExchange(&table.lock,1,0)) Sleep(1);
+    LONG count=table.count<MaxKinds ? table.count : MaxKinds;
+    DWORD left=table.left;
+    memcpy(kinds,table.kinds,sizeof(FrameKind)*count);
+    table.count=0; table.left=0;
+    InterlockedExchange(&table.lock,0);
+    for(LONG i=0;i<count;++i) {
+        const FrameKind& k=kinds[i];
+        char text[160];
+        size_t at=Put(text,0,sizeof(text),"from ");
+        for(int b=0;b<6;++b) { if(b) at=Put(text,at,sizeof(text),"-"); at=PutNumber(text,at,sizeof(text),k.source[b],16,2); }
+        at=Put(text,at,sizeof(text),k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "");
+        at=Put(text,at,sizeof(text),", type ");
+        at=PutNumber(text,at,sizeof(text),k.type,16,4);
+        if(k.type==0x0800) {
+            at=Put(text,at,sizeof(text),", ");
+            at=PutIp(text,at,sizeof(text),k.from,k.fromPort);
+            at=Put(text,at,sizeof(text)," to ");
+            at=PutIp(text,at,sizeof(text),k.to,k.toPort);
+            at=Put(text,at,sizeof(text),", protocol ");
+            at=PutNumber(text,at,sizeof(text),k.protocol,10,1);
+        }
+        SwapNote("System Link:   %s: %u frames %s.",what,k.count,text);
+    }
+    if(left) SwapNote("System Link:   %s: %u frames of other kinds.",what,left);
+}
+
+static BYTE* volatile LinkNova=NULL;
+static NovaInstance LinkInstance=NULL;          // Nova's function that gives its instance
+static SetCallbacks NovaSet=NULL,RealSet=NULL; // Nova's function for 109; xam's own, through Nova's import
+static bool LinkToNova=false;                   // xbox_link=nova (or off) in NetDisc360.ini
+static char LinkSetting[96]="";
+static HANDLE LinkXam=NULL;
+static DWORD* LinkEntry=NULL;                   // xam's export table entry for 109
+static DWORD LinkBase=0;
+static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRegistered=false;
+static volatile DWORD LinkSets=0;
+static volatile LONG LinkXamResult=-1,LinkXamRetry=-1;
+static int LinkFirstMode=0;                     // xbox_link_first: 0 filter, 1 raw (the game's own), 2 none
+static volatile bool LinkDetail=false;          // xbox_link_log=1: the kinds of frames, the first ones, and notes every 5 s
+static void* LinkNovaFrames=NULL;               // Nova's own callbacks, to give back
+static void* LinkNovaOther=NULL;
+static volatile bool LinkMovedNova=false;
+static volatile LONG LinkNovaOff=-1,LinkNovaBack=-1; // what xam said to taking Nova's off and giving them back
+static DWORD LinkNotedAt=0,LinkNotedSeen=0,LinkRegisteredAt=0; // the watcher's last progress note; when xam took the game's
+static int LinkNotes=0;
+// An IPv4 frame from or to 0.0.0.1, as original Xbox consoles send System
+// Link. The frame may come with its Ethernet header or start at the IPv4
+// header, so both are looked at.
+static bool XboxIp(const BYTE* ip,DWORD length) {
+    return length>=20 && (ip[0]>>4)==4 && ((!ip[12] && !ip[13] && !ip[14] && ip[15]==1) || (!ip[16] && !ip[17] && !ip[18] && ip[19]==1));
+}
+static bool XboxFrame(const BYTE* frame,DWORD length) {
+    return (length>=34 && frame[12]==8 && !frame[13] && XboxIp(frame+14,length-14)) || XboxIp(frame,length);
+}
+
+// The first few frames each way, the first 64 bytes of each in hex, to see
+// how xam hands them over; each said once.
+static const int MaxDumps=4,DumpBytes=64;
+struct FrameDumps { BYTE bytes[MaxDumps][DumpBytes]; DWORD lengths[MaxDumps]; volatile LONG count,noted; };
+static void DumpFrame(FrameDumps& dumps,const BYTE* frame,DWORD length) {
+    if(!frame || dumps.count>=MaxDumps) return;
+    LONG at=InterlockedIncrement(&dumps.count)-1;
+    if(at>=MaxDumps) return;
+    dumps.lengths[at]=length;
+    memcpy(dumps.bytes[at],frame,length<DWORD(DumpBytes) ? length : DWORD(DumpBytes));
+}
+static void NoteDumps(FrameDumps& dumps,const char* what) {
+    LONG count=dumps.count<MaxDumps ? dumps.count : MaxDumps;
+    for(LONG i=dumps.noted;i<count;++i) {
+        char hex[DumpBytes*3+1]; size_t at=0; hex[0]=0;
+        DWORD shown=dumps.lengths[i]<DWORD(DumpBytes) ? dumps.lengths[i] : DWORD(DumpBytes);
+        for(DWORD b=0;b<shown;++b) { at=PutNumber(hex,at,sizeof(hex),dumps.bytes[i][b],16,2); at=Put(hex,at,sizeof(hex)," "); }
+        SwapNote("System Link:   %s frame %u, %u bytes: %s",what,DWORD(i+1),dumps.lengths[i],hex);
+    }
+    if(count>dumps.noted) dumps.noted=count;
+}
+// Each of the game's two callbacks while xam has ours in front of them, and
+// what came through: [0] xam's first, [1] its second.
+struct LinkWay {
+    TitleFrames volatile game;
+    volatile LONG other;                        // what xam is told for the frames left to the console (xbox_link_other)
+    volatile DWORD seen,unreadable,xbox,taken,left;
+    volatile LONG odd;
+    FrameKinds kinds;
+    FrameDumps first,link;                      // the first frames, and the first System Link ones
+};
+static LinkWay LinkWays[2];
+static const char* const LinkWayNames[2]={"first callback","second callback"};
+static void ResetWay(LinkWay& way) {
+    way.game=NULL;
+    way.seen=way.unreadable=way.xbox=way.taken=way.left=0; way.odd=0;
+    while(InterlockedCompareExchange(&way.kinds.lock,1,0)) Sleep(1);
+    way.kinds.count=0; way.kinds.left=0;
+    InterlockedExchange(&way.kinds.lock,0);
+    way.first.count=way.first.noted=0; way.link.count=way.link.noted=0;
+}
+static void NoteWay(int w) {
+    const LinkWay& way=LinkWays[w];
+    SwapNote("System Link: %s: %u frames (%u unreadable), %u of them System Link, which the game got (it said 1 to %u, 0 to %u, last other %X); xam was told %u for the rest.",
+             LinkWayNames[w],way.seen,way.unreadable,way.xbox,way.taken,way.left,DWORD(way.odd),DWORD(way.other));
+}
+// What xam calls with each frame, in front of one of the game's callbacks:
+// hands the game the System Link ones and says what it did with them; every
+// other frame is left to the console (0), for the disc stream.
+static LONG LinkFrame(LinkWay& way,void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    TitleFrames game=way.game;
+    if(!game) return way.other;
+    ++way.seen;
+    if(!frame || length<14 || length>0x4000 || !MmIsAddressValid(frame) || !MmIsAddressValid(frame+length-1)) { ++way.unreadable; return way.other; }
+    if(LinkDetail) { NoteKind(way.kinds,frame,length); DumpFrame(way.first,frame,length); }
+    if(!LinkActive || !XboxFrame(frame,length)) return way.other;
+    ++way.xbox;
+    if(LinkDetail) DumpFrame(way.link,frame,length);
+    LONG result=game(context,frame,length,r6,r7,r8,r9,r10);
+    if(result==1) ++way.taken;
+    else if(!result) ++way.left;
+    else way.odd=result;
+    return result;
+}
+static LONG LinkFirst(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[0],context,frame,length,r6,r7,r8,r9,r10);
+}
+static LONG LinkSecond(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[1],context,frame,length,r6,r7,r8,r9,r10);
+}
+// xam's export 109 once installed: for the game while it runs, xam gets its
+// callbacks with LinkFirst and LinkSecond in front, on the game's thread (without
+// callbacks it takes them back); everything else goes to Nova's, as before.
+// Takes Nova's own callbacks off xam, to make room for the game's; true if
+// it did.
+static bool MoveNova() {
+    BYTE* nova=LinkNova;
+    if(LinkMovedNova || !nova || *(DWORD*)(nova+NovaRegistered)!=1) return false;
+    LinkNovaOff=RealSet(2,NULL,NULL,NULL,0);
+    LinkMovedNova=true;
+    return true;
+}
+// Gives Nova its callbacks back at xam, as Nova registers them, unless it
+// has already let go of them itself (its title ended).
+static void GiveNovaBack() {
+    if(!LinkMovedNova) return;
+    LinkMovedNova=false;
+    BYTE* nova=LinkNova;
+    if(!nova || *(DWORD*)(nova+NovaRegistered)!=1) { LinkNovaBack=-2; return; }
+    if(!LinkNovaFrames || !LinkNovaOther) { LinkNovaBack=-3; return; } // Nova registers them again at the next title's load
+    LinkNovaBack=RealSet(2,LinkNovaFrames,LinkNovaOther,nova,0);
+}
+static LONG LinkSetCallbacks(DWORD slot,void* sent,void* received,void* context,DWORD more) {
+    BYTE* nova=LinkNova;
+    if(slot!=1 || !LinkActive || (nova && *(DWORD*)(nova+NovaLinkOn))) return NovaSet(slot,sent,received,context,more);
+    ++LinkSets;
+    if(!sent && !received) {
+        if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+        LinkWays[0].game=LinkWays[1].game=NULL;
+        GiveNovaBack();
+        return NovaSet(slot,sent,received,context,more);
+    }
+    // Both go through ours (xbox_link_first=raw gives xam the game's first
+    // as it is, none leaves it out).
+    LinkWays[0].game=(TitleFrames)sent; LinkWays[1].game=(TitleFrames)received;
+    void* first=!sent || LinkFirstMode==2 ? NULL : LinkFirstMode==1 ? sent : (void*)LinkFirst;
+    void* second=received ? (void*)LinkSecond : NULL;
+    LinkRegisteredAt=GetTickCount(); LinkNotes=0;
+    LONG xam=RealSet(1,first,second,context,more),retry=xam;
+    if(retry && MoveNova()) retry=RealSet(1,first,second,context,more); // Nova's were in the way
+    if(retry) { // taken: once more after taking it back
+        RealSet(1,NULL,NULL,NULL,0);
+        retry=RealSet(1,first,second,context,more);
+    }
+    LinkXamResult=xam; LinkXamRetry=retry;
+    LinkRegistered=!retry;
+    SwapNote("System Link: xam said %X (in the end %X) to the game's callbacks as slot 1 (first %X %s, second %X %s); Nova's own were %s (%X).",
+             DWORD(xam),DWORD(retry),DWORD(sent),first==(void*)LinkFirst ? "behind ours" : first ? "as it is" : "left out",
+             DWORD(received),second ? "behind ours" : "none",LinkMovedNova ? "taken off" : "left",DWORD(LinkNovaOff));
+    if(LinkRegistered) return 0;
+    LinkWays[0].game=LinkWays[1].game=NULL;
+    GiveNovaBack();
+    return NovaSet(slot,sent,received,context,more);
+}
+// On any launch: takes the game's callbacks back from xam (on the title's
+// thread, as they were given: xam mustn't keep calling into a game that's
+// gone) and says what came in.
+static void StopLink() {
+    if(!LinkActive) return;
+    if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+    GiveNovaBack();
+    LinkActive=false; LinkWays[0].game=LinkWays[1].game=NULL;
+    SwapNote("System Link: the game set its callbacks %u times; xam said %X (in the end %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
+    if(DWORD(LinkNovaOff)!=0xFFFFFFFF)
+        SwapNote("System Link: Nova's own callbacks were taken off xam (it said %X) and given back (%X; FFFFFFFE: Nova had let go of them, FFFFFFFD: not found).",
+                 DWORD(LinkNovaOff),DWORD(LinkNovaBack));
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+        ResetWay(LinkWays[w]);
+    }
+    LinkSets=0; LinkNotedSeen=0; LinkNotes=0;
+    LinkXamResult=LinkXamRetry=-1;
+    LinkNovaOff=LinkNovaBack=-1;
+}
+// Whether the four instructions at at are code's.
+static bool SameCode(const DWORD* at,const DWORD* code) {
+    if(!MmIsAddressValid((void*)at) || !MmIsAddressValid((void*)(at+3))) return false;
+    for(int i=0;i<4;++i) if(at[i]!=code[i]) return false;
+    return true;
+}
+// From the watcher, with xbox_link_log=1, while xam has the game's
+// callbacks: the counts so far every 5 s (a console that freezes never gets
+// to StopLink), for the first two minutes whether they change or not, so the
+// last note says when it froze; the kinds of frames for the first 30 s, and
+// the first frames once.
+static void NoteLinkProgress() {
+    if(!LinkDetail || !LinkActive || !LinkRegistered) return;
+    DWORD now=GetTickCount(),seen=LinkWays[0].seen+LinkWays[1].seen;
+    if(now-LinkNotedAt<5000 || (seen==LinkNotedSeen && now-LinkRegisteredAt>120000)) return;
+    LinkNotedAt=now; LinkNotedSeen=seen; ++LinkNotes;
+    SwapNote("System Link: %u s in:",(now-LinkRegisteredAt)/1000);
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        if(LinkNotes<=6) NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+    }
+}
+// When the plugin starts: whether System Link is left to Nova.
+static void ReadLinkSetting() {
+    char value[16];
+    const char* from=TuningValue("xbox_link",value,sizeof(value));
+    LinkToNova=from && (!_stricmp(value,"nova") || !_stricmp(value,"off"));
+    if(LinkToNova) sprintf_s(LinkSetting,"xbox_link=%s in %s",value,from);
+}
+// From the watcher (a system thread; no CRT calls here, see SwapNote), until
+// done once this boot: once Nova's function for 109 is in xam's export table,
+// puts LinkSetCallbacks there in its place.
+static void WatchLink() {
+    if(LinkInstalled || LinkTried || LinkToNova) return;
+    if(!LinkEntry) {
+        HANDLE module=NULL;
+        DWORD base=0;
+        DWORD* entry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,base);
+        if(!entry) { LinkTried=true; SwapNote("System Link: xam's export table isn't where Nova's is found; left to Nova."); return; }
+        LinkXam=module; LinkBase=base; LinkEntry=entry;
+    }
+    DWORD at=LinkBase+*LinkEntry;
+    if(at<0x90000000) return; // xam's own still: Nova isn't loaded yet
+    if(at==DWORD(LinkSetCallbacks)) { LinkInstalled=true; return; }
+    LinkTried=true;
+    void* address=NULL;
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=at) {
+        SwapNote("System Link: xam's export table reads %X where xam says %X; left to Nova.",at,DWORD(address));
+        return;
+    }
+    NovaFunction set;
+    if(!IsNovaFunction(at,set)) { SwapNote("System Link: xam's export 109 (%X) isn't Nova's function as known; left as it is.",at); return; }
+    NovaInstance instance=(NovaInstance)CallTarget(set.instance);
+    SetCallbacks real=(SetCallbacks)CallTarget(set.xam);
+    if(!instance || !real) { SwapNote("System Link: Nova's function for 109 (%X) doesn't call what it should; left to Nova.",at); return; }
+    LinkInstance=instance; NovaSet=(SetCallbacks)at; RealSet=real;
+    const DWORD* novaFrames=(const DWORD*)(at-NovaFramesBefore);
+    const DWORD* novaOther=(const DWORD*)(at-NovaOtherBefore);
+    if(SameCode(novaFrames,NovaFramesCode) && SameCode(novaOther,NovaOtherCode)) {
+        LinkNovaFrames=(void*)novaFrames; LinkNovaOther=(void*)novaOther;
+    } else SwapNote("System Link: Nova's own callbacks aren't where Nova 0.7b.2 has them; while a game has System Link, Nova gets its back only at the next title.");
+    __sync(); // all of that before anyone can call LinkSetCallbacks
+    *LinkEntry=DWORD(LinkSetCallbacks)-LinkBase;
+    FlushCode(LinkEntry,4);
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks)) {
+        SwapNote("System Link: xam's export 109 reads %X after the change, not NetDisc360's %X; left to Nova.",DWORD(address),DWORD(LinkSetCallbacks));
+        return;
+    }
+    LinkInstalled=true;
+    SwapNote("System Link: xam's export 109 goes through NetDisc360 now (Nova's is %X); original Xbox games get System Link frames from xam.",at);
+}
+// When the emulator starts: System Link for this game, unless LiNK is on.
+// xbox_link_other=1 in NetDisc360.ini tells xam 1 instead of 0 for the
+// frames left to the console.
+static void StartLink() {
+    StopLink();
+    if(LinkToNova) { SwapNote("System Link: left to Nova (%s).",LinkSetting); return; }
+    if(!LinkInstalled) {
+        SwapNote(LinkTried ? "System Link: xam's export 109 doesn't go through NetDisc360 (see above); left to Nova."
+                           : "System Link: Nova's function for 109 never showed up in xam's export table (is Nova loaded?); left as it is.");
+        return;
+    }
+    BYTE* nova=LinkInstance();
+    if(!nova || !MmIsAddressValid(nova+NovaLinkOn)) { SwapNote("System Link: no Nova instance; left to Nova."); return; }
+    if(*(DWORD*)(nova+NovaLinkOn)) { SwapNote("System Link: LiNK is on, so it's left to Nova."); return; }
+    LinkNova=nova;
+    char value[16];
+    for(int w=0;w<2;++w) ResetWay(LinkWays[w]);
+    LinkWays[0].other=LinkWays[1].other=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
+    if(TuningValue("xbox_link_first_other",value,sizeof(value))) LinkWays[0].other=!strcmp(value,"1") ? 1 : 0;
+    LinkFirstMode=!TuningValue("xbox_link_first",value,sizeof(value)) ? 0 : !_stricmp(value,"raw") ? 1 : !_stricmp(value,"none") ? 2 : 0;
+    LinkDetail=TuningValue("xbox_link_log",value,sizeof(value)) && !strcmp(value,"1");
+    LinkRegistered=false;
+    LinkActive=true;
+    SwapNote("System Link: on for this game; it gets System Link frames, the console keeps the rest.");
+}
+// The emulator starting, for a disc or a copy on a drive.
+static bool XefuStart(const char* path) {
+    const char* name=path ? strrchr(path,'\\') : NULL;
+    return name && !_strnicmp(name+1,"xefu",4) && _strnicmp(name+1,"xefutitle",9);
+}
+// Whether path from mountPath is the console starting the emulator for an
+// original Xbox disc.
+static bool EmulatorStart(const char* path,const char* mountPath) {
+    return mountPath && !_stricmp(mountPath,DiscDevice) && XefuStart(path);
+}
+
+// xefu or config_loader_xefu, then letters, digits and _ (see server/xefu.h).
+static bool XefuName(const char* name) {
+    size_t start=!strncmp(name,"xefu",4) ? 4 : !strncmp(name,"config_loader_xefu",18) ? 18 : 0;
+    if(!start || !strncmp(name,"xefutitle",9) || strlen(name)>start+24) return false;
+    for(const char* c=name+start;*c;++c) if(!isalnum((unsigned char)*c) && *c!='_') return false;
+    return true;
+}
+
 // ---- Tiles ----
 
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
@@ -1537,6 +2143,8 @@ static Handling Handled(const char* path,const char* mountPath) {
     Handling handling=NotTile;
     if(IsTile(path,mountPath,settings)) {
         strcpy_s(LastTile.folder,TileDevice); LastTile.titleId=settings.titleId; LastTile.at=GetTickCount();
+        if(!IniValue(Ini,"xefu",LastTile.xefu,sizeof(LastTile.xefu)) || !XefuName(LastTile.xefu)) LastTile.xefu[0]=0;
+        else Note("Original Xbox emulator: %s (from netiso.ini).",LastTile.xefu);
         SwapLogTo(LastTile.folder);
         PrepareDiscs(settings);
         // The tile's own launcher starts it (see the top of this file);
@@ -1581,6 +2189,7 @@ static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     bool disc=handling==NotTile && DiscStart(path,NULL);
     NoteLaunch(path,NULL,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
+    StopLink();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -1592,6 +2201,12 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     bool disc=handling==NotTile && DiscStart(path,mountPath);
     NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
     if(disc) ArmSwap();
+    static char emulator[MAX_PATH];
+    if(handling==NotTile && !disc && EmulatorStart(path,mountPath)) {
+        StartLink();
+        path=Emulator(path,mountPath,emulator,sizeof(emulator));
+    } else if(handling==NotTile && !disc && XefuStart(path)) StartLink();
+    else StopLink();
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -1617,6 +2232,7 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         PatchReceiveBuffer();
         StartDrive();
         FindSwapExports();
+        ReadLinkSetting();
         StartWatcher();
         // The LAN party's guest profiles, made here under Aurora (profiles_job.h).
         profilejob::Start(Note,Show);
