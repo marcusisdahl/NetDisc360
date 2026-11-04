@@ -1238,7 +1238,7 @@ function details(g) {
         g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + a, onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? a : 'netiso.log')))] : null))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
-        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in Hdd1:\\NetISO.'),
+        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in ' + gamesFolder() + '.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn.primary', { onclick: close }, 'Close')),
   ]);
@@ -1461,7 +1461,7 @@ Pages.consoles = root => {
     only = h('input.input', { value: st.xboxes.join(', '), placeholder: '192.168.1.30, 192.168.1.31', oninput: () => { some.checked = true; } });
     fill(which, h('div.card', h('div.card-head', ic('folder-sync'), h('h2', 'Which consoles get your games in Aurora')),
       h('div.card-body', h('div.form',
-        h('label.radio', every, h('div', h('div.title', 'Every console that connects'), h('div.help', 'Each console that uses this server gets a folder in Hdd1:\\NetISO for every game.'))),
+        h('label.radio', every, h('div', h('div.title', 'Every console that connects'), h('div.help', 'Each console that uses this server gets a folder in ' + gamesFolder() + ' for every game.'))),
         h('label.radio', some, h('div', { style: { flex: 1 } }, h('div.title', 'Only these consoles'), h('div.help', 'IP addresses, separated by commas. Other consoles can still play, but their Aurora is left alone.'), h('div', { style: { marginTop: '8px' } }, only))),
         h('div.form-actions', h('button.btn.primary', { onclick: () => save({ xboxes: every.checked ? '' : only.value }) }, 'Save'))))));
   }
@@ -1575,7 +1575,7 @@ async function missingArt(address, button) {
       h('div.modal-body',
         h('p', { style: { marginTop: 0 } }, 'Aurora on ', h('b', address), ' found no cover for these games when it added them, and won’t look again by itself.'),
         h('ul', found.tiles.map(t => h('li', t.title, t.title !== t.folder ? h('span.muted', ' · ' + t.folder) : null))),
-        h('p.muted', { style: { marginBottom: 0 } }, 'NetDisc360 renames each game’s folder in ', h('code', S.settings.xboxFolder || '/Hdd1/NetISO'), ', so Aurora adds it as a new game and looks it up online again. Aurora forgets anything else it kept for those tiles.')),
+        h('p.muted', { style: { marginBottom: 0 } }, 'NetDisc360 renames each game’s folder in ', h('code', gamesFolder()), ', so Aurora adds it as a new game and looks it up online again. Aurora forgets anything else it kept for those tiles.')),
       h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'), go),
     ];
   }, true);
@@ -1865,7 +1865,7 @@ Pages.settings = root => {
     fill(body,
       head('Xbox & Aurora', 'How your games get into Aurora\u2019s game list on each console.'),
       card('gamepad-2', 'Your games in Aurora', null,
-        row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s Hdd1:\\NetISO, so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
+        row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s ' + gamesFolder() + ', so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
         row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
         row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i))),
         row('Consoles to update', st.xboxes.length ? st.xboxes.join(', ') : 'Every console that connects.', h('a.btn', { href: '#consoles' }, 'Change', ic('chevron-right', 'sm')))),
@@ -1901,7 +1901,7 @@ Pages.settings = root => {
           h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login')))),
       card('folder', 'Folders on the Xbox', null,
         h('div.form.cols',
-          h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path. Add it to Aurora\u2019s scan paths (depth 1).')),
+          h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path, like /Hdd1/NetDisc360/Games. Add it to Aurora\u2019s scan paths (depth 1). NetDisc360\u2019s own files go in Hdd1:\\Apps\\NetDisc360.')),
           h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
           h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders')))),
       wakeCard());
@@ -2329,6 +2329,10 @@ const wzHead = (title, lead) => h('div.wz-head', h('h2', title), lead && h('p', 
 const wzCheck = (tone, title, detail) => h('li.wz-check.' + tone, h('span.badge', ic({ good: 'circle-check', warn: 'triangle-alert', bad: 'circle-alert', info: 'info' }[tone], 'sm')),
   h('div', h('div.t', title), detail ? h('div.d', detail) : null));
 const isDocker = () => S.update.how === 'docker';
+// An FTP path on the Xbox as Aurora shows it (/Hdd1/NetDisc360/Games -> Hdd1:\NetDisc360\Games).
+const xboxPath = p => (p || '').replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\');
+// Where the game folders go on each console (Settings, Xbox & Aurora).
+const gamesFolder = () => xboxPath((S.settings && S.settings.xboxFolder) || '/Hdd1/NetDisc360/Games');
 function wzToggle(checked, onchange) {
   return h('label.switch', h('input', { type: 'checkbox', checked, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
 }
@@ -2535,9 +2539,9 @@ function consoleChecks(r) {
   if (!r.ftp) return [wzCheck('bad', 'Aurora\u2019s FTP server doesn\u2019t answer at ' + r.address, 'Is the Xbox on and in Aurora, with the FTP server turned on (Aurora\u2019s settings, Network)?')];
   if (!r.login) return [wzCheck('good', 'Aurora\u2019s FTP server answers'), wzCheck('bad', 'The login didn\u2019t work', 'Use the user name and password from Aurora\u2019s FTP settings. (' + r.error + ')')];
   out.push(wzCheck('good', 'Logged in to Aurora\u2019s FTP server'));
-  out.push(r.aurora ? wzCheck('good', 'Aurora is in ' + st.aurora.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\'))
+  out.push(r.aurora ? wzCheck('good', 'Aurora is in ' + xboxPath(st.aurora))
     : wzCheck('warn', 'Aurora isn\u2019t in ' + st.aurora, 'NetDisc360 can\u2019t add the Xbox 360 category rule there. Set Aurora\u2019s folder under Settings, Xbox & Aurora.'));
-  const games = st.xboxFolder.replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\');
+  const games = xboxPath(st.xboxFolder);
   out.push(r.gameFolder ? wzCheck('good', games + ' is there') : wzCheck('info', games + ' isn\u2019t there yet', 'NetDisc360 makes it. Add it to Aurora\u2019s scan paths with depth 1.'));
   if (!r.launchIni) {
     out.push(wzCheck('warn', 'No launch.ini found', 'DashLaunch reads it from the root of the USB drive or hard drive. The plugins couldn\u2019t be checked.'));
@@ -2599,7 +2603,7 @@ WizardParts.aurora = body => {
   fill(body,
     wzHead('Put your games in Aurora', 'NetDisc360 adds a small folder for every game to the Xbox over Aurora\u2019s FTP server. Aurora then lists them with their cover art, like installed games.'),
     h('ol.wz-how', h('li', 'In Aurora\u2019s settings, turn the ', h('b', 'FTP server'), ' on.'),
-      h('li', 'Under Content, ', h('b', 'Scan paths'), ', add ', h('code', 'Hdd1:\\NetISO'), ' with depth 1. It can be empty; NetDisc360 fills it.')),
+      h('li', 'Under Content, ', h('b', 'Scan paths'), ', add ', h('code', gamesFolder()), ' with depth 1. It can be empty; NetDisc360 fills it. If you had Hdd1:\\NetISO there, NetDisc360 changes it for you.')),
     st.preset.ftp && isDocker() ? wzPreset('The login from your Docker settings is filled in.') : null,
     h('div.form.cols', wzField('Aurora\u2019s FTP user', user), wzField('Password', password, 'Aurora\u2019s default login is xboxftp / xboxftp.')),
     wzRow('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', wzToggle(st.category, (v, i) => save({ category: v }).then(ok => { if (!ok) i.checked = !v; }))),

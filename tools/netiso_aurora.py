@@ -10,7 +10,7 @@ start to goes in a folder of its own (see shared/helper.h):
     <output>/<game>/netiso.ini
     <output>/NetDisc360/boot.xex
 
-Copy the output folder to the console (for example Hdd1:\\NetISO) and add it
+Copy the output folder to the console (for example Hdd1:\\NetDisc360\\Games) and add it
 to Aurora as a scan path with depth 1. Aurora then lists each game with its
 cover art; starting one mounts its ISO through the NetISO plugin and boots it.
 

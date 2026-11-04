@@ -109,17 +109,22 @@ void __cdecl main() {
     memset(&data,0,sizeof(data));
     memcpy(data.text,nia::BootData,sizeof(nia::BootData));
     data.started=GetTickCount();
-    // The shared helper, in HelperFolder next to this game folder; else the
-    // folder's own boot.xex, from before there was a shared one, which reads
-    // the folder it is in and takes the launch data without one.
+    // The shared helper, in NetDisc360's folder in Hdd1:\\Apps, or in
+    // HelperFolder next to this game folder (game folders that aren't on the
+    // hard drive, and those in Hdd1:\\NetISO before); else the folder's own
+    // boot.xex, from before there was a shared one, which reads the folder it
+    // is in and takes the launch data without one.
     char helper[64]; helper[0]=0;
     DWORD size=sizeof(data);
     if(OwnFolder(data.folder,sizeof(data.folder))) {
         const char* name=strrchr(data.folder,'\\');
         char shared[nia::BootFolderMax+32];
-        _snprintf_s(shared,sizeof(shared),_TRUNCATE,"%.*s\\%s",name ? int(name-data.folder) : 0,data.folder,nia::HelperFolder);
-        if(name && LinkHelper(shared,helper,sizeof(helper))) Note("The helper is %s\\%s.",shared,nia::HelperXex);
-        else { Note("No %s in %s.",nia::HelperXex,shared); helper[0]=0; }
+        if(LinkHelper(nia::AppDevice,helper,sizeof(helper))) Note("The helper is %s\\%s.",nia::AppDevice,nia::HelperXex);
+        else {
+            _snprintf_s(shared,sizeof(shared),_TRUNCATE,"%.*s\\%s",name ? int(name-data.folder) : 0,data.folder,nia::HelperFolder);
+            if(name && LinkHelper(shared,helper,sizeof(helper))) Note("The helper is %s\\%s.",shared,nia::HelperXex);
+            else { Note("No %s in %s or %s.",nia::HelperXex,nia::AppDevice,shared); helper[0]=0; }
+        }
     }
     if(!helper[0] && Exists(FolderHelper)) { strcpy_s(helper,FolderHelper); size=nia::BootLaunchBefore; }
     if(helper[0]) {

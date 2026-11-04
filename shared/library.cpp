@@ -465,7 +465,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall,
-          FindRole findRole, Wanted wanted, Placed placed, Progress progress) {
+          FindRole findRole, Wanted wanted, Placed placed, Progress progress, const char* helperFolder) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -491,9 +491,14 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     // without it.
     bool helperReady=false;
     if(boot) {
-        char helperFolder[PathMax],helperPath[PathMax]; Join(helperFolder,root,HelperFolder); Join(helperPath,helperFolder,HelperXex);
-        storage.MakeFolder(helperFolder);
-        int written=RefreshFile(storage,helperFolder,HelperXex,boot,bootSize);
+        char folder[PathMax],helperPath[PathMax];
+        if(helperFolder) strcpy_s(folder,helperFolder); else Join(folder,root,HelperFolder);
+        Join(helperPath,folder,HelperXex);
+        // NetDisc360's folder (Hdd1:\\Apps\\NetDisc360) can be the first in Apps.
+        for(char* at=folder+1;*at;++at)
+            if((*at=='/' || *at=='\\') && at[-1]!=':') { char c=*at; *at=0; storage.MakeFolder(folder); *at=c; }
+        storage.MakeFolder(folder);
+        int written=RefreshFile(storage,folder,HelperXex,boot,bootSize);
         if(written<0) { Say(note,"Couldn't write %s (error %lu); the game folders keep their own helper.",helperPath,storage.LastError()); ++result.failed; }
         else if(written>0) Say(note,"Put the helper the game folders share in %s.",helperPath);
         helperReady=written>=0;
