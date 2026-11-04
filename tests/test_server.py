@@ -916,6 +916,14 @@ class Push(ServerTest):
                 ftp.server_close()
         self.assertIn("waiting for it to come online", out)
 
+    def test_makes_a_game_folder_whose_parent_folder_is_missing(self):
+        # Aurora's FTP makes one folder level per MKD, so /Hdd1/NetDisc360/Test
+        # on a console without /Hdd1/NetDisc360 is made a level at a time.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push(extra=("--xbox-folder", "/Hdd1/NetDisc360/Test"))
+        self.assertNotIn("couldn't list", out)
+        self.assertTrue(os.path.isfile(os.path.join(self.xbox, "Hdd1", "NetDisc360", "Test", "Halo 3", "default.xex")))
+
     def test_keeps_every_console_up_to_date(self):
         # Two consoles, each with its own Aurora: both get the game folders.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)

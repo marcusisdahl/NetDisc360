@@ -1935,7 +1935,9 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
 bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o, const std::vector<InstalledGame>& installed,
           const std::vector<InstalledGame>& godPackages) {
     std::vector<FtpEntry> entries;
-    ftp.MakeFolder(o.xboxFolder.c_str());
+    // A level at a time: Aurora's FTP makes no parent folders (/Hdd1/NetDisc360/Test on a console without NetDisc360).
+    std::string unused;
+    MakeFolders(ftp,o.xboxFolder+"/",FtpDrive(o.xboxFolder).size(),unused);
     if(!ftp.List(o.xboxFolder.c_str(),entries)) {
         XboxLog(console,"couldn't list %s: %s",o.xboxFolder.c_str(),ftp.Error());
         XboxEvent(console,EventWarning,"Couldn't open "+o.xboxFolder);
