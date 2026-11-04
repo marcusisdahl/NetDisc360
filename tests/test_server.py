@@ -1005,6 +1005,56 @@ class Push(ServerTest):
             server.kill()
             server.communicate()
 
+    def test_remembers_each_profile_s_last_game_on_a_console(self):
+        # Who's signed in (Aurora's web server) a little after a game starts
+        # played it: the console page's Last played, with Play again.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        aurora = AuroraWeb()
+        aurora.profiles.append({"index": 2, "gamertag": "Pipe|Tag", "gamerscore": 5, "signedin": 1, "xuid": "E000000000000042"})
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        self.web = free_port()
+        args = ("--web-port", str(self.web), "--config", config, "--aurora-web-port", str(aurora.port))
+        server, port = self.run_server(*args)
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            # In a game, Aurora's FTP server doesn't answer (it would be back in Aurora).
+            self.ftp.shutdown()
+            self.ftp.server_close()
+            client = Client(port)
+            self.assertEqual(client.mount("Halo 3.iso"), 1)
+            for i in range(17):
+                client.read(i << 20, 1 << 20)
+            last = lambda: {p["xuid"]: p for p in self.json("GET", "/api/state")["lastPlayed"]}
+            self.assertEqual(last(), {})  # Not yet: a game quit within seconds didn't really start.
+            self.assertTrue(self.wait_for(lambda: len(last()) == 2, 35))
+            one = last()["0009000000000001"]
+            self.assertEqual((one["address"], one["gamertag"], one["game"], one["titleId"], one["seconds"]), ("127.0.0.1", "Player One", "Halo 3", "4D5307E6", 0))
+            self.assertGreater(one["at"], time.time() - 90)
+            self.assertEqual(last()["E000000000000042"]["gamertag"], "Pipe|Tag")
+            # Another game ends it: how long it was played.
+            self.assertEqual(client.mount("Skate 3.iso"), 1)
+            for i in range(17):
+                client.read(i << 20, 1 << 20)
+            self.assertTrue(self.wait_for(lambda: last()["0009000000000001"]["seconds"] >= 20, 5))
+            with open(os.path.join(self.tmp.name, "lastplayed.ini")) as f:
+                text = f.read()
+            self.assertIn("|127.0.0.1|E000000000000042|Pipe%7CTag|Halo 3\n", text)
+            client.close()
+        finally:
+            server.kill()
+            server.communicate()
+            aurora.close()
+        # Kept for the next start.
+        server, port = self.run_server(*args)
+        try:
+            p = {p["xuid"]: p for p in self.json("GET", "/api/state")["lastPlayed"]}
+            self.assertEqual((p["E000000000000042"]["gamertag"], p["E000000000000042"]["game"]), ("Pipe|Tag", "Halo 3"))
+            self.assertGreaterEqual(p["0009000000000001"]["seconds"], 20)
+        finally:
+            server.kill()
+            server.communicate()
+
     def test_console_names_and_identify(self):
         # Each console's own name, from its media sharing, on the dashboard
         # and in the settings file; shown on its screen when Aurora starts and

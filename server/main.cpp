@@ -1123,6 +1123,196 @@ void PlaysChanged() {
     GamesChanged();
 }
 
+// Last played (Marcus 2026-11-04: "resume where you left off") -----------------
+//
+// Each profile's latest game on each console, for the console page's Last
+// played card and its Play again button. Who played is who was signed in
+// (as the console's Aurora says; its web server answers in a game too)
+// LastPlayLookSeconds after a game started, from a disc NetISO serves
+// (PlayStarted) or a copy installed on the console started from the
+// dashboard (StartOn), looked at once more after LastPlayAgainSeconds if
+// nobody was signed in yet. Any profile counts, a user's or not. Kept in
+// lastplayed.ini beside plays.ini: one line per console and profile, the
+// newest LastPlaysKept.
+struct LastPlay {
+    std::string address, xuid, gamertag;  // XUID: 16 hex digits, upper case.
+    std::string game;                     // Its listed name (UTF-8, without .iso).
+    DWORD titleId;
+    long long at;       // When it started (Unix seconds).
+    long long seconds;  // How long it was played: 0 while it runs, or for a copy the end of isn't seen.
+};
+const size_t LastPlaysKept = 200;
+const double LastPlayLookSeconds = 20;   // A game quit sooner didn't really start.
+const double LastPlayAgainSeconds = 90;
+std::mutex LastPlaysLock;
+std::vector<LastPlay> LastPlays;  // Under LastPlaysLock, newest first.
+
+std::string LastPlaysPath(const std::string& configPath) {
+    std::string map=DiscMapPath(configPath);
+    return map.empty() ? std::string() : map.substr(0,map.size()-9)+"lastplayed.ini";
+}
+// A gamertag in a line of lastplayed.ini: % and | as %25 and %7C.
+std::string LastPlayField(const std::string& text) {
+    std::string out;
+    for(size_t i=0;i<text.size();++i) {
+        if(text[i]=='%') out+="%25";
+        else if(text[i]=='|') out+="%7C";
+        else if(text[i]=='\r' || text[i]=='\n') out+=' ';
+        else out+=text[i];
+    }
+    return out;
+}
+std::string LastPlayUnfield(const std::string& text) {
+    std::string out;
+    for(size_t i=0;i<text.size();++i) {
+        if(text.compare(i,3,"%25")==0) { out+='%'; i+=2; }
+        else if(text.compare(i,3,"%7C")==0 || text.compare(i,3,"%7c")==0) { out+='|'; i+=2; }
+        else out+=text[i];
+    }
+    return out;
+}
+// A profile's XUID as Aurora gives it, as 16 upper case hex digits; false for none.
+bool XuidOf(const std::string& text, std::string& xuid) {
+    std::string t=text;
+    if(t.size()>2 && t[0]=='0' && (t[1]=='x' || t[1]=='X')) t=t.substr(2);
+    if(t.empty() || t.size()>16) return false;
+    for(size_t i=0;i<t.size();++i) if(!isxdigit((unsigned char)t[i])) return false;
+    xuid=std::string(16-t.size(),'0')+t;
+    for(size_t i=0;i<16;++i) xuid[i]=char(toupper((unsigned char)xuid[i]));
+    return xuid!="0000000000000000";
+}
+
+// lastplayed.ini: "at|seconds|titleid|address|xuid|gamertag|game" (game last, as it is).
+void LoadLastPlays(const std::string& configPath) {
+    std::string path=LastPlaysPath(configPath), text;
+    std::vector<LastPlay> list;
+    if(!path.empty() && config::ReadFile(path,text,4<<20))
+        for(size_t at=0;at<text.size();) {
+            size_t end=text.find('\n',at);
+            std::string line=text.substr(at,end==std::string::npos ? std::string::npos : end-at);
+            at=end==std::string::npos ? text.size() : end+1;
+            if(!line.empty() && line[line.size()-1]=='\r') line.erase(line.size()-1);
+            std::vector<std::string> f;
+            size_t from=0;
+            for(int k=0;k<6;++k) {
+                size_t bar=line.find('|',from);
+                if(bar==std::string::npos) break;
+                f.push_back(line.substr(from,bar-from));
+                from=bar+1;
+            }
+            if(f.size()<6 || from>=line.size()) continue;
+            LastPlay p;
+            p.at=atoll(f[0].c_str()); p.seconds=atoll(f[1].c_str()); p.titleId=(DWORD)strtoul(f[2].c_str(),NULL,16);
+            p.address=f[3]; p.gamertag=LastPlayUnfield(f[5]); p.game=line.substr(from);
+            if(p.at<=0 || inet_addr(p.address.c_str())==INADDR_NONE || !XuidOf(f[4],p.xuid)) continue;
+            list.push_back(p);
+        }
+    std::sort(list.begin(),list.end(),[](const LastPlay& a, const LastPlay& b) { return a.at>b.at; });
+    if(list.size()>LastPlaysKept) list.resize(LastPlaysKept);
+    std::lock_guard<std::mutex> hold(LastPlaysLock);
+    LastPlays=list;
+}
+void SaveLastPlays() {
+    std::string path=LastPlaysPath(Current().configPath), text;
+    if(path.empty()) return;
+    {
+        std::lock_guard<std::mutex> hold(LastPlaysLock);
+        for(size_t i=0;i<LastPlays.size();++i) {
+            const LastPlay& p=LastPlays[i];
+            char head[64]; _snprintf_s(head,sizeof(head),_TRUNCATE,"%lld|%lld|%08X|",p.at,p.seconds,p.titleId);
+            text+=head+p.address+"|"+p.xuid+"|"+LastPlayField(p.gamertag)+"|"+p.game+"\n";
+        }
+    }
+    if(!config::WriteFile(path,text,false)) Log("Couldn't save who played last in %s.",config::FromUtf8(path).c_str());
+}
+
+// The Unix time of a Now() moment.
+long long UnixAt(double now) { return (long long)time(NULL)-(long long)(Now()-now+0.5); }
+
+// The profiles signed in on the console, as its Aurora says (XUID, gamertag); false if it didn't answer.
+bool SignedInProfiles(DWORD address, const Options& o, std::vector<std::pair<std::string,std::string> >& out) {
+    AuroraWeb aurora(address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,5);
+    std::string body;
+    web::Value v;
+    if(!aurora.Get("/profile","/getProfileInfo",body) || !web::Parse(body,v) || v.type!=web::Value::Array) return false;
+    for(size_t i=0;i<v.items.size();++i) {
+        const web::Value* x=v.items[i].Get("xuid");
+        const web::Value* tag=v.items[i].Get("gamertag");
+        const web::Value* in=v.items[i].Get("signedin");
+        std::string xuid;
+        if(!x || x->type!=web::Value::String || !XuidOf(x->text,xuid)) continue;
+        if(in && in->type==web::Value::Number && in->number==0) continue;
+        std::string gamertag=tag && tag->type==web::Value::String ? tag->text : std::string();
+        bool again=false;
+        for(size_t k=0;k<out.size() && !again;++k) again=out[k].first==xuid;
+        if(!again) out.push_back(std::make_pair(xuid,gamertag));
+    }
+    return true;
+}
+
+// The profiles played game on the console at address, from at (Unix seconds).
+void LastPlayed(const std::string& address, const std::vector<std::pair<std::string,std::string> >& profiles, const std::string& game, DWORD titleId, long long at) {
+    if(profiles.empty()) return;
+    {
+        std::lock_guard<std::mutex> hold(LastPlaysLock);
+        for(size_t i=0;i<profiles.size();++i) {
+            for(size_t k=LastPlays.size();k-->0;)
+                if(LastPlays[k].address==address && LastPlays[k].xuid==profiles[i].first) LastPlays.erase(LastPlays.begin()+k);
+            LastPlay p;
+            p.address=address; p.xuid=profiles[i].first; p.gamertag=profiles[i].second; p.game=game; p.titleId=titleId; p.at=at; p.seconds=0;
+            LastPlays.insert(LastPlays.begin(),p);
+        }
+        std::stable_sort(LastPlays.begin(),LastPlays.end(),[](const LastPlay& a, const LastPlay& b) { return a.at>b.at; });
+        if(LastPlays.size()>LastPlaysKept) LastPlays.resize(LastPlaysKept);
+    }
+    SaveLastPlays();
+}
+// The game the console at address started at (Unix seconds) ended after seconds.
+void LastPlayEnded(const std::string& address, long long at, double seconds) {
+    bool changed=false;
+    {
+        std::lock_guard<std::mutex> hold(LastPlaysLock);
+        for(size_t i=0;i<LastPlays.size();++i) {
+            LastPlay& p=LastPlays[i];
+            if(p.address!=address || p.at<at-3 || p.at>at+3) continue;
+            p.seconds=std::max(1LL,(long long)(seconds+0.5));
+            changed=true;
+        }
+    }
+    if(changed) SaveLastPlays();
+}
+
+// Who plays the game console started: since (its gameSince) for a disc
+// NetISO serves, or launched (its launchedAt) for a copy installed on it.
+// Looked at in the background, while it still plays that game.
+void FollowPlayers(Console& console, const std::string& game, DWORD titleId, double since, long long launched) {
+    DWORD address=console.address;
+    std::string text=console.text;
+    long long at=launched ? UnixAt(launched/1000.0) : UnixAt(since);
+    std::thread([=]() {
+        Console* c=ConsoleIfKnown(address);
+        if(!c) return;
+        const double looks[]={ LastPlayLookSeconds, LastPlayAgainSeconds };
+        double start=launched ? launched/1000.0 : since;
+        for(size_t i=0;i<sizeof(looks)/sizeof(looks[0]);++i) {
+            double wait=start+looks[i]-Now();
+            if(wait>0) std::this_thread::sleep_for(std::chrono::milliseconds((long long)(wait*1000)));
+            bool still;
+            if(launched) still=c->launchedAt==launched;
+            else { std::lock_guard<std::mutex> hold(ConsoleLock); still=c->game==game && c->gameSince==since; }
+            if(!still) return;
+            if(launched && !c->launchLeft) continue;  // Not seen leaving Aurora yet.
+            std::vector<std::pair<std::string,std::string> > profiles;
+            if(!SignedInProfiles(address,Current(),profiles) || profiles.empty()) continue;
+            LastPlayed(text,profiles,game,titleId,at);
+            std::string names;
+            for(size_t k=0;k<profiles.size();++k) names+=(k ? ", " : "")+(profiles[k].second.empty() ? profiles[k].first : profiles[k].second);
+            XboxLog(*c,"%s plays %s (for Last played on its page).",names.c_str(),game.c_str());
+            return;
+        }
+    }).detach();
+}
+
 // Ends the game console plays, adding its time; true if there was one.
 bool PlayEnded(Console& console) {
     std::string game;
@@ -1139,6 +1329,7 @@ bool PlayEnded(Console& console) {
         Plays[Lower(game)].seconds+=std::max(0.0,Now()-since);
     }
     PlaysChanged();
+    LastPlayEnded(console.text,UnixAt(since),Now()-since);
     GuestsPlayed(console.text,std::max(0.0,Now()-since),game);
     return true;
 }
@@ -1168,6 +1359,9 @@ void PlayStarted(Console& console, const std::string& name, DWORD titleId) {
         console.game=game; console.gameTitle=titleId; console.gameSince=Now();
     }
     console.gameEndedAt=0;
+    double since;
+    { std::lock_guard<std::mutex> hold(ConsoleLock); since=console.gameSince; }
+    FollowPlayers(console,game,titleId,since,0);
     PlayersPlayOn(console.text);
     {
         std::lock_guard<std::mutex> hold(PlaysLock);
@@ -1217,7 +1411,10 @@ void FollowLaunch(Console& c, int port) {
     c.launchedAt=0;
     c.ftp=2;
     c.recheck=true;
-    if(c.launchLeft) XboxLog(c,"back in Aurora after the game started from the dashboard (its FTP server answers).");
+    if(c.launchLeft) {
+        XboxLog(c,"back in Aurora after the game started from the dashboard (its FTP server answers).");
+        LastPlayEnded(c.text,UnixAt(started/1000.0),Now()-started/1000.0);
+    }
 }
 
 // Tells when a console in a game is back in Aurora: its FTP port is tried
@@ -4021,6 +4218,27 @@ void State(web::Reply& out) {
         j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
     }
     j.Close(']');
+    // Each profile's latest game on each console (Last played), with whose
+    // it is when it's a user's, and whether its gamer picture is the one
+    // NetDisc360 gave it.
+    {
+        std::vector<LastPlay> last;
+        { std::lock_guard<std::mutex> hold(LastPlaysLock); last=LastPlays; }
+        std::map<std::string,std::pair<std::string,bool> > whose;  // By XUID: the user's name, and NetDisc360 made it.
+        {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            for(size_t i=0;i<Users.size();++i) if(!Users[i].removed && !Users[i].xuid.empty()) whose[Users[i].xuid]=std::make_pair(Users[i].name,!Users[i].adopted);
+        }
+        j.Key("lastPlayed").Open('[');
+        for(size_t i=0;i<last.size();++i) {
+            const LastPlay& p=last[i];
+            char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",p.titleId);
+            std::map<std::string,std::pair<std::string,bool> >::const_iterator u=whose.find(p.xuid);
+            j.Open('{').Set("address",p.address).Set("xuid",p.xuid).Set("gamertag",p.gamertag).Set("game",p.game).Set("titleId",p.titleId ? std::string(title) : std::string());
+            j.Set("at",p.at).Set("seconds",p.seconds).Set("user",u!=whose.end() ? u->second.first : std::string()).Set("picture",u!=whose.end() && u->second.second).Close('}');
+        }
+        j.Close(']');
+    }
     double peak;
     { std::lock_guard<std::mutex> hold(ConsoleLock); peak=Peak; }
     j.Key("totals").Open('{').Set("sent",(unsigned long long)total).Set("rate",rate).Set("peak",peak).Close('}');
@@ -5506,7 +5724,10 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
     // Its return to Aurora, to look at it again (see FollowLaunch).
     c.launchLeft=false;
     c.probeAt=(long long)((Now()+FirstProbeSeconds)*1000);
-    c.launchedAt=(long long)(Now()*1000);
+    long long launched=(long long)(Now()*1000);
+    c.launchedAt=launched;
+    // Who plays it, for Last played (a tile's game is followed as NetISO mounts it).
+    if(how=="installed") FollowPlayers(c,config::ToUtf8(WithoutIso(game.name)),game.titleId,0,launched);
     return true;
 }
 
@@ -9683,6 +9904,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
 
     LoadPlays(o.configPath);
+    LoadLastPlays(o.configPath);
     std::string where;
     for(size_t i=0;i<o.folders.size();++i) where+=(i ? ", " : "")+o.folders[i];
     std::vector<IsoFile> isos=Isos();

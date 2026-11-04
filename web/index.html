@@ -751,6 +751,22 @@ details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
 .user-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .user-acts .btn.icon { width: 30px; padding: 0; justify-content: center; }
 .console-picks { display: grid; gap: 8px; }
+/* Last played on a console page: each profile's latest game there, to play again. */
+.last-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.last-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.3fr) auto; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; min-width: 0; }
+.last-row + .last-row { border-top: 1px solid var(--line); }
+.last-row .who, .last-row .what { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.last-row .who b, .last-row .what b { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.last-row .who .tag { color: var(--muted); font-weight: 500; }
+.last-row .sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.last-row .sub .dot { width: 6px; height: 6px; box-shadow: none; flex: none; }
+.last-row .game { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.last-row .acts { display: flex; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .last-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
+  .last-row .game, .last-row .acts { grid-column: 2; }
+  .last-row .acts { justify-content: flex-start; }
+}
 .signed-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; }
 .signed-row + .signed-row { margin-top: 8px; }
 .signed-row .grow { flex: 1; min-width: 0; }
@@ -2217,13 +2233,43 @@ const ConsoleParts = {};
 // Overview: now, its bandwidth, what it is, what happened.
 ConsoleParts.overview = (body, address) => {
   const tiles = h('div.grid.tiles'), chartWrap = h('div.chart-wrap.small'), facts = h('div.con-facts'), events = h('ul.events'), speed = h('div');
+  const last = h('div');
   body.append(h('div.stack', tiles,
+    h('div.card', h('div.card-head', ic('history'), h('h2', 'Last played here'), h('span.sub', 'each profile’s latest game on it')), h('div.card-body', last)),
     h('div.card', h('div.card-head', ic('activity'), h('h2', 'Bandwidth'), h('span.sub', 'game data sent to it, last 2 minutes')), h('div.card-body', chartWrap, speed)),
     h('div.grid.two',
       h('div.card', h('div.card-head', ic('info'), h('h2', 'About it')), h('div.card-body', facts)),
       h('div.card', h('div.card-head', ic('history'), h('h2', 'Recent activity')), h('div.card-body', events)))));
   const chart = bandwidthChart(chartWrap);
   const tile = (icon, label, value, note, tone) => h('div.card.tile', h('div.label', ic(icon, 'sm'), label), h('div.value' + (tone ? '.' + tone : ''), value), h('div.note', note));
+  let lastDrawn = '';
+  // Last played here: each profile's latest game on this console, newest
+  // first, with Play again (it starts that game here, as the Play buttons do).
+  function drawLast(c, signed) {
+    const rows = (S.lastPlayed || []).filter(p => p.address === address);
+    const games = rows.map(p => G.games.find(g => g.name.toLowerCase() === p.game.toLowerCase()) || null);
+    const key = JSON.stringify([G.version, c.playing, c.mounted, consoleOn(c), signed, rows.map(p => [p.xuid, p.game, p.at, p.seconds, p.user, ago(p.at)]), games.map(g => g && playable(g).includes(c))]);
+    if (key === lastDrawn) return;
+    lastDrawn = key;
+    if (!rows.length) {
+      fill(last, h('p.muted', { style: { margin: 0 } }, 'Nobody yet. When someone signed in to a profile plays a game here, it shows up with a Play again button to start it from here.'));
+      return;
+    }
+    fill(last, h('div.last-list', { role: 'list' }, rows.map((p, i) => {
+      const g = games[i], name = p.user || p.gamertag || p.xuid, tag = p.user && p.gamertag && p.gamertag !== p.user ? p.gamertag : '';
+      const here = (signed || []).includes(p.xuid), now = c.playing && c.mounted.toLowerCase() === p.game.toLowerCase();
+      const can = g && playable(g).includes(c);
+      const why = !g ? p.game + ' isn’t in your folders any more' : !can ? cName(c) + ' has no tile for it yet, and doesn’t have it installed' : !consoleOn(c) ? cName(c) + ' is off' : '';
+      return h('div.last-row', { role: 'listitem' },
+        p.picture && p.gamertag ? gamerPicture(p.gamertag) : h('span.gp-pic.blank', { 'aria-hidden': 'true' }, initials(name)),
+        h('div.who', h('b', name, tag ? h('span.tag', ' · ' + tag) : null),
+          h('span.sub', here ? [h('span.dot.good'), 'Signed in now'] : p.user ? 'User' : 'Profile on this console')),
+        h('div.game', cover(g || { name: p.game, titleId: p.titleId }, true),
+          h('div.what', h('b', p.game), h('span.sub', (p.seconds ? ago(p.at) + ' · played ' + duration(p.seconds) : now ? 'Playing now' : ago(p.at))))),
+        h('div.acts', now ? h('span.pill.play', ic('play', 'sm'), 'Playing now')
+          : h('button.btn.small.play-btn', { disabled: !!why, title: why || 'Start ' + p.game + ' on ' + cName(c) + ' again', onclick: e => playOn(g, c, e.currentTarget) }, ic('play', 'sm'), 'Play again')));
+    })));
+  }
   return {
     update(c, l) {
       const d = l && l.data, now = c.rate.length ? c.rate[c.rate.length - 1] : 0;
@@ -2231,6 +2277,7 @@ ConsoleParts.overview = (body, address) => {
       const t = d && d.temperature, unit = t && t.celsius === false ? '°F' : '°C', deg = v => typeof v === 'number' ? Math.round(v) + unit : '—';
       const signed = d && Array.isArray(d.profiles) ? d.profiles.filter(p => p.signedin).map(p => p.gamertag) : null;
       const running = d && d.title && d.title.path ? (/\\aurora\.xex$/i.test(d.title.path) ? 'Aurora' : gameName(d.title.titleid) || d.title.path.split('\\').slice(-2, -1)[0]) : '';
+      drawLast(c, d && Array.isArray(d.profiles) ? d.profiles.filter(p => p.signedin).map(p => String(p.xuid || '').toUpperCase().replace(/^0X/, '').padStart(16, '0')) : null);
       fill(tiles,
         tile(c.playing ? 'gamepad-2' : 'monitor', 'Now', c.playing ? c.mounted : running || consoleStatus(c).text, c.playing ? 'from this PC' : signed && signed.length ? signed.join(', ') + ' signed in' : signed ? 'no profile signed in' : ' '),
         tile('gauge', 'Streaming', c.connections > 0 ? rate(now) : '—', bytes(c.sent) + ' sent in all'),
