@@ -1796,6 +1796,7 @@ Pages.consoles = root => {
         const actions = h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px' } });
         // Aurora's FTP server is up only while Aurora runs (1: it didn't answer).
         if (x.c.ftp !== 1 && !x.c.playing) actions.appendChild(h('button.btn.small.ghost', { title: 'Find the games in Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(x.c.address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art'));
+        actions.appendChild(xboxHomeSwitch(x.c));
         actions.appendChild(h('button.btn.small.ghost', { title: 'Which games this console gets, and how: Aurora folders or Games on Demand', onclick: () => tileChooser(x.c) }, ic('layout-grid', 'sm'), 'Games on this console'));
         if (x.c.connections === 0) actions.appendChild(
           h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
@@ -1813,9 +1814,27 @@ Pages.consoles = root => {
 // The console's choice goes for every game but those picked otherwise.
 const TileModes = {
   folder: { title: 'Aurora folders (Hdd1:\\NetISO)', short: 'as Aurora folders', help: 'A folder in Hdd1:\\NetISO for each game, which Aurora lists.' },
-  god: { title: 'Games on Demand (test)', short: 'as Games on Demand', help: 'A small package for each game in Hdd1:\\Content, so the Xbox\u2019s own menu lists it as well as Aurora. The game still streams from this PC. Original Xbox games keep their folder.' },
+  god: { title: 'Games on Demand (Xbox home and Aurora)', short: 'as Games on Demand', help: 'A small package for each game in Hdd1:\\Content, so the Xbox\u2019s own menu lists it as well as Aurora. The game still streams from this PC. Original Xbox games keep their folder.' },
   none: { title: 'Not on this console', short: 'not at all', help: 'The game isn\u2019t on this console; its folder or package goes.' },
 };
+// The whole library on the Xbox home (as Games on Demand) or in Aurora's
+// folders, in one flip: the console's choice, as Games on this console sets
+// it; games set their own way there keep it.
+function xboxHomeSwitch(c) {
+  const t = c.tiles || { mode: '', games: {} };
+  const on = (t.mode || S.settings.tileMode || 'folder') === 'god';
+  return h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginRight: 'auto', fontSize: '13px', cursor: 'pointer' },
+    title: 'Every game on the Xbox home too, as a small Games on Demand package that streams from this PC. Original Xbox games keep their Aurora folder.' },
+    wzToggle(on, async (checked, input) => {
+      input.disabled = true;
+      try {
+        await api('consoles/tiles', { address: c.address, mode: checked ? 'god' : 'folder', games: t.games || {} });
+        await refresh();
+        toast(checked ? c.address + ' gets every game on its Xbox home when Aurora is on screen.' : c.address + ' gets its games as Aurora folders again when Aurora is on screen.');
+      } catch (e) { toast(e.message, true); input.checked = !checked; }
+      input.disabled = false;
+    }), 'Add to Xbox home');
+}
 function tileChooser(c) {
   const t = c.tiles || { mode: '', games: {} };
   const fallback = S.settings.tileMode || 'folder';
