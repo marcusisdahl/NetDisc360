@@ -16,6 +16,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
+COPY third_party/iso2god/ third_party/iso2god/
 COPY tests/posix_compat.h tests/
 # The guests' gamer pictures (server/picture.cpp) draw letters with these.
 COPY third_party/imgui/imstb_truetype.h third_party/imgui/
@@ -26,7 +27,7 @@ COPY tools/make_web.py tools/make_version.py tools/
 RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
         server/main.cpp server/discs.cpp server/discmap.cpp server/xefu.cpp server/ftp.cpp server/web.cpp server/config.cpp \
-        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/system.cpp server/auroradb.cpp \
+        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/titleupdates.cpp server/system.cpp server/saves.cpp server/wake.cpp \
         server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp server/users.cpp \
         shared/library.cpp shared/isvr.cpp
 

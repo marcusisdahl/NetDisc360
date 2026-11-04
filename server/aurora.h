@@ -95,4 +95,26 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
 // script does but without asking (only while at least one tile is there).
 std::string OnlineScript(const std::string& tiles, bool tidy);
 extern const char CleanupScriptPath[], OnlineScriptPath[], OnlineMarker[], ShownMarker[];
+
+// A game's title update as Aurora's own list should have it (TitleUpdateScript).
+struct AuroraTu {
+    unsigned titleId, mediaId;
+    std::string hash;  // The Content ID (40 hex digits) of the one Aurora should have on; "": none.
+    // To add it to Aurora's list (content.db TitleUpdates) when it isn't
+    // there: backupPath "" adds nothing.
+    std::string name, file, size, device, livePath, backupPath;
+    unsigned base, version;
+    AuroraTu() : titleId(0), mediaId(0), base(0), version(0) {}
+};
+// The filter script NetDiscTitleUpdates.lua (TitleUpdateScriptPath, in
+// Aurora's folder). Aurora's title update manager makes each game's update
+// folder match the updates Aurora has on (settings.db ActiveTitleUpdates)
+// each time it starts the game: it copies the one on from its store and
+// deletes the others. So a change made on the dashboard has to be in that
+// list too. As Aurora starts, the script makes the list say wants, once:
+// it writes what it did to done (a script path, Hdd1:\...) and does nothing
+// while that file is there, so a later change in Aurora's own title update
+// screen stays. Each line of done: <Title ID> <Media ID> on|off|missing|error.
+std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::string& done);
+extern const char TitleUpdateScriptPath[];
 }
