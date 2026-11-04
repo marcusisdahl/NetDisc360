@@ -107,3 +107,10 @@ test("lists by prefix, page by page", async () => {
   assert.equal(all.items[0].device, pc.id);
   assert.equal(all.next, "");
 });
+
+test("an owner key set with a line break after it still works", async () => {
+  const env = { BUCKET: new Bucket(), OWNER_KEY: OWNER + "\r\n" };
+  const r = await worker.fetch(new Request("https://sync.example/v1/devices", {
+    method: "POST", headers: { authorization: "Bearer " + OWNER }, body: JSON.stringify({ name: "PC" }) }), env);
+  assert.equal(r.status, 200);
+});

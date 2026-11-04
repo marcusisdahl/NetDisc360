@@ -83,7 +83,9 @@ async function who(request, env) {
   const auth = request.headers.get("authorization") || "";
   if (!auth.startsWith("Bearer ")) return null;
   const key = auth.slice(7).trim();
-  if (env.OWNER_KEY && env.OWNER_KEY.length >= 16 && same(key, env.OWNER_KEY)) return { owner: true };
+  // Trimmed: a secret piped in from a shell can end in a line break.
+  const owner = typeof env.OWNER_KEY === "string" ? env.OWNER_KEY.trim() : "";
+  if (owner.length >= 16 && same(key, owner)) return { owner: true };
   const m = /^nd1-([a-z0-9]{10})-([A-Za-z0-9]{40})$/.exec(key);
   if (!m) return null;
   const stored = await env.BUCKET.get(`devices/${m[1]}.json`);
