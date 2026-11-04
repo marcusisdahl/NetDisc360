@@ -5601,6 +5601,124 @@ void RefreshTus(FtpClient& ftp, const Options& o, DWORD address, DWORD titleId) 
     if(!t.checkedAt) t.checkedAt=(long long)time(NULL);
 }
 
+// Aurora's own list of the updates it has on, kept like the dashboard's
+// choices (see TitleUpdateScript): what each console's script still has to
+// do, by (Title ID << 32 | Media ID), and the number in its done file's name.
+struct TuAuroraState { std::map<unsigned long long,AuroraTu> wants; long long seq; TuAuroraState() : seq(0) {} };
+std::map<DWORD,TuAuroraState> TuAurora;
+const char TuAuroraDone[] = "tu-aurora-";
+
+// Aurora's store folder for this console's updates: Data\TitleUpdates\<its
+// drive's ID>, the one (if there are several) that has titleId's; "" if none.
+std::string TuAuroraDevice(FtpClient& ftp, const Options& o, DWORD titleId) {
+    std::string store=o.aurora+"/Data/TitleUpdates";
+    std::vector<FtpEntry> devices;
+    if(!ftp.Enters(store.c_str()) || !ftp.List(store.c_str(),devices)) return std::string();
+    std::string first;
+    for(size_t d=0;d<devices.size();++d) {
+        const std::string& name=devices[d].name;
+        if(!devices[d].folder || name.size()!=40 || name.find_first_not_of("0123456789ABCDEFabcdef")!=std::string::npos) continue;
+        if(first.empty()) first=name;
+        if(ftp.Enters((store+"/"+name+"/"+Hex8(titleId)).c_str())) return name;
+    }
+    return first;
+}
+
+// Makes Aurora have on (in its own list) the update now live at live, or
+// none (on NULL), so it keeps that when it starts the game: a script Aurora
+// runs as it starts (see TitleUpdateScript), and Aurora restarted when it's
+// on screen and the settings allow. An update Aurora hasn't got gets a copy
+// in its store. ftp is open, and closed here. What happened, for the job's note.
+std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const Console* console, DWORD titleId, DWORD mediaId,
+                       const TuFile* on, const std::string& live, const std::vector<unsigned char>* bytes) {
+    std::string game=c.game;
+    AuroraTu want;
+    want.titleId=titleId; want.mediaId=mediaId;
+    bool cache=on && on->contentId.empty();
+    if(on && !cache) {
+        for(size_t i=0;i<on->contentId.size();++i) want.hash+=char(toupper((unsigned char)on->contentId[i]));
+        want.name=on->displayName.empty() ? on->name : on->displayName; want.file=on->name;
+        want.base=on->version;
+        std::vector<tu::Offer> offers;
+        { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(titleId); if(t!=TuInfo.end()) offers=t->second.offers; }
+        int number=TuNumber(*on,TuOfferOf(o,titleId,*on,offers),offers);
+        want.version=number>int(on->version) ? unsigned(number) : on->version+1;
+        char size[32]; _snprintf_s(size,sizeof(size),_TRUNCATE,"%.1f MB",on->size/1048576.0);
+        want.size=size;
+        want.device=TuAuroraDevice(ftp,o,titleId);
+        if(!want.device.empty()) {
+            std::string folder=o.aurora+"/Data/TitleUpdates/"+want.device+"/"+Hex8(titleId)+"/"+want.hash, store=folder+"/"+on->name, why;
+            bool there=RemoteSize(ftp,store)==(long long)on->size;
+            if(!there) {
+                // Aurora copies its store's file in place when it starts the game: one there, then.
+                std::vector<unsigned char> data;
+                if(bytes) data=*bytes;
+                else if(!ftp.Retrieve(live.c_str(),data,size_t(1)<<30)) data.clear();
+                there=data.size()==on->size && MakeFolders(ftp,store,o.aurora.size(),why) && ftp.Store(store.c_str(),data.data(),data.size());
+                if(there) Log("Xbox %s: put a copy of %s in Aurora's store, at %s.",c.console.c_str(),live.c_str(),store.c_str());
+                else Log("Xbox %s: couldn't put a copy of %s in Aurora's store (%s).",c.console.c_str(),live.c_str(),why.empty() ? ftp.Error() : why.c_str());
+            }
+            if(there) {
+                want.backupPath="Game:\\Data\\TitleUpdates\\"+want.device+"\\"+Hex8(titleId)+"\\"+want.hash+"\\"+on->name;
+                want.livePath="\\Content\\0000000000000000\\"+Hex8(titleId)+"\\000B0000\\";
+            }
+        }
+    }
+    std::string helper=o.xboxFolder+"/"+HelperFolder;
+    EnsureFolder(ftp,helper);
+    std::vector<FtpEntry> files;
+    ftp.List(helper.c_str(),files);
+    std::string done;
+    std::vector<AuroraTu> wants;
+    {
+        std::lock_guard<std::mutex> hold(TuLock);
+        TuAuroraState& a=TuAurora[c.address];
+        // The last script ran: what it had is done.
+        std::string last=TuAuroraDone+std::to_string(a.seq)+".txt";
+        for(size_t i=0;i<files.size();++i) if(a.seq && !_stricmp(files[i].name.c_str(),last.c_str())) a.wants.clear();
+        a.wants[((unsigned long long)titleId<<32)|mediaId]=want;
+        a.seq=std::max(a.seq+1,(long long)time(NULL));
+        done=helper+"/"+TuAuroraDone+std::to_string(a.seq)+".txt";
+        for(std::map<unsigned long long,AuroraTu>::const_iterator w=a.wants.begin();w!=a.wants.end();++w) wants.push_back(w->second);
+    }
+    for(size_t i=0;i<files.size();++i)
+        if(!files[i].folder && !_strnicmp(files[i].name.c_str(),TuAuroraDone,strlen(TuAuroraDone))) ftp.Delete((helper+"/"+files[i].name).c_str());
+    std::string text=TitleUpdateScript(wants,done), path=o.aurora+TitleUpdateScriptPath;
+    const std::string script=TitleUpdateScriptPath;
+    for(size_t at=1;(at=script.find('/',at))!=std::string::npos;++at) EnsureFolder(ftp,o.aurora+script.substr(0,at));
+    if(RefreshRemote(ftp,path,std::vector<unsigned char>(text.begin(),text.end()))<0) {
+        std::string why=ftp.Error();
+        ftp.Close();
+        Log("Xbox %s: couldn't write %s: %s",c.console.c_str(),path.c_str(),why.c_str());
+        return "Aurora's own list wasn't changed (its script couldn't be written), so Aurora may switch it back when it starts "+game+".";
+    }
+    Log("Xbox %s: wrote %s, so Aurora has %s on as it starts.",c.console.c_str(),path.c_str(),want.hash.empty() ? "no update of "+game : c.label+" of "+game);
+    ftp.Close();
+    std::string later=cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." :
+        "Restart Aurora before you start "+game+": Aurora takes this as it starts, and would switch it back otherwise.";
+    if(!o.restartAurora || !console) return later;
+    if(!RestartAurora(*console,o,"so it takes the title update")) return later;
+    // Aurora's FTP is back with it: the script's done file says what it did.
+    std::string result;
+    for(int tries=0;tries<20 && result.empty() && !c.stop;++tries) {
+        Sleep(3000);
+        FtpClient check(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
+        if(!check.Open()) continue;
+        std::vector<unsigned char> answer;
+        if(RemoteSize(check,done)>=0 && check.Retrieve(done.c_str(),answer,4096)) result.assign(answer.begin(),answer.end());
+        check.Close();
+    }
+    if(result.empty()) return "Aurora restarted, but its script didn't say it switched it; check Aurora's title updates for "+game+" before you start it.";
+    { std::lock_guard<std::mutex> hold(TuLock); TuAurora[c.address].wants.clear(); }
+    char ids[32]; _snprintf_s(ids,sizeof(ids),_TRUNCATE,"%08X %08X ",titleId,mediaId);
+    size_t at=result.find(ids);
+    std::string said=at==std::string::npos ? std::string() : result.substr(at+strlen(ids),result.find_first_of("\r\n",at)-at-strlen(ids));
+    if(said=="on") return "Aurora has it on too, so it stays when Aurora starts "+game+".";
+    if(said=="off") return cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." : "Aurora has none on either.";
+    if(said=="missing") return "Aurora didn't take it on its list; switch it on in Aurora's title updates for "+game+", or Aurora removes it when it starts the game.";
+    return "Aurora couldn't change its list ("+(said.empty() ? std::string("no answer for this game") : said)+"); check Aurora's title updates for "+game+".";
+}
+
 // The update on the console, made the one it uses: older updates of the
 // same disc (by their headers) are moved to the backup folder first.
 void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::Offer offer) {
@@ -5648,10 +5766,16 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
         Log("Xbox %s: put %s for %s on it, at %s.",c.console.c_str(),c.label.c_str(),c.game.c_str(),remote.c_str());
     }
     RefreshTus(ftp,o,c.address,titleId);
-    ftp.Close();
-    if(!moved.empty()) {
+    TuFile put; put.path=remote; put.name=name; put.size=data.size(); put.titleId=titleId;
+    tu::PackageHeader header;
+    if(tu::ReadPackageHeader(reinterpret_cast<const unsigned char*>(data.data()),data.size(),header)) {
+        put.mediaId=header.mediaId; put.displayName=header.displayName; put.contentId=header.contentId; put.version=header.version;
+    }
+    std::vector<unsigned char> bytes(data.begin(),data.end());
+    std::string aurora=TuInAurora(ftp,o,c,console,titleId,mediaId,&put,remote,&bytes);
+    {
         std::lock_guard<std::mutex> hold(CopyLock);
-        c.note="Moved the older "+std::string(moved.size()==1 ? "update" : "updates")+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".";
+        c.note=moved.empty() ? aurora : "Moved the older "+std::string(moved.size()==1 ? "update" : "updates")+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+". "+aurora;
     }
     EndCopy(c,console,"done","");
 }
@@ -5697,7 +5821,8 @@ void UseTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, TuFil
     }
     { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; }
     RefreshTus(ftp,o,c.address,titleId);
-    ftp.Close();
+    std::string aurora=TuInAurora(ftp,o,c,console,titleId,mediaId,&from,remote,from.where=="aurora" ? &data : NULL);
+    { std::lock_guard<std::mutex> hold(CopyLock); c.note=aurora; }
     EndCopy(c,console,"done","");
 }
 
@@ -5711,11 +5836,11 @@ void OffTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId) {
     std::vector<std::string> moved;
     MoveTusAside(ftp,o,c,titleId,mediaId,std::string(),moved);
     RefreshTus(ftp,o,c.address,titleId);
-    ftp.Close();
+    std::string aurora=TuInAurora(ftp,o,c,console,titleId,mediaId,NULL,std::string(),NULL);
     {
         std::lock_guard<std::mutex> hold(CopyLock);
         c.done=c.total; c.skipped=moved.empty() ? 1 : 0;
-        c.note=moved.empty() ? std::string("It had no update of it on.") : "Moved "+std::to_string(moved.size())+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".";
+        c.note=(moved.empty() ? std::string("It had no update of it on.") : "Moved "+std::to_string(moved.size())+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".")+" "+aurora;
     }
     EndCopy(c,console,"done","");
 }

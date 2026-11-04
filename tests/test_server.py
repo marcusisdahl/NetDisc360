@@ -7,6 +7,7 @@ Builds build/host/netdisc with g++ (or uses NETDISC_SERVER if set).
     python tests/test_server.py
 """
 import base64
+import contextlib
 import gzip
 import hashlib
 import hmac
@@ -35,6 +36,59 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import aurora_ftp  # noqa: E402
+try:  # Lua, to run the scripts NetDisc360 puts in Aurora; tests that need it skip without it.
+    import lupa
+    try:
+        import lupa.lua51  # noqa: F401  Aurora's Lua is 5.1.
+    except ImportError:
+        pass
+except ImportError:
+    lupa = None
+
+AURORA_TU_TABLES = (
+    "CREATE TABLE TitleUpdates ( Id INTEGER PRIMARY KEY AUTOINCREMENT, DisplayName TEXT COLLATE NOCASE, FileName TEXT COLLATE NOCASE, "
+    "LiveDeviceId TEXT COLLATE NOCASE, LivePath TEXT COLLATE NOCASE, TitleId INTEGER, MediaId INTEGER, BaseVersion INTEGER, Version INTEGER, "
+    "Hash TEXT COLLATE NOCASE, BackupPath TEXT COLLATE NOCASE, FileSize INTEGER, UNIQUE ( Hash, LiveDeviceId, LivePath ) )",
+    "CREATE TABLE ActiveTitleUpdates ( Id INTEGER PRIMARY KEY, TitleUpdateId INTEGER, UNIQUE( TitleUpdateId ) )")
+
+
+def run_aurora_script(path, xbox, content, settings):
+    """Runs one of NetDisc360's Aurora filter scripts as Aurora does when it
+    starts: Sql on content.db with settings.db as Config, and FileSystem on
+    the fake console's drive (xbox)."""
+    lua = getattr(lupa, "lua51", None) or lupa  # Aurora's Lua is 5.1.
+    runtime = lua.LuaRuntime(unpack_returned_tuples=True)
+    db = sqlite3.connect(content)
+    db.execute("ATTACH DATABASE ? AS Config", (settings,))
+
+    def execute(query):
+        try:
+            db.execute(query)
+            db.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def fetch(query):
+        cursor = db.execute(query)
+        names = [d[0] for d in cursor.description]
+        return runtime.table_from([runtime.table_from({n: (None if v is None else str(v)) for n, v in zip(names, row)}) for row in cursor.fetchall()])
+
+    def local(name):
+        drive, rest = name.split(":", 1)
+        return os.path.join(xbox, drive, *[p for p in rest.split("\\") if p])
+
+    def write(name, text):
+        with open(local(name), "w", newline="") as f:
+            f.write(text)
+        return True
+
+    runtime.globals().Sql = runtime.table_from({"Execute": execute, "ExecuteFetchRows": fetch})
+    runtime.globals().FileSystem = runtime.table_from({"FileExists": lambda name: os.path.exists(local(name)), "WriteFile": write})
+    runtime.globals().GameListFilterCategories = runtime.table_from({"User": runtime.table_from({})})
+    with open(path, encoding="utf-8") as f:
+        runtime.execute(f.read())
+    db.close()
 from test_generator import execution_info, header_digest, write_iso, xex  # noqa: E402
 
 SERVER = os.environ.get("NETDISC_SERVER") or os.path.join(ROOT, "build", "host", "netdisc")
@@ -2614,7 +2668,8 @@ class Dashboard(ServerTest):
             self.assertFalse([a for a in unity.asked[asked:] if "TitleUpdate.php" in a])
             # Like Aurora's manager: every update the console has, on or off,
             # Aurora's own store too (only read), and switched by moving files.
-            store = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data", "TitleUpdates", "3930383034", "4D5307E6")
+            device = "3930383034324250323438335351314B54354158"  # Aurora's ID for the hard drive.
+            store = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data", "TitleUpdates", device, "4D5307E6")
             for package in (older, newest):
                 os.makedirs(os.path.join(store, content_id(package).upper()))
                 with open(os.path.join(store, content_id(package).upper(), "tu0000000%d_00000000" % (1 if package is older else 2)), "wb") as f:
@@ -2657,6 +2712,57 @@ class Dashboard(ServerTest):
             console, files = switched()
             self.assertEqual(files, [("aside", "110"), ("aside", "111"), ("aurora", "110"), ("aurora", "111"), ("live", "111")])
             self.assertEqual(console["has"], "111")
+            # Aurora's own list says the same: Aurora puts the update it has on
+            # in place each time it starts the game and deletes the others. A
+            # script Aurora runs as it starts does that (Aurora isn't restarted
+            # here: there's no Aurora web server, so the job says to).
+            self.assertIn("Restart Aurora before you start Halo 3", job["note"])
+            script = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscTitleUpdates.lua")
+            helper = os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360")
+            if lupa:
+                content, settings = os.path.join(self.tmp.name, "content.db"), os.path.join(self.tmp.name, "settings.db")
+                for name, table in ((content, AURORA_TU_TABLES[0]), (settings, AURORA_TU_TABLES[1])):
+                    with contextlib.closing(sqlite3.connect(name)) as db:
+                        db.execute(table)
+                with contextlib.closing(sqlite3.connect(content)) as db, db:  # Aurora has Title Update 1 on its list, and on.
+                    db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (7, 'tu00000001_00000000', ?, ?, ?, ?, ?, 'x')",
+                               (device, "\\Content\\0000000000000000\\4D5307E6\\000B0000\\", 0x4D5307E6, 0x1A2B3C4D, content_id(older).upper()))
+                    db.execute("INSERT INTO TitleUpdates (Id, FileName, TitleId, MediaId, Hash) VALUES (8, 'other', 1, 2, 'AB')")
+                with contextlib.closing(sqlite3.connect(settings)) as db, db:
+                    db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (7), (8)")
+
+                def aurora_starts():
+                    run_aurora_script(script, xbox, content, settings)
+                    with contextlib.closing(sqlite3.connect(content)) as db:
+                        db.execute("ATTACH DATABASE ? AS Config", (settings,))
+                        return db.execute("SELECT t.Hash, t.FileName, t.BackupPath, t.TitleId, t.MediaId, t.Version FROM Config.ActiveTitleUpdates a "
+                                          "JOIN TitleUpdates t ON t.Id = a.TitleUpdateId ORDER BY t.Id").fetchall()
+                active = aurora_starts()
+                backup = "Game:\\Data\\TitleUpdates\\%s\\4D5307E6\\%s\\tu00000002_00000000" % (device, content_id(newest).upper())
+                self.assertEqual(active, [("AB", "other", None, 1, 2, None), (content_id(newest).upper(), "tu00000002_00000000", backup, 0x4D5307E6, 0x1A2B3C4D, 2)])
+                done = [n for n in os.listdir(helper) if n.startswith("tu-aurora-")]
+                self.assertEqual(len(done), 1)
+                with open(os.path.join(helper, done[0])) as f:
+                    self.assertEqual(f.read(), "4D5307E6 1A2B3C4D on\n")
+                # Once: a change made in Aurora afterwards stays.
+                with contextlib.closing(sqlite3.connect(settings)) as db, db:
+                    db.execute("DELETE FROM ActiveTitleUpdates")
+                self.assertEqual(aurora_starts(), [])
+                # Off: none on in Aurora either.
+                with contextlib.closing(sqlite3.connect(settings)) as db, db:
+                    db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (7)")
+                self.json("POST", "/api/titleupdates/off", {"game": "Halo 3", "address": "127.0.0.2"})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                self.assertEqual(aurora_starts(), [])
+                self.assertNotEqual([n for n in os.listdir(helper) if n.startswith("tu-aurora-")], done)  # The old done file goes.
+                path = next(f["path"] for f in switched()[0]["files"] if f["where"] == "aside" and f["offer"] == "111")
+                self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                self.assertEqual([a[0] for a in aurora_starts()], [content_id(newest).upper()])
+            else:
+                print("Skipped running the Aurora script: no lupa (pip install lupa).", file=sys.stderr)
+            with open(script, encoding="utf-8") as f:
+                self.assertIn(content_id(newest).upper(), f.read())
             # Only a switched-off update it listed.
             self.assertEqual(self.call("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": "/Hdd1/Apps/Aurora/Aurora.xex"})[0], 400)
             # An update with an upper-case TU_ name goes in the Cache.

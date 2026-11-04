@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: The dashboard page, made into server/web_page.h (not kept in git)
         run: python3 tools/make_web.py
+      - name: Lua for running NetDisc360's Aurora scripts in the tests
+        run: python3 -m pip install --quiet lupa
       - name: Server, discs, Sync and generator tests
         run: python3 tests/run_ci.py
 

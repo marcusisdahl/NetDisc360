@@ -1351,7 +1351,7 @@ function tuBox(g) {
           h('span', h(f.on ? 'span.tu-on' : 'span.tu-off', f.on ? 'On' : 'Off'), ' ', h('b', name), h('span.muted', ' ' + where[f.where] + (f.size ? ', ' + bytes(f.size, 1) : '') + (offer ? '' : ', not on XboxUnity for this disc'))),
           f.on ? null : h('button.btn.small', { disabled: busy, title: f.where === 'aurora' ? 'Copies it from Aurora’s store to where the game loads it; Aurora’s copy stays' : 'Moves it back to where the game loads it', onclick: e => switchTo(e.target, c.address, f.path) }, ic('check', 'sm'), 'Use this one'));
       }),
-      anyOn ? h('div.install-line', h('span.muted', 'Turning updates off moves them aside, so the game starts as it is on the disc.'),
+      anyOn ? h('div.install-line', h('span.muted', 'Turning updates off moves them aside and switches them off in Aurora too, so the game starts as it is on the disc.'),
         h('button.btn.small', { disabled: busy, onclick: e => switchTo(e.target, c.address, '') }, ic('power', 'sm'), 'Turn updates off')) : null);
   }
   async function check(button, address) {
