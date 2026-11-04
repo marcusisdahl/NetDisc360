@@ -170,24 +170,35 @@ def gdf_partition(files, root_sector=36):
     return chunks
 
 
-def write_god(folder, title_id, files, title="A Game", disc=1, discs=1, egdf=False, name="0123456789ABCDEF0123"):
+def write_god(folder, title_id, files, title="A Game", disc=1, discs=1, egdf=False, name="0123456789ABCDEF0123",
+              start=0, root_sector=36, folders=None):
     """A GOD package for a disc with root files {name: (sector, data)}, in
-    folder/<Title ID>/00007000. Returns the partition's chunks."""
-    content = os.path.join(folder, "%08X" % title_id, "00007000")
+    folder/<Title ID>/00007000 (or folder/<folders>). Returns the partition's chunks."""
+    content = os.path.join(folder, *(folders if folders is not None else ("%08X" % title_id, "00007000")))
     os.makedirs(content + "/" + name + ".data")
     header = bytearray(0xB000)
     header[0:4] = b"LIVE"
     struct.pack_into(">I", header, 0x344, 0x7000)
     struct.pack_into(">I", header, 0x360, title_id)
     header[0x366], header[0x367] = disc, discs
+    if start:  # The SVOD volume descriptor: EGDF, and its start data block.
+        header[0x391] = 0x40
+        header[0x395:0x398] = start.to_bytes(3, "little")
     raw = title.encode("utf-16-be")
     header[0x411:0x411 + len(raw)] = raw
     with open(os.path.join(content, name), "wb") as f:
         f.write(header)
-    chunks = gdf_partition(files)
-    # XSF (iso2god): the data starts at the partition. EGDF: at its volume descriptor.
-    shift = 0x10000 if egdf else 0
-    end = max(at + len(data) for at, data in chunks.items()) - shift
+    chunks = gdf_partition(files, root_sector)
+    # XSF (iso2god): the data starts at the partition. EGDF: at its volume
+    # descriptor, and with a start block, the data after the descriptor's
+    # block is the partition from that block on.
+
+    def data_at(at):
+        if start and at >= 0x11000:
+            return at - start * BLOCK + BLOCK
+        return at - (0x10000 if egdf or start else 0)
+
+    end = max(data_at(at) + len(data) for at, data in chunks.items())
     blocks = (end + BLOCK - 1) // BLOCK
     parts = (blocks + PART_DATA - 1) // PART_DATA
     handles = []
@@ -196,7 +207,7 @@ def write_god(folder, title_id, files, title="A Game", disc=1, discs=1, egdf=Fal
         f.truncate(part_bytes(min(PART_DATA, blocks - p * PART_DATA)))
         handles.append(f)
     for at, data in chunks.items():
-        d = at - shift
+        d = data_at(at)
         while data:
             run = min(len(data), BLOCK - d % BLOCK)
             part, offset = god_location(d)
@@ -352,6 +363,31 @@ class Discs(ServerTest):
         gdf = Gdf(c)
         found = gdf.walk()
         self.assertEqual(gdf.read_file(*found["x.bin"][:2]), b"xyz" * 999)
+        c.close()
+
+    def test_microsoft_layout_with_a_start_block(self):
+        # Like Red Faction Guerrilla: an EGDF package whose header has a start
+        # block, so the sectors between the volume descriptor and the files
+        # aren't in it, in <game>/00007000 with no Title ID folder. It was
+        # named after the folder above the game and its default.xex wasn't found.
+        start = 0x1E0
+        files = {"default.xex": (2 * start + 8, xex(execution_info(1, 0x5451080D))),
+                 "big.bin": (2 * start + 20, os.urandom(5 * BLOCK + 7))}
+        write_god(os.path.join(self.isos, "Xbox 360 RETAIL", "Red Faction Guerrilla"), 0x5451080D, files,
+                  title="Red Faction: Guerrilla", egdf=True, start=start, root_sector=2 * start + 2, folders=("00007000",))
+        self.start()
+        c = Client(self.port)
+        self.assertEqual(c.names(), ["Red Faction Guerrilla.iso"])
+        self.assertEqual(c.mount("Red Faction Guerrilla.iso"), 1)
+        gdf = Gdf(c)
+        self.assertEqual(gdf.start, XGD2)
+        found = gdf.walk()
+        self.assertEqual(sorted(found), ["big.bin", "default.xex"])
+        for name, (sector, data) in files.items():
+            self.assertEqual(found[name][:2], (sector, len(data)))
+            self.assertEqual(gdf.read_file(sector, len(data)), data, name)
+        # The sectors the package leaves out read as zeros.
+        self.assertEqual(c.read(XGD2 + 0x11000, 4096), bytes(4096))
         c.close()
 
     def test_each_game_once_and_duplicates_reported(self):

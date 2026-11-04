@@ -60,7 +60,15 @@ bool InstalledGames::Ids(FtpClient& ftp, const std::string& path, const FtpEntry
     if(!ftp.RetrieveHead(path.c_str(),head,god ? GodHead : XexHead)) return false;  // Tried again next time.
     bool found=false;
     if(god) found=!head.empty() && GodIds(&head[0],DWORD(head.size()),titleId,mediaId,disc);
-    else if(head.size()>=24) {
+    else if(path.size()>4 && Lower(path.substr(path.size()-4))==".xbe") {
+        // An original Xbox game: the Title ID is in default.xbe's
+        // certificate, within its headers; it's disc 1, as the server has it.
+        DWORD headers=0;
+        found=!head.empty() && XbeIds(&head[0],DWORD(head.size()),titleId,&headers);
+        if(!found && headers>head.size() && headers<=HeaderMost && ftp.RetrieveHead(path.c_str(),head,headers))
+            found=!head.empty() && XbeIds(&head[0],DWORD(head.size()),titleId);
+        disc=1;
+    } else if(head.size()>=24) {
         found=XexIds(&head[0],DWORD(head.size()),titleId,mediaId,disc);
         DWORD header=Big32(&head[8]);
         if(!found && !memcmp(&head[0],"XEX2",4) && header>head.size() && header<=HeaderMost && ftp.RetrieveHead(path.c_str(),head,header))
@@ -72,18 +80,25 @@ bool InstalledGames::Ids(FtpClient& ftp, const std::string& path, const FtpEntry
     return found;
 }
 
-// A game is a folder with default.xex; one without is looked into, depth
-// folders down.
+// A game is a folder with default.xex, or an original Xbox game's
+// default.xbe; one with neither is looked into, depth folders down.
 bool InstalledGames::Walk(FtpClient& ftp, const std::string& folder, int depth, const std::string& skip,
                           std::vector<InstalledGame>& out, std::string& error) {
     std::vector<FtpEntry> entries;
     if(!ftp.List(folder.c_str(),entries)) { error="couldn't list "+folder+": "+ftp.Error(); return false; }
+    size_t xex=entries.size(), xbe=entries.size();
     for(size_t i=0;i<entries.size();++i) {
-        if(entries[i].folder || Lower(entries[i].name)!="default.xex") continue;
-        std::string path=folder+"/"+entries[i].name;
+        if(entries[i].folder) continue;
+        std::string name=Lower(entries[i].name);
+        if(name=="default.xex") xex=i;
+        else if(name=="default.xbe") xbe=i;
+    }
+    if(xex<entries.size() || xbe<entries.size()) {
+        const FtpEntry& file=entries[xex<entries.size() ? xex : xbe];
+        std::string path=folder+"/"+file.name;
         InstalledGame game;
         game.path=path; game.god=false;
-        if(Ids(ftp,path,entries[i],false,game.titleId,game.disc)) out.push_back(game);
+        if(Ids(ftp,path,file,false,game.titleId,game.disc)) out.push_back(game);
         return true;
     }
     for(size_t i=0;i<entries.size() && depth>0;++i) {

@@ -26,8 +26,8 @@
     <ImageXex><ExcludedFromBuild>true</ExcludedFromBuild></ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="disc.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
-  <ItemGroup><ClInclude Include="disc.h" /><ClInclude Include="..\shared\netdisc.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="disc.cpp" /><ClCompile Include="profiles_job.cpp" /><ClCompile Include="..\launcher\profiles.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="disc.h" /><ClInclude Include="profiles_job.h" /><ClInclude Include="..\shared\netdisc.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
   <ItemGroup><None Include="xex.xml" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- The Xbox 360 platform's ImageXex target ignores ExcludedFromBuild; this

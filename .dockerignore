@@ -2,7 +2,10 @@
 !server/
 !shared/
 !tests/posix_compat.h
+!third_party/imgui/imstb_truetype.h
+!third_party/fonts/roboto_medium.h
 !docker/
 !art/aurora/*/*.asset
 !web/
 !tools/make_web.py
+!tools/make_version.py

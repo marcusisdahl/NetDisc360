@@ -82,6 +82,11 @@ private:
 // package's header file (0x368 bytes); false if it isn't one.
 bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
 bool GodIds(const unsigned char* header, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
+// The Title ID in an original Xbox default.xbe's certificate, from the start
+// of the file (its headers, which hold the certificate); false if it isn't
+// one, or the certificate lies past size. *headers, if given, gets the size
+// of the headers the file says it has (0 if it isn't an XBE).
+bool XbeIds(const unsigned char* xbe, DWORD size, DWORD& titleId, DWORD* headers=NULL);
 
 // For the tests: the disc image of a folder or GOD package, or NULL with why in error.
 DiscImage* OpenFolderImage(const std::string& folder, std::string& error);

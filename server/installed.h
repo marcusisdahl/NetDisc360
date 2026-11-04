@@ -2,16 +2,18 @@
 #pragma once
 // The games installed on a console, found over Aurora's FTP server, so a game
 // from the server that is installed there gets no tile: Aurora would list it
-// twice. Extracted games are a default.xex in a folder, or in a folder in it
-// ("Halo 3\Disc 1"), under the folders given; Games on Demand are in each of
-// their drives' Content\0000000000000000\<Title ID>\00007000.
+// twice. Extracted games are a default.xex (or an original Xbox game's
+// default.xbe) in a folder, or in a folder in it ("Halo 3\Disc 1"), under
+// the folders given; Games on Demand are in each of their drives'
+// Content\0000000000000000\<Title ID>\00007000.
 #include "ftp.h"
 #include <map>
 #include <string>
 #include <vector>
 
 namespace nia {
-// path is the default.xex, or the GOD package's header file, as an FTP path.
+// path is the default.xex (default.xbe), or the GOD package's header file, as
+// an FTP path.
 struct InstalledGame { DWORD titleId; int disc; std::string path; bool god; };
 
 // One for each console: what it read stays known until the file changes (by
