@@ -5821,7 +5821,6 @@ void LoadOtherPlays(const Options& o) {
 // users.h on the party branch) merged into this one's users.ini: the same
 // XUID is the same user, the line changed last wins, removals carry over.
 // A merge that changed users.ini sends it up on the next pass.
-bool MergeUsersFile(const std::string& text, std::string& error);  // Below, with the Users page.
 void MergeOtherUsers(const Options& o) {
     std::string devices=InFolder(CloudFolder(o),"devices");
     std::vector<std::string> ids=config::Folders(devices);

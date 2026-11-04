@@ -4965,6 +4965,8 @@ class Sync(DashboardTest):
         users = b"[Users]\r\ncount=1\r\nuser1=ufedcba9876543210|Marcus|Marcus|E000000000000001|1700000000|0|1700000000|0\r\n"
         with open(os.path.join(self.folder, "users.ini"), "wb") as f:
             f.write(users)
+        with open(self.config, "w") as f:
+            f.write("[Server]\n")  # users.ini is read with the settings file.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.start()
         self.assertFalse(self.json("GET", "/api/state")["sync"]["on"])
@@ -5020,8 +5022,10 @@ class Sync(DashboardTest):
         os.remove(os.path.join(saves, from_laptop))
         newer = "4D5307E6_2026-11-03_09-00-00.zip"
         self.cloud_put(laptop["key"], "files/saves/" + newer, self.save_zip("Halo 3"))
+        last = self.synced()["sync"]["last"]
+        time.sleep(1.1)  # A pass in a later second.
         self.json("POST", "/api/sync/now", {})
-        self.synced(state["sync"]["last"])
+        self.synced(last)
         self.assertFalse(os.path.exists(os.path.join(saves, from_laptop)))
         self.assertTrue(os.path.exists(os.path.join(saves, newer)))
         # After a restart it still syncs, as the same computer.
