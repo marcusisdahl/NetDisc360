@@ -1987,6 +1987,8 @@ bool RestartAurora(const Console& console, const Options& o, const char* why) {
     return true;
 }
 
+bool TuAuroraFollowUp(const Console& console, FtpClient& ftp, const Options& o);
+
 // Aurora's cleanup script and "Hide PC games while NetDisc360 is off" filter
 // (see aurora.h), and the marker the filter looks for, after a push. When the
 // filter hides the PC games though this server runs (Aurora started while it
@@ -2025,6 +2027,7 @@ void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const 
         if(!ftp.Store((helper+"/"+OnlineMarker).c_str(),text,sizeof(text)-1)) { XboxLog(console,"couldn't write %s/%s: %s",helper.c_str(),OnlineMarker,ftp.Error()); return; }
     }
     console.marked=true;
+    if(TuAuroraFollowUp(console,ftp,o)) return;
     std::vector<unsigned char> state;
     if(!shown || s.restarted || !o.restartAurora || !ftp.Retrieve((helper+"/"+ShownMarker).c_str(),state,64)) return;
     if(std::string(state.begin(),state.end()).compare(0,7,"offline")) return;
@@ -5604,7 +5607,13 @@ void RefreshTus(FtpClient& ftp, const Options& o, DWORD address, DWORD titleId) 
 // Aurora's own list of the updates it has on, kept like the dashboard's
 // choices (see TitleUpdateScript): what each console's script still has to
 // do, by (Title ID << 32 | Media ID), and the number in its done file's name.
-struct TuAuroraState { std::map<unsigned long long,AuroraTu> wants; long long seq; TuAuroraState() : seq(0) {} };
+// Aurora reads that list once as it starts, before its scripts run, so a
+// change the script makes is used from the start after: restartAfter, when
+// the console still needs that second start (done: the script's done file).
+struct TuAuroraState {
+    std::map<unsigned long long,AuroraTu> wants; long long seq; bool restartAfter; std::string done;
+    TuAuroraState() : seq(0), restartAfter(false) {}
+};
 std::map<DWORD,TuAuroraState> TuAurora;
 const char TuAuroraDone[] = "tu-aurora-";
 
@@ -5679,6 +5688,7 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
         a.wants[((unsigned long long)titleId<<32)|mediaId]=want;
         a.seq=std::max(a.seq+1,(long long)time(NULL));
         done=helper+"/"+TuAuroraDone+std::to_string(a.seq)+".txt";
+        a.done=done; a.restartAfter=true;  // Until the job restarts Aurora after the script ran.
         for(std::map<unsigned long long,AuroraTu>::const_iterator w=a.wants.begin();w!=a.wants.end();++w) wants.push_back(w->second);
     }
     for(size_t i=0;i<files.size();++i)
@@ -5695,9 +5705,11 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
     std::string what=want.hash.empty() ? "no update of "+game : c.label+" of "+game;
     Log("Xbox %s: wrote %s, so Aurora has %s on as it starts.",c.console.c_str(),path.c_str(),what.c_str());
     ftp.Close();
-    std::string later=cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." :
-        "Restart Aurora before you start "+game+": Aurora takes this as it starts, and would switch it back otherwise.";
-    if(!o.restartAurora || !console) return later;
+    // Aurora uses the change from its second start from now: the first runs
+    // the script, after Aurora read its list.
+    std::string twice="Restart Aurora twice before you start "+game+": the first time Aurora takes this, and it uses it from the second. Otherwise Aurora switches it back when it starts the game.";
+    if(!o.restartAurora || !console) return twice;
+    std::string later="When Aurora is on screen again, NetDisc360 restarts it twice so it takes this; don't start "+game+" before that, or Aurora switches it back.";
     if(!RestartAurora(*console,o,"so it takes the title update")) return later;
     // Aurora's FTP is back with it: the script's done file says what it did.
     std::string result;
@@ -5710,14 +5722,40 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
         check.Close();
     }
     if(result.empty()) return "Aurora restarted, but its script didn't say it switched it; check Aurora's title updates for "+game+" before you start it.";
-    { std::lock_guard<std::mutex> hold(TuLock); TuAurora[c.address].wants.clear(); }
+    bool again=RestartAurora(*console,o,"so it uses its new title update list");
+    {
+        std::lock_guard<std::mutex> hold(TuLock);
+        TuAuroraState& a=TuAurora[c.address];
+        a.wants.clear();
+        if(a.done==done) a.restartAfter=!again;
+    }
+    std::string pending=again ? std::string() : " Restart Aurora once before you start "+game+", so Aurora uses it.";
     char ids[32]; _snprintf_s(ids,sizeof(ids),_TRUNCATE,"%08X %08X ",titleId,mediaId);
     size_t at=result.find(ids);
     std::string said=at==std::string::npos ? std::string() : result.substr(at+strlen(ids),result.find_first_of("\r\n",at)-at-strlen(ids));
-    if(said=="on") return "Aurora has it on too, so it stays when Aurora starts "+game+".";
-    if(said=="off") return cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." : "Aurora has none on either.";
+    if(said=="on") return "Aurora has it on too, so it stays when Aurora starts "+game+"."+pending;
+    if(said=="off") return (cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." : std::string("Aurora has none on either."))+pending;
     if(said=="missing") return "Aurora didn't take it on its list; switch it on in Aurora's title updates for "+game+", or Aurora removes it when it starts the game.";
     return "Aurora couldn't change its list ("+(said.empty() ? std::string("no answer for this game") : said)+"); check Aurora's title updates for "+game+".";
+}
+
+// After a push: a console whose Aurora ran the title update script (its
+// done file is there) but hasn't started since gets that second start, so it
+// uses the new list (see TuAuroraState), when it's on screen.
+bool TuAuroraFollowUp(const Console& console, FtpClient& ftp, const Options& o) {
+    std::string done;
+    {
+        std::lock_guard<std::mutex> hold(TuLock);
+        std::map<DWORD,TuAuroraState>::const_iterator a=TuAurora.find(console.address);
+        if(a==TuAurora.end() || !a->second.restartAfter || a->second.done.empty()) return false;
+        done=a->second.done;
+    }
+    if(!o.restartAurora || RemoteSize(ftp,done)<0) return false;  // Aurora hasn't run it yet.
+    if(!RestartAurora(console,o,"so it uses its new title update list")) return false;
+    std::lock_guard<std::mutex> hold(TuLock);
+    TuAuroraState& a=TuAurora[console.address];
+    if(a.done==done) { a.restartAfter=false; a.wants.clear(); }
+    return true;
 }
 
 // The update on the console, made the one it uses: older updates of the

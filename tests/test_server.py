@@ -2714,9 +2714,11 @@ class Dashboard(ServerTest):
             self.assertEqual(console["has"], "111")
             # Aurora's own list says the same: Aurora puts the update it has on
             # in place each time it starts the game and deletes the others. A
-            # script Aurora runs as it starts does that (Aurora isn't restarted
-            # here: there's no Aurora web server, so the job says to).
-            self.assertIn("Restart Aurora before you start Halo 3", job["note"])
+            # script Aurora runs as it starts does that. Aurora reads the list
+            # before its scripts run, so it uses the change from the start
+            # after; it isn't restarted here (no Aurora web server), so the job
+            # says that's still to come.
+            self.assertIn("restarts it twice so it takes this; don't start Halo 3 before that", job["note"])
             script = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscTitleUpdates.lua")
             helper = os.path.join(xbox, "Hdd1", "NetISO", "NetDisc360")
             if lupa:
