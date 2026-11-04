@@ -221,6 +221,12 @@ void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCou
     }
 }
 
+void FriendlyGameName(const char* isoName, char* out, size_t capacity) {
+    size_t length=strlen(isoName);
+    if(length>4 && !_stricmp(isoName+length-4,".iso")) length-=4;
+    FriendlyStem(isoName,length,out,capacity);
+}
+
 static bool Fail(char* error, size_t capacity, const char* text) { _snprintf_s(error,capacity,_TRUNCATE,"%s",text); return false; }
 static bool ReadIso(IsvrClient& client, U64 offset, DWORD length, unsigned char* data) {
     while(length) {

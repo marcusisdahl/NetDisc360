@@ -1853,10 +1853,92 @@ std::string ConsolePath(const std::string& ftpPath);
 std::string SizeText(U64 n);
 
 // Makes the package of a game folder's tile (its default.xex) in god.
+// What the Xbox home shows of a Games on Demand tile: its header's name and
+// icon. The name is Aurora's for the title (the game's own, as Aurora lists
+// its folder tile or package), else XboxUnity's, else the ISO's without its
+// release tags; the icon is XboxUnity's, the one Aurora shows. Each title is
+// asked of XboxUnity once while the server runs, and not at all for
+// GodArtRetrySeconds after it couldn't be reached.
+struct GodArt { std::string name; std::vector<unsigned char> icon; };
+std::mutex GodArtLock;
+std::map<DWORD,GodArt> UnityArt;            // Titles XboxUnity answered for.
+std::map<DWORD,std::string> AuroraTitles;   // Aurora's names, from consoles' content.db.
+time_t UnityDownAt=0;
+const double GodArtRetrySeconds=600;
+extern const char AuroraContentDb[];
+
+// XboxUnity's name and icon of a title; false if it couldn't be reached.
+bool AskUnityArt(const Options& o, DWORD titleId, GodArt& art) {
+    std::string body, file, error;
+    if(!tu::Get(o.xboxUnity+"/TitleList.php?page=0&count=10&search="+Hex8(titleId)+"&sort=3&direction=1&category=0&filter=0",body,1<<20,file,error)) {
+        Log("XboxUnity didn't answer for the name of %08X: %s",unsigned(titleId),error.c_str());
+        return false;
+    }
+    web::Value v;
+    const web::Value* items=web::Parse(body,v) && v.type==web::Value::Object ? v.Get("Items") : NULL;
+    for(size_t i=0;items && items->type==web::Value::Array && i<items->items.size() && art.name.empty();++i) {
+        const web::Value* id=items->items[i].Get("TitleID");
+        const web::Value* name=items->items[i].Get("Name");
+        if(id && id->type==web::Value::String && !_stricmp(id->text.c_str(),Hex8(titleId).c_str()) && name && name->type==web::Value::String) art.name=name->text;
+    }
+    // A PNG, which the header's 0x4000 bytes hold; XboxUnity has no icon for some titles.
+    std::vector<unsigned char> icon;
+    if(tu::Get(o.xboxUnity+"/Icon.php?tid="+Hex8(titleId),body,1<<20,file,error) && body.size()>8 && body.size()<=0x4000 && !memcmp(body.data(),"\x89PNG\r\n\x1a\n",8))
+        art.icon.assign(body.begin(),body.end());
+    return true;
+}
+
+// The name and icon a tile of titleId gets; listed is its listed name.
+GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed) {
+    GodArt art;
+    bool ask=false;
+    {
+        std::lock_guard<std::mutex> hold(GodArtLock);
+        std::map<DWORD,GodArt>::const_iterator known=UnityArt.find(titleId);
+        if(known!=UnityArt.end()) art=known->second;
+        else ask=!o.xboxUnity.empty() && (!UnityDownAt || difftime(time(NULL),UnityDownAt)>=GodArtRetrySeconds);
+    }
+    if(ask) {
+        GodArt asked;
+        bool answered=AskUnityArt(o,titleId,asked);
+        std::lock_guard<std::mutex> hold(GodArtLock);
+        if(answered) { UnityArt[titleId]=asked; art=asked; UnityDownAt=0; }
+        else UnityDownAt=time(NULL);
+    }
+    std::lock_guard<std::mutex> hold(GodArtLock);
+    std::map<DWORD,std::string>::const_iterator aurora=AuroraTitles.find(titleId);
+    if(aurora!=AuroraTitles.end()) art.name=aurora->second;
+    if(art.name.empty()) { char friendly[512]; FriendlyGameName(listed.c_str(),friendly,sizeof(friendly)); art.name=config::ToUtf8(friendly); }
+    return art;
+}
+
+// Reads Aurora's names of the titles on the console from its content.db, for
+// GodArtFor. Not those of NetDisc360's own packages, whose name may be the
+// one their header gave (and an older build's was the ISO's).
+void ReadAuroraTitles(FtpClient& ftp, const Options& o) {
+    std::vector<unsigned char> db;
+    std::vector<AuroraItem> items;
+    std::string why;
+    if(!ftp.Retrieve((o.aurora+AuroraContentDb).c_str(),db,size_t(256)<<20) || !ReadAuroraItems(db,items,why)) return;
+    std::map<DWORD,std::string> found;
+    for(size_t i=0;i<items.size();++i) {
+        const AuroraItem& item=items[i];
+        if(!item.titleId || item.titleName.empty() || found.count(item.titleId)) continue;
+        std::string directory=item.directory;
+        while(!directory.empty() && (directory[directory.size()-1]=='\\' || directory[directory.size()-1]=='/')) directory.erase(directory.size()-1);
+        size_t slash=directory.find_last_of("\\/");
+        if(IsGodTileName(slash==std::string::npos ? directory : directory.substr(slash+1))) continue;
+        found[item.titleId]=item.titleName;
+    }
+    std::lock_guard<std::mutex> hold(GodArtLock);
+    for(std::map<DWORD,std::string>::const_iterator i=found.begin();i!=found.end();++i) AuroraTitles[i->first]=i->second;
+}
+
 bool MakeGodTile(const std::vector<unsigned char>& xex, const std::string& folder, const std::string& title,
-                 IsoReader& reader, GodPackage& god, std::string& error) {
+                 const std::vector<unsigned char>& icon, IsoReader& reader, GodPackage& god, std::string& error) {
     DWORD titleId=0, mediaId=0; int disc=0;
     if(xex.size()<24 || !XexIds(&xex[0],DWORD(xex.size()),titleId,mediaId,disc) || !titleId) { error="its default.xex has no Title ID"; return false; }
+    god.SetIcon(icon);
     std::string ini="; Written by NetDisc360: this Games on Demand package starts the game folder named here.\r\ntile="+ConsolePath(folder)+"\r\n";
     std::vector<std::pair<std::string,std::vector<unsigned char> > > files;
     files.push_back(std::make_pair(std::string("default.xex"),xex));
@@ -1880,6 +1962,7 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
     std::string content=GodContent(o);
     std::set<std::string> keep, there;
     for(size_t i=0;i<had.size();++i) there.insert(Lower(had[i].path));
+    if(!tiles.empty()) ReadAuroraTitles(ftp,o);
     for(size_t i=0;i<tiles.size();++i) {
         std::string folder=GodHome(o)+"/"+tiles[i].second;
         std::map<std::string,std::vector<unsigned char> >::const_iterator kept=launchers.find(Lower(folder));
@@ -1889,8 +1972,18 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
             XboxLog(console,"couldn't read %s/default.xex for its Games on Demand tile: %s",folder.c_str(),ftp.Error());
             ok=false; continue;
         }
+        DWORD titleId=0, mediaId=0; int disc=0;
+        GodArt art;
+        if(xex.size()>=24 && XexIds(&xex[0],DWORD(xex.size()),titleId,mediaId,disc) && titleId) {
+            art=GodArtFor(o,titleId,tiles[i].first);
+            // Each disc of a set its own name, as the Xbox home lists each.
+            DWORD info=ExecutionInfoOffset(&xex[0],DWORD(xex.size()));
+            std::string number="disc "+std::to_string(disc);
+            if(info && info+ExecutionInfoSize<=xex.size() && xex[info+19]>1 && disc>0 && Lower(art.name).find(number)==std::string::npos)
+                art.name+=" (Disc "+std::to_string(disc)+")";
+        }
         IsoReader reader; GodPackage god; std::string error;
-        if(!MakeGodTile(xex,folder,WithoutIso(tiles[i].first),reader,god,error)) {
+        if(!MakeGodTile(xex,folder,art.name,art.icon,reader,god,error)) {
             XboxLog(console,"couldn't make the Games on Demand tile of %s: %s.",tiles[i].first.c_str(),error.c_str());
             ok=false; continue;
         }
@@ -1910,8 +2003,8 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
         }
         if(written && !ftp.Store(header.c_str(),god.Header().data(),god.Header().size())) { written=false; error=ftp.Error(); }
         if(!written) { XboxLog(console,"couldn't write the Games on Demand tile of %s (%s): %s",tiles[i].first.c_str(),header.c_str(),error.c_str()); ok=false; continue; }
-        XboxLog(console,"put %s in as Games on Demand (%s, %s), which starts %s.",WithoutIso(tiles[i].first).c_str(),header.c_str(),
-                SizeText(god.Bytes()).c_str(),folder.c_str());
+        XboxLog(console,"put %s in as Games on Demand (%s, %s), named \"%s\"%s, which starts %s.",WithoutIso(tiles[i].first).c_str(),header.c_str(),
+                SizeText(god.Bytes()).c_str(),art.name.c_str(),art.icon.empty() ? " with no icon" : " with its icon",folder.c_str());
         ++changed;
     }
     for(size_t i=0;i<had.size();++i) {
@@ -5200,7 +5293,10 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     GodPackage god;
     std::string error;
     { std::lock_guard<std::mutex> hold(CopyLock); c.phase="prepare"; }
-    bool made=god.Make(reader,c.game,[&](U64 done, U64 total) {
+    // Named and with its icon in the Xbox home as a tile's package is (see GodArtFor).
+    std::string title=c.game;
+    if(disc.titleId) { GodArt art=GodArtFor(o,disc.titleId,disc.name); title=art.name; god.SetIcon(art.icon); }
+    bool made=god.Make(reader,title,[&](U64 done, U64 total) {
         std::lock_guard<std::mutex> hold(CopyLock);
         c.done=done; c.total=total;
         return !c.stop.load();

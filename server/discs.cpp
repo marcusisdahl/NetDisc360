@@ -1323,11 +1323,30 @@ bool GodPackage::Make(IsoReader& reader, const std::string& title, const std::fu
     PutBig32(h+0x354,mediaId_); PutBig32(h+0x360,titleId_);
     h[0x364]=info[16]; h[0x365]=info[17]; h[0x366]=info[18]; h[0x367]=info[19];
     Sha1Block(&masters_[0][0],GodBlock,h+0x37D);
-    // The game's name, in UTF-16BE where Aurora and the dashboard show it (ASCII; others as _).
-    for(size_t i=0;i<title.size() && i<0x7F;++i) {
-        DWORD c=(unsigned char)title[i]<0x80 ? (unsigned char)title[i] : '_';
-        PutBig16(h+0x411+i*2,c); PutBig16(h+0x1691+i*2,c);
+    // The game's name (UTF-8), in UTF-16BE where Aurora and the dashboard
+    // show it: the display name of each of the 18 languages and the title
+    // name, 0x80 bytes each, so at most 63 characters and a zero.
+    std::vector<DWORD> name;
+    for(size_t i=0;i<title.size() && name.size()<0x3F;) {
+        unsigned char c=(unsigned char)title[i];
+        int more=c<0x80 ? 0 : (c&0xE0)==0xC0 ? 1 : (c&0xF0)==0xE0 ? 2 : (c&0xF8)==0xF0 ? 3 : -1;
+        DWORD code=more==0 ? c : more==1 ? c&0x1F : more==2 ? c&0x0F : c&0x07;
+        bool ok=more>=0 && i+more<title.size();
+        for(int k=1;ok && k<=more;++k) { unsigned char n=(unsigned char)title[i+k]; ok=(n&0xC0)==0x80; code=(code<<6)|(n&0x3F); }
+        i+=ok ? more+1 : 1;
+        // Beyond UTF-16's first plane, control characters and broken bytes: as _.
+        name.push_back(!ok || code<0x20 || code>0xFFFF || (code>=0xD800 && code<0xE000) ? '_' : code);
     }
+    for(size_t i=0;i<name.size();++i) {
+        for(int language=0;language<18;++language) PutBig16(h+0x411+language*0x80+i*2,name[i]);
+        PutBig16(h+0x1691+i*2,name[i]);
+    }
+    // The icon, as both thumbnails (version 1 metadata: 0x4000 bytes each).
+    static const unsigned char Png[8]={0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+    bool icon=icon_.size()>sizeof(Png) && icon_.size()<=0x4000 && !memcmp(&icon_[0],Png,sizeof(Png)) && Big32(h+0x3A9)==1;
+    memset(h+0x171A,0,0x8000);
+    PutBig32(h+0x1712,icon ? DWORD(icon_.size()) : 0); PutBig32(h+0x1716,icon ? DWORD(icon_.size()) : 0);
+    if(icon) { memcpy(h+0x171A,&icon_[0],icon_.size()); memcpy(h+0x571A,&icon_[0],icon_.size()); }
     h[0x35B]=0; h[0x35F]=0; h[0x391]=0;
     Sha1Block(h+0x344,0xACBC,h+0x32C);
     return true;
