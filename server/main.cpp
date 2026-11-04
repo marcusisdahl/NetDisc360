@@ -3131,12 +3131,17 @@ void ConflictsJson(web::Json& j) {
 // console stays asked for until it's in Aurora. Once a minute, consoles not
 // checked yet (new ones, and all after a start) are asked for.
 void FollowStep() {
-    static double lookedAt=-1e9;
+    static double lookedAt=-1e9, allAt=-1e9;
     if(Now()-lookedAt>60) {
         lookedAt=Now();
+        // Every 10 minutes all of them: a profile put on a console since (by
+        // hand, or by a party) gets its saves too. Games already checked with
+        // the same profiles cost one look at the console's profiles.
+        bool all=Now()-allAt>600;
+        if(all) allAt=Now();
         std::vector<Console*> consoles=AllConsoles();
         std::lock_guard<std::mutex> hold(FollowLock);
-        for(size_t i=0;i<consoles.size();++i) if(!FollowDone.count(consoles[i]->address)) FollowAsked.insert(consoles[i]->address);
+        for(size_t i=0;i<consoles.size();++i) if(all || !FollowDone.count(consoles[i]->address)) FollowAsked.insert(consoles[i]->address);
     }
     std::vector<DWORD> asked;
     { std::lock_guard<std::mutex> hold(FollowLock); asked.assign(FollowAsked.begin(),FollowAsked.end()); }
