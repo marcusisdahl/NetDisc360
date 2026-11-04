@@ -5633,6 +5633,20 @@ std::string TuAuroraDevice(FtpClient& ftp, const Options& o, DWORD titleId) {
     return first;
 }
 
+// After Aurora was restarted: true once it's back, its web server answering
+// (it starts after Aurora's plugins). Nothing is sent for the first 25 s,
+// while Aurora builds its list and loads its plugins.
+bool WaitForAurora(DWORD address, const Options& o) {
+    Sleep(25000);
+    for(int tries=0;tries<20;++tries) {
+        AuroraWeb aurora(address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,5);
+        std::string path;
+        if(aurora.Title(path)) return true;
+        Sleep(5000);
+    }
+    return false;
+}
+
 // Makes Aurora have on (in its own list) the update now live at live, or
 // none (on NULL), so it keeps that when it starts the game: a script Aurora
 // runs as it starts (see TitleUpdateScript), and Aurora restarted when it's
@@ -5711,10 +5725,13 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
     if(!o.restartAurora || !console) return twice;
     std::string later="When Aurora is on screen again, NetDisc360 restarts it twice so it takes this; don't start "+game+" before that, or Aurora switches it back.";
     if(!RestartAurora(*console,o,"so it takes the title update")) return later;
-    // Aurora's FTP is back with it: the script's done file says what it did.
+    // Nothing goes to the console while Aurora starts (COD hung once loading
+    // its plugins while this read its FTP): only once it's up, the script's
+    // done file, which says what it did.
+    if(!WaitForAurora(c.address,o)) return "Aurora didn't come back after its restart; check the console, then Aurora's title updates for "+game+".";
     std::string result;
-    for(int tries=0;tries<20 && result.empty() && !c.stop;++tries) {
-        Sleep(3000);
+    for(int tries=0;tries<5 && result.empty() && !c.stop;++tries) {
+        if(tries) Sleep(3000);
         FtpClient check(c.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),10);
         if(!check.Open()) continue;
         std::vector<unsigned char> answer;
@@ -5722,7 +5739,12 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
         check.Close();
     }
     if(result.empty()) return "Aurora restarted, but its script didn't say it switched it; check Aurora's title updates for "+game+" before you start it.";
-    bool again=RestartAurora(*console,o,"so it uses its new title update list");
+    bool again=false;
+    for(int tries=0;tries<3 && !again;++tries) {
+        if(tries) Sleep(5000);
+        again=RestartAurora(*console,o,"so it uses its new title update list");
+    }
+    if(again) WaitForAurora(c.address,o);  // The next job's FTP waits for it too.
     {
         std::lock_guard<std::mutex> hold(TuLock);
         TuAuroraState& a=TuAurora[c.address];
