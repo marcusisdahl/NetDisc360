@@ -8813,7 +8813,8 @@ void PartyNamesChanged(const std::vector<std::string>& dropped, const std::vecto
     PartyNews();
 }
 
-bool MergeUsersFile(const std::string& text, std::string& error) {
+// users.h's MergeUsersFile (defined after this namespace, as nia's, so any file can call it).
+bool MergeUsersFileHere(const std::string& text, std::string& error) {
     std::vector<User> other;
     ReadUsers(text,other);
     if(other.empty() && text.find("[Users]")==std::string::npos) { error="That isn't a NetDisc360 users file (users.ini)."; return false; }
@@ -8984,7 +8985,7 @@ void UsersChange(const web::Value& v, web::Reply& out) {
     } else if(action=="import") {
         std::string text;
         Text(v,"text",text);
-        if(!MergeUsersFile(text,error)) { out.Error(400,error); return; }
+        if(!MergeUsersFileHere(text,error)) { out.Error(400,error); return; }
     } else { out.Error(400,"Send action add, remove, adopt or import."); return; }
     Save();
     UsersJson(out);
@@ -9585,6 +9586,9 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
     return o.port>0 && o.port<65536 && o.ftpPort>0 && o.ftpPort<65536 && o.webPort>=0 && o.webPort<65536 && o.auroraWebPort>0 && o.auroraWebPort<65536;
 }
 }  // namespace
+
+// users.h: another computer's users.ini merged into this one's (the sync).
+bool nia::MergeUsersFile(const std::string& text, std::string& error) { return MergeUsersFileHere(text,error); }
 
 // What the dashboard's sessions are signed with besides the password's hash
 // (see web.h): kept next to the settings file but not in it, so a backup
