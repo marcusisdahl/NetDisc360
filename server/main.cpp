@@ -131,6 +131,11 @@ struct Options {
     int saveKeep;
     double saveDelay;
     std::string xboxUnity;  // XboxUnity's API (see titleupdates.h); --xboxunity for the tests.
+    // Title updates looked for by themselves (TuAutoLoop): each game here on
+    // XboxUnity and each console checked about once a day, the first time
+    // tuAutoDelay seconds after the server started.
+    bool tuAuto;
+    double tuAutoDelay;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), pingSeconds(30),
@@ -138,7 +143,7 @@ struct Options {
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
                 wake(true), saveBackup(true), saveKeep(10), saveDelay(10),
-                xboxUnity("https://xboxunity.net/Resources/Lib") {}
+                xboxUnity("https://xboxunity.net/Resources/Lib"), tuAuto(true), tuAutoDelay(300) {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -169,6 +174,9 @@ bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated 
 struct Preset { bool folders, xboxes, ftp; } Given;
 double StartedAt;
 std::atomic<long long> GameStarts(0);  // Mounts of a game by a console, for /metrics.
+// Raised each time what's known of title updates changes (XboxUnity's lists,
+// a console's check), so the dashboard asks for them again.
+std::atomic<long long> TuVersion(0);
 // The command line's options, under the settings file's: what a restored
 // backup's settings go over (Reload).
 Options CommandLine;
@@ -2412,6 +2420,7 @@ bool Save() {
     f.Set("wake_mac",o.wakeMac);
     f.Set("save_backup",o.saveBackup ? "1" : "0");
     f.Set("save_keep",Number(o.saveKeep));
+    f.Set("tu_auto",o.tuAuto ? "1" : "0");
     f.Set("skip_installed",o.skipInstalled ? "1" : "0");
     f.Set("installed_folders",o.installedFolders);
     f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
@@ -2524,6 +2533,8 @@ bool LoadConfig(Options& o) {
     o.saveBackup=Flag(f,"save_backup",o.saveBackup);
     if(f.Has("save_keep")) o.saveKeep=std::max(1,std::min(100,int(f.Number("save_keep",o.saveKeep))));
     if(f.Has("save_delay")) o.saveDelay=double(std::max(0,std::min(600,int(f.Number("save_delay",10)))));  // Only for the tests.
+    o.tuAuto=Flag(f,"tu_auto",o.tuAuto);
+    if(f.Has("tu_auto_delay")) o.tuAutoDelay=double(std::max(0,std::min(86400,int(f.Number("tu_auto_delay",300)))));  // Only for the tests.
     o.skipInstalled=Flag(f,"skip_installed",o.skipInstalled);
     if(f.Has("installed_folders")) o.installedFolders=f.Get("installed_folders");
     o.auroraScripts=Flag(f,"aurora_scripts",o.auroraScripts);
@@ -3017,7 +3028,7 @@ void State(web::Reply& out) {
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
     j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
-    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep);
+    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep).Set("tuAuto",o.tuAuto);
     {
         std::string mac,address;
         WakeAdapter(o,mac,address);
@@ -3046,6 +3057,7 @@ void State(web::Reply& out) {
     { std::lock_guard<std::mutex> hold(GamesListLock); version=GamesVersion; }
     j.Key("library").Open('{').Set("games",int(games.size())).Set("duplicates",duplicates).Set("conflicts",conflicts);
     j.Set("version",version).Set("scanned",scanned).Close('}');
+    j.Key("titleUpdates").Open('{').Set("version",TuVersion.load()).Close('}');
     j.Key("folders").Open('[');
     for(size_t i=0;i<o.folders.size();++i) {
         int count=0;
@@ -4062,6 +4074,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(!error.empty()) return false;
     Bool(v,"wake",next.wake);
     Bool(v,"saveBackup",next.saveBackup);
+    Bool(v,"tuAuto",next.tuAuto);
     if(Text(v,"wakeMac",text)) {
         next.wakeMac=wake::CleanMac(text);
         if(next.wakeMac.empty() && !Trim(text).empty()) { error="\""+text+"\" isn't a MAC address like AA:BB:CC:DD:EE:FF."; return false; }
@@ -4125,6 +4138,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.wake!=was.wake) changed.push_back(next.wake ? "the Xbox can wake this computer" : "the Xbox doesn't wake this computer");
     if(next.wakeMac!=was.wakeMac) changed.push_back(next.wakeMac.empty() ? "waking this computer's own network adapter" : "waking "+next.wakeMac);
     if(next.saveBackup!=was.saveBackup) changed.push_back(next.saveBackup ? "game saves backed up after each game" : "game saves not backed up");
+    if(next.tuAuto!=was.tuAuto) changed.push_back(next.tuAuto ? "newer title updates looked for by themselves" : "title updates looked for only when you ask");
     if(next.saveKeep!=was.saveKeep) changed.push_back("keeping the newest "+Count(next.saveKeep,"save backup","save backups")+" of each game");
     if(next.skipInstalled!=was.skipInstalled) changed.push_back(next.skipInstalled ? "games installed on a console get no tile" : "installed games get a tile too");
     if(next.installedFolders!=was.installedFolders) changed.push_back("installed games looked for in "+(next.installedFolders.empty() ? std::string("Games on Demand only") : next.installedFolders));
@@ -4143,6 +4157,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
         Settings.wake=next.wake; Settings.wakeMac=next.wakeMac; Settings.saveBackup=next.saveBackup; Settings.saveKeep=next.saveKeep;
+        Settings.tuAuto=next.tuAuto;
         Settings.skipInstalled=next.skipInstalled; Settings.installedFolders=next.installedFolders; Settings.auroraScripts=next.auroraScripts;
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
@@ -4588,9 +4603,10 @@ struct ContentCopy {
     long long queuedAt, startedAt, endedAt;  // time().
     double began;                     // Now() when sending started, for the speed.
     std::atomic<bool> stop;
+    bool quiet;                       // Started by the server itself (TuAutoLoop): how it ended goes in the log only.
     std::function<void(std::shared_ptr<ContentCopy>)> run;
     ContentCopy() : id(0), address(0), whole(false), total(0), done(0), copied(0), files(0), file(0), skipped(0),
-                    queuedAt(0), startedAt(0), endedAt(0), began(0), stop(false) {}
+                    queuedAt(0), startedAt(0), endedAt(0), began(0), stop(false), quiet(false) {}
 };
 std::mutex CopyLock;  // Guards the fields of each ContentCopy that change while it runs, and the lists below.
 std::vector<std::shared_ptr<ContentCopy> > Copies;  // The queued, running and latest finished ones, oldest first.
@@ -4648,6 +4664,7 @@ void EndCopy(ContentCopy& c, const Console* console, const char* state, const st
     else if(stopped) { text="Stopped installing "+c.game+"'s content"; kind=EventInfo; }
     else { text="Installing "+c.game+"'s content stopped; the log says why"; kind=EventWarning; }
     Log("Xbox %s: %s%s%s",where,text.c_str(),error.empty() ? "." : ": ",error.c_str());
+    if(c.quiet) return;
     if(console) XboxEvent(*console,kind,text);
     else Event(kind,"%s on %s",text.c_str(),where);
 }
@@ -5334,7 +5351,9 @@ struct ConsoleTus {
     long long checkedAt;  // time(); 0: never.
     std::vector<TuFile> files;
     std::string error;
-    ConsoleTus() : checkedAt(0) {}
+    std::set<DWORD> titles;  // The Title IDs the latest whole check looked for.
+    long long autoAt;        // When TuAutoLoop last queued a check of it (time()); 0: never.
+    ConsoleTus() : checkedAt(0), autoAt(0) {}
 };
 std::mutex TuLock;
 std::map<DWORD,TuTitle> TuInfo;          // By Title ID.
@@ -5343,6 +5362,13 @@ struct TuScanState { bool running; int done, total, found; long long startedAt, 
 
 const char TuBackupFolder[] = "Title updates";
 const double TuFresh = 6*3600;  // How long XboxUnity's list for a game is used before it's asked again.
+// TuAutoLoop: each game looked up on XboxUnity and each console checked
+// again after a day; a look-up or check that failed is tried again after an hour.
+const double TuAutoEvery = 24*3600, TuAutoRetry = 3600;
+// XboxUnity's latest answer for a game, kept next to its downloads
+// (TitleUpdates\<Title ID>\xboxunity.json) so a restart doesn't ask again:
+// the time it was asked (time()) on the first line, then the answer.
+const char TuInfoFile[] = "xboxunity.json";
 
 std::string TuCacheFolder(const Options& o) {
     return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"TitleUpdates";
@@ -5379,24 +5405,48 @@ int TuNumber(const TuFile& f, int offer, const std::vector<tu::Offer>& offers) {
     return offer>=0 && offers[size_t(offer)].version>0 ? offers[size_t(offer)].version : int(f.version);
 }
 
+// XboxUnity's answer for titleId kept on this PC (see TuInfoFile), into
+// TuInfo if it has nothing newer; under TuLock.
+void TuInfoFromDisk(const Options& o, DWORD titleId) {
+    std::string root=TuCacheFolder(o), text, error;
+    std::map<DWORD,TuTitle>::const_iterator known=TuInfo.find(titleId);
+    if(root.empty() || (known!=TuInfo.end() && known->second.fetchedAt)) return;
+    if(!config::ReadFile(root+"/"+Hex8(titleId)+"/"+TuInfoFile,text,4<<20)) return;
+    size_t line=text.find('\n');
+    long long at=line==std::string::npos ? 0 : atoll(text.substr(0,line).c_str());
+    std::vector<tu::Offer> offers;
+    if(at<=0 || !tu::ParseInfo(text.substr(line+1),offers,error)) return;
+    TuTitle& t=TuInfo[titleId];
+    t.offers=offers; t.error.clear();
+    t.fetchedAt=std::max(1e-3,Now()-double(std::max(0LL,(long long)time(NULL)-at)));
+    ++TuVersion;
+}
+
 // XboxUnity's updates for titleId, asked again when older than TuFresh (or refresh).
 bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std::string& error) {
+    Options o=Current();
     {
         std::lock_guard<std::mutex> hold(TuLock);
+        TuInfoFromDisk(o,titleId);
         std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(titleId);
         if(t!=TuInfo.end() && t->second.fetchedAt && Now()-t->second.fetchedAt<TuFresh && !refresh) {
             offers=t->second.offers; error=t->second.error;
             return error.empty();
         }
     }
-    Options o=Current();
     std::string body, name;
     bool ok=tu::Get(tu::InfoUrl(o.xboxUnity,titleId),body,4<<20,name,error) && tu::ParseInfo(body,offers,error);
+    std::string root=TuCacheFolder(o);
+    if(ok && !root.empty()) {
+        config::MakeFolder(root); config::MakeFolder(root+"/"+Hex8(titleId));
+        config::WriteFile(root+"/"+Hex8(titleId)+"/"+TuInfoFile,std::to_string((long long)time(NULL))+"\n"+body,false);
+    }
     std::lock_guard<std::mutex> hold(TuLock);
     TuTitle& t=TuInfo[titleId];
     t.fetchedAt=Now();
     if(ok) { t.offers=offers; t.error.clear(); }
     else t.error=error;
+    ++TuVersion;
     return ok;
 }
 
@@ -5529,8 +5579,9 @@ void CheckTus(std::shared_ptr<ContentCopy> job) {
     {
         std::lock_guard<std::mutex> hold(TuLock);
         ConsoleTus& t=TuConsoles[c.address];
-        if(ok) { t.files=files; t.checkedAt=(long long)time(NULL); t.error.clear(); }
+        if(ok) { t.files=files; t.checkedAt=(long long)time(NULL); t.error.clear(); t.titles=titles; }
         else if(c.state=="copying") t.error=error;
+        ++TuVersion;
     }
     if(!ok) { if(c.state=="copying") EndCopy(c,console,"failed",error); return; }
     Log("Xbox %s: it has %d title update file(s) for the games here.",c.console.c_str(),int(files.size()));
@@ -5538,9 +5589,9 @@ void CheckTus(std::shared_ptr<ContentCopy> job) {
     c.state="done"; c.endedAt=(long long)time(NULL); c.done=c.total; c.file=c.files;
 }
 
-bool QueueTuCheck(DWORD at, std::string& error) {
+bool QueueTuCheck(DWORD at, std::string& error, bool quiet=false) {
     std::shared_ptr<ContentCopy> job(new ContentCopy);
-    job->kind="check"; job->game="Title updates"; job->label="Check its title updates";
+    job->kind="check"; job->game="Title updates"; job->label="Check its title updates"; job->quiet=quiet;
     job->run=CheckTus;
     return AddCopy(job,at,error);
 }
@@ -5602,6 +5653,7 @@ void RefreshTus(FtpClient& ftp, const Options& o, DWORD address, DWORD titleId) 
     for(size_t i=0;i<files.size();++i) if(files[i].titleId==titleId || !files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(files[i]);
     t.files.swap(kept);
     if(!t.checkedAt) t.checkedAt=(long long)time(NULL);
+    ++TuVersion;
 }
 
 // Aurora's own list of the updates it has on, kept like the dashboard's
@@ -5927,6 +5979,15 @@ bool ConsoleHasGame(const Console& c, const IsoFile& g) {
     return false;
 }
 
+// Whether a console's file f is XboxUnity's update u of the disc (titleId, mediaId).
+bool TuFileIs(const TuFile& f, const tu::Offer& u, DWORD titleId, DWORD mediaId, const Options& o) {
+    bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+    if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) return false;
+    std::string path, name;
+    return (!f.contentId.empty() && f.contentId==u.hash) || (u.size && tu::SameSize(f.size,u.size) && !cache) ||
+           (TuCached(o,titleId,u.id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
+}
+
 // Which of offers (newest first) a console's files are: the index of the
 // newest it has, or -1; other: it has an update of the disc that isn't one of them.
 int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::vector<tu::Offer>& offers, const Options& o, bool& other) {
@@ -5939,16 +6000,33 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
         if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
         bool known=false;
         for(size_t k=0;k<offers.size();++k) {
-            std::string path, name;
-            bool same=(!f.contentId.empty() && f.contentId==offers[k].hash) || (offers[k].size && tu::SameSize(f.size,offers[k].size) && !cache) ||
-                      (TuCached(o,titleId,offers[k].id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
-            if(!same) continue;
+            if(!TuFileIs(f,offers[k],titleId,mediaId,o)) continue;
             known=true;
             if(best<0 || int(k)<best) best=int(k);
         }
         if(!known && !cache) other=true;
     }
     return best;
+}
+
+// Where a console stands with a disc's updates, by its last check: has (see
+// TuOnConsole), newestOff: XboxUnity's newest is on it but switched off
+// (moved aside, or only in Aurora's store), and behind: the newest is out
+// and not on it at all. A console whose newest was switched off, by hand
+// or in Aurora, isn't behind: that was someone's choice. Nor is one that
+// has only an update XboxUnity doesn't list on.
+struct TuStanding {
+    int has; bool other, newestOff, behind;
+    TuStanding() : has(-1), other(false), newestOff(false), behind(false) {}
+};
+TuStanding TuStandingOf(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::vector<tu::Offer>& offers, const Options& o) {
+    TuStanding s;
+    if(!t.checkedAt || offers.empty()) return s;
+    s.has=TuOnConsole(t,titleId,mediaId,offers,o,s.other);
+    for(size_t i=0;i<t.files.size() && s.has!=0 && !s.newestOff;++i)
+        s.newestOff=t.files[i].where!="live" && TuFileIs(t.files[i],offers[0],titleId,mediaId,o);
+    s.behind=s.has!=0 && !s.newestOff && !(s.other && s.has<0);
+    return s;
 }
 
 void TuOfferJson(web::Json& j, const tu::Offer& u, DWORD titleId, const Options& o) {
@@ -6054,9 +6132,10 @@ bool SwitchTitleUpdate(const web::Value& body, bool off, std::string& error) {
 }
 
 // POST /api/titleupdates/install {game, id (default: the newest), address
-// (or all: each console with the game), keep (leave older ones where they are)}
-// or {everything: true}: the newest of every game to each console with it
-// that hasn't got it, by the last checks.
+// (or all: each console with the game; behind: each console behind with it,
+// see TuStanding), keep (leave older ones where they are)} or {everything:
+// true}: the newest of every game to each console behind with it, by the
+// last checks.
 bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued) {
     queued=0;
     Options o=Current();
@@ -6064,8 +6143,10 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
     bool everything=flag && flag->type==web::Value::Bool && flag->boolean;
     flag=body.Get("keep");
     bool replace=!(flag && flag->type==web::Value::Bool && flag->boolean);
+    flag=body.Get("behind");
+    bool behind=everything || (flag && flag->type==web::Value::Bool && flag->boolean);
     flag=body.Get("all");
-    bool all=everything || (flag && flag->type==web::Value::Bool && flag->boolean);
+    bool all=behind || (flag && flag->type==web::Value::Bool && flag->boolean);
     std::string name, id, address;
     Text(body,"game",name); Text(body,"id",id); Text(body,"address",address);
     std::vector<IsoFile> games;
@@ -6104,11 +6185,10 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
             const Console& c=*consoles[k];
             if(!all && address!=c.text) continue;
             if(all && (!ConsoleHasGame(c,g) || c.offline)) continue;
-            if(everything) {
+            if(behind) {
                 ConsoleTus t;
                 { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,ConsoleTus>::const_iterator f=TuConsoles.find(c.address); if(f==TuConsoles.end()) continue; t=f->second; }
-                bool other=false;
-                if(TuOnConsole(t,g.titleId,g.mediaId,offers,o,other)==0) continue;  // Has the newest.
+                if(!TuStandingOf(t,g.titleId,g.mediaId,offers,o).behind) continue;
             }
             DWORD at=INADDR_NONE;
             std::string one;
@@ -6117,7 +6197,8 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
         }
     }
     if(!queued && !everything) {
-        error=why.empty() ? (all ? "No console has "+name+" (a tile of it, or it installed)." : "There's no console at "+address+".") : why;
+        error=!why.empty() ? why : behind ? "Every console with "+name+" has its newest title update, by the last checks."
+              : all ? "No console has "+name+" (a tile of it, or it installed)." : "There's no console at "+address+".";
         return false;
     }
     if(!queued && everything && !why.empty()) { error=why; return false; }
@@ -6164,6 +6245,79 @@ bool StartTuScan(std::string& error) {
     return true;
 }
 
+// Title updates looked for by themselves (settings: tuAuto). Once the
+// folders were read, what was kept of XboxUnity's answers is loaded, so the
+// Games page shows what's newer right after a start. From tuAutoDelay
+// seconds after the start, each game here is looked up on XboxUnity when
+// its answer is a day old (a new game at once; gently, one a second, like
+// the scan), and each console that's in Aurora, and answered its FTP, is
+// checked when its check is a day old or games came that it wasn't checked
+// for (at most once an hour). Not while a console plays, or has something
+// in its queue, nor in the first two minutes after a game ended.
+bool TuConsoleDue(const Console& c, const ConsoleTus* t, const std::set<DWORD>& titles, long long now) {
+    if(c.offline || c.ftp!=2 || !c.synced) return false;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        if(c.connections>0 && !c.mounted.empty() && !c.inAurora) return false;  // Playing.
+    }
+    long long ended=c.gameEndedAt;
+    if(ended && Now()*1000-ended<120000) return false;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        for(size_t i=0;i<Copies.size();++i)
+            if(Copies[i]->address==c.address && (Copies[i]->state=="queued" || Copies[i]->state=="copying")) return false;
+    }
+    if(!t) return true;
+    if(t->autoAt && now-t->autoAt<(long long)TuAutoRetry) return false;
+    if(!t->checkedAt || now-t->checkedAt>=(long long)TuAutoEvery) return true;
+    for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(!t->titles.count(*i)) return true;
+    return false;
+}
+
+void TuAutoLoop() {
+    std::set<DWORD> loaded;  // Titles whose kept answer was looked for.
+    for(;;Sleep(1000)) {
+        bool scanned;
+        { std::lock_guard<std::mutex> hold(GamesListLock); scanned=GamesScanned; }
+        if(!scanned) continue;
+        Options o=Current();
+        std::set<DWORD> titles=LibraryTitles();
+        {
+            std::lock_guard<std::mutex> hold(TuLock);
+            for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(loaded.insert(*i).second) TuInfoFromDisk(o,*i);
+        }
+        if(!o.tuAuto || Now()-StartedAt<o.tuAutoDelay) continue;
+        for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) {
+            bool due;
+            {
+                std::lock_guard<std::mutex> hold(TuLock);
+                if(TuScan.running) break;  // The scan asks for them.
+                std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(*i);
+                due=t==TuInfo.end() || !t->second.fetchedAt || Now()-t->second.fetchedAt>=(t->second.error.empty() ? TuAutoEvery : TuAutoRetry);
+            }
+            if(!due) continue;
+            if(!Current().tuAuto) break;
+            std::vector<tu::Offer> offers;
+            std::string error;
+            if(!LookupTus(*i,true,offers,error)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(*i).c_str(),error.c_str());
+            Sleep(1000);  // Gently: XboxUnity is run by volunteers.
+        }
+        long long now=(long long)time(NULL);
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            ConsoleTus t;
+            bool known;
+            { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,ConsoleTus>::const_iterator f=TuConsoles.find(c.address); known=f!=TuConsoles.end(); if(known) t=f->second; }
+            if(!TuConsoleDue(c,known ? &t : NULL,titles,now)) continue;
+            std::string error;
+            { std::lock_guard<std::mutex> hold(TuLock); TuConsoles[c.address].autoAt=now; }
+            if(QueueTuCheck(c.address,error,true)) XboxLog(c,"checking its title updates, as it does each day.");
+        }
+        if(o.tuAutoDelay>=60) Sleep(59000);
+    }
+}
+
 // GET /api/titleupdates/all: every game here with XboxUnity's newest update
 // for its disc (by the last look-up), and whether each console has it.
 void AllTitleUpdates(web::Reply& out) {
@@ -6179,9 +6333,10 @@ void AllTitleUpdates(web::Reply& out) {
     std::map<DWORD,TuTitle> info;
     std::map<DWORD,ConsoleTus> checks;
     TuScanState scan;
+    long long version=TuVersion;
     { std::lock_guard<std::mutex> hold(TuLock); info=TuInfo; checks=TuConsoles; scan=TuScan; }
     web::Json j;
-    j.Open('{').Key("scan").Open('{').Set("running",scan.running).Set("done",scan.done).Set("total",scan.total).Set("found",scan.found).Set("ended",scan.endedAt).Close('}');
+    j.Open('{').Set("version",version).Set("auto",o.tuAuto).Key("scan").Open('{').Set("running",scan.running).Set("done",scan.done).Set("total",scan.total).Set("found",scan.found).Set("ended",scan.endedAt).Close('}');
     j.Key("consoles").Open('[');
     for(size_t k=0;k<consoles.size();++k) {
         std::map<DWORD,ConsoleTus>::const_iterator t=checks.find(consoles[k]->address);
@@ -6194,16 +6349,17 @@ void AllTitleUpdates(web::Reply& out) {
         if(t==info.end()) continue;
         std::vector<tu::Offer> offers=tu::ForMedia(t->second.offers,g.mediaId);
         if(offers.empty()) continue;
-        j.Open('{').Set("game",config::ToUtf8(WithoutIso(g.name))).Set("titleId",Hex8(g.titleId)).Key("newest");
+        j.Open('{').Set("game",config::ToUtf8(WithoutIso(g.name))).Set("titleId",Hex8(g.titleId)).Set("mediaId",Hex8(g.mediaId)).Key("newest");
         TuOfferJson(j,offers[0],g.titleId,o);
         j.Key("consoles").Open('[');
         for(size_t k=0;k<consoles.size();++k) {
             const Console& c=*consoles[k];
             std::map<DWORD,ConsoleTus>::const_iterator ct=checks.find(c.address);
-            bool other=false;
-            int has=ct!=checks.end() && ct->second.checkedAt ? TuOnConsole(ct->second,g.titleId,g.mediaId,offers,o,other) : -1;
-            j.Open('{').Set("address",std::string(c.text)).Set("hasGame",ConsoleHasGame(c,g)).Set("checked",ct!=checks.end() && ct->second.checkedAt!=0)
-             .Set("newest",has==0).Set("has",has>=0 ? offers[size_t(has)].name : std::string()).Set("other",other).Close('}');
+            TuStanding st=ct!=checks.end() ? TuStandingOf(ct->second,g.titleId,g.mediaId,offers,o) : TuStanding();
+            bool hasGame=ConsoleHasGame(c,g);
+            j.Open('{').Set("address",std::string(c.text)).Set("hasGame",hasGame).Set("checked",ct!=checks.end() && ct->second.checkedAt!=0)
+             .Set("newest",st.has==0).Set("has",st.has>=0 ? offers[size_t(st.has)].name : std::string()).Set("other",st.other)
+             .Set("newestOff",st.newestOff).Set("behind",hasGame && st.behind).Close('}');
         }
         j.Close(']').Close('}');
     }
@@ -6943,6 +7099,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(BackupLoop).detach();
     std::thread(SaveLoop).detach();
     std::thread(UpdateLoop).detach();
+    std::thread(TuAutoLoop).detach();
     Serve(listener);
     return 0;
 }
