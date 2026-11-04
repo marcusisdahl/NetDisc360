@@ -123,6 +123,12 @@ class Handler(socketserver.StreamRequestHandler):
                         conn.close()
                     self.reply("550 Could not open file.  Error:  2")
                     continue
+                if os.path.normcase(os.path.abspath(path)) in self.server.locked:
+                    # Open on the console (a signed-in profile's package): access denied.
+                    if conn:
+                        conn.close()
+                    self.reply("550 Could not open file.  Error:  5")
+                    continue
                 self.reply("150 Opening data connection")
                 with open(path, "rb") as f:
                     data = f.read()
@@ -205,6 +211,7 @@ class Server(socketserver.ThreadingTCPServer):
         self.log, self.stored, self.scans, self.renamed = [], [], [], []
         self.gate = threading.Event()
         self.gate.set()
+        self.locked = set()  # Files the console has open (normcase'd absolute paths): RETR is refused.
 
 
 def main():
