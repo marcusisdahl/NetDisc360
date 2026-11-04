@@ -5692,7 +5692,8 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
         Log("Xbox %s: couldn't write %s: %s",c.console.c_str(),path.c_str(),why.c_str());
         return "Aurora's own list wasn't changed (its script couldn't be written), so Aurora may switch it back when it starts "+game+".";
     }
-    Log("Xbox %s: wrote %s, so Aurora has %s on as it starts.",c.console.c_str(),path.c_str(),want.hash.empty() ? "no update of "+game : c.label+" of "+game);
+    std::string what=want.hash.empty() ? "no update of "+game : c.label+" of "+game;
+    Log("Xbox %s: wrote %s, so Aurora has %s on as it starts.",c.console.c_str(),path.c_str(),what.c_str());
     ftp.Close();
     std::string later=cache ? "Aurora has none of its own on for "+game+" (it doesn't list this kind of update)." :
         "Restart Aurora before you start "+game+": Aurora takes this as it starts, and would switch it back otherwise.";
