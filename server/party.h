@@ -19,7 +19,7 @@ typedef std::vector<std::string> Team;
 typedef std::pair<std::string,std::string> NamePair;
 typedef std::vector<std::pair<std::string,Team> > Seats;  // By console address, in the party's order.
 enum { PartyGuestsMost = 64, GuestNameMost = 32, PartyNameMost = 64, PartyPairsMost = 64, SeatsPerConsole = 4,
-       TeamsLeast = 2, TeamsMost = 4, RaffleTries = 2000 };
+       TeamsLeast = 2, TeamsMost = 4, RaffleTries = 2000, PartyGamesMost = 10, GameNameMost = 128, PartyPresetsMost = 20 };
 
 struct PartyTheme {
     std::string preset;           // classic, birthday, company or retro.
@@ -116,6 +116,9 @@ struct Party {
     // "" off), this party's code there (shown on the big screen, made new for
     // each party) and the key that shows the relay this NetDisc360 posts it.
     std::string phoneRelay, phoneCode, phoneKey;
+    // Tonight's games (Marcus 2026-11-04, party presets): the game vote picks
+    // from those of them on every party console; none: from every game there.
+    std::vector<std::string> games;
     Party() : active(false), teams(2), round(0), drawn(false), kept(false), balance(BalanceRandom), started(0), idleOffMinutes(0) { for(int t=0;t<TeamsMost;++t) teamColours.push_back(t); }
 };
 
@@ -197,4 +200,19 @@ void LoadGuestStats(const config::File& file, std::vector<GuestStats>& stats);
 // The party in the settings file (party_... keys), and back, tidied.
 void SaveParty(config::File& file, const Party& party);
 void LoadParty(const config::File& file, Party& party);
+
+// A saved party (Marcus 2026-11-04: save a party's setup, start it again
+// later with one tap): its consoles, players (and who's here), teams and
+// their colours, rules, tonight's games, theme, idle-off and phone relay,
+// as the JSON POST /api/party takes (setup), so starting it is that change.
+struct PartyPreset {
+    std::string id;       // 12 hex digits, made once.
+    std::string name;     // As the page shows it ("Friday Halo night").
+    long long saved;      // When it was saved last (Unix seconds).
+    std::string setup;    // A JSON object for POST /api/party.
+    PartyPreset() : saved(0) {}
+};
+// Kept as party_presets=count, party_presetN=id|saved|name|setup (name and setup escaped).
+void SavePartyPresets(config::File& file, const std::vector<PartyPreset>& presets);
+void LoadPartyPresets(const config::File& file, std::vector<PartyPreset>& presets);
 }

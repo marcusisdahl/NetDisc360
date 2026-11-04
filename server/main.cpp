@@ -768,6 +768,9 @@ std::mutex PartyLock;
 // before any other lock.
 std::mutex PartyChangeLock;
 Party CurrentParty() { std::lock_guard<std::mutex> hold(PartyLock); return TheParty; }
+// The saved parties (party.h), newest first; under PartyLock too.
+std::vector<PartyPreset> PartyPresets;
+std::vector<PartyPreset> PartyPresetsNow() { std::lock_guard<std::mutex> hold(PartyLock); return PartyPresets; }
 // The LAN party's guest profiles (see guests.h), kept in the settings file;
 // under GuestLock, which no other lock is taken under.
 std::vector<GuestProfile> GuestProfiles;
@@ -3300,6 +3303,7 @@ bool Save() {
               (known[i].name.empty() ? std::string() : "|"+known[i].id+"|"+known[i].name));
     for(long long i=(long long)known.size()+1;i<=before;++i) f.Remove(("console"+Number(i)).c_str());
     SaveParty(f,party);
+    SavePartyPresets(f,PartyPresetsNow());
     SaveGuestProfiles(f,GuestProfilesNow());
     SaveGuestStats(f,GuestStatsNow());
     SaveUsers(o.configPath,party);
@@ -3435,6 +3439,8 @@ bool LoadConfig(Options& o) {
     // The LAN party: its consoles are addresses (a file made by hand could have anything).
     Party party;
     LoadParty(f,party);
+    std::vector<PartyPreset> presets;
+    LoadPartyPresets(f,presets);
     std::vector<GuestProfile> guestProfiles;
     LoadGuestProfiles(f,guestProfiles);
     { std::lock_guard<std::mutex> hold(GuestLock); GuestProfiles.swap(guestProfiles); }
@@ -3450,6 +3456,7 @@ bool LoadConfig(Options& o) {
         std::lock_guard<std::mutex> change(PartyChangeLock);
         std::lock_guard<std::mutex> hold(PartyLock);
         TheParty=party;
+        PartyPresets.swap(presets);
     }
     std::lock_guard<std::mutex> hold(SettingsLock);
     Known.swap(known);
@@ -3707,6 +3714,8 @@ std::vector<std::string> NotReady(const Party& p, const std::string& address) {
 }
 
 // The party as the page reads it (in /api/state).
+bool Text(const web::Value& v, const char* key, std::string& out);
+bool Strings(const web::Value& v, std::vector<std::string>& out);
 void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
     j.Open('{').Set("active",p.active).Set("name",p.name);
     j.Key("theme").Open('{').Set("preset",p.theme.preset).Set("accent",p.theme.accent).Set("accent2",p.theme.accent2);
@@ -3730,6 +3739,32 @@ void PartyJson(web::Json& j, const Party& p, const PartyPictures& pictures) {
         j.Close('}');
     }
     j.Close(']').Set("statsReading",StatsReading.load()).Set("teams",p.teams).Set("balance",BalanceNames[p.balance]).Set("game",p.game).Set("started",p.started).Set("idleOffMinutes",p.idleOffMinutes);
+    j.Key("games");
+    NamesJson(j,p.games);
+    // The saved parties, each with what it holds in a few numbers.
+    j.Key("presets").Open('[');
+    std::vector<PartyPreset> presets=PartyPresetsNow();
+    for(size_t i=0;i<presets.size();++i) {
+        web::Value v;
+        web::Parse(presets[i].setup,v);
+        const web::Value* f;
+        int guests=0, here=0;
+        if((f=v.Get("guests")) && f->type==web::Value::Array)
+            for(size_t k=0;k<f->items.size();++k) { ++guests; const web::Value* h=f->items[k].Get("here"); if(h && h->type==web::Value::Bool && h->boolean) ++here; }
+        std::vector<std::string> consoles, games;
+        if((f=v.Get("consoles"))) Strings(*f,consoles);
+        if((f=v.Get("games"))) Strings(*f,games);
+        std::string name;
+        Text(v,"name",name);
+        f=v.Get("teams");
+        j.Open('{').Set("id",presets[i].id).Set("name",presets[i].name).Set("saved",presets[i].saved).Set("party",name).Set("guests",guests).Set("here",here)
+         .Set("teams",f && f->type==web::Value::Number ? int(f->number) : 2).Key("consoles");
+        NamesJson(j,consoles);
+        j.Key("games");
+        NamesJson(j,games);
+        j.Close('}');
+    }
+    j.Close(']');
     // Join from a phone: the relay, the party code and its page, and how posting goes.
     {
         RelayState r;
@@ -6137,6 +6172,18 @@ bool ChangeParty(const web::Value& v, std::string& error) {
     }
     if(!Whole(v,"teams",TeamsLeast,TeamsMost,next.teams,error) && !error.empty()) return false;
     if(!Whole(v,"idleOffMinutes",0,IdleOffMost,next.idleOffMinutes,error) && !error.empty()) return false;
+    if((f=v.Get("games"))) {
+        std::vector<std::string> games;
+        if(!Strings(*f,games) || games.size()>PartyGamesMost) { error="games is a list of up to "+Number(PartyGamesMost)+" games' names."; return false; }
+        next.games.clear();
+        for(size_t i=0;i<games.size();++i) {
+            std::string name;
+            if(!CleanName(games[i],1,GameNameMost,"A game's name",name,error)) return false;
+            bool twice=false;
+            for(size_t k=0;k<next.games.size();++k) twice=twice || SameName(next.games[k],name);
+            if(!twice) next.games.push_back(name);
+        }
+    }
     if((f=v.Get("phoneRelay"))) {
         if(f->type!=web::Value::String) { error="phoneRelay is the relay's address."; return false; }
         text=f->text;
@@ -6588,6 +6635,126 @@ std::vector<std::string> Fields(const std::string& text) {
 // openall (the party app opens on every console in Aurora, which join it).
 // reopen: this console's app went back to Aurora for this server's newer
 // one. "" or why not; said is a sentence for the screen.
+// Saved parties (Marcus 2026-11-04): a party's setup saved, and started
+// again later with one tap (see PartyPreset in party.h) ----------------------
+
+// The party's setup as ChangeParty takes it: no rounds, teams drawn or seats.
+std::string PresetSetup(const Party& p) {
+    web::Json j;
+    j.Open('{').Set("name",p.name).Key("theme").Open('{').Set("preset",p.theme.preset).Set("accent",p.theme.accent).Set("accent2",p.theme.accent2)
+     .Set("person",p.theme.person).Set("age",p.theme.age).Close('}').Set("gamemaster",p.gamemaster).Key("consoles");
+    NamesJson(j,p.consoles);
+    j.Key("guests").Open('[');
+    for(size_t i=0;i<p.guests.size();++i) j.Open('{').Set("name",p.guests[i].name).Set("here",p.guests[i].here).Close('}');
+    j.Close(']').Set("teams",p.teams).Key("teamColours").Open('[');
+    for(size_t i=0;i<p.teamColours.size();++i) j.Number(p.teamColours[i]);
+    j.Close(']').Set("balance",BalanceNames[p.balance>=0 && p.balance<BalanceCount ? p.balance : 0]);
+    for(int rule=0;rule<2;++rule) {
+        const std::vector<NamePair>& pairs=rule ? p.apart : p.together;
+        j.Key(rule ? "apart" : "together").Open('[');
+        for(size_t i=0;i<pairs.size();++i) j.Open('[').String(pairs[i].first).String(pairs[i].second).Close(']');
+        j.Close(']');
+    }
+    j.Set("idleOffMinutes",p.idleOffMinutes).Set("phoneRelay",p.phoneRelay).Key("games");
+    NamesJson(j,p.games);
+    return j.Close('}').Text();
+}
+
+// POST /api/party/presets {action, ...}: save {name, id?} (the party's setup
+// now, as a new one, or in place of the one with that id or name); rename
+// {id, name}; delete {id}; start {id, end?} (the party that's on ends first
+// if end is true; its consoles NetDisc360 doesn't know any more are left out).
+void PartyPresetsChange(const web::Value& v, web::Reply& out) {
+    std::string action, id, name, error;
+    Text(v,"action",action);
+    Text(v,"id",id);
+    if(action=="save" || action=="rename") {
+        Text(v,"name",name);
+        if(!CleanName(name,1,PartyNameMost,"The saved party's name",name,error)) { out.Error(400,error); return; }
+    }
+    std::string said;
+    if(action=="save") {
+        Party p=CurrentParty();
+        std::string setup=PresetSetup(p);
+        std::lock_guard<std::mutex> hold(PartyLock);
+        PartyPreset* had=NULL;
+        for(size_t i=0;i<PartyPresets.size() && !had;++i) if(PartyPresets[i].id==id || (id.empty() && SameName(PartyPresets[i].name,name))) had=&PartyPresets[i];
+        if(!id.empty() && !had) { out.Error(404,"There's no such saved party."); return; }
+        PartyPreset preset=had ? *had : PartyPreset();
+        if(!had) {
+            if(PartyPresets.size()>=PartyPresetsMost) { out.Error(409,"NetDisc360 keeps "+Number(PartyPresetsMost)+" saved parties at most: delete one first."); return; }
+            preset.id=web::NewSecret().substr(0,12);
+        }
+        preset.name=name; preset.setup=setup; preset.saved=(long long)time(NULL);
+        if(had) PartyPresets.erase(PartyPresets.begin()+(had-&PartyPresets[0]));
+        PartyPresets.insert(PartyPresets.begin(),preset);
+        said=had ? name+" is saved again, as the party is now." : name+" is saved: start it again with one tap.";
+        id=preset.id;
+    } else if(action=="rename" || action=="delete") {
+        std::lock_guard<std::mutex> hold(PartyLock);
+        size_t i=0;
+        while(i<PartyPresets.size() && PartyPresets[i].id!=id) ++i;
+        if(i==PartyPresets.size()) { out.Error(404,"There's no such saved party."); return; }
+        for(size_t k=0;k<PartyPresets.size() && action=="rename";++k)
+            if(k!=i && SameName(PartyPresets[k].name,name)) { out.Error(409,"There's a saved party called "+PartyPresets[k].name+" already."); return; }
+        if(action=="rename") { said=PartyPresets[i].name+" is called "+name+" now."; PartyPresets[i].name=name; }
+        else { said=PartyPresets[i].name+" is deleted."; PartyPresets.erase(PartyPresets.begin()+long(i)); }
+    } else if(action=="start") {
+        PartyPreset preset;
+        {
+            std::lock_guard<std::mutex> hold(PartyLock);
+            size_t i=0;
+            while(i<PartyPresets.size() && PartyPresets[i].id!=id) ++i;
+            if(i==PartyPresets.size()) { out.Error(404,"There's no such saved party."); return; }
+            preset=PartyPresets[i];
+        }
+        web::Value setup;
+        if(!web::Parse(preset.setup,setup) || setup.type!=web::Value::Object) { out.Error(500,preset.name+" can't be read."); return; }
+        bool end=false;
+        Bool(v,"end",end);
+        Party was=CurrentParty();
+        if(was.active && !end) { out.Error(409,"A party is on: end it first, or start "+preset.name+" in its place."); return; }
+        // Consoles it had that NetDisc360 doesn't know now are left out (a Gamemaster too).
+        std::vector<std::string> gone;
+        for(size_t i=0;i<setup.fields.size();++i) {
+            web::Value& f=setup.fields[i].second;
+            if(setup.fields[i].first=="consoles" && f.type==web::Value::Array)
+                for(size_t k=f.items.size();k-->0;)
+                    if(f.items[k].type!=web::Value::String || !KnownAddress(f.items[k].text)) { gone.push_back(f.items[k].text); f.items.erase(f.items.begin()+long(k)); }
+            if(setup.fields[i].first=="gamemaster" && f.type==web::Value::String && !f.text.empty() && !KnownAddress(f.text)) {
+                if(std::find(gone.begin(),gone.end(),f.text)==gone.end()) gone.push_back(f.text);
+                f.text.clear();
+            }
+        }
+        if(was.active) {
+            web::Value stop=Field(web::Value::Object);
+            Put(stop,"active",BoolValue(false));
+            if(!ChangeParty(stop,error)) { out.Error(400,error); return; }
+            Log("LAN party: ended, to start %s.",preset.name.c_str());
+        }
+        if(!ChangeParty(setup,error)) { out.Error(400,preset.name+" can't start: "+error); return; }
+        web::Value go=Field(web::Value::Object);
+        Put(go,"active",BoolValue(true));
+        if(!ChangeParty(go,error)) { out.Error(400,error); return; }
+        MakeProfilesSoon(AutoMakeDelaySeconds);
+        Party p=CurrentParty();
+        said=preset.name+" is on: "+Count(int(GuestsHere(p).size()),"player","players")+" here, "+Count(int(p.consoles.size()),"console","consoles")+
+             (p.games.empty() ? std::string() : ", "+Count(int(p.games.size()),"game","games"))+".";
+        if(!gone.empty()) {
+            said+=" Left out (NetDisc360 doesn't know them now): ";
+            for(size_t i=0;i<gone.size();++i) said+=(i ? ", " : "")+gone[i];
+            said+=".";
+        }
+        Log("LAN party: %s started from its saved setup.",preset.name.c_str());
+        PartyFeed("party","%s is on!",preset.name.c_str());
+    } else { out.Error(400,"Send action save, rename, delete or start."); return; }
+    Save();
+    PartyNews();
+    web::Json j;
+    j.Open('{').Set("ok",true).Set("id",id).Set("said",said).Close('}');
+    out.body=j.Text();
+}
+
 // Game vote (Marcus 2026-11-02): every player votes from their controller
 // for the next game, among those every party console can start; the wheel
 // then spins between the top picks (as likely as their votes), and the one
@@ -6649,6 +6816,13 @@ bool OpenVote(int seconds, const std::vector<std::string>* given, std::string& s
     Party p=CurrentParty();
     if(!p.active) { error="Start the party first."; return false; }
     std::vector<std::string> games=given ? *given : PartyGames(p);
+    // Tonight's games, those of them every party console has (two at least, or every game there).
+    if(!given && !p.games.empty()) {
+        std::vector<std::string> tonight;
+        for(size_t i=0;i<p.games.size();++i)
+            for(size_t k=0;k<games.size();++k) if(SameName(games[k],p.games[i])) { tonight.push_back(games[k]); break; }
+        if(tonight.size()>=2) games=tonight;
+    }
     if(games.size()>VoteGamesMost) games.resize(VoteGamesMost);
     if(games.size()<2) { error=games.empty() ? "No game is on every party console yet, so there's nothing to vote for." : "Only "+games[0]+" is on every party console: start it with Start on all."; return false; }
     {
@@ -9283,6 +9457,7 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     }
     else if(r.method=="POST" && r.path=="/api/party/raffle") PartyRaffle(body,out);
+    else if(r.method=="POST" && r.path=="/api/party/presets") PartyPresetsChange(body,out);
     else if(r.method=="POST" && r.path=="/api/party/stats") RefreshGuestStats(out);
     else if(r.method=="POST" && r.path=="/api/party/open") {
         int opened=0;

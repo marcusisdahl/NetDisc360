@@ -2237,6 +2237,89 @@ print('lua ok')
         self.assertIn("LAN party: a game vote opened (3 games).", out)
         self.assertIn("LAN party: The game vote is called off.", out)
 
+    def test_saved_parties_start_again_with_one_tap(self):
+        # Marcus 2026-11-04: save a party's setup (games, teams, players) and
+        # start it again later with one tap. Tonight's games are what the vote offers.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Zuma.iso", 0x2B3C4D5E, 0x58410912)
+        other, ftp2 = self.second_console()
+        aurora = AuroraWeb()
+        aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
+        self.addCleanup(aurora.close)
+        self.addCleanup(aurora2.close)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        self.web = free_port()
+
+        def stop(server):
+            server.kill()
+            try:
+                server.communicate()
+            except ValueError:  # Stopped already.
+                pass
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+
+        def party():
+            return self.json("GET", "/api/state")["party"]
+
+        def presets():
+            return {x["name"]: x for x in party()["presets"]}
+        self.assertTrue(self.wait_for(lambda: self.ftp.scans and ftp2.scans, 20))
+        self.assertTrue(self.wait_for(lambda: all(len(g["tiles"]) == 2 for g in self.json("GET", "/api/games")["games"]), 20))
+        # Friday: two consoles, four players (three here), three teams, a rule, two of tonight's games on both (and one that isn't).
+        self.json("POST", "/api/party", {"gamemaster": "127.0.0.2", "consoles": ["127.0.0.1"], "teams": 3, "balance": "wins",
+                                         "guests": [{"name": "Ola", "here": True}, {"name": "Kari", "here": True}, {"name": "Lars", "here": True}, {"name": "Tom", "here": False}],
+                                         "together": [["Ola", "Kari"]], "games": ["Zuma", "Halo 3", "Not Here", "zuma"], "name": "Friday LAN", "idleOffMinutes": 30})
+        self.assertEqual(party()["games"], ["Zuma", "Halo 3", "Not Here"])
+        for body in ({"games": "Zuma"}, {"games": ["x"] * 11}, {"games": [""]}):
+            self.assertEqual(self.call("POST", "/api/party", body)[0], 400, body)
+        r = self.json("POST", "/api/party/presets", {"action": "save", "name": "Friday"})
+        self.assertEqual(r["said"], "Friday is saved: start it again with one tap.")
+        friday = presets()["Friday"]
+        self.assertEqual((friday["party"], friday["guests"], friday["here"], friday["teams"], friday["consoles"], friday["games"]),
+                         ("Friday LAN", 4, 3, 3, ["127.0.0.2", "127.0.0.1"], ["Zuma", "Halo 3", "Not Here"]))
+        self.assertTrue(re.match(r"^[0-9a-f]{12}$", friday["id"]))
+        for body, code in (({"action": "save", "name": ""}, 400), ({"action": "rename", "id": "000000000000", "name": "X"}, 404), ({"action": "nap"}, 400),
+                           ({"action": "start", "id": "000000000000"}, 404), ({"action": "save", "id": "000000000000", "name": "X"}, 404)):
+            self.assertEqual(self.call("POST", "/api/party/presets", body)[0], code, body)
+        # Another party in its place, then Friday again with one tap: as saved, and on.
+        self.json("POST", "/api/party", {"consoles": [], "gamemaster": "127.0.0.1", "teams": 2, "guests": [{"name": "Nora", "here": True}], "together": [], "games": [], "name": "Other"})
+        self.json("POST", "/api/party/presets", {"action": "save", "name": "Small"})
+        self.assertEqual(list(presets()), ["Small", "Friday"])  # Newest first.
+        r = self.json("POST", "/api/party/presets", {"action": "start", "id": friday["id"]})
+        self.assertEqual(r["said"], "Friday is on: 3 players here, 2 consoles, 3 games.")
+        p = party()
+        self.assertEqual((p["active"], p["name"], p["gamemaster"], p["consoles"], p["teams"], p["balance"], p["games"], p["idleOffMinutes"]),
+                         (True, "Friday LAN", "127.0.0.2", ["127.0.0.2", "127.0.0.1"], 3, "wins", ["Zuma", "Halo 3", "Not Here"], 30))
+        self.assertEqual([(g["name"], g["here"]) for g in p["guests"]], [("Ola", True), ("Kari", True), ("Lars", True), ("Tom", False)])
+        self.assertIn("Friday is on!", [x["text"] for x in p["feed"]])
+        # The vote offers tonight's games every party console has, in their order.
+        said = self.json("POST", "/api/party/vote", {"action": "open", "seconds": 60})["said"]
+        self.assertEqual(said, "Vote for the next game: 2 games, 60 seconds.")
+        self.assertEqual([g["name"] for g in party()["vote"]["games"]], ["Zuma", "Halo 3"])
+        self.json("POST", "/api/party/vote", {"action": "cancel"})
+        # While a party is on, starting another asks first (end: true ends it).
+        small = presets()["Small"]
+        status, _, data = self.call("POST", "/api/party/presets", {"action": "start", "id": small["id"]})
+        self.assertEqual((status, json.loads(data)["error"]), (409, "A party is on: end it first, or start Small in its place."))
+        self.json("POST", "/api/party/presets", {"action": "start", "id": small["id"], "end": True})
+        p = party()
+        self.assertEqual((p["active"], p["name"], [g["name"] for g in p["guests"]], p["games"], p["consoles"]), (True, "Other", ["Nora"], [], ["127.0.0.1"]))
+        # Renamed and deleted; Friday saved again in place keeps its id.
+        self.assertEqual(self.call("POST", "/api/party/presets", {"action": "rename", "id": small["id"], "name": "friday"})[0], 409)
+        self.json("POST", "/api/party/presets", {"action": "rename", "id": small["id"], "name": "Tiny"})
+        self.json("POST", "/api/party/presets", {"action": "save", "id": friday["id"], "name": "Friday"})
+        self.assertEqual((list(presets()), presets()["Friday"]["id"], presets()["Friday"]["guests"]), (["Friday", "Tiny"], friday["id"], 1))
+        self.json("POST", "/api/party/presets", {"action": "delete", "id": small["id"]})
+        self.assertEqual(list(presets()), ["Friday"])
+        # Kept in the settings file across a restart.
+        stop(server)
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+        self.assertEqual([(x["name"], x["id"]) for x in party()["presets"]], [("Friday", friday["id"])])
+        self.assertEqual(party()["games"], [])
+
     def test_join_and_vote_from_a_phone(self):
         # Marcus 2026-11-02: guests join and vote from their phones, through
         # the party relay on Cloudflare (relay/), which NetDisc360 posts the

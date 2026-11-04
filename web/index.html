@@ -733,6 +733,19 @@ details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
 .gp-work { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .gp-work .i { flex: none; margin-top: 2px; }
 .gp-work.bad { color: var(--bad); }
+.presets { display: flex; flex-direction: column; gap: 8px; }
+.preset-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px 9px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.preset-row .grow { flex: 1; min-width: 0; }
+.preset-row b { display: block; font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-row .sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-row .btn.icon { width: 30px; padding: 0; justify-content: center; }
+.tonight { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.tonight-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-right: 4px; }
+.tonight .chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.tonight .chip.away { background: var(--hover); color: var(--muted); }
+.tonight .chip button { width: 20px; height: 20px; border: 0; background: transparent; color: inherit; border-radius: 50%; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.tonight .chip button:hover { background: var(--bad-soft); color: var(--bad); }
+.tonight .chip button .i { width: 13px; height: 13px; }
 .add-row { display: flex; gap: 8px; }
 .add-row .input { flex: 1; min-width: 0; max-width: 360px; }
 .users-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -2835,8 +2848,8 @@ Pages.party = root => {
   root.append(wrap);
   const banner = livePart(h('div.party-banner')), facts = livePart(h('div.party-facts')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
-  const profiles = livePart(h('div')), scores = livePart(h('div'));
-  const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results];
+  const profiles = livePart(h('div')), scores = livePart(h('div')), presets = livePart(h('div'));
+  const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results, presets];
   const guestCount = h('span.sub'), rulesCount = h('span.muted');
   const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
   const typed = h('input.input', { placeholder: 'Add players: names, with commas between', 'aria-label': 'Guests to add', list: 'party-users', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
@@ -2854,6 +2867,7 @@ Pages.party = root => {
   main.append(
     h('div.party-grid',
       h('div.stack',
+        card('history', 'Saved parties', h('span.sub', 'start one again with one tap'), h('button.btn.small', { 'data-focus': 'preset-save', onclick: () => savePreset() }, ic('archive', 'sm'), 'Save this party'), presets.el),
         card(1, 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), openAll, consoles.el),
         h('div.card.players-card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '2'), h('h2', 'Players'), guestCount,
           h('div.right', h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here'))),
@@ -3036,6 +3050,47 @@ Pages.party = root => {
   async function removePicture(kind, index) {
     try { await api('party/asset/remove', index === undefined ? { kind } : { kind, index }); PartyPics.changed++; await refresh(); }
     catch (e) { toast(e.message, true); }
+  }
+
+  // Saved parties: the setup (consoles, players and who's here, teams, rules,
+  // tonight's games, theme) kept under a name, started again with one tap.
+  function drawPresets(p) {
+    const list = S.party.presets || [];
+    if (!list.length) return h('p.muted', { style: { margin: 0 } }, 'Save this party’s setup (consoles, players and who’s here, teams, rules, tonight’s games and the theme) to start it again another day with one tap.');
+    return [h('div.presets', list.map(x => h('div.preset-row',
+      h('div.grow', h('b', x.name), h('div.sub', [plural(x.guests, 'player') + (x.here && x.here !== x.guests ? ' (' + x.here + ' here)' : ''), x.consoles.length ? x.consoles.map(nameOf).join(', ') : 'no consoles', plural(x.teams, 'team'),
+        x.games.length ? x.games.slice(0, 3).join(', ') + (x.games.length > 3 ? ' +' + (x.games.length - 3) : '') : 'every game', 'saved ' + ago(x.saved)].filter(Boolean).join(' · '))),
+      h('button.btn.small.primary', { 'data-focus': 'preset-start-' + x.id, title: 'Sets the party up as saved and starts it; the players’ profiles go on its consoles by themselves', onclick: e => startPreset(x, e.currentTarget) }, ic('play', 'sm'), 'Start'),
+      h('button.btn.small.ghost.icon', { title: 'Save the party as it is now in its place', 'aria-label': 'Save the party now as ' + x.name, onclick: () => savePreset(x) }, ic('archive', 'sm')),
+      h('button.btn.small.ghost.icon', { title: 'Delete ' + x.name, 'aria-label': 'Delete ' + x.name, onclick: () => deletePreset(x) }, ic('trash-2', 'sm'))))),
+      h('p.hint', 'Start sets the party up as it was saved and starts it. A party that’s on ends first.')];
+  }
+  async function presetCall(body) {
+    try { const r = await api('party/presets', body); await refresh(); toast(r.said); return true; }
+    catch (e) { toast(e.message, true); return false; }
+  }
+  function savePreset(x) {
+    const p = shownParty();
+    const name = h('input.input', { value: x ? x.name : p.name || 'LAN party', maxlength: 64, 'aria-label': 'The saved party’s name' });
+    const go = async () => { if (await presetCall(x ? { action: 'save', id: x.id, name: name.value.trim() } : { action: 'save', name: name.value.trim() })) close(); };
+    name.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    const close = modal(x ? 'Save the party as ' + x.name + '?' : 'Save this party', () => [
+      h('div.modal-body', h('label.field', h('span', 'Name'), name,
+        h('span.help', (x ? 'The party as it is now takes the place of what ' + x.name + ' held: ' : 'It keeps ') + plural(p.guests.length, 'player') + ', ' + plural(p.consoles.length, 'console') + ', ' +
+          plural(p.teams, 'team') + ', the rules, ' + ((p.games || []).length ? plural(p.games.length, 'game') + ' for tonight' : 'tonight’s games') + ' and the theme. A saved party with the same name is saved again.'))),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: () => close() }, 'Cancel'), h('button.btn.primary', { onclick: go }, ic('archive', 'sm'), 'Save')),
+    ], true);
+  }
+  async function startPreset(x, button) {
+    const p = S.party;
+    if (p.active && !(await confirmBox('Start ' + x.name + '?', 'The party that’s on ends first: its rounds, teams and seats go. Then ' + x.name + ' starts as it was saved.', 'Start ' + x.name))) return;
+    button.disabled = true;
+    await presetCall({ action: 'start', id: x.id, end: !!p.active });
+    button.disabled = false;
+  }
+  async function deletePreset(x) {
+    if (!(await confirmBox('Delete ' + x.name + '?', 'Only the saved setup goes; the players, their profiles and the party now stay as they are.', 'Delete', true))) return;
+    presetCall({ action: 'delete', id: x.id });
   }
 
   // The consoles: the Gamemaster's (the radio), and the party's (ticked).
@@ -3493,7 +3548,8 @@ Pages.party = root => {
   }
   function drawStart(p) {
     if (!p.consoles.length) return h('p.muted', { style: { margin: 0 } }, 'Choose the Gamemaster console and tick the party’s consoles first.');
-    const games = startable(p), g = games.find(x => x.name === chosen) || games[0];
+    const tonight = p.games || [], games = startable(p);
+    const g = games.find(x => x.name === chosen) || games.find(x => tonight.some(n => sameName(n, x.name))) || games[0];
     const buttons = h('div.party-buttons',
       h('button.btn.primary', { disabled: !g, onclick: e => startAll(g, e.currentTarget) }, ic('play', 'sm'), 'Start on all'),
       h('button.btn', { title: 'Opens the LAN party app on every party console, from a game too', onclick: e => powerAll('party', e.currentTarget) }, ic('party-popper', 'sm'), 'Back to the party on all'),
@@ -3518,6 +3574,11 @@ Pages.party = root => {
     return [
       drawVote(p),
       h('div.start-pick', select),
+      h('div.tonight', h('span.tonight-label', ic('list', 'sm'), 'Tonight’s games'),
+        tonight.length ? tonight.map(n => h('span.chip' + (games.some(x => sameName(x.name, n)) ? '' : '.away'), { title: games.some(x => sameName(x.name, n)) ? null : 'Not on every party console now' }, n,
+          h('button', { type: 'button', 'aria-label': 'Take ' + n + ' off tonight’s games', 'data-focus': 'tonight-x-' + n, onclick: () => edit({ games: tonight.filter(t => t !== n) }) }, ic('x', 'sm'))))
+          : h('span.muted', 'none picked: the vote offers every game on all party consoles'),
+        !tonight.some(n => sameName(n, g.name)) && tonight.length < 10 ? h('button.btn.small.ghost', { 'data-focus': 'tonight-add', onclick: () => edit({ games: tonight.concat(g.name) }) }, ic('plus', 'sm'), 'Add ' + g.name) : null),
       h('div.game-facts',
         g.systemLink ? h('span.pill.good', ic('cable', 'sm'), 'System Link') : h('span.pill.off', 'No System Link'),
         g.systemLink ? h('span.pill.info', g.perConsole ? plural(g.perConsole, 'player') + ' per console' : 'Players per console not known') : null,
@@ -3670,7 +3731,8 @@ Pages.party = root => {
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
     raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn, p.balance]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
-    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes, p.active, S.party.vote, p.phone && [p.phone.relay, p.phone.code, p.phone.ok, p.phone.error, p.phone.joins]]), () => drawStart(p));
+    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes, p.active, S.party.vote, p.games, p.phone && [p.phone.relay, p.phone.code, p.phone.ok, p.phone.error, p.phone.joins]]), () => drawStart(p));
+    presets.show(JSON.stringify([S.party.presets, S.consoles.map(c => c.address + '=' + c.name), Math.floor(S.time / 3600)]), () => drawPresets(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
   function route() {
