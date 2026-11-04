@@ -10,3 +10,7 @@
 #define IDR_ART_FASTFTP_GC 106
 #define IDR_ART_FASTFTP_BK 107
 #define IDR_ART_FASTFTP_GL 108
+// The console plugin (build\NetDisc360.xex, built before the server), which
+// the Health page puts on a console whose copy is missing or loads at the
+// wrong address.
+#define IDR_PLUGIN 109

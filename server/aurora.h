@@ -56,6 +56,11 @@ private:
 // console off. false with why in error.
 enum { XbdmPort = 730 };
 bool Xbdm(DWORD address, int port, const std::string& command, std::string& error);
+// The same for a command that answers with lines ("modules": what runs on
+// the console, with where it's loaded): the answer after the greeting, up to
+// "bye". One connection that ends at once, never a notify listener (that
+// made COD's xbdm crash).
+bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error);
 
 // An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path
 // (\Device\Harddisk0\Partition1\NetISO\Halo 3); "" for another drive.
@@ -101,4 +106,15 @@ struct AuroraTu {
 // screen stays. Each line of done: <Title ID> <Media ID> on|off|missing|error.
 std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::string& done);
 extern const char TitleUpdateScriptPath[];
+
+// The filter script NetDiscLinkOff.lua (LinkOffScriptPath, in Aurora's
+// folder), for the Health page's "Turn LiNK off": Nova's LiNK (Aurora's
+// Settings, Modules, Nova) passes System Link traffic through Nova, which
+// leaves streamed games deaf to the other consoles. As Aurora starts, the
+// script sets it off in Aurora's settings (settings.db SystemSettings,
+// PluginLiNK = 0) once and writes "off" (or "error") to done (an FTP path);
+// while done is there it does nothing, so LiNK switched on again in Aurora
+// stays on. Nova reads the setting as the console starts.
+std::string LinkOffScript(const std::string& done);
+extern const char LinkOffScriptPath[];
 }
