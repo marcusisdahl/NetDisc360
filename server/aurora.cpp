@@ -415,4 +415,73 @@ std::string OnlineScript(const std::string& tiles) {
         "end\n";
     return Crlf(text);
 }
+
+const char TitleUpdateScriptPath[] = "/User/Scripts/Content/Filters/NetDiscTitleUpdates.lua";
+
+std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::string& done) {
+    std::string text=
+        "-- Written by NetDisc360 when a title update is switched on or off on its\n"
+        "-- dashboard. Each time Aurora starts a game, its title update manager puts\n"
+        "-- the update Aurora has on in place and deletes the others, so as Aurora\n"
+        "-- starts, this makes Aurora's own list say what was chosen. It does that\n"
+        "-- once and writes what it did to NetDiscTuDone; while that file is there it\n"
+        "-- does nothing, so a change made in Aurora's title update screen stays.\n"
+        "local NetDiscTuDone = "+LuaQuote(ScriptPath(done))+"\n"
+        "local NetDiscTuWants = {\n";
+    for(size_t i=0;i<wants.size();++i) {
+        const AuroraTu& w=wants[i];
+        char ids[32]; _snprintf_s(ids,sizeof(ids),_TRUNCATE,"%08X %08X",w.titleId,w.mediaId);
+        text+="   { titleId = "+std::to_string((unsigned long long)w.titleId)+", mediaId = "+std::to_string((unsigned long long)w.mediaId)+", ids = "+LuaQuote(ids)+
+              ", hash = "+LuaQuote(w.hash)+", name = "+LuaQuote(w.name)+", file = "+LuaQuote(w.file)+", size = "+LuaQuote(w.size)+
+              ", device = "+LuaQuote(w.device)+", livePath = "+LuaQuote(w.livePath)+", backupPath = "+LuaQuote(w.backupPath)+
+              ", base = "+std::to_string((unsigned long long)w.base)+", version = "+std::to_string((unsigned long long)w.version)+" },\n";
+    }
+    text+=
+        "}\n"
+        "\n"
+        "local function NetDiscTuText(text)\n"
+        "   return \"'\" .. (string.gsub(text or \"\", \"'\", \"''\")) .. \"'\"\n"
+        "end\n"
+        "\n"
+        "-- Aurora may keep IDs as signed numbers.\n"
+        "local function NetDiscTuId(id)\n"
+        "   return \"(\" .. string.format(\"%.0f\", id) .. \",\" .. string.format(\"%.0f\", id - 4294967296) .. \")\"\n"
+        "end\n"
+        "\n"
+        "local function NetDiscTuRun(query)\n"
+        "   local ok, result = pcall(Sql.Execute, query)\n"
+        "   return ok and result ~= false\n"
+        "end\n"
+        "\n"
+        "local function NetDiscTuApply(want)\n"
+        "   local game = \"TitleId IN \" .. NetDiscTuId(want.titleId) .. \" AND MediaId IN \" .. NetDiscTuId(want.mediaId)\n"
+        "   local mine = \"Hash = \" .. NetDiscTuText(want.hash) .. \" AND \" .. game\n"
+        "   if want.hash ~= \"\" and want.backupPath ~= \"\" then\n"
+        "      -- Aurora hasn't seen it yet: on its list, with the copy in its store.\n"
+        "      NetDiscTuRun(\"INSERT INTO TitleUpdates (DisplayName, FileName, LiveDeviceId, LivePath, TitleId, MediaId, BaseVersion, Version, Hash, BackupPath, FileSize) SELECT \" ..\n"
+        "         NetDiscTuText(want.name) .. \", \" .. NetDiscTuText(want.file) .. \", \" .. NetDiscTuText(want.device) .. \", \" .. NetDiscTuText(want.livePath) .. \", \" ..\n"
+        "         string.format(\"%.0f\", want.titleId) .. \", \" .. string.format(\"%.0f\", want.mediaId) .. \", \" .. want.base .. \", \" .. want.version .. \", \" ..\n"
+        "         NetDiscTuText(want.hash) .. \", \" .. NetDiscTuText(want.backupPath) .. \", \" .. NetDiscTuText(want.size) ..\n"
+        "         \" WHERE NOT EXISTS (SELECT 1 FROM TitleUpdates WHERE \" .. mine .. \")\")\n"
+        "   end\n"
+        "   if not NetDiscTuRun(\"DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. game .. \")\") then return \"error\" end\n"
+        "   if want.hash == \"\" then return \"off\" end\n"
+        "   if not NetDiscTuRun(\"INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) SELECT Id FROM TitleUpdates WHERE \" .. mine ..\n"
+        "      \" ORDER BY LiveDeviceId = \" .. NetDiscTuText(want.device) .. \" DESC LIMIT 1\") then return \"error\" end\n"
+        "   local read, rows = pcall(Sql.ExecuteFetchRows, \"SELECT TitleUpdateId FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. mine .. \")\")\n"
+        "   if read and rows ~= nil and next(rows) ~= nil then return \"on\" end\n"
+        "   return \"missing\"\n"
+        "end\n"
+        "\n"
+        "local NetDiscTuRead, NetDiscTuThere = pcall(FileSystem.FileExists, NetDiscTuDone)\n"
+        "if Sql ~= nil and NetDiscTuRead and NetDiscTuThere ~= true then\n"
+        "   local lines = {}\n"
+        "   for _, want in ipairs(NetDiscTuWants) do\n"
+        "      local ok, result = pcall(NetDiscTuApply, want)\n"
+        "      table.insert(lines, want.ids .. \" \" .. (ok and result or \"error\"))\n"
+        "   end\n"
+        "   pcall(FileSystem.WriteFile, NetDiscTuDone, table.concat(lines, \"\\r\\n\") .. \"\\r\\n\")\n"
+        "end\n";
+    return Crlf(text);
+}
 }

@@ -675,63 +675,132 @@ U64 ImageDataEnd(DiscImage& image) {
 // Content on a storage device (inferred: GTA V's guides copy them there).
 
 const char ContentFolder[] = "content", CommonProfile[] = "0000000000000000";
-enum { MaxPackages = 16 };
+enum { MaxPackages = 64, HeaderBytes = 0x971 };
 
-// list(path, entries) lists the folder at path (names as on the disc, from its top).
-template<class Lister> void FindPackages(Lister list, DWORD titleId, std::vector<Package>& out) {
+DWORD HexName(const std::string& name, bool& ok) {
+    ok=name.size()==8;
+    DWORD v=0;
+    for(size_t i=0;i<name.size() && ok;++i) {
+        char c=name[i];
+        int d=c>='0' && c<='9' ? c-'0' : c>='a' && c<='f' ? c-'a'+10 : c>='A' && c<='F' ? c-'A'+10 : -1;
+        if(d<0) ok=false; else v=(v<<4)|DWORD(d);
+    }
+    return v;
+}
+
+// Where a package from content\0000000000000000\<folder>\<type> on a disc
+// goes, by its own header (CON, LIVE or PIRS: its Title ID at 0x360, its
+// content type at 0x344), as the console reads it: bonus discs keep theirs
+// under a placeholder (FFED2000\FFFFFFFF on Skyrim's, Fallout's, BioShock's).
+// False for one that isn't a game's (avatar items, themes, gamer pictures,
+// the dashboard's), or whose Title ID nothing says.
+bool PackageTarget(const unsigned char* head, size_t got, const std::string& folder, const std::string& type, DWORD& titleId, DWORD& contentType) {
+    bool folderOk=false, typeOk=false;
+    titleId=HexName(folder,folderOk); contentType=HexName(type,typeOk);
+    // The disc's folders say where a package goes; only a placeholder folder
+    // (FFED2000, FFFFFFFF: Skyrim's, Fallout's, BioShock's bonus discs) or one
+    // that isn't a Title ID leaves it to the package's own header.
+    bool placeholder=!folderOk || !titleId || titleId==0xFFED2000 || titleId==0xFFFFFFFF;
+    if(placeholder && got>=0x364 && (!memcmp(head,"CON ",4) || !memcmp(head,"LIVE",4) || !memcmp(head,"PIRS",4))) {
+        DWORD t=Big32(head+0x360), c=Big32(head+0x344);
+        if(t) { titleId=t; folderOk=true; }
+        if(c && c<=0xFFFFF) { contentType=c; typeOk=true; }  // Content types run from 0x1 to 0xF0000.
+    }
+    if(!folderOk || !typeOk || !titleId) return false;
+    if(titleId==0xFFED2000 || titleId==0xFFFFFFFF || (titleId>>16)==0xFFFE) return false;  // A placeholder it didn't say better, or the dashboard's.
+    switch(contentType) {
+    case 0x9000: case 0x10000: case 0x20000: case 0x30000: case 0x1: return false;  // Avatar items, profiles, gamer pictures, themes, saves.
+    }
+    return true;
+}
+
+// list(path, entries) lists the folder at path (names as on the disc, from
+// its top); head(path, name, data, bytes) reads a file's first bytes.
+template<class Lister, class Reader> void FindPackages(Lister list, Reader head, std::vector<Package>& out) {
     out.clear();
-    char title[12]; _snprintf_s(title,sizeof(title),_TRUNCATE,"%08X",titleId);
-    const char* const steps[]={ ContentFolder, CommonProfile, title };
+    const char* const steps[]={ ContentFolder, CommonProfile };
     std::vector<std::string> path;
     std::vector<Entry> entries;
-    for(int i=0;i<3;++i) {
+    for(int i=0;i<2;++i) {
         const Entry* e=list(path,entries) ? Find(entries,steps[i],true) : NULL;
         if(!e) return;
         path.push_back(e->name);
     }
-    std::vector<Entry> types;
-    if(!list(path,types)) return;
-    for(size_t t=0;t<types.size();++t) {
-        if(!types[t].folder) continue;
-        path.push_back(types[t].name);
-        if(list(path,entries)) for(size_t f=0;f<entries.size();++f) {
-            if(entries[f].folder) continue;
-            Package p; p.path=path[1]+"\\"+path[2]+"\\"+path[3]+"\\"+entries[f].name; p.size=entries[f].size;
-            out.push_back(p);
+    std::vector<Entry> titles, types;
+    if(!list(path,titles)) return;
+    for(size_t t=0;t<titles.size() && out.size()<MaxPackages;++t) {
+        if(!titles[t].folder) continue;
+        path.push_back(titles[t].name);
+        if(list(path,types)) for(size_t k=0;k<types.size();++k) {
+            if(!types[k].folder) continue;
+            path.push_back(types[k].name);
+            if(list(path,entries)) for(size_t f=0;f<entries.size() && out.size()<MaxPackages;++f) {
+                if(entries[f].folder) continue;
+                unsigned char data[HeaderBytes];
+                size_t got=head(path,entries[f].name,data,sizeof(data));
+                DWORD titleId=0, type=0;
+                if(!PackageTarget(data,got,path[2],path[3],titleId,type)) continue;
+                char target[48]; _snprintf_s(target,sizeof(target),_TRUNCATE,"%s\\%08X\\%08X\\",CommonProfile,(unsigned)titleId,(unsigned)type);
+                Package p; p.path=target+entries[f].name; p.size=entries[f].size; p.titleId=titleId;
+                std::string source=path[1]+"\\"+path[2]+"\\"+path[3]+"\\"+entries[f].name;
+                // Where it is already: as the disc spells it.
+                if(!_stricmp(source.c_str(),p.path.c_str())) p.path=source;
+                else p.source=source;
+                out.push_back(p);
+            }
+            path.pop_back();
         }
         path.pop_back();
     }
     std::sort(out.begin(),out.end(),[](const Package& a, const Package& b) { return _stricmp(a.path.c_str(),b.path.c_str())<0; });
-    if(out.size()>MaxPackages) out.resize(MaxPackages);
 }
-void FolderPackages(const std::string& game, DWORD titleId, std::vector<Package>& out) {
-    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
+void FolderPackages(const std::string& game, std::vector<Package>& out) {
+    auto at=[&](const std::vector<std::string>& path) {
         std::string folder=game;
         for(size_t i=0;i<path.size();++i) folder=Join(folder,path[i]);
-        return List(folder,entries);
-    },titleId,out);
+        return folder;
+    };
+    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) { return List(at(path),entries); },
+        [&](const std::vector<std::string>& path, const std::string& name, unsigned char* data, size_t bytes) -> size_t {
+            File f;
+            if(!f.Open(Join(at(path),name))) return 0;
+            long long got=f.Read(0,data,DWORD(bytes));
+            return got>0 ? size_t(got) : 0;
+        },out);
 }
-void ImagePackages(DiscImage& image, DWORD titleId, std::vector<Package>& out) {
+void ImagePackages(DiscImage& image, std::vector<Package>& out) {
     Volume volume;
     if(!ImageVolume(image,volume)) { out.clear(); return; }
-    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
-        std::vector<ImageEntry> table;
+    std::vector<ImageEntry> last;  // The table listed last, for head.
+    auto table=[&](const std::vector<std::string>& path, std::vector<ImageEntry>& found) {
         DWORD sector=volume.rootSector,size=volume.rootSize;
         for(size_t i=0;i<=path.size();++i) {
-            if(!ReadTable(image,volume,sector,size,table)) return false;
+            if(!ReadTable(image,volume,sector,size,found)) return false;
             if(i==path.size()) break;
             size_t k=0;
-            while(k<table.size() && (!table[k].folder || _stricmp(table[k].name.c_str(),path[i].c_str()))) ++k;
-            if(k==table.size()) return false;
-            sector=table[k].sector; size=table[k].size;
+            while(k<found.size() && (!found[k].folder || _stricmp(found[k].name.c_str(),path[i].c_str()))) ++k;
+            if(k==found.size()) return false;
+            sector=found[k].sector; size=found[k].size;
         }
+        return true;
+    };
+    FindPackages([&](const std::vector<std::string>& path, std::vector<Entry>& entries) {
+        if(!table(path,last)) return false;
         entries.clear();
-        for(size_t i=0;i<table.size();++i) {
-            Entry e; e.name=table[i].name; e.folder=table[i].folder; e.size=table[i].folder ? 0 : table[i].size; e.modified=0;
+        for(size_t i=0;i<last.size();++i) {
+            Entry e; e.name=last[i].name; e.folder=last[i].folder; e.size=last[i].folder ? 0 : last[i].size; e.modified=0;
             entries.push_back(e);
         }
         return true;
-    },titleId,out);
+    }, [&](const std::vector<std::string>&, const std::string& name, unsigned char* data, size_t bytes) -> size_t {
+        for(size_t i=0;i<last.size();++i)
+            if(!last[i].folder && last[i].name==name) {
+                size_t n=std::min(bytes,size_t(last[i].size));
+                U64 at=volume.start+U64(last[i].sector)*Sector;
+                return n && at+n<=image.Size() && image.Read(at,data,DWORD(n)) ? n : 0;
+            }
+        return 0;
+    },out);
 }
 
 struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete, xbe; };
@@ -916,16 +985,17 @@ void ReadTitles(std::vector<IsoFile>& discs) {
         DWORD titleId=0,mediaId=0; int disc=0; bool xbe=false;
         if(d.kind==DiscFolder) {
             if(!FileTitle(Join(d.path,"default.xex"),titleId,mediaId,disc) && XbeTitle(Join(d.path,"default.xbe"),titleId)) { mediaId=0; disc=1; xbe=true; }
-            if(titleId) FolderPackages(d.path,titleId,d.packages);
+            FolderPackages(d.path,d.packages);
         } else if(d.kind==DiscGod) {  // The Title ID is from its header already.
             titleId=d.titleId; mediaId=d.mediaId; disc=d.disc;
             std::string error;
             std::unique_ptr<DiscImage> god(OpenGodImage(d.path,error));
-            if(god.get() && titleId) ImagePackages(*god,titleId,d.packages);
+            if(god.get()) ImagePackages(*god,d.packages);
         } else {
             IsoImage iso; std::string error;
             if(iso.Open(d.path,error)) {
-                if(ImageTitle(iso,titleId,mediaId,disc,xbe)) ImagePackages(iso,titleId,d.packages);
+                ImageTitle(iso,titleId,mediaId,disc,xbe);
+                ImagePackages(iso,d.packages);
                 d.incomplete=ImageDataEnd(iso)>iso.Size();
             }
         }
@@ -947,11 +1017,16 @@ void ReadTitles(std::vector<IsoFile>& discs) {
 }
 
 void LinkInstallDiscs(std::vector<IsoFile>& discs) {
+    // A disc's own packages: those for its game (a bonus disc can carry another's).
+    auto own=[](const IsoFile& d) {
+        for(size_t k=0;k<d.packages.size();++k) if(d.packages[k].titleId==d.titleId) return true;
+        return false;
+    };
     std::map<DWORD,const IsoFile*> carriers;  // Title ID: a disc of it with packages.
-    for(size_t i=0;i<discs.size();++i) if(discs[i].titleId && !discs[i].packages.empty()) carriers[discs[i].titleId]=&discs[i];
+    for(size_t i=0;i<discs.size();++i) if(discs[i].titleId && own(discs[i])) carriers[discs[i].titleId]=&discs[i];
     for(size_t i=0;i<discs.size();++i) {
         IsoFile& d=discs[i];
-        std::map<DWORD,const IsoFile*>::const_iterator c=d.packages.empty() ? carriers.find(d.titleId) : carriers.end();
+        std::map<DWORD,const IsoFile*>::const_iterator c=!own(d) ? carriers.find(d.titleId) : carriers.end();
         if(c!=carriers.end() && c->second->disc!=d.disc) d.installDisc=c->second->name;
         else d.installDisc.clear();
     }
@@ -1002,6 +1077,259 @@ bool IsoReader::Open(const IsoFile& disc) {
     if(!image) { note_=error; return false; }
     image_.reset(image);
     note_=image->Description();
+    return true;
+}
+
+bool IsoReader::Locate(const std::string& path, U64& at, U64& size) {
+    Volume volume;
+    if(!image_.get() || !ImageVolume(*image_,volume)) return false;
+    std::vector<ImageEntry> table;
+    DWORD sector=volume.rootSector,bytes=volume.rootSize;
+    for(size_t from=0;;) {
+        size_t end=path.find_first_of("/\\",from);
+        std::string step=path.substr(from,end==std::string::npos ? std::string::npos : end-from);
+        bool last=end==std::string::npos;
+        if(!ReadTable(*image_,volume,sector,bytes,table)) return false;
+        size_t k=0;
+        while(k<table.size() && (table[k].folder==last || _stricmp(table[k].name.c_str(),step.c_str()))) ++k;
+        if(k==table.size()) return false;
+        if(last) {
+            at=volume.start+U64(table[k].sector)*Sector; size=table[k].size;
+            return at+size<=image_->Size();
+        }
+        sector=table[k].sector; bytes=table[k].size; from=end+1;
+    }
+}
+
+bool IsoReader::Files(std::vector<DiscFile>& out) {
+    out.clear();
+    Volume volume;
+    if(!image_.get() || !ImageVolume(*image_,volume)) return false;
+    struct Table { std::string path; DWORD sector, size; };
+    std::vector<Table> todo(1,Table{std::string(),volume.rootSector,volume.rootSize});
+    std::vector<ImageEntry> table;
+    while(!todo.empty()) {
+        Table t=todo.back(); todo.pop_back();
+        if(!ReadTable(*image_,volume,t.sector,t.size,table)) return false;
+        // A broken disc can't send this round in circles: depth is bounded by the path.
+        if(t.path.size()>1024) return false;
+        for(size_t k=0;k<table.size();++k) {
+            const ImageEntry& e=table[k];
+            if(e.folder) {
+                out.push_back(DiscFile{t.path+e.name+"\\",0,0});
+                todo.push_back(Table{t.path+e.name+"\\",e.sector,e.size});
+                continue;
+            }
+            DiscFile f{t.path+e.name,volume.start+U64(e.sector)*Sector,e.size};
+            if(f.at+f.size>image_->Size()) return false;
+            out.push_back(f);
+        }
+    }
+    return true;
+}
+
+// Games on Demand packages ----------------------------------------------------
+
+namespace {
+#include "../third_party/iso2god/empty_live.h"
+
+// SHA-1 of whole 4 KB blocks, a word at a time.
+void Sha1Block(const unsigned char* data, size_t size, unsigned char* digest) {
+    DWORD h[5]={0x67452301,0xEFCDAB89,0x98BADCFE,0x10325476,0xC3D2E1F0};
+    auto rotate=[](DWORD v, int n) { return (v<<n)|(v>>(32-n)); };
+    auto compress=[&](const unsigned char* block) {
+        DWORD w[80];
+        for(int i=0;i<16;++i) w[i]=Big32(block+i*4);
+        for(int i=16;i<80;++i) w[i]=rotate(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+        DWORD a=h[0],b=h[1],c=h[2],d=h[3],e=h[4];
+        for(int i=0;i<80;++i) {
+            DWORD f,k;
+            if(i<20) { f=(b&c)|(~b&d); k=0x5A827999; }
+            else if(i<40) { f=b^c^d; k=0x6ED9EBA1; }
+            else if(i<60) { f=(b&c)|(b&d)|(c&d); k=0x8F1BBCDC; }
+            else { f=b^c^d; k=0xCA62C1D6; }
+            DWORD t=rotate(a,5)+f+e+k+w[i];
+            e=d; d=c; c=rotate(b,30); b=a; a=t;
+        }
+        h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d; h[4]+=e;
+    };
+    size_t whole=size/64*64;
+    for(size_t at=0;at<whole;at+=64) compress(data+at);
+    unsigned char tail[128]={0};
+    size_t rest=size-whole;
+    memcpy(tail,data+whole,rest);
+    tail[rest]=0x80;
+    size_t end=rest<56 ? 64 : 128;
+    U64 bits=U64(size)*8;
+    for(int i=0;i<8;++i) tail[end-1-i]=BYTE(bits>>(i*8));
+    compress(tail);
+    if(end==128) compress(tail+64);
+    for(int i=0;i<5;++i) { digest[i*4]=BYTE(h[i]>>24); digest[i*4+1]=BYTE(h[i]>>16); digest[i*4+2]=BYTE(h[i]>>8); digest[i*4+3]=BYTE(h[i]); }
+}
+void PutBig16(unsigned char* p, DWORD v) { p[0]=BYTE(v>>8); p[1]=BYTE(v); }
+void PutBig24(unsigned char* p, DWORD v) { p[0]=BYTE(v>>16); p[1]=BYTE(v>>8); p[2]=BYTE(v); }
+void PutBig32(unsigned char* p, DWORD v) { p[0]=BYTE(v>>24); p[1]=BYTE(v>>16); p[2]=BYTE(v>>8); p[3]=BYTE(v); }
+const U64 GodGroupBytes = U64(GodGroupData)*GodBlock;
+const DWORD GodGroups = (GodPartData+GodGroupData-1)/GodGroupData;  // 0xCB.
+}
+
+DWORD GodPackage::PartBlocks(int part) const {
+    U64 left=blocks_-U64(part)*GodPartData;
+    return left<GodPartData ? DWORD(left) : DWORD(GodPartData);
+}
+
+U64 GodPackage::PartSize(int part) const {
+    DWORD blocks=PartBlocks(part);
+    return U64(GodBlock)*(1+(blocks+GodGroupData-1)/GodGroupData+blocks);
+}
+
+U64 GodPackage::Bytes() const {
+    U64 total=header_.size();
+    for(int i=0;i<Parts();++i) total+=PartSize(i);
+    return total;
+}
+
+std::string GodPackage::Folder() const {
+    char text[32]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X\\%08X",titleId_,GodContentType);
+    return text;
+}
+
+std::string GodPackage::Name() const {
+    char text[16]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",mediaId_);
+    return text;
+}
+
+// The hash block of a group: the SHA-1 of each of its blocks (the last one
+// filled out with zeros), the rest of it zeros.
+bool GodPackage::Group(int part, U64 group, unsigned char* hashes) {
+    memset(hashes,0,GodBlock);
+    U64 first=U64(part)*GodPartData+group*GodGroupData;
+    U64 count=blocks_-first<GodGroupData ? blocks_-first : GodGroupData;
+    std::vector<unsigned char> data(size_t(count*GodBlock),0);
+    U64 at=start_+first*GodBlock;
+    U64 bytes=count*GodBlock;
+    if(at+bytes>reader_->Size()) bytes=reader_->Size()>at ? reader_->Size()-at : 0;
+    if(bytes && !reader_->Read(at,&data[0],DWORD(bytes))) return false;
+    for(U64 b=0;b<count;++b) Sha1Block(&data[size_t(b*GodBlock)],GodBlock,hashes+b*20);
+    return true;
+}
+
+bool GodPackage::Make(IsoReader& reader, const std::string& title, const std::function<bool(U64, U64)>& progress, std::string& error) {
+    reader_=&reader; groupAt_=-1;
+    masters_.clear(); header_.clear();
+    Volume volume;
+    std::vector<DiscFile> files;
+    if(!reader.image_.get() || !ImageVolume(*reader.image_,volume) || !reader.Files(files)) { error="it holds no Xbox 360 disc"; return false; }
+    // From the partition's start to the end of its last file or table, as iso2god's trim.
+    U64 end=0x21*U64(Sector);
+    if(U64(volume.rootSector)*Sector+volume.rootSize>end) end=U64(volume.rootSector)*Sector+volume.rootSize;
+    const DiscFile* xex=NULL;
+    std::vector<ImageEntry> table;
+    for(size_t i=0;i<files.size();++i) {
+        const DiscFile& f=files[i];
+        if(!_stricmp(f.path.c_str(),"default.xex")) xex=&f;
+        if(f.size && f.at+f.size-volume.start>end) end=f.at+f.size-volume.start;
+    }
+    // A folder's own table ends where its entry says; Files gives folders no place, so read them again.
+    std::vector<std::pair<DWORD,DWORD> > tables(1,std::make_pair(volume.rootSector,volume.rootSize));
+    while(!tables.empty()) {
+        std::pair<DWORD,DWORD> t=tables.back(); tables.pop_back();
+        if(!ReadTable(*reader.image_,volume,t.first,t.second,table)) { error="its file tables can't be read"; return false; }
+        for(size_t k=0;k<table.size();++k) {
+            U64 tail=U64(table[k].sector)*Sector+table[k].size;
+            if(tail>end) end=tail;
+            if(table[k].folder && tables.size()<100000) tables.push_back(std::make_pair(table[k].sector,table[k].size));
+        }
+    }
+    if(!xex) { error="it has no default.xex: only Xbox 360 games can be Games on Demand here"; return false; }
+    unsigned char start[24];
+    if(xex->size<24 || !reader.Read(xex->at,start,24)) { error="its default.xex can't be read"; return false; }
+    DWORD headerSize=Big32(start+8);
+    if(headerSize>xex->size) headerSize=xex->size;
+    if(headerSize<24 || headerSize>XexHeaderMax) { error="its default.xex is broken"; return false; }
+    std::vector<unsigned char> xexHeader(headerSize);
+    if(!reader.Read(xex->at,&xexHeader[0],headerSize)) { error="its default.xex can't be read"; return false; }
+    const unsigned char* info=NULL;
+    DWORD count=Big32(&xexHeader[20]);
+    for(DWORD i=0;i<count && 24+i*8+8<=headerSize && !info;++i) {
+        if(Big32(&xexHeader[24+i*8])!=ExecutionInfoKey) continue;
+        DWORD at=Big32(&xexHeader[28+i*8]);
+        if(at>=24 && at<=headerSize && headerSize-at>=ExecutionInfoBytes) info=&xexHeader[at];
+    }
+    if(!info || !Big32(info+12)) { error="its default.xex has no Title ID"; return false; }
+    titleId_=Big32(info+12); mediaId_=Big32(info);
+    start_=volume.start;
+    blocks_=(end+GodBlock-1)/GodBlock;
+    if(start_+blocks_*GodBlock>reader.Size()+GodBlock) { error="it is cut short"; return false; }
+    int parts=int((blocks_+GodPartData-1)/GodPartData);
+    // Each file's master block: its groups' hashes, then (below) the next one's.
+    masters_.assign(parts,std::vector<unsigned char>(GodBlock,0));
+    std::vector<unsigned char> hashes(GodBlock);
+    U64 done=0;
+    for(int p=0;p<parts;++p) {
+        U64 groups=(PartBlocks(p)+GodGroupData-1)/GodGroupData;
+        for(U64 g=0;g<groups;++g) {
+            if(!Group(p,g,&hashes[0])) { error="it can't be read here"; return false; }
+            Sha1Block(&hashes[0],GodBlock,&masters_[p][size_t(g*20)]);
+            done+=(PartBlocks(p)-g*GodGroupData<GodGroupData ? PartBlocks(p)-g*GodGroupData : GodGroupData)*GodBlock;
+            if(!progress(done,blocks_*GodBlock)) { error.clear(); return false; }
+        }
+    }
+    for(int p=parts-2;p>=0;--p) {
+        U64 groups=(PartBlocks(p)+GodGroupData-1)/GodGroupData;
+        Sha1Block(&masters_[p+1][0],GodBlock,&masters_[p][size_t(groups*20)]);
+    }
+    // The header, as iso2god's ConHeaderBuilder fills it in.
+    header_.assign(EmptyLive,EmptyLive+sizeof(EmptyLive));
+    unsigned char* h=&header_[0];
+    PutBig24(h+0x392,DWORD(blocks_)); PutBig16(h+0x395,0);
+    PutBig32(h+0x344,GodContentType);
+    PutLittle32(h+0x3A0,DWORD(parts));  // Little-endian, as iso2god has it.
+    PutBig32(h+0x3A4,DWORD((PartSize(parts-1)+U64(parts-1)*GodBlock*0xA290)/0x100));
+    PutBig32(h+0x354,mediaId_); PutBig32(h+0x360,titleId_);
+    h[0x364]=info[16]; h[0x365]=info[17]; h[0x366]=info[18]; h[0x367]=info[19];
+    Sha1Block(&masters_[0][0],GodBlock,h+0x37D);
+    // The game's name, in UTF-16BE where Aurora and the dashboard show it (ASCII; others as _).
+    for(size_t i=0;i<title.size() && i<0x7F;++i) {
+        DWORD c=(unsigned char)title[i]<0x80 ? (unsigned char)title[i] : '_';
+        PutBig16(h+0x411+i*2,c); PutBig16(h+0x1691+i*2,c);
+    }
+    h[0x35B]=0; h[0x35F]=0; h[0x391]=0;
+    Sha1Block(h+0x344,0xACBC,h+0x32C);
+    return true;
+}
+
+bool GodPackage::Part(int part, U64 offset, unsigned char* data, DWORD length) {
+    while(length) {
+        DWORD n;
+        if(offset<GodBlock) {
+            n=DWORD(GodBlock-offset)<length ? DWORD(GodBlock-offset) : length;
+            memcpy(data,&masters_[part][size_t(offset)],n);
+        } else {
+            U64 inside=offset-GodBlock, group=inside/((GodGroupData+1)*U64(GodBlock)), within=inside%((GodGroupData+1)*U64(GodBlock));
+            if(within<GodBlock) {
+                long long key=(long long)part*0x10000+(long long)group;
+                if(groupAt_!=key) {
+                    group_.resize(GodBlock);
+                    if(!Group(part,group,&group_[0])) return false;
+                    groupAt_=key;
+                }
+                n=DWORD(GodBlock-within)<length ? DWORD(GodBlock-within) : length;
+                memcpy(data,&group_[size_t(within)],n);
+            } else {
+                U64 block=U64(part)*GodPartData+group*GodGroupData, at=start_+block*GodBlock+within-GodBlock;
+                U64 groupEnd=start_+(block+GodGroupData)*GodBlock;
+                U64 run=groupEnd-at;
+                n=run<length ? DWORD(run) : length;
+                // Past the disc's end (the last block filled out): zeros.
+                memset(data,0,n);
+                U64 have=reader_->Size()>at ? reader_->Size()-at : 0;
+                DWORD read=have<n ? DWORD(have) : n;
+                if(read && !reader_->Read(at,data,read)) return false;
+            }
+        }
+        offset+=n; data+=n; length-=n;
+    }
     return true;
 }
 }

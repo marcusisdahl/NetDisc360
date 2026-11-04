@@ -3,6 +3,7 @@
 !shared/
 !tests/posix_compat.h
 !docker/
+!third_party/iso2god/
 !art/aurora/*/*.asset
 !web/
 !tools/make_web.py
