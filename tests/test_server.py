@@ -2648,7 +2648,8 @@ class Dashboard(ServerTest):
             path = next(f["path"] for f in console["files"] if f["where"] == "aurora" and f["offer"] == "111")
             self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
             job = wait_queue()[-1]
-            self.assertEqual((job["state"], job["label"]), ("done", "tu00000002_00000000"), job["error"])
+            # Labelled with XboxUnity's number when it lists the update (a header's can be one lower).
+            self.assertEqual((job["state"], job["label"]), ("done", "Title update 2"), job["error"])
             self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
             with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
                 self.assertEqual(f.read(), newest)
@@ -2663,6 +2664,27 @@ class Dashboard(ServerTest):
             self.assertEqual(wait_queue()[-1]["state"], "done")
             with open(os.path.join(xbox, "Hdd1", "Cache", "TU_16L61V6_0000014000000.00000000000O9"), "rb") as f:
                 self.assertEqual(f.read(), cache_tu)
+            # A Cache update (no header) is switched off and on too: it's known
+            # as the game's because it was downloaded here.
+            def forza():
+                self.json("POST", "/api/titleupdates/check", {"address": "127.0.0.2"})
+                wait_queue()
+                console = self.json("GET", "/api/titleupdates?game=Forza%204")["consoles"][0]
+                return console, sorted((f["where"], f["offer"], f["version"]) for f in console["files"])
+            console, files = forza()
+            self.assertEqual((console["has"], files), ("130", [("live", "130", 4)]))
+            self.json("POST", "/api/titleupdates/off", {"game": "Forza 4", "address": "127.0.0.2"})
+            job = wait_queue()[-1]
+            self.assertEqual((job["kind"], job["state"], job["skipped"]), ("tuoff", "done", 0), job["error"])
+            self.assertEqual(os.listdir(os.path.join(xbox, "Hdd1", "Cache")), [])
+            console, files = forza()
+            self.assertEqual((console["has"], files), ("", [("aside", "130", 4)]))
+            path = console["files"][0]["path"]
+            self.json("POST", "/api/titleupdates/use", {"game": "Forza 4", "address": "127.0.0.2", "path": path})
+            job = wait_queue()[-1]
+            self.assertEqual((job["state"], job["label"]), ("done", "Title update 4"), job["error"])
+            self.assertEqual(os.listdir(os.path.join(xbox, "Hdd1", "Cache")), ["TU_16L61V6_0000014000000.00000000000O9"])
+            self.assertEqual(forza()[0]["has"], "130")
             # The whole library at once: looked up, then each console checked.
             self.json("POST", "/api/titleupdates/scan", {})
             scan = None

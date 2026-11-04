@@ -5359,6 +5359,23 @@ bool TuCached(const Options& o, DWORD titleId, const std::string& id, std::strin
     return false;
 }
 
+// Which of XboxUnity's updates f is: by its Content ID, or for a Cache
+// update (no header), the one downloaded here under that name; -1 if none.
+int TuOfferOf(const Options& o, DWORD titleId, const TuFile& f, const std::vector<tu::Offer>& offers) {
+    for(size_t u=0;u<offers.size();++u) if(!f.contentId.empty() && f.contentId==offers[u].hash) return int(u);
+    if(!f.contentId.empty()) return -1;
+    for(size_t u=0;u<offers.size();++u) {
+        std::string path, cached;
+        if(TuCached(o,titleId,offers[u].id,path,cached) && !_stricmp(tu::FatxName(cached).c_str(),f.name.c_str())) return int(u);
+    }
+    return -1;
+}
+
+// The update's number as XboxUnity counts it (a header's can be one lower), else its header's.
+int TuNumber(const TuFile& f, int offer, const std::vector<tu::Offer>& offers) {
+    return offer>=0 && offers[size_t(offer)].version>0 ? offers[size_t(offer)].version : int(f.version);
+}
+
 // XboxUnity's updates for titleId, asked again when older than TuFresh (or refresh).
 bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std::string& error) {
     {
@@ -5531,7 +5548,7 @@ std::set<std::string> TuCachedNames(const Options& o, DWORD titleId) {
     std::string root=TuCacheFolder(o);
     if(root.empty()) return names;
     std::string folder=root+"/"+Hex8(titleId);
-    std::vector<config::Entry> ids=config::Files(folder);
+    std::vector<config::Entry> ids=config::Folders(folder);  // One per XboxUnity update id.
     for(size_t i=0;i<ids.size();++i) {
         std::vector<config::Entry> files=config::Files(folder+"/"+ids[i].name);
         for(size_t k=0;k<files.size();++k) if(!files[k].name.empty() && files[k].name[0]!='.') names.insert(Lower(tu::FatxName(files[k].name)));
@@ -5783,20 +5800,12 @@ void TitleUpdates(const std::string& name, bool refresh, web::Reply& out) {
             const TuFile& f=t.files[k];
             bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
             if(!cache && f.titleId!=g.titleId) continue;
-            if(cache) {
-                // A Cache update has no header: only one downloaded here is known to be this game's.
-                bool mine=false;
-                for(size_t u=0;u<offers.size() && !mine;++u) {
-                    std::string path, cached;
-                    mine=TuCached(o,g.titleId,offers[u].id,path,cached) && !_stricmp(tu::FatxName(cached).c_str(),f.name.c_str());
-                }
-                if(!mine) continue;
-            }
+            // A Cache update has no header: only one downloaded here is known to be this game's.
+            int offer=TuOfferOf(o,g.titleId,f,offers);
+            if(cache && offer<0) continue;
             if(!cache && f.mediaId && f.mediaId!=g.mediaId) continue;  // Another version of the game's.
-            std::string offer;
-            for(size_t u=0;u<offers.size() && offer.empty();++u) if(!f.contentId.empty() && f.contentId==offers[u].hash) offer=offers[u].id;
             j.Open('{').Set("path",f.path).Set("name",f.name).Set("size",(unsigned long long)f.size).Set("title",f.displayName).Set("mediaId",f.mediaId ? Hex8(f.mediaId) : std::string());
-            j.Set("where",f.where).Set("on",f.where=="live").Set("version",int(f.version)).Set("contentId",f.contentId).Set("offer",offer).Close('}');
+            j.Set("where",f.where).Set("on",f.where=="live").Set("version",TuNumber(f,offer,offers)).Set("contentId",f.contentId).Set("offer",offer>=0 ? offers[size_t(offer)].id : std::string()).Close('}');
         }
         j.Close(']').Close('}');
     }
@@ -5845,7 +5854,10 @@ bool SwitchTitleUpdate(const web::Value& body, bool off, std::string& error) {
                 }
         }
         if(!found) { error="The console's last check has no switched-off update of "+name+" at "+path+"; check it again."; return false; }
-        job->kind="update"; job->label=from.version ? "Title update "+std::to_string(from.version) : from.name; job->total=from.size;
+        std::vector<tu::Offer> offers;
+        { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(titleId); if(t!=TuInfo.end()) offers=t->second.offers; }
+        int number=TuNumber(from,TuOfferOf(Current(),titleId,from,offers),offers);
+        job->kind="update"; job->label=number ? "Title update "+std::to_string(number) : from.name; job->total=from.size;
         job->run=[titleId,mediaId,from](std::shared_ptr<ContentCopy> j) { UseTu(j,titleId,mediaId,from); };
     }
     if(!AddCopy(job,at,error)) return false;
