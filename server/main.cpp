@@ -5572,7 +5572,9 @@ void MoveTusAside(FtpClient& ftp, const Options& o, ContentCopy& c, DWORD titleI
         if(!_stricmp(f.path.c_str(),keep.c_str())) continue;
         bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
         if(cache ? !cached.count(Lower(f.name)) : (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
-        std::string to=backup+"/"+(f.contentId.empty() ? tu::FatxName(Lower(f.name)+"-"+std::to_string(f.size)) : f.contentId)+"/"+f.name;
+        // A Cache update has no Content ID: its folder is named by its name and size, short enough for FATX.
+        std::string key=Lower(f.name)+"-"+std::to_string(f.size);
+        std::string to=backup+"/"+(f.contentId.empty() ? "cache-"+tu::Sha1Hex(key.data(),key.size()).substr(0,16)+"-"+std::to_string(f.size) : f.contentId)+"/"+f.name;
         std::string why;
         if(RemoteSize(ftp,to)>=0) to=backup+"/"+tu::FatxName(f.contentId.substr(0,8)+"-"+std::to_string((long long)time(NULL)))+"/"+f.name;  // That one's there already.
         if(!MakeFolders(ftp,to,o.xboxFolder.size()-1,why) || !ftp.Rename(f.path.c_str(),to.c_str())) {

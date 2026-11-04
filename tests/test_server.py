@@ -2680,6 +2680,7 @@ class Dashboard(ServerTest):
             console, files = forza()
             self.assertEqual((console["has"], files), ("", [("aside", "130", 4)]))
             path = console["files"][0]["path"]
+            self.assertLessEqual(len(path.split("/")[-2]), 42)  # FATX's longest name.
             self.json("POST", "/api/titleupdates/use", {"game": "Forza 4", "address": "127.0.0.2", "path": path})
             job = wait_queue()[-1]
             self.assertEqual((job["state"], job["label"]), ("done", "Title update 4"), job["error"])
