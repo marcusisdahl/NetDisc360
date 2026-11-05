@@ -744,6 +744,19 @@ details.phone-join form { display: flex; gap: 8px; margin-top: 8px; }
 .gp-work { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .gp-work .i { flex: none; margin-top: 2px; }
 .gp-work.bad { color: var(--bad); }
+.presets { display: flex; flex-direction: column; gap: 8px; }
+.preset-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px 9px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.preset-row .grow { flex: 1; min-width: 0; }
+.preset-row b { display: block; font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-row .sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-row .btn.icon { width: 30px; padding: 0; justify-content: center; }
+.tonight { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.tonight-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin-right: 4px; }
+.tonight .chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.tonight .chip.away { background: var(--hover); color: var(--muted); }
+.tonight .chip button { width: 20px; height: 20px; border: 0; background: transparent; color: inherit; border-radius: 50%; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.tonight .chip button:hover { background: var(--bad-soft); color: var(--bad); }
+.tonight .chip button .i { width: 13px; height: 13px; }
 .add-row { display: flex; gap: 8px; }
 .add-row .input { flex: 1; min-width: 0; max-width: 360px; }
 .users-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -1356,7 +1369,7 @@ function frame() {
       h('div.brand', mark(), h('div', h('div.brand-name', 'NetDisc360'), h('div.brand-sub', 'NetISO server for Aurora'))),
       h('nav.nav', nav),
       h('div.side-foot', h('button.side-link', { onclick: releases }, ic('download', 'sm'), 'Latest releases'),
-        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'), h('a.row.muted#sync-state', { href: '#settings/sync', hidden: true }), h('div.row.muted#server-version'))),
+        h('div.row', h('span.dot#server-dot'), h('span#server-state')), h('div.row.muted#server-address'), h('div.row.muted#server-version'), h('a.row.muted#sync-state', { href: '#settings/sync', hidden: true }))),
     h('main',
       h('nav.topbar', mark(), Nav.map(([id, label, icon]) => h('a', { href: '#' + id, 'data-page': id }, ic(icon, 'sm'), label)),
         h('a', { href: '#', title: 'Latest releases', onclick: e => { e.preventDefault(); releases(); } }, ic('download', 'sm'), 'Releases')),
@@ -1396,13 +1409,13 @@ function updateFrame(problem) {
   $('#server-dot').className = 'dot ' + (problem ? 'bad' : 'good');
   fill($('#server-state'), problem ? 'Not answering' : h('span', h('b', 'Serving'), ' \u00b7 up ', duration(S.uptime)));
   fill($('#server-address'), ic('network', 'sm'), (S.addresses[0] || 'this computer') + ':' + S.ports.netiso);
+  fill($('#server-version'), ic('tag', 'sm'), h('span', { title: 'Built ' + S.built }, versionText()));
   // Sync between computers, when it's on: how it went last.
   const sync = $('#sync-state'), y = S.sync;
   if (sync) {
     sync.hidden = !y || !y.on;
     if (y && y.on) fill(sync, ic(y.failed ? 'triangle-alert' : 'folder-sync', 'sm'), y.running ? 'Syncing\u2026' : y.failed ? 'Sync had a problem' : y.last ? 'Synced ' + ago(y.last) : 'Sync starting');
   }
-  fill($('#server-version'), ic('tag', 'sm'), h('span', { title: 'Built ' + S.built }, versionText()));
   document.title = (S.library.conflicts ? '(' + S.library.conflicts + ') ' : '') + (playingNow ? '\u25b6 ' : '') + 'NetDisc360';
 }
 
@@ -1656,16 +1669,16 @@ Pages.dashboard = root => {
       if (n) fill(copies, h('div.notice', ic('copy'), h('span', (n === 1 ? 'A game is' : n + ' games are') + ' in your folders more than once. Choose which copy to play.'), h('a.btn.small', { href: '#games' }, 'Choose')));
       else if (cut.length) fill(copies, h('div.notice', ic('triangle-alert'), h('span', (cut.length === 1 ? cut[0].name + ' is' : plural(cut.length, 'ISO') + ' are') + ' incomplete: a download or copy that stopped. A game crashes where it reads the missing part, so copy ' + (cut.length === 1 ? 'it' : 'them') + ' again.'), h('a.btn.small', { href: '#games' }, 'See which')));
       else copies.replaceChildren();
-      // Two consoles played the same game with the same profile: which saves to keep.
-      const sc = S.saveConflicts || [];
-      if (sc.length) fill(savesNote, h('div.notice', ic('gamepad-2'), h('span', sc.length === 1 ? (sc[0].gamertag || sc[0].xuid) + '\u2019s saves of ' + sc[0].game + ' on ' + sc[0].address + ' differ from the newest from ' + placeText(sc[0].from) + '. Both are kept; choose which to use.' : plural(sc.length, 'game\u2019s saves differ', 'games\u2019 saves differ') + ' between consoles. Both are kept; choose which to use.'),
-        h('a.btn.small', { href: '#settings/backups' }, 'Choose')));
-      else savesNote.replaceChildren();
       // Consoles (the party's while it's on) on different title updates of a game.
       const tus = S.titleUpdates ? S.titleUpdates.mismatches : 0;
       if (tus) fill(updates, h('div.notice', ic('triangle-alert'), h('span', (tus === 1 ? 'A game has' : tus + ' games have') + ' different title updates on ' + (S.party && S.party.active ? 'the party’s consoles' : 'your consoles') +
         ', so those consoles may not find each other in it over System Link.'), h('button.btn.small', { onclick: titleUpdateList }, 'See which')));
       else updates.replaceChildren();
+      // Two consoles played the same game with the same profile: which saves to keep.
+      const sc = S.saveConflicts || [];
+      if (sc.length) fill(savesNote, h('div.notice', ic('gamepad-2'), h('span', sc.length === 1 ? (sc[0].gamertag || sc[0].xuid) + '\u2019s saves of ' + sc[0].game + ' on ' + sc[0].address + ' differ from the newest from ' + placeText(sc[0].from) + '. Both are kept; choose which to use.' : plural(sc.length, 'game\u2019s saves differ', 'games\u2019 saves differ') + ' between consoles. Both are kept; choose which to use.'),
+        h('a.btn.small', { href: '#settings/backups' }, 'Choose')));
+      else savesNote.replaceChildren();
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell the Xbox where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetDisc360.ini'), ' next to NetDisc360.xex on your USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || 'this computer\u2019s address')), '. Then restart the Xbox.'] },
@@ -2129,7 +2142,7 @@ function details(g) {
           g.tiles && g.tiles.length ? [h('div.k', 'Its log'), h('div.v', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             g.tiles.map(a => h('button.btn.small', { title: 'netiso.log in its folder on ' + nameOf(a), onclick: () => gameLog(g, a) }, ic('file-text', 'sm'), g.tiles.length > 1 ? nameOf(a) : 'netiso.log')))] : null)))),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
-        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as “' + g.name + '” in ' + gamesFolder() + '.'),
+        ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in ' + gamesFolder() + '.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
       h('button.btn', { onclick: close }, 'Close')),
   ], false, () => { live.delete(followCopy); live.delete(followUpdates); });
@@ -2138,9 +2151,9 @@ function details(g) {
 // Deletes the game's installed copy on a console (after asking): only its
 // own Games on Demand package or folder, never its saves, updates or add-ons.
 async function removeFrom(g, address, button) {
-  if (!(await confirmBox('Remove ' + g.name + ' from ' + address + '?', [h('p', { style: { margin: 0 } }, 'Its copy on the console\u2019s hard drive is deleted. Its saves, title updates and add-ons stay. It plays from this computer again once its tile is back.')], 'Remove it', true))) return;
+  if (!(await confirmBox('Remove ' + g.name + ' from ' + nameOf(address) + '?', [h('p', { style: { margin: 0 } }, 'Its copy on the console\u2019s hard drive is deleted. Its saves, title updates and add-ons stay. It plays from this computer again once its tile is back.')], 'Remove it', true))) return;
   button.disabled = true;
-  try { await api('console/remove', { game: g.name, address }); toast('Removing ' + g.name + ' from ' + address); await refresh(); }
+  try { await api('console/remove', { game: g.name, address }); toast('Removing ' + g.name + ' from ' + nameOf(address)); await refresh(); }
   catch (e) { toast(e.message, true); button.disabled = false; }
 }
 
@@ -2615,15 +2628,14 @@ ConsoleParts.games = (body, address) => {
       const has = g => (g.tiles || []).includes(address), installed = g => (g.installedOn || []).includes(address);
       const mine = G.games.filter(g => has(g) || installed(g));
       const games = mine.filter(g => (which === 'all' || (which === 'tile' ? has(g) : installed(g))) && (!query || g.name.toLowerCase().includes(query) || g.titleId.toLowerCase().includes(query)));
-      const key = JSON.stringify([G.version, query, which, c.playing, c.mounted, c.push, S.settings.push, S.settings.tileMode, c.ftp, c.tiles, games.map(g => g.name + (g.titleUpdates || {})[address])]);
+      const key = JSON.stringify([G.version, query, which, c.playing, c.mounted, c.push, S.settings.push, S.settings.tileMode, c.tiles, c.ftp, games.map(g => g.name + (g.titleUpdates || {})[address])]);
       if (key === drawn) return;
       drawn = key;
       fill(note, !c.push ? h('div.notice', ic('info'), h('span', 'NetDisc360 doesn’t add games to ' + cName(c) + '’s Aurora: it isn’t one of the consoles to update.'), h('a.btn.small', { href: consoleHref(address, 'settings') }, 'Change it'))
         : !S.settings.push ? h('div.notice', ic('info'), h('span', 'Adding games to Aurora is off in Settings.'), h('a.btn.small', { href: '#settings/xbox' }, 'Settings')) : null);
-      fill(art, h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-        xboxHomeSwitch(c),
+      fill(art, xboxHomeSwitch(c),
         h('button.btn.small', { title: 'Which games this console gets, and how: Aurora folders or Games on Demand', onclick: () => tileChooser(c) }, ic('layout-grid', 'sm'), 'Games on this console'),
-        c.ftp !== 1 && !c.playing ? h('button.btn.small', { title: 'Find the games in its Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art') : null));
+        c.ftp !== 1 && !c.playing ? h('button.btn.small', { title: 'Find the games in its Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art') : null);
       if (!mine.length) { fill(list, h('div.card', h('div.empty', ic('gamepad-2'), h('h3', 'No games on it yet'), h('p', c.push && S.settings.push ? 'NetDisc360 adds your games to its Aurora over FTP while Aurora is on screen; they show up here then.' : 'Games installed on it show up here once its Aurora has been read.')))); return; }
       if (!games.length) { fill(list, h('div.card', h('div.empty', ic('search'), h('h3', 'No games match'), h('p', 'Try another name, or All.')))); return; }
       fill(list, h('div.card', { style: { overflow: 'hidden' } }, h('table.table',
@@ -3257,8 +3269,8 @@ Pages.party = root => {
   root.append(wrap);
   const banner = livePart(h('div.party-banner')), facts = livePart(h('div.party-facts')), form = livePart(h('div.party-form')), consoles = livePart(h('div')), guests = livePart(h('div'));
   const rules = livePart(h('div')), raffle = livePart(h('div')), seats = livePart(h('div')), start = livePart(h('div.start-body')), results = livePart(h('div'));
-  const profiles = livePart(h('div')), scores = livePart(h('div'));
-  const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results];
+  const profiles = livePart(h('div')), scores = livePart(h('div')), presets = livePart(h('div'));
+  const parts = [banner, facts, form, consoles, guests, profiles, scores, rules, raffle, seats, start, results, presets];
   const guestCount = h('span.sub'), rulesCount = h('span.muted');
   const wheel = raffleWheel(() => wheelColours(wrap, document.documentElement.dataset.theme === 'dark'), () => update());
   const typed = h('input.input', { placeholder: 'Add players: names, with commas between', 'aria-label': 'Guests to add', list: 'party-users', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter') addGuests(false); } });
@@ -3276,6 +3288,7 @@ Pages.party = root => {
   main.append(
     h('div.party-grid',
       h('div.stack',
+        card('history', 'Saved parties', h('span.sub', 'start one again with one tap'), h('button.btn.small', { 'data-focus': 'preset-save', onclick: () => savePreset() }, ic('archive', 'sm'), 'Save this party'), presets.el),
         card(1, 'Consoles', h('span.sub', 'the Gamemaster’s, and the party’s'), openAll, consoles.el),
         h('div.card.players-card', h('div.card-head', h('span.step-n', { 'aria-hidden': 'true' }, '2'), h('h2', 'Players'), guestCount,
           h('div.right', h('button.btn.small.ghost', { onclick: () => everyone(true) }, 'All here'), h('button.btn.small.ghost', { onclick: () => everyone(false) }, 'None here'))),
@@ -3458,6 +3471,47 @@ Pages.party = root => {
   async function removePicture(kind, index) {
     try { await api('party/asset/remove', index === undefined ? { kind } : { kind, index }); PartyPics.changed++; await refresh(); }
     catch (e) { toast(e.message, true); }
+  }
+
+  // Saved parties: the setup (consoles, players and who's here, teams, rules,
+  // tonight's games, theme) kept under a name, started again with one tap.
+  function drawPresets(p) {
+    const list = S.party.presets || [];
+    if (!list.length) return h('p.muted', { style: { margin: 0 } }, 'Save this party’s setup (consoles, players and who’s here, teams, rules, tonight’s games and the theme) to start it again another day with one tap.');
+    return [h('div.presets', list.map(x => h('div.preset-row',
+      h('div.grow', h('b', x.name), h('div.sub', [plural(x.guests, 'player') + (x.here && x.here !== x.guests ? ' (' + x.here + ' here)' : ''), x.consoles.length ? x.consoles.map(nameOf).join(', ') : 'no consoles', plural(x.teams, 'team'),
+        x.games.length ? x.games.slice(0, 3).join(', ') + (x.games.length > 3 ? ' +' + (x.games.length - 3) : '') : 'every game', 'saved ' + ago(x.saved)].filter(Boolean).join(' · '))),
+      h('button.btn.small.primary', { 'data-focus': 'preset-start-' + x.id, title: 'Sets the party up as saved and starts it; the players’ profiles go on its consoles by themselves', onclick: e => startPreset(x, e.currentTarget) }, ic('play', 'sm'), 'Start'),
+      h('button.btn.small.ghost.icon', { title: 'Save the party as it is now in its place', 'aria-label': 'Save the party now as ' + x.name, onclick: () => savePreset(x) }, ic('archive', 'sm')),
+      h('button.btn.small.ghost.icon', { title: 'Delete ' + x.name, 'aria-label': 'Delete ' + x.name, onclick: () => deletePreset(x) }, ic('trash-2', 'sm'))))),
+      h('p.hint', 'Start sets the party up as it was saved and starts it. A party that’s on ends first.')];
+  }
+  async function presetCall(body) {
+    try { const r = await api('party/presets', body); await refresh(); toast(r.said); return true; }
+    catch (e) { toast(e.message, true); return false; }
+  }
+  function savePreset(x) {
+    const p = shownParty();
+    const name = h('input.input', { value: x ? x.name : p.name || 'LAN party', maxlength: 64, 'aria-label': 'The saved party’s name' });
+    const go = async () => { if (await presetCall(x ? { action: 'save', id: x.id, name: name.value.trim() } : { action: 'save', name: name.value.trim() })) close(); };
+    name.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    const close = modal(x ? 'Save the party as ' + x.name + '?' : 'Save this party', () => [
+      h('div.modal-body', h('label.field', h('span', 'Name'), name,
+        h('span.help', (x ? 'The party as it is now takes the place of what ' + x.name + ' held: ' : 'It keeps ') + plural(p.guests.length, 'player') + ', ' + plural(p.consoles.length, 'console') + ', ' +
+          plural(p.teams, 'team') + ', the rules, ' + ((p.games || []).length ? plural(p.games.length, 'game') + ' for tonight' : 'tonight’s games') + ' and the theme. A saved party with the same name is saved again.'))),
+      h('div.modal-foot', h('span.note'), h('button.btn', { onclick: () => close() }, 'Cancel'), h('button.btn.primary', { onclick: go }, ic('archive', 'sm'), 'Save')),
+    ], true);
+  }
+  async function startPreset(x, button) {
+    const p = S.party;
+    if (p.active && !(await confirmBox('Start ' + x.name + '?', 'The party that’s on ends first: its rounds, teams and seats go. Then ' + x.name + ' starts as it was saved.', 'Start ' + x.name))) return;
+    button.disabled = true;
+    await presetCall({ action: 'start', id: x.id, end: !!p.active });
+    button.disabled = false;
+  }
+  async function deletePreset(x) {
+    if (!(await confirmBox('Delete ' + x.name + '?', 'Only the saved setup goes; the players, their profiles and the party now stay as they are.', 'Delete', true))) return;
+    presetCall({ action: 'delete', id: x.id });
   }
 
   // The consoles: the Gamemaster's (the radio), and the party's (ticked).
@@ -3915,7 +3969,8 @@ Pages.party = root => {
   }
   function drawStart(p) {
     if (!p.consoles.length) return h('p.muted', { style: { margin: 0 } }, 'Choose the Gamemaster console and tick the party’s consoles first.');
-    const games = startable(p), g = games.find(x => x.name === chosen) || games[0];
+    const tonight = p.games || [], games = startable(p);
+    const g = games.find(x => x.name === chosen) || games.find(x => tonight.some(n => sameName(n, x.name))) || games[0];
     const buttons = h('div.party-buttons',
       h('button.btn.primary', { disabled: !g, onclick: e => startAll(g, e.currentTarget) }, ic('play', 'sm'), 'Start on all'),
       h('button.btn', { title: 'Opens the LAN party app on every party console, from a game too', onclick: e => powerAll('party', e.currentTarget) }, ic('party-popper', 'sm'), 'Back to the party on all'),
@@ -3940,6 +3995,11 @@ Pages.party = root => {
     return [
       drawVote(p),
       h('div.start-pick', select),
+      h('div.tonight', h('span.tonight-label', ic('list', 'sm'), 'Tonight’s games'),
+        tonight.length ? tonight.map(n => h('span.chip' + (games.some(x => sameName(x.name, n)) ? '' : '.away'), { title: games.some(x => sameName(x.name, n)) ? null : 'Not on every party console now' }, n,
+          h('button', { type: 'button', 'aria-label': 'Take ' + n + ' off tonight’s games', 'data-focus': 'tonight-x-' + n, onclick: () => edit({ games: tonight.filter(t => t !== n) }) }, ic('x', 'sm'))))
+          : h('span.muted', 'none picked: the vote offers every game on all party consoles'),
+        !tonight.some(n => sameName(n, g.name)) && tonight.length < 10 ? h('button.btn.small.ghost', { 'data-focus': 'tonight-add', onclick: () => edit({ games: tonight.concat(g.name) }) }, ic('plus', 'sm'), 'Add ' + g.name) : null),
       h('div.game-facts',
         g.systemLink ? h('span.pill.good', ic('cable', 'sm'), 'System Link') : h('span.pill.off', 'No System Link'),
         g.systemLink ? h('span.pill.info', g.perConsole ? plural(g.perConsole, 'player') + ' per console' : 'Players per console not known') : null,
@@ -4092,7 +4152,8 @@ Pages.party = root => {
     const turn = sp ? [sp.id, spinPicked(sp, spinNow(sp)).length, spinDone(sp), S.party.drawn, spinWait(sp), spinAt(sp, spinNow(sp)).stopped] : null;
     raffle.show(JSON.stringify([p.teams, p.teamColours, p.drawn, p.round, here, p.together, p.apart, p.consoles, shuffling, turn, p.balance]), () => drawRaffle(p));
     seats.show(JSON.stringify([p.consoles, p.gamemaster, p.drawn, here, pick, statuses, S.party.signedIn, S.party.wheelOn, S.party.profilesTo]), () => drawSeats(p));
-    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes, p.active, S.party.vote, p.phone && [p.phone.relay, p.phone.code, p.phone.ok, p.phone.error, p.phone.joins]]), () => drawStart(p));
+    start.show(JSON.stringify([G.version, p.consoles, chosen, p.drawn, here.length, shown && shown.game, p.idleOffMinutes, p.active, S.party.vote, p.games, p.phone && [p.phone.relay, p.phone.code, p.phone.ok, p.phone.error, p.phone.joins]]), () => drawStart(p));
+    presets.show(JSON.stringify([S.party.presets, S.consoles.map(c => c.address + '=' + c.name), Math.floor(S.time / 3600)]), () => drawPresets(p));
     results.show(JSON.stringify([shown, p.gamemaster]), drawResults);
   }
   function route() {
@@ -4589,7 +4650,7 @@ async function titleUpdateList() {
   modal('Different Title Updates', close => [h('div.modal-body', body),
     h('div.modal-foot', h('span.note', ic('info', 'sm'), 'As each console’s Aurora listed them last.'), h('button.btn.primary', { onclick: close }, 'Close'))], true);
   try {
-    const r = await api('titleupdates'), games = r.games.filter(g => g.mismatch);
+    const r = await api('titleupdates/compare'), games = r.games.filter(g => g.mismatch);
     fill(body, games.length ? games.map(g => h('div.tu-game', h('b', g.game), h('span.muted', ' · the newest: ' + g.newest.name),
       h('div.tu-rows', Object.keys(g.byConsole).map(ip => [h('span.mono', ip), h('span', g.byConsole[ip] ? g.byConsole[ip].name : 'None',
         g.byConsole[ip] && g.byConsole[ip].version === g.newest.version ? h('span.pill.good', { style: { marginLeft: '8px', height: '20px' } }, 'Newest') : null)])))) :

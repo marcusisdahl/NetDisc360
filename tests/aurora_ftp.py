@@ -209,9 +209,9 @@ class Server(socketserver.ThreadingTCPServer):
         super().__init__((host, port), Handler)
         self.root, self.user, self.password, self.host = root, user, password, host
         self.log, self.stored, self.scans, self.renamed = [], [], [], []
-        self.locked = set()  # Files the console has open (normcase'd absolute paths): RETR is refused.
         self.gate = threading.Event()
         self.gate.set()
+        self.locked = set()  # Files the console has open (normcase'd absolute paths): RETR is refused.
 
 
 def main():

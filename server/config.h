@@ -50,12 +50,5 @@ bool MakeFolder(const std::string& utf8Path);
 struct Entry { std::string name; long long size, time; };
 std::vector<Entry> Files(const std::string& utf8Folder);    // The files directly in it.
 std::vector<Entry> Folders(const std::string& utf8Folder);  // The folders directly in it (not . or ..).
-// Just their names.
-inline std::vector<std::string> FolderNames(const std::string& utf8Folder) {
-    std::vector<Entry> found=Folders(utf8Folder);
-    std::vector<std::string> names;
-    for(size_t i=0;i<found.size();++i) names.push_back(found[i].name);
-    return names;
-}
 std::string FolderOf(const std::string& path);            // Up to and with the last separator; "" if none.
 }

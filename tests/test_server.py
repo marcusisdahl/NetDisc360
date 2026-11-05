@@ -116,8 +116,8 @@ def build_server():
     subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_web.py")], check=True)
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
-                                               "server/installed.cpp", "server/aurora.cpp", "server/system.cpp", "server/auroradb.cpp", "server/titleupdates.cpp",
-                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/saves.cpp", "server/wake.cpp", "server/http.cpp", "server/sync.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/titleupdates.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp",
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/http.cpp", "server/sync.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -184,19 +184,12 @@ OWN_ADDRESS = own_address()
 
 
 def free_port():
-    """A port free on 127.0.0.1 and on 127.0.0.2, where the tests' consoles are:
-    one free on the first alone can be in use on the second (a fake FTP
-    server's data connection), and the console's FTP server then can't start."""
-    for _ in range(50):
-        with socket.socket() as s, socket.socket() as other:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-            try:
-                other.bind(("127.0.0.2", port))
-            except OSError:
-                continue
-            return port
-    raise OSError("no port free on both 127.0.0.1 and 127.0.0.2")
+    # Free on every address, as the server listens on all of them: a test's
+    # second console (127.0.0.2) leaves FTP data connections in TIME_WAIT on
+    # its own address, which a port free on 127.0.0.1 alone can be held by.
+    with socket.socket() as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 AURORA_XEX = "\\Device\\Harddisk0\\Partition1\\Apps\\Aurora\\Aurora.xex"
@@ -1516,7 +1509,7 @@ class Push(ServerTest):
                 # Written once it has settled (10 s).
                 def uploading():
                     log = list(self.ftp.log)
-                    into = [i for i, l in enumerate(log) if l == "CWD /Hdd1/NetISO/Skate 3"]
+                    into = [i for i, l in enumerate(log) if l == "CWD /Hdd1/NetDisc360/Games/Skate 3"]
                     return into and any(l.startswith("STOR") for l in log[into[0]:])
                 self.assertTrue(self.wait_for(uploading, 30))
                 aurora.launched.clear()
@@ -2158,7 +2151,7 @@ class Push(ServerTest):
         out = self.push(extra=["--installed", "/Hdd1/Games"])
         self.assertIn("1 game is installed on it", out)
         self.assertIn("1 removed", out)
-        self.assertEqual(sorted(os.listdir(self.games)), ["Burnout 3", "Halo 3", "NetDisc360"])
+        self.assertEqual(sorted(os.listdir(self.games)), ["Burnout 3", "Halo 3"])
 
     def test_a_game_deleted_from_the_console_gets_its_folder_back(self):
         # Installed games are looked at again while the server runs, though
@@ -2169,7 +2162,7 @@ class Push(ServerTest):
         server, _ = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1")
         try:
             self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
-            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "Skate 3"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["Skate 3"])
             shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
             self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "Halo 3")), 15))
             self.assertTrue(self.wait_for(lambda: len(self.ftp.scans) == 2, 10))
@@ -2186,7 +2179,7 @@ class Push(ServerTest):
         self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
         server, port = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1000")
         try:
-            self.assertTrue(self.wait_for(lambda: self.ftp.scans or os.path.isdir(os.path.join(self.games, "NetDisc360")), 15))
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans or os.path.isfile(os.path.join(self.app, "boot.xex")), 15))
             time.sleep(2)
             self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))
             shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
@@ -2274,7 +2267,7 @@ main()
 assert(#done == 0)
 -- As Aurora starts, the filter's script does the same without asking:
 -- the rows of tiles without a default.xex (Skate 3 isn't one: no file).
-files = { ['Hdd1:\\NetISO\\halo 3\\default.xex'] = 'x' }
+files = { ['Hdd1:\\NetDisc360\\Games\\halo 3\\default.xex'] = 'x' }
 Script = nil
 GameListFilterCategories = { User = {} }
 dofile(%(online)r)
@@ -2637,7 +2630,7 @@ print('lua ok')
             done = self.json("POST", "/api/party/start", {"game": "Skate 3"})
             self.assertEqual(done["copy"], "tile")
             self.assertEqual([(r["address"], r["ok"], r["how"]) for r in done["results"]], [("127.0.0.2", True, "tile"), ("127.0.0.1", True, "tile")])
-            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Skate 3", "default.xex", "0")])
+            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Skate 3", "default.xex", "0")])
         finally:
             server.kill()
             out = server.communicate()[0]
@@ -2707,7 +2700,7 @@ print('lua ok')
             self.assertIn("votegame\tSkate 3\t3\n", text)
             # Every vote for one game: it starts on all, no wheel.
             self.assertEqual(self.edit_from("127.0.0.2", port, "voteclose"), "ok\tSkate 3 won the vote.\n")
-            started = lambda a, game: ("\\Device\\Harddisk0\\Partition1\\NetISO\\" + game, "default.xex", "0") in a.launched
+            started = lambda a, game: ("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\" + game, "default.xex", "0") in a.launched
             self.assertTrue(self.wait_for(lambda: started(aurora, "Skate 3") and started(aurora2, "Skate 3"), 15))
             party = self.json("GET", "/api/state")["party"]
             self.assertEqual((party["vote"]["open"], party["vote"]["picked"], party["game"]), (False, "Skate 3", "Skate 3"))
@@ -2748,6 +2741,89 @@ print('lua ok')
             out = server.communicate()[0]
         self.assertIn("LAN party: a game vote opened (3 games).", out)
         self.assertIn("LAN party: The game vote is called off.", out)
+
+    def test_saved_parties_start_again_with_one_tap(self):
+        # Marcus 2026-11-04: save a party's setup (games, teams, players) and
+        # start it again later with one tap. Tonight's games are what the vote offers.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Zuma.iso", 0x2B3C4D5E, 0x58410912)
+        other, ftp2 = self.second_console()
+        aurora = AuroraWeb()
+        aurora2 = AuroraWeb(host="127.0.0.2", port=aurora.port)
+        self.addCleanup(aurora.close)
+        self.addCleanup(aurora2.close)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        self.web = free_port()
+
+        def stop(server):
+            server.kill()
+            try:
+                server.communicate()
+            except ValueError:  # Stopped already.
+                pass
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+
+        def party():
+            return self.json("GET", "/api/state")["party"]
+
+        def presets():
+            return {x["name"]: x for x in party()["presets"]}
+        self.assertTrue(self.wait_for(lambda: self.ftp.scans and ftp2.scans, 20))
+        self.assertTrue(self.wait_for(lambda: all(len(g["tiles"]) == 2 for g in self.json("GET", "/api/games")["games"]), 20))
+        # Friday: two consoles, four players (three here), three teams, a rule, two of tonight's games on both (and one that isn't).
+        self.json("POST", "/api/party", {"gamemaster": "127.0.0.2", "consoles": ["127.0.0.1"], "teams": 3, "balance": "wins",
+                                         "guests": [{"name": "Ola", "here": True}, {"name": "Kari", "here": True}, {"name": "Lars", "here": True}, {"name": "Tom", "here": False}],
+                                         "together": [["Ola", "Kari"]], "games": ["Zuma", "Halo 3", "Not Here", "zuma"], "name": "Friday LAN", "idleOffMinutes": 30})
+        self.assertEqual(party()["games"], ["Zuma", "Halo 3", "Not Here"])
+        for body in ({"games": "Zuma"}, {"games": ["x"] * 11}, {"games": [""]}):
+            self.assertEqual(self.call("POST", "/api/party", body)[0], 400, body)
+        r = self.json("POST", "/api/party/presets", {"action": "save", "name": "Friday"})
+        self.assertEqual(r["said"], "Friday is saved: start it again with one tap.")
+        friday = presets()["Friday"]
+        self.assertEqual((friday["party"], friday["guests"], friday["here"], friday["teams"], friday["consoles"], friday["games"]),
+                         ("Friday LAN", 4, 3, 3, ["127.0.0.2", "127.0.0.1"], ["Zuma", "Halo 3", "Not Here"]))
+        self.assertTrue(re.match(r"^[0-9a-f]{12}$", friday["id"]))
+        for body, code in (({"action": "save", "name": ""}, 400), ({"action": "rename", "id": "000000000000", "name": "X"}, 404), ({"action": "nap"}, 400),
+                           ({"action": "start", "id": "000000000000"}, 404), ({"action": "save", "id": "000000000000", "name": "X"}, 404)):
+            self.assertEqual(self.call("POST", "/api/party/presets", body)[0], code, body)
+        # Another party in its place, then Friday again with one tap: as saved, and on.
+        self.json("POST", "/api/party", {"consoles": [], "gamemaster": "127.0.0.1", "teams": 2, "guests": [{"name": "Nora", "here": True}], "together": [], "games": [], "name": "Other"})
+        self.json("POST", "/api/party/presets", {"action": "save", "name": "Small"})
+        self.assertEqual(list(presets()), ["Small", "Friday"])  # Newest first.
+        r = self.json("POST", "/api/party/presets", {"action": "start", "id": friday["id"]})
+        self.assertEqual(r["said"], "Friday is on: 3 players here, 2 consoles, 3 games.")
+        p = party()
+        self.assertEqual((p["active"], p["name"], p["gamemaster"], p["consoles"], p["teams"], p["balance"], p["games"], p["idleOffMinutes"]),
+                         (True, "Friday LAN", "127.0.0.2", ["127.0.0.2", "127.0.0.1"], 3, "wins", ["Zuma", "Halo 3", "Not Here"], 30))
+        self.assertEqual([(g["name"], g["here"]) for g in p["guests"]], [("Ola", True), ("Kari", True), ("Lars", True), ("Tom", False)])
+        self.assertIn("Friday is on!", [x["text"] for x in p["feed"]])
+        # The vote offers tonight's games every party console has, in their order.
+        said = self.json("POST", "/api/party/vote", {"action": "open", "seconds": 60})["said"]
+        self.assertEqual(said, "Vote for the next game: 2 games, 60 seconds.")
+        self.assertEqual([g["name"] for g in party()["vote"]["games"]], ["Zuma", "Halo 3"])
+        self.json("POST", "/api/party/vote", {"action": "cancel"})
+        # While a party is on, starting another asks first (end: true ends it).
+        small = presets()["Small"]
+        status, _, data = self.call("POST", "/api/party/presets", {"action": "start", "id": small["id"]})
+        self.assertEqual((status, json.loads(data)["error"]), (409, "A party is on: end it first, or start Small in its place."))
+        self.json("POST", "/api/party/presets", {"action": "start", "id": small["id"], "end": True})
+        p = party()
+        self.assertEqual((p["active"], p["name"], [g["name"] for g in p["guests"]], p["games"], p["consoles"]), (True, "Other", ["Nora"], [], ["127.0.0.1"]))
+        # Renamed and deleted; Friday saved again in place keeps its id.
+        self.assertEqual(self.call("POST", "/api/party/presets", {"action": "rename", "id": small["id"], "name": "friday"})[0], 409)
+        self.json("POST", "/api/party/presets", {"action": "rename", "id": small["id"], "name": "Tiny"})
+        self.json("POST", "/api/party/presets", {"action": "save", "id": friday["id"], "name": "Friday"})
+        self.assertEqual((list(presets()), presets()["Friday"]["id"], presets()["Friday"]["guests"]), (["Friday", "Tiny"], friday["id"], 1))
+        self.json("POST", "/api/party/presets", {"action": "delete", "id": small["id"]})
+        self.assertEqual(list(presets()), ["Friday"])
+        # Kept in the settings file across a restart.
+        stop(server)
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--config", config)
+        self.addCleanup(stop, server)
+        self.assertEqual([(x["name"], x["id"]) for x in party()["presets"]], [("Friday", friday["id"])])
+        self.assertEqual(party()["games"], [])
 
     def test_join_and_vote_from_a_phone(self):
         # Marcus 2026-11-02: guests join and vote from their phones, through
@@ -2880,10 +2956,10 @@ print('lua ok')
                              [("127.0.0.2", True, "installed", ""), ("127.0.0.1", True, "tile", "")])
             self.assertEqual(done["copy"], "")  # The first console has no copy but the tile.
             self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0")])
-            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Skate 3", "default.xex", "0")])
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Skate 3", "default.xex", "0")])
             self.assertEqual(done["titleUpdates"], {"mismatch": False, "byConsole": {"127.0.0.2": "none", "127.0.0.1": "none"}, "newest": "", "unread": []})
             # A console in a game: the page is told (409) and asks once, then it starts with confirm.
-            aurora.running = "\\Device\\Harddisk0\\Partition1\\NetISO\\Skate 3\\default.xex"
+            aurora.running = "\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Skate 3\\default.xex"
             aurora.launched.clear()
             aurora2.launched.clear()
             status, _, data = self.call("POST", "/api/party/start", {"game": "Halo 3"})
@@ -2893,8 +2969,8 @@ print('lua ok')
             self.assertEqual((aurora.launched, aurora2.launched), ([], []))
             done = self.json("POST", "/api/party/start", {"game": "Halo 3", "confirm": True})
             self.assertEqual([(r["address"], r["ok"], r["how"]) for r in done["results"]], [("127.0.0.2", True, "tile"), ("127.0.0.1", True, "tile")])
-            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
-            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Halo 3", "default.xex", "0")])
+            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Halo 3", "default.xex", "0")])
             # They run different title updates: a warning in the answer.
             self.assertEqual(done["titleUpdates"], {"mismatch": True, "byConsole": {"127.0.0.2": "none", "127.0.0.1": "Title Update 8"},
                                                     "newest": "Title Update 8", "unread": []})
@@ -2943,7 +3019,7 @@ print('lua ok')
         def helper(path, exe):
             # The helper as the console runs it: the job in its folder, a
             # profile (and a save) for each gamertag, its answer back.
-            folder = os.path.join(other, "Hdd1", "NetISO", "NetDisc360")
+            folder = os.path.join(other, "Hdd1", "Apps", "NetDisc360")
             with open(os.path.join(folder, "profiles.job")) as f:
                 job = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line and not line.startswith(";"))
             os.remove(os.path.join(folder, "profiles.job"))
@@ -2996,7 +3072,7 @@ print('lua ok')
             r = finished()
             self.assertEqual(r["work"]["error"], "")
             self.assertIn("2 guests have a profile on every console", r["work"]["result"])
-            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360", "boot.xex", "0")])
+            self.assertEqual(aurora2.launched, [("\\Device\\Harddisk0\\Partition1\\Apps\\NetDisc360", "boot.xex", "0")])
             self.assertEqual(aurora.launched, [])
             self.assertEqual([g for g, _ in made], ["Stale Ovrebo", "Kristoffer H"])
             xuids = [x for _, x in made]
@@ -3006,11 +3082,11 @@ print('lua ok')
                 self.assertTrue(has(self.xbox, xuid) and has(other, xuid))
                 with open(os.path.join(self.xbox, "Hdd1", "Content", xuid, "4D5307E6", "00000001", "save"), "rb") as f:
                     self.assertEqual(f.read(), b"halo save " + xuid.encode())
-            self.assertFalse(os.path.exists(os.path.join(other, "Hdd1", "NetISO", "NetDisc360", "profiles.done")))
+            self.assertFalse(os.path.exists(os.path.join(other, "Hdd1", "Apps", "NetDisc360", "profiles.done")))
             # The pictures went with the job and are gone again; one the helper
             # couldn't give is only noted (the profile is made all the same).
             self.assertEqual([(g, f) for g, f, _, _ in pictures], [("Stale Ovrebo", "guest1.png"), ("Stale Ovrebo", "guest1_32.png"), ("Kristoffer H", "guest2.png"), ("Kristoffer H", "guest2_32.png")])
-            self.assertEqual([f for f in os.listdir(os.path.join(other, "Hdd1", "NetISO", "NetDisc360")) if f.endswith(".png")], [])
+            self.assertEqual([f for f in os.listdir(os.path.join(other, "Hdd1", "Apps", "NetDisc360")) if f.endswith(".png")], [])
             # The page shows each guest's picture.
             status, response, png = self.call("GET", "/api/party/profiles/picture?gamertag=Stale%20Ovrebo")
             self.assertEqual((status, response.getheader("Content-Type"), png[:8], struct.unpack(">II", png[16:24])), (200, "image/png", b"\x89PNG\r\n\x1a\n", (64, 64)))
@@ -3078,7 +3154,7 @@ print('lua ok')
         made = []
 
         def helper(path, exe):
-            folder = os.path.join(other, "Hdd1", "NetISO", "NetDisc360")
+            folder = os.path.join(other, "Hdd1", "Apps", "NetDisc360")
             with open(os.path.join(folder, "profiles.job")) as f:
                 job = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line and not line.startswith(";"))
             os.remove(os.path.join(folder, "profiles.job"))
@@ -3122,7 +3198,7 @@ print('lua ok')
                 return {v.split("|")[0]: v.split("|") for k, v in (l.split("=", 1) for l in f.read().splitlines() if l.startswith("user"))}
 
         def marks(root):
-            path = os.path.join(root, "Hdd1", "NetISO", "NetDisc360", "profiles.ini")
+            path = os.path.join(root, "Hdd1", "Apps", "NetDisc360", "profiles.ini")
             if not os.path.exists(path):
                 return {}
             with open(path, encoding="utf-8") as f:
@@ -3177,7 +3253,7 @@ print('lua ok')
         self.assertFalse(os.path.exists(os.path.join(self.xbox, "Hdd1", "Content", xuid)))
         self.assertEqual(marks(self.xbox), {})
         # A line another computer wrote on the console stays.
-        path = os.path.join(other, "Hdd1", "NetISO", "NetDisc360", "profiles.ini")
+        path = os.path.join(other, "Hdd1", "Apps", "NetDisc360", "profiles.ini")
         with open(path, "a", encoding="utf-8", newline="") as f:
             f.write("E0000000000AB0CD=u00000000000000aa|Per|Per|1|1\r\n")
         self.json("POST", "/api/users/profiles", {"action": "remove", "ids": [nora["id"]]})
@@ -3264,7 +3340,7 @@ print('lua ok')
             self.assertEqual(aurora.launched, [])  # Aurora stayed on screen.
             self.assertEqual([j["guest1"] for j in jobs], ["Nora"])
             self.assertFalse(os.path.exists(os.path.join(root, "NetDisc360.done")))
-            self.assertEqual([f for f in os.listdir(os.path.join(root, "NetISO", "NetDisc360")) if f.endswith(".png")], [])
+            self.assertEqual([f for f in os.listdir(os.path.join(root, "Apps", "NetDisc360")) if f.endswith(".png")], [])
         finally:
             stop.set()
             server.kill()
@@ -3605,7 +3681,7 @@ print('lua ok')
             done = self.json("POST", "/api/party/power", {"action": "party"})
             self.assertEqual(done, {"results": [{"address": "127.0.0.2", "ok": True, "error": ""}, {"address": "127.0.0.1", "ok": True, "error": ""}]})
             for each in (aurora, aurora2):
-                self.assertEqual(each.launched[1:], [("\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360 Party", "default.xex", "0")])
+                self.assertEqual(each.launched[1:], [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\NetDisc360 Party", "default.xex", "0")])
                 del each.launched[1:]
             # Only those named.
             self.json("POST", "/api/party/power", {"action": "off", "consoles": ["127.0.0.2"]})
@@ -3644,9 +3720,9 @@ print('lua ok')
         self.web = free_port()
         server, _ = self.run_server("--xbox", "127.0.0.2", "--web-port", str(self.web), "--aurora-web-port", str(aurora.port))
         try:
-            self.assertTrue(self.wait_for(lambda: all(c["read"] for c in self.json("GET", "/api/titleupdates")["consoles"]), 25))
+            self.assertTrue(self.wait_for(lambda: all(c["read"] for c in self.json("GET", "/api/titleupdates/compare")["consoles"]), 25))
             first = time.time()  # After the databases' listing was first seen.
-            listed = self.json("GET", "/api/titleupdates")
+            listed = self.json("GET", "/api/titleupdates/compare")
             consoles = {c["address"]: c for c in listed["consoles"]}
             self.assertEqual(sorted(consoles), ["127.0.0.1", "127.0.0.2"])
             self.assertTrue(re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", consoles["127.0.0.1"]["read"]))
@@ -3732,7 +3808,7 @@ print('lua ok')
         try:
             time.sleep(2)
             self.assertEqual((self.logins(), self.logins(ftp2)), (0, 0))
-            self.assertFalse(any(c["read"] for c in self.json("GET", "/api/titleupdates")["consoles"]))
+            self.assertFalse(any(c["read"] for c in self.json("GET", "/api/titleupdates/compare")["consoles"]))
             self.json("POST", "/api/party", {"active": True, "gamemaster": "127.0.0.1", "consoles": ["127.0.0.2"]})
             self.assertTrue(self.wait_for(lambda: self.json("GET", "/api/state")["titleUpdates"]["mismatches"] == 1, 10))
             # Title Update 8 put to use on the second console.
@@ -3837,9 +3913,9 @@ print('lua ok')
             self.json("POST", "/api/party", {"gamemaster": "127.0.0.1"})
             done = self.json("POST", "/api/party/start", {"game": "Halo 3"})
             self.assertEqual([(r["address"], r["ok"], r["how"], r["error"]) for r in done["results"]], [("127.0.0.1", True, "tile", "")])
-            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0"),
+            self.assertEqual(aurora.launched, [("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Halo 3", "default.xex", "0"),
                                                ("\\Device\\Harddisk0\\Partition1\\Games\\Skate 3", "default.xex", "0"),
-                                               ("\\Device\\Harddisk0\\Partition1\\NetISO\\Halo 3", "default.xex", "0")])
+                                               ("\\Device\\Harddisk0\\Partition1\\NetDisc360\\Games\\Halo 3", "default.xex", "0")])
         finally:
             aurora.close()
             server.kill()
@@ -3872,6 +3948,9 @@ class DashboardTest(ServerTest):
         self.server.stdout.close()
         self.start(*extra)
 
+
+class Dashboard(DashboardTest):
+    """The dashboard's web API, as web/index.html uses it."""
     def test_sets_how_each_console_gets_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
@@ -3900,9 +3979,6 @@ class DashboardTest(ServerTest):
         self.assertEqual(tiles()["192.168.1.20"], {"mode": "", "games": {}})
         with open(self.config) as f:
             self.assertIn("tile_choices=0", f.read())
-
-class Dashboard(DashboardTest):
-    """The dashboard's web API, as web/index.html uses it."""
 
     def test_serves_the_page_and_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
@@ -4541,7 +4617,7 @@ class Dashboard(DashboardTest):
     def party_now(self):
         """The party in /api/state, without the guests' numbers and the team colours."""
         party = self.json("GET", "/api/state")["party"]
-        for key in ("statsReading", "teamColours", "palette", "started", "feed", "vote", "ready", "phone"):
+        for key in ("statsReading", "teamColours", "palette", "started", "feed", "vote", "ready", "phone", "presets"):
             del party[key]
         for g in party["guests"]:
             g.pop("stats", None)
@@ -4562,7 +4638,8 @@ class Dashboard(DashboardTest):
                           "gamemaster": "", "consoles": [], "guests": [], "statsReading": False, "teams": 2, "teamColours": [0, 1, 2, 3], "palette": self.PALETTE,
                           "balance": "random", "game": "", "started": 0, "idleOffMinutes": 0, "feed": [], "wins": [], "points": [], "vote": None, "ready": {},
                           "phone": {"relay": "", "code": "", "url": "", "ok": False, "error": "", "joins": 0},
-                          "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}})
+                          "together": [], "apart": [], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {},
+                          "games": [], "presets": []})
         # The teams' colours: 4 of the palette's 8, kept; one another team has swaps.
         self.json("POST", "/api/party", {"teamColours": [5, 4, 7, 3]})
         self.assertEqual(self.json("GET", "/api/state")["party"]["teamColours"], [5, 4, 7, 3])
@@ -4577,13 +4654,14 @@ class Dashboard(DashboardTest):
                                          "theme": {"preset": "birthday", "person": "Bjørn", "age": 40, "accent": "#FF8800", "accent2": "#1a1a1a"},
                                          "consoles": ["10.10.1.41", "10.10.1.42", "10.10.1.41"],
                                          "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann"}], "teams": 3,
-                                         "together": [["BJØRN", tricky]], "apart": [["ann", "Bjørn"]]})
+                                         "together": [["BJØRN", tricky]], "apart": [["ann", "Bjørn"]], "games": ["Halo 3", tricky, "halo 3 "]})
         party = {"active": True, "name": "Bjørn's 40th", "theme": {"preset": "birthday", "accent": "#ff8800", "accent2": "#1a1a1a", "person": "Bjørn", "age": 40,
                                                                     "logo": False, "backgrounds": 0, "pictures": ""},
                  "gamemaster": "10.10.1.42", "consoles": ["10.10.1.42", "10.10.1.41"],
                  "guests": [{"name": "Bjørn", "here": True}, {"name": tricky, "here": True}, {"name": "Ann", "here": False}], "teams": 3,
                  "balance": "random", "game": "", "idleOffMinutes": 0, "wins": [], "points": [],
-                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {}}
+                 "together": [["Bjørn", tricky]], "apart": [["Ann", "Bjørn"]], "round": 0, "drawn": None, "last": [], "spin": None, "signedIn": {}, "wheelOn": [], "profilesTo": {},
+                 "games": ["Halo 3", tricky]}
         self.assertIn("LAN party started: Bjørn's 40th", [e["text"] for e in self.json("GET", "/api/state")["events"]])
         for _ in range(2):  # As changed, and as saved.
             self.assertEqual(self.party_now(), party)

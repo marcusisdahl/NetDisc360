@@ -495,6 +495,29 @@ void SaveParty(config::File& f, const Party& p) {
     f.Set("party_phone_relay",p.phoneRelay);
     f.Set("party_phone_code",p.phoneCode);
     f.Set("party_phone_key",p.phoneKey);
+    std::vector<std::string> games;
+    for(size_t i=0;i<p.games.size();++i) games.push_back(Escaped(p.games[i]));
+    SetList(f,"party_games","party_game_",games);
+}
+
+void SavePartyPresets(config::File& f, const std::vector<PartyPreset>& presets) {
+    std::vector<std::string> lines;
+    for(size_t i=0;i<presets.size() && i<size_t(PartyPresetsMost);++i)
+        lines.push_back(presets[i].id+"|"+Number(presets[i].saved)+"|"+Escaped(presets[i].name)+"|"+Escaped(presets[i].setup));
+    SetList(f,"party_presets","party_preset",lines);
+}
+void LoadPartyPresets(const config::File& f, std::vector<PartyPreset>& presets) {
+    presets.clear();
+    std::vector<std::string> lines=GetList(f,"party_presets","party_preset");
+    for(size_t i=0;i<lines.size() && presets.size()<size_t(PartyPresetsMost);++i) {
+        std::vector<std::string> parts=Split(lines[i],'|');
+        if(parts.size()<4 || parts[0].empty()) continue;
+        PartyPreset p;
+        p.id=parts[0]; p.saved=atoll(parts[1].c_str()); p.name=Unescaped(parts[2]); p.setup=Unescaped(parts[3]);
+        bool twice=false;
+        for(size_t k=0;k<presets.size();++k) twice=twice || presets[k].id==p.id;
+        if(!twice && !p.name.empty()) presets.push_back(p);
+    }
 }
 
 void SaveGuestStats(config::File& f, const std::vector<GuestStats>& stats) {
@@ -586,6 +609,8 @@ void LoadParty(const config::File& f, Party& p) {
     p.phoneRelay=f.Get("party_phone_relay");
     p.phoneCode=f.Get("party_phone_code");
     p.phoneKey=f.Get("party_phone_key");
+    std::vector<std::string> games=GetList(f,"party_games","party_game_");
+    for(size_t i=0;i<games.size() && p.games.size()<size_t(PartyGamesMost);++i) if(!games[i].empty()) p.games.push_back(Unescaped(games[i]));
     TidyParty(p);
 }
 

@@ -208,8 +208,8 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
     std::vector<std::string> folders;
     if(kind.depth==0) folders.push_back("");
     else {
-        std::vector<std::string> subs=config::FolderNames(kind.folder);
-        for(size_t i=0;i<subs.size();++i) if(GoodName(subs[i])) folders.push_back(subs[i]);
+        std::vector<config::Entry> subs=config::Folders(kind.folder);
+        for(size_t i=0;i<subs.size();++i) if(GoodName(subs[i].name)) folders.push_back(subs[i].name);
     }
     for(size_t f=0;f<folders.size();++f) {
         std::vector<config::Entry> files=config::Files(folders[f].empty() ? kind.folder : Join(kind.folder,folders[f]));
