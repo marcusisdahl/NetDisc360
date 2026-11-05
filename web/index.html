@@ -1777,6 +1777,10 @@ Pages.consoles = root => {
       h('div.card-body', h('div.form',
         h('label.radio', every, h('div', h('div.title', 'Every console that connects'), h('div.help', 'Each console that uses this server gets a folder in Hdd1:\\NetISO for every game.'))),
         h('label.radio', some, h('div', { style: { flex: 1 } }, h('div.title', 'Only these consoles'), h('div.help', 'IP addresses, separated by commas. Other consoles can still play, but their Aurora is left alone.'), h('div', { style: { marginTop: '8px' } }, only))),
+        h('label', { style: { display: 'grid', gap: '6px' } }, h('div.title', { style: { fontWeight: 550 } }, 'New consoles get the games as'),
+          h('select.input', { 'aria-label': 'New consoles get the games as', onchange: e => save({ tileMode: e.target.value }, 'New consoles get the games ' + TileModes[e.target.value].short) },
+            Object.keys(TileModes).map(m => h('option', { value: m, selected: (st.tileMode || 'folder') === m }, TileModes[m].title))),
+          h('div.help', { style: { color: 'var(--muted)', fontSize: '13px' } }, 'Each console can go its own way, game by game: Games on this console, on its card.')),
         h('div.form-actions', h('button.btn.primary', { onclick: () => save({ xboxes: every.checked ? '' : only.value }) }, 'Save'))))));
   }
   return {
@@ -1792,6 +1796,8 @@ Pages.consoles = root => {
         const actions = h('div', { style: { gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px' } });
         // Aurora's FTP server is up only while Aurora runs (1: it didn't answer).
         if (x.c.ftp !== 1 && !x.c.playing) actions.appendChild(h('button.btn.small.ghost', { title: 'Find the games in Aurora with no cover, and have Aurora fetch it again', onclick: e => missingArt(x.c.address, e.currentTarget) }, ic('image', 'sm'), 'Fix missing art'));
+        actions.appendChild(xboxHomeSwitch(x.c));
+        actions.appendChild(h('button.btn.small.ghost', { title: 'Which games this console gets, and how: Aurora folders or Games on Demand', onclick: () => tileChooser(x.c) }, ic('layout-grid', 'sm'), 'Games on this console'));
         if (x.c.connections === 0) actions.appendChild(
           h('button.btn.small.ghost', { onclick: () => api('forget', { address: x.c.address }).then(refresh).then(() => toast('Forgot ' + x.c.address)).catch(e => toast(e.message, true)) }, ic('trash-2', 'sm'), 'Forget'));
         if (actions.childNodes.length) $('.console-facts', card).appendChild(actions);
@@ -1801,6 +1807,78 @@ Pages.consoles = root => {
     },
   };
 };
+
+// How a console gets the games (see TileChoice in server/main.cpp): a folder
+// in Hdd1:\NetISO that Aurora lists, as always; a small Games on Demand
+// package that the Xbox's own menu lists as well as Aurora; or not at all.
+// The console's choice goes for every game but those picked otherwise.
+const TileModes = {
+  folder: { title: 'Aurora folders (Hdd1:\\NetISO)', short: 'as Aurora folders', help: 'A folder in Hdd1:\\NetISO for each game, which Aurora lists.' },
+  god: { title: 'Games on Demand (Xbox home and Aurora)', short: 'as Games on Demand', help: 'A small package for each game in Hdd1:\\Content, so the Xbox\u2019s own menu lists it as well as Aurora. The game still streams from this PC. Original Xbox games keep their folder.' },
+  none: { title: 'Not on this console', short: 'not at all', help: 'The game isn\u2019t on this console; its folder or package goes.' },
+};
+// The whole library on the Xbox home (as Games on Demand) or in Aurora's
+// folders, in one flip: the console's choice, as Games on this console sets
+// it; games set their own way there keep it.
+function xboxHomeSwitch(c) {
+  const t = c.tiles || { mode: '', games: {} };
+  const on = (t.mode || S.settings.tileMode || 'folder') === 'god';
+  return h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginRight: 'auto', fontSize: '13px', cursor: 'pointer' },
+    title: 'Every game on the Xbox home too, as a small Games on Demand package that streams from this PC. Original Xbox games keep their Aurora folder.' },
+    wzToggle(on, async (checked, input) => {
+      input.disabled = true;
+      try {
+        await api('consoles/tiles', { address: c.address, mode: checked ? 'god' : 'folder', games: t.games || {} });
+        await refresh();
+        toast(checked ? c.address + ' gets every game on its Xbox home when Aurora is on screen.' : c.address + ' gets its games as Aurora folders again when Aurora is on screen.');
+      } catch (e) { toast(e.message, true); input.checked = !checked; }
+      input.disabled = false;
+    }), 'Add to Xbox home');
+}
+function tileChooser(c) {
+  const t = c.tiles || { mode: '', games: {} };
+  const fallback = S.settings.tileMode || 'folder';
+  let mode = t.mode || '';
+  const picks = {};
+  for (const [name, m] of Object.entries(t.games || {})) picks[name.toLowerCase()] = m;
+  let query = '';
+  const list = h('div', { style: { display: 'grid', gap: '6px', maxHeight: '320px', overflowY: 'auto', marginTop: '8px' } });
+  const named = h('span.muted');
+  const games = () => G.games.filter(g => !g.incomplete).slice().sort((a, b) => a.name.localeCompare(b.name));
+  function draw() {
+    const shown = games().filter(g => !query || g.name.toLowerCase().includes(query));
+    const own = Object.keys(picks).length;
+    fill(named, own ? plural(own, 'game goes', 'games go') + ' its own way' : '');
+    fill(list, shown.length ? shown.map(g => {
+      const key = g.name.toLowerCase();
+      const pick = h('select.input', { style: { width: 'auto', height: '30px', padding: '0 8px' }, 'aria-label': 'How ' + g.name + ' comes to this console',
+        onchange: e => { if (e.target.value) picks[key] = e.target.value; else delete picks[key]; draw(); } },
+        h('option', { value: '', selected: !picks[key] }, 'As the console (' + TileModes[mode || fallback].short.replace(/^as /, '') + ')'),
+        Object.keys(TileModes).filter(m => m !== 'god' || !g.xbe).map(m => h('option', { value: m, selected: picks[key] === m }, TileModes[m].title)));
+      return h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between' } },
+        h('div', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.name, g.xbe ? h('span.muted', ' \u00b7 original Xbox') : null), pick);
+    }) : h('p.muted', { style: { margin: 0 } }, G.games.length ? 'No game matches.' : 'No games yet.'));
+  }
+  const radios = [['', 'As new consoles get them', TileModes[fallback].title + ', as \u201cWhich consoles get your games\u201d sets for new consoles.'], ...Object.keys(TileModes).map(m => [m, TileModes[m].title, TileModes[m].help])].map(([m, title, help]) =>
+    h('label.radio', h('input', { type: 'radio', name: 'tile-mode', checked: mode === m, onchange: () => { mode = m; draw(); } }), h('div', h('div.title', title), h('div.help', help))));
+  modal('Games on ' + c.address, close => {
+    const go = h('button.btn.primary', { onclick: async () => {
+      go.disabled = true;
+      const sent = {};
+      for (const g of G.games) if (picks[g.name.toLowerCase()]) sent[g.name] = picks[g.name.toLowerCase()];
+      try { await api('consoles/tiles', { address: c.address, mode, games: sent }); await refresh(); toast('Saved. ' + c.address + ' gets the changes when Aurora is on screen.'); close(); }
+      catch (e) { toast(e.message, true); go.disabled = false; }
+    } }, 'Save');
+    draw();
+    return [
+      h('div.modal-body', h('div.form', ...radios),
+        h('h3', { style: { margin: '18px 0 4px' } }, 'Game by game'),
+        h('div.input-icon', ic('search', 'sm'), h('input.input', { placeholder: 'Find a game', oninput: e => { query = e.target.value.toLowerCase(); draw(); } })),
+        list),
+      h('div.modal-foot', h('span.note', named), h('button.btn', { onclick: close }, 'Cancel'), go),
+    ];
+  });
+}
 
 // Check my setup: this computer, then each console, and a report of it all
 // that leaves out addresses, names and passwords, to share when asking for help.

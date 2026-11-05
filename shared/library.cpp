@@ -221,6 +221,12 @@ void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCou
     }
 }
 
+void FriendlyGameName(const char* isoName, char* out, size_t capacity) {
+    size_t length=strlen(isoName);
+    if(length>4 && !_stricmp(isoName+length-4,".iso")) length-=4;
+    FriendlyStem(isoName,length,out,capacity);
+}
+
 static bool Fail(char* error, size_t capacity, const char* text) { _snprintf_s(error,capacity,_TRUNCATE,"%s",text); return false; }
 static bool ReadIso(IsvrClient& client, U64 offset, DWORD length, unsigned char* data) {
     while(length) {
@@ -643,7 +649,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!removeGone && !installed) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
         if(!storage.RemoveGame(folder)) { Say(note,"Couldn't remove %s.",folder); ++result.failed; continue; }
-        if(installed) Say(note,"Removed %s: the game on %s is installed on this console.",folders[k].name,folders[k].iso);
+        if(installed) Say(note,"Removed %s: %s gets no folder here on this console (it's installed there, or set so).",folders[k].name,folders[k].iso);
         else Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso);
         folders[k].game=false;
         ++result.removed;

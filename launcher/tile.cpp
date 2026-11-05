@@ -11,6 +11,14 @@
 // The folder is the path this XEX was started from, which the kernel keeps
 // in the running title's loader entry (xboxkrnl's XexExecutableModuleHandle,
 // export 403, which the NetDisc360 plugin reads the same way).
+//
+// The same launcher is the default.xex of a game's Games on Demand tile (see
+// GodTiles in server/main.cpp): a package that holds only it and a
+// netiso.ini whose tile= names the game folder it stands for. Started from
+// there (game: is the package, which can't be written), it starts that
+// folder's default.xex by a drive name, which the console then starts as
+// Aurora starts a tile: the plugin sees a tile's start, and this launcher,
+// in the folder, hands over to the helper.
 #include "../shared/helper.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -31,7 +39,8 @@ typedef void (*QueueNotice)(DWORD type,DWORD user,unsigned __int64 areas,const w
 struct WideString { USHORT length,capacity; wchar_t* text; };
 struct LoaderEntry { LIST_ENTRY links[3]; void* headers; void* base; DWORD size; WideString fullName,baseName; };
 
-static const char LogFile[]="game:\\netiso.log",FolderHelper[]="game:\\boot.xex";
+static char LogFile[nia::BootFolderMax+16]="game:\\netiso.log";
+static const char FolderHelper[]="game:\\boot.xex",PackageIni[]="game:\\netiso.ini";
 // Drive names the path may come with, and their devices (as in main.cpp).
 static const struct { const char* name; const char* device; } Drives[]={
     {"Hdd1:","\\Device\\Harddisk0\\Partition1"},{"Usb0:","\\Device\\Mass0"},{"Usb1:","\\Device\\Mass1"},
@@ -99,12 +108,64 @@ static bool LinkHelper(const char* device,char* path,size_t capacity) {
     return false;
 }
 
+// A Games on Demand tile's netiso.ini: tile= the game folder
+// (Hdd1:\NetDisc360\GOD\Halo 3); false, with nothing set, when there is
+// none, as in a game folder, whose netiso.ini names the game's disc instead.
+static bool PackageTile(char* folder,size_t capacity) {
+    FILE* ini=NULL;
+    if(fopen_s(&ini,PackageIni,"rb")) return false;
+    char text[1024];
+    size_t size=fread(text,1,sizeof(text)-1,ini);
+    fclose(ini);
+    text[size]=0;
+    for(char* line=text;*line;) {
+        char* end=line+strcspn(line,"\r\n");
+        char next=*end; *end=0;
+        if(!_strnicmp(line,"tile=",5) && line[5]) { strcpy_s(folder,capacity,line+5); return true; }
+        if(!next) break;
+        line=end+1;
+    }
+    return false;
+}
+
+// Starts the game folder's default.xex, linking its drive name first: a
+// title started from the Xbox's own menu may have no Hdd1: (the kernel
+// keeps one link of a name, so one that's there stays). Returns only if the
+// start failed.
+static void StartFolderTile(const char* folder) {
+    _snprintf_s(LogFile,sizeof(LogFile),_TRUNCATE,"%s\\netiso.log",folder);
+    for(int i=0;i<int(sizeof(Drives)/sizeof(Drives[0]));++i) {
+        size_t drive=strlen(Drives[i].name);
+        if(_strnicmp(folder,Drives[i].name,drive)) continue;
+        char name[16],device[64];
+        _snprintf_s(name,sizeof(name),_TRUNCATE,"\\??\\%s",Drives[i].name);
+        strcpy_s(device,Drives[i].device);
+        KernelString link={USHORT(strlen(name)),USHORT(sizeof(name)),name};
+        KernelString target={USHORT(strlen(device)),USHORT(sizeof(device)),device};
+        ObCreateSymbolicLink(&link,&target);
+    }
+    char xex[nia::BootFolderMax+16];
+    _snprintf_s(xex,sizeof(xex),_TRUNCATE,"%s\\default.xex",folder);
+    if(!Exists(xex)) { Note("Started as Games on Demand, but %s isn't there.",xex); return; }
+    Note("Started as Games on Demand: starting %s",xex);
+    LaunchImage(xex,0);
+    Note("Couldn't start %s (%lu).",xex,GetLastError());
+}
+
 static void Show(const wchar_t* text) {
     QueueNotice notice=(QueueNotice)Export("xam.xex",656);
     if(notice) notice(0x22,0xFF,1,text,NULL);
 }
 
 void __cdecl main() {
+    static char tile[nia::BootFolderMax];
+    if(PackageTile(tile,sizeof(tile))) {
+        StartFolderTile(tile);
+        Show(L"NetDisc360 couldn't start this game: its folder on the console is missing. Start NetDisc360 on your PC to put it back.");
+        Sleep(500);
+        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+        return;
+    }
     static nia::BootLaunch data;
     memset(&data,0,sizeof(data));
     memcpy(data.text,nia::BootData,sizeof(nia::BootData));

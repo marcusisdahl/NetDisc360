@@ -349,7 +349,8 @@ class Xbdm(socketserver.ThreadingTCPServer):
 
 class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
     """XboxUnity's TitleUpdateInfo.php and TitleUpdate.php, from self.server.titles
-    ({Title ID: answer}) and self.server.files ({id: (name, bytes)})."""
+    ({Title ID: answer}) and self.server.files ({id: (name, bytes)}); and its
+    TitleList.php and Icon.php, from self.server.names and .icons ({Title ID: ...})."""
     def log_message(self, *args):
         pass
 
@@ -368,6 +369,25 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
                 part = body[at:at + 100]
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
             self.wfile.write(b"0\r\n\r\n")
+            return
+        names, icons = getattr(self.server, "names", {}), getattr(self.server, "icons", {})
+        if url.path == "/Resources/Lib/TitleList.php":
+            search = query.get("search", [""])[0].upper()
+            items = [{"TitleID": search, "HBTitleID": "00000000", "Name": names[search], "TitleType": "360"}] if search in names else []
+            body = json.dumps({"Items": items, "Count": len(items), "Pages": 1, "Page": 0}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")  # As XboxUnity labels its JSON.
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if url.path == "/Resources/Lib/Icon.php" and query.get("tid", [""])[0].upper() in icons:
+            body = icons[query["tid"][0].upper()]
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if url.path == "/Resources/Lib/TitleUpdate.php" and query.get("tuid", [""])[0] in self.server.files:
             name, data = self.server.files[query["tuid"][0]]
@@ -514,7 +534,7 @@ class ServerTest(unittest.TestCase):
         # binds it; then the server says so and stops, and gets another.
         for _ in range(3):
             self.port = free_port()
-            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0"] + self.ports() + list(extra),
+            self.server = subprocess.Popen([SERVER, self.isos, "--port", str(self.port), "--no-push", "--web-port", "0", "--xboxunity", ""] + self.ports() + list(extra),
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             deadline = time.time() + 10
             said = []
@@ -692,7 +712,7 @@ class Push(ServerTest):
     def push(self, expect=0, ftp_port=None, extra=()):
         result = subprocess.run([SERVER, self.isos, "--port", str(free_port()), "--push-once", "--xbox", "127.0.0.1",
                                  "--web-port", "0", "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
-                                 "--launcher", self.launcher, "--boot", self.boot] + list(extra),
+                                 "--launcher", self.launcher, "--boot", self.boot, "--xboxunity", ""] + list(extra),
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
         return result.stdout
@@ -722,6 +742,165 @@ class Push(ServerTest):
         out = self.push()
         self.assertIn("0 added, 0 removed, 2 kept (0 updated)", out)
         self.assertEqual([p for p in self.ftp.stored if "NetISO" in p], [])
+
+    def read_god_files(self, header_path):
+        """The files at the top of a GOD package's disc, its hashes checked on the way."""
+        import hashlib
+        sha = lambda b: hashlib.sha1(b).digest()
+        with open(header_path, "rb") as f:
+            h = f.read()
+        self.assertEqual(h[0x32C:0x340], sha(h[0x344:0x344 + 0xACBC]))
+        blocks = int.from_bytes(h[0x392:0x395], "big")
+        self.assertEqual(int.from_bytes(h[0x3A0:0x3A4], "little"), 1)
+        with open(os.path.join(header_path + ".data", "Data0000"), "rb") as f:
+            part = f.read()
+        master = part[:4096]
+        self.assertEqual(sha(master), h[0x37D:0x37D + 20])
+        data = bytearray()
+        at = 4096
+        for g in range((blocks + 0xCB) // 0xCC):
+            hashes = part[at:at + 4096]
+            self.assertEqual(master[g * 20:g * 20 + 20], sha(hashes))
+            n = min(0xCC, blocks - g * 0xCC)
+            for b in range(n):
+                block = part[at + 4096 * (1 + b):at + 4096 * (2 + b)]
+                self.assertEqual(hashes[b * 20:b * 20 + 20], sha(block))
+                data += block
+            at += 4096 * (1 + n)
+        self.assertEqual(at, len(part))
+        self.assertEqual(bytes(data[0x10000:0x10014]), b"MICROSOFT*XBOX*MEDIA")
+        root, size = struct.unpack_from("<II", data, 0x10014)
+        files, table = {}, bytes(data[root * 2048:root * 2048 + size])
+        at = 0
+        while at + 14 <= len(table):
+            if table[at:at + 2] == b"\xff\xff":
+                at = (at // 2048 + 1) * 2048
+                continue
+            sector, length, _, n = struct.unpack_from("<IIBB", table, at + 4)
+            files[table[at + 14:at + 14 + n].decode()] = bytes(data[sector * 2048:sector * 2048 + length])
+            at += (14 + n + 3) & ~3
+        return h, files
+
+    def test_gives_a_console_its_games_as_games_on_demand_where_set(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        # A real copy of another game, which stays.
+        os.makedirs(os.path.join(content, "41560817", "00007000"))
+        with open(os.path.join(content, "41560817", "00007000", "AABBCCDD"), "wb") as f:
+            f.write(god_header(0xAABBCCDD, 0x41560817))
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("tile_choices=1\ntile_choice1=127.0.0.1|god|folder:Skate 3.iso\n")
+        out = self.push(extra=("--config", config))
+        # Halo 3 as Games on Demand: its game folder where Aurora doesn't look, and a package in Content.
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "Skate 3"])
+        home = os.path.join(self.xbox, "Hdd1", "NetDisc360", "GOD")
+        self.assertEqual(sorted(os.listdir(home)), ["Halo 3", "NetDisc360"])
+        self.assertEqual(sorted(os.listdir(os.path.join(home, "Halo 3"))), ["default.xex", "netiso.ini"])
+        with open(os.path.join(home, "NetDisc360", "boot.xex"), "rb") as f:
+            self.assertEqual(f.read(), b"BOOT HELPER")
+        packages = os.path.join(content, "4D5307E6", "00007000")
+        name = "4E443301" + "1A2B3C4D"
+        self.assertEqual(sorted(os.listdir(packages)), [name, name + ".data"])
+        self.assertEqual(os.listdir(os.path.join(packages, name + ".data")), ["Data0000"])
+        header, files = self.read_god_files(os.path.join(packages, name))
+        self.assertEqual(header[:4], b"LIVE")
+        be = lambda at: int.from_bytes(header[at:at + 4], "big")
+        self.assertEqual((be(0x344), be(0x354), be(0x360)), (0x7000, 0x1A2B3C4D, 0x4D5307E6))
+        self.assertEqual(header[0x411:0x411 + 12].decode("utf-16-be"), "Halo 3")
+        with open(os.path.join(home, "Halo 3", "default.xex"), "rb") as f:
+            self.assertEqual(files["default.xex"], f.read())
+        self.assertIn(b"tile=Hdd1:\\NetDisc360\\GOD\\Halo 3\r\n", files["netiso.ini"])
+        self.assertLess(os.path.getsize(os.path.join(packages, name + ".data", "Data0000")), 1 << 20)
+        self.assertIn("put Halo 3 in as Games on Demand", out)
+        self.assertIn("/Hdd1/Content/0000000000000000", self.ftp.scans)
+        # Nothing new: nothing written. The tile is no installed copy, so Halo 3 keeps its game folder.
+        self.ftp.stored.clear()
+        out = self.push(extra=("--config", config))
+        self.assertEqual([p for p in self.ftp.stored if "Content" in p or "NetDisc360/GOD" in p], [])
+        self.assertTrue(os.path.isdir(os.path.join(home, "Halo 3")))
+        # Back to folders: the package and the game folder in GOD go; the other game's copy stays.
+        with open(config, "w") as f:
+            f.write("tile_choices=1\ntile_choice1=127.0.0.1|folder\n")
+        out = self.push(extra=("--config", config))
+        self.assertEqual(sorted(os.listdir(self.games)), ["Halo 3", "NetDisc360", "Skate 3"])
+        self.assertEqual(os.listdir(home), ["NetDisc360"])
+        self.assertFalse(os.path.exists(packages))
+        self.assertEqual(os.listdir(os.path.join(content, "41560817", "00007000")), ["AABBCCDD"])
+        # None: no folder or package at all for that game.
+        with open(config, "w") as f:
+            f.write("tile_mode=god\ntile_choices=1\ntile_choice1=127.0.0.1||none:Skate 3.iso\n")
+        out = self.push(extra=("--config", config))
+        self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360"])
+        self.assertEqual(sorted(os.listdir(home)), ["Halo 3", "NetDisc360"])
+        self.assertFalse(os.path.exists(os.path.join(content, "454108E6")))
+
+    def test_names_games_on_demand_tiles_as_aurora_and_xboxunity_do(self):
+        # What the Xbox home shows: the header's name and icon.
+        self.add_iso("Halo 3 (USA, Europe) (En,Ja,Fr).iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3 (USA).iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Fable II (Europe) (En,Fr).iso", 0x22223333, 0x4D5307F1)
+        # A set's discs: each its own name (the ISO's tags say which already for the second).
+        for name, media, disc in (("Mass Effect 2 (USA).iso", 0x31313131, 1), ("Mass Effect 2 (USA) (Disc 2).iso", 0x32323232, 2)):
+            write_iso(os.path.join(self.isos, name), {"default.xex": xex(execution_info(media, 0x454108C2, disc, 2))})
+        # Aurora's name wins (its folder tile's, not one of NetDisc360's
+        # packages, whose name came from a header).
+        databases = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "Data", "Databases")
+        os.makedirs(databases)
+        db = sqlite3.connect(os.path.join(databases, "content.db"))
+        db.execute("CREATE TABLE ContentItems ( Id INTEGER PRIMARY KEY AUTOINCREMENT, Directory TEXT COLLATE NOCASE, Executable TEXT, "
+                   "TitleId INTEGER, TitleName TEXT, Description TEXT, ScanPathId INTEGER )")
+        for directory, title, name in (("\\content\\0000000000000000\\4d5307e6\\00007000\\4e443301aabbccdd", 0x4D5307E6, "Halo 3 from a header"),
+                                       ("\\netiso\\halo 3", 0x4D5307E6, "Halo 3: Édition épique"),
+                                       ("\\content\\0000000000000000\\4d5307f1\\00007000\\4e44330122223333", 0x4D5307F1, "Fable II (Europe) (En,Fr)")):
+            db.execute("INSERT INTO ContentItems (Directory, Executable, TitleId, TitleName, ScanPathId) VALUES (?, 'default.xex', ?, ?, 3)",
+                       (directory, title, name))
+        db.commit()
+        db.close()
+        icon = b"\x89PNG\r\n\x1a\n" + os.urandom(3000)
+        unity = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnityHandler)
+        unity.asked, unity.titles, unity.files = [], {}, {}
+        unity.names = {"4D5307E6": "Halo 3 (XboxUnity)", "454108E6": "skate. 3"}
+        unity.icons = {"454108E6": icon, "4D5307E6": b"\x89PNG\r\n\x1a\n" + bytes(0x4000)}  # Halo 3's is too big for the header.
+        threading.Thread(target=unity.serve_forever, daemon=True).start()
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        with open(config, "w") as f:
+            f.write("tile_mode=god\n")
+        try:
+            address = ("--config", config, "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
+            out = self.push(extra=address)
+            content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+            def header(title, media, disc=1):
+                with open(os.path.join(content, title, "00007000", "4E4433%02X%s" % (disc, media)), "rb") as f:
+                    return f.read()
+            def name(h, at=0x411):
+                return h[at:at + 0x80].decode("utf-16-be").split("\0")[0]
+            be = lambda h, at: int.from_bytes(h[at:at + 4], "big")
+            halo, skate, fable = header("4D5307E6", "1A2B3C4D"), header("454108E6", "5C087C2C"), header("4D5307F1", "22223333")
+            # Every language's display name, and the title name.
+            self.assertEqual([name(halo, 0x411 + k * 0x80) for k in range(18)] + [name(halo, 0x1691)], ["Halo 3: Édition épique"] * 19)
+            self.assertEqual(name(skate), "skate. 3")
+            # Neither Aurora (its name is the ISO's) nor XboxUnity knows Fable II: the ISO's name without its tags.
+            self.assertEqual(name(fable), "Fable II")
+            self.assertEqual([name(header("454108C2", m, d)) for m, d in (("31313131", 1), ("32323232", 2))], ["Mass Effect 2 (Disc 1)", "Mass Effect 2 (Disc 2)"])
+            self.assertEqual((be(skate, 0x1712), be(skate, 0x1716)), (len(icon), len(icon)))
+            self.assertEqual((skate[0x171A:0x171A + len(icon)], skate[0x571A:0x571A + len(icon)]), (icon, icon))
+            self.assertEqual((be(halo, 0x1712), be(fable, 0x1712)), (0, 0))
+            self.assertEqual(halo[0x171A:0x971A], bytes(0x8000))
+            self.read_god_files(os.path.join(content, "454108E6", "00007000", "4E4433015C087C2C"))
+            self.assertIn('named "skate. 3" with its icon', out)
+            # XboxUnity is asked once a title while the server runs; its answer
+            # is the same, so the next push writes nothing.
+            self.ftp.stored.clear()
+            self.push(extra=address)
+            self.assertEqual([p for p in self.ftp.stored if "Content" in p], [])
+        finally:
+            unity.shutdown()
+            unity.server_close()
+        lists = [a for a in unity.asked if a.startswith("/Resources/Lib/TitleList.php")]
+        self.assertEqual(len(lists), 8)  # 4 titles, 2 pushes (each its own server run).
+        self.assertTrue(all("search=" in a for a in lists))
 
     def test_takes_the_ftp_password_from_the_environment(self):
         # The Docker image passes the password this way.
@@ -761,7 +940,7 @@ class Push(ServerTest):
         port = free_port()
         server = subprocess.Popen([SERVER, self.isos, "--port", str(port), "--xbox", xbox, "--web-port", "0",
                                    "--ftp-port", str(ftp_port or self.ftp.server_address[1]),
-                                   "--launcher", self.launcher, "--boot", self.boot] + list(options),
+                                   "--launcher", self.launcher, "--boot", self.boot, "--xboxunity", ""] + list(options),
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         return server, port
 
@@ -822,6 +1001,14 @@ class Push(ServerTest):
                 ftp.shutdown()
                 ftp.server_close()
         self.assertIn("waiting for it to come online", out)
+
+    def test_makes_a_game_folder_whose_parent_folder_is_missing(self):
+        # Aurora's FTP makes one folder level per MKD, so /Hdd1/NetDisc360/Test
+        # on a console without /Hdd1/NetDisc360 is made a level at a time.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push(extra=("--xbox-folder", "/Hdd1/NetDisc360/Test"))
+        self.assertNotIn("couldn't list", out)
+        self.assertTrue(os.path.isfile(os.path.join(self.xbox, "Hdd1", "NetDisc360", "Test", "Halo 3", "default.xex")))
 
     def test_keeps_every_console_up_to_date(self):
         # Two consoles, each with its own Aurora: both get the game folders.
@@ -1855,6 +2042,35 @@ class Dashboard(ServerTest):
         self.server.stdout.close()
         self.start(*extra)
 
+    def test_sets_how_each_console_gets_the_games(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        with open(self.config, "w") as f:
+            f.write("consoles=1\nconsole1=192.168.1.20|1700000000\n")
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        tiles = lambda: {c["address"]: c["tiles"] for c in self.json("GET", "/api/state")["consoles"]}
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "", "games": {}})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "folder")
+        self.json("POST", "/api/consoles/tiles", {"address": "192.168.1.20", "mode": "god", "games": {"Skate 3": "none", "Halo 3": ""}})
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "god", "games": {"Skate 3": "none"}})
+        self.json("POST", "/api/settings", {"tileMode": "none"})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "none")
+        for bad in ({"address": "192.168.1.20", "mode": "disc"}, {"address": "192.168.1.20", "games": {"Halo 3": "iso"}},
+                    {"address": "192.168.1.20", "games": {"Halo 4": "god"}}, {"mode": "god"}):
+            self.assertEqual(self.call("POST", "/api/consoles/tiles", bad)[0], 400, bad)
+        self.assertEqual(self.call("POST", "/api/settings", {"tileMode": "usb"})[0], 400)
+        # Kept in the settings file.
+        self.restart()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "god", "games": {"Skate 3": "none"}})
+        self.assertEqual(self.json("GET", "/api/state")["settings"]["tileMode"], "none")
+        # Back to the default, with no game of its own: nothing kept.
+        self.json("POST", "/api/consoles/tiles", {"address": "192.168.1.20", "mode": "", "games": {}})
+        self.assertEqual(tiles()["192.168.1.20"], {"mode": "", "games": {}})
+        with open(self.config) as f:
+            self.assertIn("tile_choices=0", f.read())
+
     def test_serves_the_page_and_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.start()
@@ -2440,7 +2656,7 @@ class Dashboard(ServerTest):
             folder = os.path.join(content, "4D5307E6", "00007000")
             with open(iso, "rb") as f:
                 image = f.read()
-            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3 (USA)")
+            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3")  # Without its release tags, as the Xbox home shows it.
             self.assertEqual(ftp.scans[-1], "/Hdd1/Content/0000000000000000")
             self.assertIn("Halo 3 (USA) is on the hard drive", json.dumps(self.json("GET", "/api/state")["events"]))
             # Again: it's there. Without its header, a Data file cut short is sent again and the rest kept.
@@ -2451,7 +2667,7 @@ class Dashboard(ServerTest):
             ftp.stored.clear()
             self.assertEqual(copy("Halo 3 (USA)")["skipped"], 1)
             self.assertEqual(len(ftp.stored), 2)
-            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3 (USA)")
+            self.check_god(os.path.join(folder, "1A2B3C4D"), image, 0x2080000, 0x4D5307E6, 0x1A2B3C4D, "Halo 3")
             # An extracted folder, as the disc the server serves of it.
             self.assertEqual(copy("Forza 4")["state"], "done")
             self.assertTrue(os.path.isfile(os.path.join(content, "4D530910", "00007000", "11112222")))
