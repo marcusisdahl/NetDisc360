@@ -81,7 +81,7 @@ std::vector<std::string> MergeUsers(std::vector<User>& mine, const std::vector<U
 bool MergeUsersFile(const std::string& text, std::string& error);
 
 // The file on each console (in NetDisc360's folder:
-// Hdd1:\NetISO\NetDisc360\profiles.ini) that says which of its profiles are
+// Hdd1:\Apps\NetDisc360\profiles.ini) that says which of its profiles are
 // NetDisc360's (made by it, or a user's own it was given) and whose they
 // are, so any NetDisc360 (or a page) that meets the console knows them:
 // [Profiles] and <XUID>=<user id>|<name>|<gamertag>|<made>|<adopted: 1 or 0>.

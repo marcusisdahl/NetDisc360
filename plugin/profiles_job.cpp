@@ -171,7 +171,7 @@ void RunJob() {
     job[size]=0;
     // First, so a crash or a freeze in xam doesn't start it again.
     if(!DeleteFile(JobFile)) { Log("couldn't delete the job (%lu); left alone.",GetLastError()); return; }
-    // The pictures' folder under Hdd1: (\NetISO\NetDisc360).
+    // The pictures' folder under Hdd1: (\Apps\NetDisc360).
     Value(job,"folder",PictureFolder,sizeof(PictureFolder));
     if(strchr(PictureFolder,':') || strstr(PictureFolder,"..") || (PictureFolder[0] && PictureFolder[0]!='\\')) PictureFolder[0]=0;
     static char done[8192];

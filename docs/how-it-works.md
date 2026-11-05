@@ -4,7 +4,7 @@ What happens on the console when you pick a game, how `NetDisc360.xex` is the di
 
 ## The launcher
 
-Each game's folder in `Hdd1:\NetISO` holds `default.xex` and `netiso.ini`. `default.xex` is a small tile launcher (about 130 KB) that carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to the helper all the games share, `Hdd1:\NetISO\NetDisc360\boot.xex` (the full launcher without a Title ID, which Aurora doesn't list), telling it which game folder it came from. The helper draws the loading screen, asks the plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
+Each game's folder in `Hdd1:\NetDisc360\Games` holds `default.xex` and `netiso.ini`. `default.xex` is a small tile launcher (about 130 KB) that carries the game's Title ID and Media ID, so Aurora scans it as that game. It hands over to the helper all the games share, `Hdd1:\Apps\NetDisc360\boot.xex` (the full launcher without a Title ID, which Aurora doesn't list), telling it which game folder it came from. The helper draws the loading screen, asks the plugin to mount the game, waits until the emulated disc is that game, and boots the disc the way Aurora's own disc entry does. The game runs from the plugin's emulated DVD drive.
 
 ## The disc drive
 
@@ -16,7 +16,7 @@ Each game's folder in `Hdd1:\NetISO` holds `default.xex` and `netiso.ini`. `defa
 - points the kernel's export of `XeKeysGetMediaID` at its own function, which answers the media ID from the disc's security sector;
 - makes `\Device\NetDisc360`, which the launcher opens to ask for a disc by name and the server's address. A mount or eject gives a ticket at once, and a status control says when it is done and how it went (`shared/netdisc.h`), so the loading screen can show progress and cancel.
 
-Each step is logged to `Hdd1:\NetISO\NetDisc360\disc.log` before it is taken. Done two seconds later, from the worker while Aurora was starting, these steps froze the console, so the order matters.
+Each step is logged to `Hdd1:\Apps\NetDisc360\disc.log` before it is taken. Done two seconds later, from the worker while Aurora was starting, these steps froze the console, so the order matters.
 
 The worker alone talks to the server, over one connection. The drive's reads go to it in the order they came; it asks for up to `read_kb` at once with `read_depth` requests in flight, and when the connection drops it connects again and mounts the same disc (checking its size) before it gives the disc up. A mount finds where the game's file system starts behind the video partition of a full XGD1, XGD2 or XGD3 image, moves every read there, reads the media ID from the security sector, then fakes a tray open and close so the console reads the new disc. The plugin stays off when `NetISO.xex` is loaded before it in `launch.ini`, or with `own_disc=0` in `NetDisc360.ini`.
 
@@ -57,7 +57,7 @@ NetISO sets one option on its socket before connecting and leaves the receive bu
 
 ## Logs
 
-Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. The disc drive writes `Hdd1:\NetISO\NetDisc360\disc.log`, new at every boot: where its settings and server came from, each start-up step, the connection to the server, each disc it mounts and any read it had to retry. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
+Each game writes `netiso.log` in its folder, and NetISO Sync in its own: each step and why it stopped. The disc drive writes `Hdd1:\Apps\NetDisc360\disc.log`, new at every boot: where its settings and server came from, each start-up step, the connection to the server, each disc it mounts and any read it had to retry. Every run adds to the end of the file, each line starting with the console's time, and a run begins with a `====` line giving the date, the build and how long the console has been on. A file over 512 KB starts over on the next run. NetDisc360 logs on its dashboard's **Log** page (and to the console when it runs in a command prompt or Docker).
 
 ## Troubleshooting switches
 

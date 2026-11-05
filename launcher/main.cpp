@@ -749,7 +749,7 @@ static Result MountDisc(const char* ini,const Settings& settings,const char* gam
     if(netIso) return MountWithNetIso(ini,settings,game);
     if(plugin)
         return Fail(nia::StepMount,false,"The disc drive is off","NetDisc360.xex is loaded, but its disc drive isn't on.",
-                    "Hdd1:\\NetISO\\NetDisc360\\disc.log says why. An older NetIsoTiles.xex has no drive:",
+                    "Hdd1:\\Apps\\NetDisc360\\disc.log says why. An older NetIsoTiles.xex has no drive:",
                     "put the newest NetDisc360.xex in its place in launch.ini and reboot the Xbox.");
     return Fail(nia::StepMount,false,"NetDisc360.xex isn't running","It is the console's disc drive for games from the server.",
                 "Add NetDisc360.xex to DashLaunch's plugins in launch.ini,","and reboot the Xbox.");
@@ -1157,7 +1157,7 @@ static const Drive Drives[]={
     {"Usb1:","\\??\\NIsoU1:","\\Device\\Mass1"},
 };
 static const int DriveCount=int(sizeof(Drives)/sizeof(Drives[0]));
-// "Hdd1:\NetISO" -> "NIsoH:\NetISO", linking the drive. Other paths (game:,
+// "Hdd1:\NetDisc360" -> "NIsoH:\NetDisc360", linking the drive. Other paths (game:,
 // a \Device path) are used as they are.
 static bool MapPath(const char* path,char* out,size_t capacity) {
     for(int i=0;i<DriveCount;++i) {
@@ -1299,24 +1299,27 @@ static bool StartNetwork(int addressWaitMs) {
 }
 
 // Wake-on-LAN ----
-// wake.ini, which NetDisc360 keeps in the helper's folder next to the game
-// folders (Hdd1:\NetISO\NetDisc360; see server/wake.h): the PC's MAC address,
-// its address and its network's broadcast address.
+// wake.ini, which NetDisc360 keeps in the helper's folder (Hdd1:\Apps\NetDisc360,
+// or next to game folders that aren't on the hard drive; see server/wake.h):
+// the PC's MAC address, its address and its network's broadcast address.
 static const char WakeLink[]="\\??\\NIsoW:",WakeIni[]="NIsoW:\\wake.ini";
 static char TileFolder[nia::BootFolderMax]="";  // The game folder as a device path, when started as the helper.
 static bool ReadWake(WakeInfo& wake) {
     memset(&wake,0,sizeof(wake));
     char text[512]="";
     bool found=false;
-    // Next to this game's folder, wherever it is; else in Hdd1:\NetISO.
+    // In NetDisc360's folder in Hdd1:\Apps; else next to this game's folder.
+    char path[nia::PathMax];
+    if(MapPath(nia::AppFolder,path,sizeof(path))) {
+        strcat_s(path,"\\wake.ini");
+        found=ReadText(path,text,sizeof(text));
+    }
     char* slash=strrchr(TileFolder,'\\');
-    if(slash && slash>TileFolder) {
+    if(!found && slash && slash>TileFolder) {
         char helper[nia::BootFolderMax];
         _snprintf_s(helper,sizeof(helper),_TRUNCATE,"%.*s\\%s",int(slash-TileFolder),TileFolder,nia::HelperFolder);
         if(LinkDrive(WakeLink,helper)>=0) { found=ReadText(WakeIni,text,sizeof(text)); UnlinkDrive(WakeLink); }
     }
-    char path[nia::PathMax];
-    if(!found && MapPath("Hdd1:\\NetISO\\NetDisc360\\wake.ini",path,sizeof(path))) found=ReadText(path,text,sizeof(text));
     if(!found) { Note("No wake.ini, so the launcher can't wake the PC."); return false; }
     char mac[32],address[32],broadcast[32];
     if(!nia::IniValue(text,"mac",mac,sizeof(mac))) mac[0]=0;
@@ -1355,7 +1358,7 @@ static unsigned char Launcher[4<<20],Boot[4<<20];
 static void Sync(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     char value[nia::PathMax],games[nia::PathMax];
-    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,"Hdd1:\\NetISO");
+    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,nia::GamesFolder);
     if(!MapPath(value,games,sizeof(games))) return;
     Note("Games folder %s",value);
     // The tile launcher that started this is the template; its execution
@@ -1374,7 +1377,12 @@ static void Sync(const char* ini) {
     }
     if(!connected) return;
     nia::SyncResult result;
-    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result);
+    // The helper goes in NetDisc360's folder in Hdd1:\Apps when the games are
+    // on the hard drive, as the server puts it; else next to them.
+    char apps[nia::PathMax];
+    bool hdd=!_strnicmp(value,"Hdd1:",5) && MapPath(nia::AppFolder,apps,sizeof(apps));
+    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result,true,NULL,NULL,NULL,NULL,NULL,
+                      hdd ? apps : NULL);
     Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
     if(!ok) return;
