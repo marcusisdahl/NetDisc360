@@ -6574,14 +6574,6 @@ void SyncSoon() { SyncAsked=true; }
 
 std::string CloudFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Sync"; }
 
-std::string InFolder(const std::string& folder, const std::string& name) {
-#ifdef _WIN32
-    return folder+"\\"+name;
-#else
-    return folder+"/"+name;
-#endif
-}
-
 // The other devices' play history, from Sync\devices\<id>\plays.ini.
 void LoadOtherPlays(const Options& o) {
     std::map<std::string,Played> all;
