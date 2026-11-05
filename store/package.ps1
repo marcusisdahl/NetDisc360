@@ -1,17 +1,17 @@
 # Makes the Xbox 360 Homebrew Store files for a release, in build\:
-#   NetDisc360-<version>.7z   NetIsoTiles.xex, readme.txt and LICENSE.txt, which the
-#                             store unpacks into Apps\NetDisc360\. NetISO.xex isn't
-#                             ours to pass on, so readme.txt says where to get it.
+#   NetDisc360-<version>.7z   NetDisc360.xex, readme.txt and LICENSE.txt, which the
+#                             store unpacks into Apps\NetDisc360\ (the folder the
+#                             server keeps its own console files in too).
 #   NetDisc360-<version>.ini  the store entry for that 7z (from consolemods.ini).
 # The version comes from server\version.h, as for the release (RELEASING.md).
-# -Xex is the plugin to package: build\NetIsoTiles.xex from .\build.ps1, or the release's own.
-param([string]$Xex = 'build\NetIsoTiles.xex', [string]$SevenZip)
+# -Xex is the plugin to package: build\NetDisc360.xex from .\build.ps1, or the release's own.
+param([string]$Xex = 'build\NetDisc360.xex', [string]$SevenZip)
 $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path $PSScriptRoot)
 try {
-    $version = [regex]::Match((Get-Content -Raw server\version.h), '#define NETDISC_VERSION "(\d+\.\d+\.\d+)"').Groups[1].Value
+    $version = [regex]::Match((Get-Content -Raw server\version.h), '#define NETDISC_VERSION "(\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?)"').Groups[1].Value
     if (!$version) { throw 'No NETDISC_VERSION found in server\version.h.' }
-    if (!(Test-Path -LiteralPath $Xex)) { throw "$Xex is missing. Run .\build.ps1 first, or pass -Xex with the release's NetIsoTiles.xex." }
+    if (!(Test-Path -LiteralPath $Xex)) { throw "$Xex is missing. Run .\build.ps1 first, or pass -Xex with the release's NetDisc360.xex." }
     if (!$SevenZip) { $SevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source }
     if (!$SevenZip) { $SevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
     if (!(Test-Path -LiteralPath $SevenZip)) { throw '7-Zip is needed. Install it, or pass -SevenZip with the path to 7z.exe.' }
@@ -22,7 +22,7 @@ try {
     foreach ($file in "$out\$name.7z", "$out\$name.ini") { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file } }
     $stage = "build\store\$name"
     New-Item -ItemType Directory -Force $stage | Out-Null
-    Copy-Item -LiteralPath $Xex -Destination "$stage\NetIsoTiles.xex" -Force
+    Copy-Item -LiteralPath $Xex -Destination "$stage\NetDisc360.xex" -Force
     Copy-Item -LiteralPath LICENSE -Destination "$stage\LICENSE.txt" -Force
     (Get-Content -Raw store\readme.txt).Replace('@VERSION@', $version) | Set-Content -NoNewline -Encoding ascii "$stage\readme.txt"
     # The files go at the top of the 7z, with no folder around them: the

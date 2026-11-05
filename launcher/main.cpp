@@ -23,6 +23,12 @@
 // cycles a fake disc tray so the console sees the new disc at \Device\Cdrom0.
 // Aurora's file browser does the same when you open those folders. The
 // launcher walks the same folders by name instead of assuming their depth.
+//
+// NetDisc360.xex now has a disc drive of its own (plugin/disc.cpp), which
+// does NetISO.xex's job: the launcher asks it for the disc through
+// \Device\NetDisc360 (shared/netdisc.h) and follows how it goes. The
+// NetISO.xex way is kept for a console that still loads NetISO.xex, which
+// turns the plugin's own drive off.
 #include <xtl.h>
 #include <winsockx.h>
 #include <stdio.h>
@@ -32,6 +38,7 @@
 #include <math.h>
 #include "../shared/library.h"
 #include "../shared/helper.h"
+#include "../shared/netdisc.h"
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
 #include "ui.h"
@@ -39,6 +46,8 @@
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
 extern "C" LONG __stdcall ObDeleteSymbolicLink(KernelString* link);
+extern "C" LONG __stdcall XexGetModuleHandle(const char* name,HANDLE* module);
+extern "C" LONG __stdcall XexGetProcedureAddress(HANDLE module,DWORD ordinal,void** address);
 // xam.xex ordinal 421 (XamLoaderLaunchTitleEx; the RXDK import library calls it
 // XLaunchNewImageEx): starts xexName from mountPath. Nova.xex's file browser
 // starts files this way, with flags 0x10. It starts the game, but the Guide
@@ -65,6 +74,10 @@ static const DWORD NovaLaunchFlags=0x10;
 // flags 0. Started that way, the game has a working Guide. The same call
 // with \Device\Cdrom0\default.xex instead ended on the Xbox dashboard.
 static const char AuroraDiscLink[]="\\??\\Dvd:",AuroraDiscXex[]="Dvd:\\default.xex";
+// An original Xbox game (xbe=1 in netiso.ini): xam starts an XBE in the
+// console's original Xbox emulator (HddX:\Compatibility), as Aurora does for
+// one on the hard drive.
+static const char DiscXbe[]="NIsoD:\\default.xbe",AuroraDiscXbe[]="Dvd:\\default.xbe",DiscXbeName[]="default.xbe";
 // What XLaunchNewImage takes to start whatever disc is in the drive, like
 // the Xbox dashboard does (read from Aurora's copy of XLaunchNewImage).
 static const char DetectMedia[]="XLNI_DET_MEDIA";
@@ -73,7 +86,7 @@ static const char BootXex[]="game:\\boot.xex";
 // GetTickCount when the tile was pressed, for the timer at the top.
 static DWORD Started=0;
 static const char MountFolder[]="Mount";
-static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=256;
+static const int MountWaitMs=30000,PollMs=500,MaxDepth=4,MaxNames=16;
 // After the mount the plugin fakes a tray open and close on its own thread
 // (0.2 s apart), and the console then reads the new disc. The launcher used
 // to read the disc right away and every 0.5 s while that went on; the game
@@ -251,7 +264,7 @@ static void NoteRun() {
     if(Log) {
         fprintf(Log,"\n");
         Stamp();
-        fprintf(Log,"==== %04u-%02u-%02u, NetISO launcher built %s %s, console up %lu:%02lu:%02lu ====\n",
+        fprintf(Log,"==== %04u-%02u-%02u, NetDisc360 launcher built %s %s, console up %lu:%02lu:%02lu ====\n",
                 t.wYear,t.wMonth,t.wDay,__DATE__,__TIME__,up/3600,up/60%60,up%60);
         fflush(Log);
     }
@@ -296,11 +309,32 @@ static bool ReadSettings(const char* ini,Settings& settings) {
     return true;
 }
 
+// An original Xbox disc's Title ID, from the certificate in its default.xbe
+// (little-endian, at the certificate's address less the base address); it
+// has no Media ID.
+static DWORD Little32(const BYTE* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
+static bool XbeIds(DWORD& titleId,DWORD& mediaId) {
+    HANDLE file=CreateFile(DiscXbe,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return false;
+    bool found=false;
+    BYTE header[0x120],cert[12]; DWORD done=0;
+    if(ReadFile(file,header,sizeof(header),&done,NULL)&&done==sizeof(header)&&!memcmp(header,"XBEH",4)) {
+        DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+        if(certificate>=base && SetFilePointer(file,certificate-base,NULL,FILE_BEGIN)!=INVALID_SET_FILE_POINTER
+           && ReadFile(file,cert,sizeof(cert),&done,NULL) && done==sizeof(cert)) {
+            titleId=Little32(cert+8); mediaId=0; found=titleId!=0;
+        }
+    }
+    CloseHandle(file);
+    return found;
+}
+
 // Title ID and Media ID from the execution info header (0x40006) of the
-// default.xex on the disc that is in the drive now.
+// default.xex on the disc that is in the drive now, or of an original Xbox
+// disc's default.xbe.
 static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
     HANDLE file=CreateFile(DiscXex,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) return false;
+    if(file==INVALID_HANDLE_VALUE) return XbeIds(titleId,mediaId);
     bool found=false;
     DWORD header[6],done=0; // Read as words: the console is big-endian, like the file.
     if(ReadFile(file,header,sizeof(header),&done,NULL)&&done==sizeof(header)&&!memcmp(header,"XEX2",4)) {
@@ -318,7 +352,7 @@ static bool DiscIds(DWORD& titleId,DWORD& mediaId) {
         }
     }
     CloseHandle(file);
-    return found;
+    return found || XbeIds(titleId,mediaId);
 }
 static bool DiscIsGame(const Settings& settings) {
     DWORD titleId=0,mediaId=0;
@@ -327,24 +361,31 @@ static bool DiscIsGame(const Settings& settings) {
 }
 
 static char Names[MaxNames][MAX_PATH];
-// Lists a NetIso folder. With the plugin, listing a "Mount" folder is what
-// mounts, and that listing is empty.
-static int ListFolder(const char* folder) {
+static int NamesKept=0;
+// Lists a NetIso folder and keeps only the entries named want or also (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed. With the plugin, listing a "Mount"
+// folder is what mounts, and that listing is empty. Only the kept names are
+// logged, not every game on every start.
+static int ListFolder(const char* folder,const char* want,const char* also=NULL) {
+    NamesKept=0;
     char pattern[MAX_PATH]; sprintf_s(pattern,"%s\\*",folder);
     WIN32_FIND_DATA found;
     HANDLE find=FindFirstFile(pattern,&found);
     if(find==INVALID_HANDLE_VALUE) { Note("%s: nothing listed (error %lu)",pattern,GetLastError()); return 0; }
     int count=0;
     do {
-        if(count<MaxNames) strcpy_s(Names[count++],found.cFileName);
-        Note("  %s",found.cFileName);
+        ++count;
+        bool keep=(want && !_stricmp(found.cFileName,want)) || (also && !_stricmp(found.cFileName,also));
+        if(keep && NamesKept<MaxNames) { strcpy_s(Names[NamesKept++],found.cFileName); Note("  %s",found.cFileName); }
     } while(FindNextFile(find,&found));
     FindClose(find);
     Note("%s: %d entries",pattern,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 
@@ -361,12 +402,12 @@ static Found FindMountFolder(const Settings& settings,char* folder,size_t capaci
     for(int depth=0;depth<MaxDepth;++depth) {
         if(depth==listings) { Note("Stopping after %d listing(s) (stop_after).",depth); return FoundStopped; }
         if(CancelAsked) return FoundStopped;
-        int count=ListFolder(folder);
+        int count=ListFolder(folder,settings.iso,MountFolder);
         // An empty root: the plugin couldn't reach the server.
         if(!depth && !count) return FoundNoRoot;
-        const char* next=FindName(count,settings.iso);
+        const char* next=FindName(settings.iso);
         if(next) sawIso=true;
-        else if((next=FindName(count,MountFolder))!=NULL) {
+        else if((next=FindName(MountFolder))!=NULL) {
             strcat_s(folder,capacity,"\\"); strcat_s(folder,capacity,next);
             if(depth+1==listings) { Note("Stopping before listing %s (stop_after).",folder); return FoundStopped; }
             return FoundMount;
@@ -395,7 +436,13 @@ static bool ListMountFolder(const char* folder) {
 
 static bool FindServer(const char* ini,DWORD& address,int& port);
 static bool StartNetwork(int addressWaitMs);
+struct WakeInfo { unsigned char mac[6]; DWORD address,broadcast; char text[18]; };
+static bool ReadWake(WakeInfo& wake);
+static void SendWake(const WakeInfo& wake);
 static char ServerSource[48]="";
+// The server WaitForServer found answering, for the drive (network byte order).
+static DWORD ServerAddress=0;
+static int ServerPort=nia::IsvrPort;
 
 // A failed start, as the screen tells it: the step, a title and up to three
 // lines, and whether trying again could help.
@@ -421,36 +468,60 @@ static bool Pause(int ms) {
 // two (seen on the console), so until it has been up this long the launcher
 // keeps trying instead of failing.
 static const DWORD BootSeconds=240,RetrySeconds=10;
+// A PC that NetDisc360 said can be woken (wake.ini) gets a wake packet when it
+// doesn't answer, again every WakeEverySeconds, and this long to wake up.
+static const DWORD WakeSeconds=90,WakeEverySeconds=10;
 static Result WaitForServer(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     if(!FindServer(ini,address,port))
         return Fail(nia::StepServer,true,"No NetISO server is set up","The launcher found no server address for this game.",
-                    "Put the PC's IP address in Hdd1:\\netiso.xex.txt, as the NetISO plugin reads it,",
-                    "or server=<address> in this game's netiso.ini.");
+                    "Put server=<the PC's IP address> in NetDisc360.ini next to NetDisc360.xex",
+                    "(or the address in NetISO.xex.txt, as before), and reboot the Xbox.");
     char where[32]; nia::AddressText(address,where,sizeof(where));
     EnterCriticalSection(&ShownLock); strcpy_s(Shown.server,where); LeaveCriticalSection(&ShownLock);
     if(!StartNetwork(0)) return Fail(nia::StepServer,true,"The Xbox's network didn't start","XNetStartup or WSAStartup failed.","Reboot the Xbox and try again.");
     const DWORD start=GetTickCount();
     char error[160]="";
+    static WakeInfo wake;
+    bool wakeRead=false,canWake=false;
+    DWORD wokeAt=0,sentAt=0;
     for(;;) {
         if(CancelAsked) return Cancelled;
         XNADDR own;
-        if(XNetGetTitleXnAddr(&own)==XNET_GET_XNADDR_PENDING) strcpy_s(error,"The Xbox has no network address yet");
+        bool addressed=XNetGetTitleXnAddr(&own)!=XNET_GET_XNADDR_PENDING;
+        if(!addressed) strcpy_s(error,"The Xbox has no network address yet");
         else {
             nia::IsvrClient client(5);
-            if(client.Connect(address,port,3) && client.Ping()) { Note("The server answers."); return Mounted; }
+            if(client.Connect(address,port,3) && client.Ping()) {
+                if(wokeAt) Note("The server answers, %lu s after the first wake packet.",(GetTickCount()-wokeAt)/1000);
+                else Note("The server answers.");
+                ServerAddress=address; ServerPort=port;
+                return Mounted;
+            }
             strcpy_s(error,client.Error());
+            // Asleep, maybe: wake it, if NetDisc360 said how.
+            if(!wakeRead) { wakeRead=true; canWake=ReadWake(wake); }
+            if(canWake && (!sentAt || GetTickCount()-sentAt>=WakeEverySeconds*1000)) {
+                SendWake(wake);
+                sentAt=GetTickCount();
+                if(!wokeAt) wokeAt=sentAt;
+            }
         }
-        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
+        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000,waking=wokeAt ? (GetTickCount()-wokeAt)/1000 : 0;
         bool booting=up<BootSeconds;
-        if(!booting && waited>=RetrySeconds) break;
-        if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
+        if(!booting && waited>=RetrySeconds && (!wokeAt || waking>=WakeSeconds)) break;
+        if(wokeAt) ShowStep(nia::StepServer,0.05,"Waking the PC at %s... %lu s",where,waking);
+        else if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
         else ShowStep(nia::StepServer,0.05,"Waiting for the NetISO server at %s... %lu s",where,waited);
         if(!Pause(1000)) return Cancelled;
     }
     Note("Can't reach the NetISO server: %s",error);
     char line0[128],line2[128];
     _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
+    if(wokeAt) {
+        _snprintf_s(line2,sizeof(line2),_TRUNCATE,"Wake-on-LAN must be on in its BIOS and network adapter. The address is in %s.",ServerSource);
+        return Fail(nia::StepServer,true,"The PC didn't wake up",line0,"The Xbox sent it wake packets for 90 s. If it's off or asleep,",line2);
+    }
     _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
     return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc360 on the PC, and check that the PC and the Xbox",line2);
 }
@@ -476,8 +547,8 @@ static const char NoServerEntry[]="No Server!";
 static bool WaitForNetIso() {
     const DWORD start=GetTickCount();
     for(;;) {
-        int count=ListFolder(IsoRoot);
-        if(!FindName(count,NoServerEntry)) return true;
+        ListFolder(IsoRoot,NoServerEntry);
+        if(!FindName(NoServerEntry)) return true;
         DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
         if(up>=BootSeconds && waited>=RetrySeconds*3) return false;
         ShowStep(nia::StepMount,0.12,"NetISO is still connecting to the server after the reboot... %lu s",waited);
@@ -485,20 +556,131 @@ static bool WaitForNetIso() {
     }
 }
 
-// The whole mount, on the worker thread: the server, the mount and the disc.
-static Result Mount(const char* ini,const Settings& settings) {
-    char game[96],line[128],line1[128];
-    nia::GameName(settings.iso,game,sizeof(game));
-    ShowStep(nia::StepServer,0.02,"Checking the NetISO server");
-    if(DiscIsGame(settings)) { Note("The game is already mounted."); return Mounted; }
-    Result server=WaitForServer(ini);
-    if(server!=Mounted) return server;
+// ---- NetDisc360.xex's disc drive ----
 
-    ShowStep(nia::StepMount,0.1,"Asking the server for the disc");
-    if(!GetModuleHandle("NetISO.xex"))
-        return Fail(nia::StepMount,false,"The NetISO plugin isn't running","NetISO.xex isn't loaded, so there is no NetISO drive to mount from.",
-                    "Add it to DashLaunch's plugins in launch.ini and reboot the Xbox.");
-    Note(GetModuleHandle("NetIsoTiles.xex") ? "NetIsoTiles.xex is loaded and passed this tile on." : "NetIsoTiles.xex isn't loaded.");
+// The drive in the plugin (plugin/disc.cpp), asked through its device with
+// the controls in shared/netdisc.h. The kernel's calls for that are found by
+// ordinal, so the launcher needs nothing from the import library for them.
+struct DriveIo { LONG status; ULONG_PTR information; };
+struct DriveAttributes { HANDLE root; KernelString* name; ULONG attributes; };
+typedef LONG (*DriveOpenCall)(HANDLE* handle,ACCESS_MASK access,DriveAttributes* attributes,DriveIo* io,ULONG share,ULONG options);
+typedef LONG (*DriveControlCall)(HANDLE handle,HANDLE event,void* apc,void* context,DriveIo* io,ULONG code,void* in,ULONG inLength,void* out,ULONG outLength);
+typedef LONG (*DriveCloseCall)(HANDLE handle);
+static DriveOpenCall DriveOpen=NULL;
+static DriveControlCall DriveControl=NULL;
+static DriveCloseCall DriveClose=NULL;
+static HANDLE DriveHandle=NULL;
+// Opens the drive's device; false (with the kernel's status) when it isn't
+// there: the plugin isn't loaded, is an older one, or its drive is off.
+static bool OpenDrive(LONG& status) {
+    if(DriveHandle) { status=0; return true; }
+    if(!DriveOpen) {
+        HANDLE kernel=NULL; void* open=NULL; void* control=NULL; void* close=NULL;
+        // xboxkrnl.exe: NtOpenFile 223, NtDeviceIoControlFile 217, NtClose 207.
+        if(XexGetModuleHandle("xboxkrnl.exe",&kernel)<0 || XexGetProcedureAddress(kernel,223,&open)<0
+           || XexGetProcedureAddress(kernel,217,&control)<0 || XexGetProcedureAddress(kernel,207,&close)<0 || !open || !control || !close) {
+            status=LONG(0xC000007A); // STATUS_PROCEDURE_NOT_FOUND
+            return false;
+        }
+        DriveControl=(DriveControlCall)control; DriveClose=(DriveCloseCall)close; DriveOpen=(DriveOpenCall)open;
+    }
+    // The device itself, as \Device\Cdrom0 is opened for its controls, or
+    // with a backslash after it, as \Device\NetIso was.
+    static const char* const names[2]={"\\Device\\NetDisc360",netdisc::DeviceName};
+    for(int i=0;i<2;++i) {
+        char text[32]; strcpy_s(text,names[i]);
+        KernelString name={USHORT(strlen(text)),USHORT(sizeof(text)),text};
+        DriveAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+        DriveIo io={0,0};
+        // SYNCHRONIZE | FILE_READ_DATA, shared; FILE_SYNCHRONOUS_IO_NONALERT.
+        status=DriveOpen(&DriveHandle,0x100001,&attributes,&io,FILE_SHARE_READ|FILE_SHARE_WRITE,0x20);
+        if(status>=0) return true;
+        DriveHandle=NULL;
+    }
+    return false;
+}
+static void CloseDrive() {
+    if(DriveHandle) { DriveClose(DriveHandle); DriveHandle=NULL; }
+}
+static LONG AskDrive(DWORD code,void* in,DWORD inLength,void* out,DWORD outLength) {
+    DriveIo io={0,0};
+    return DriveControl(DriveHandle,NULL,NULL,NULL,&io,code,in,inLength,out,outLength);
+}
+static bool DriveState(netdisc::Status& status) {
+    memset(&status,0,sizeof(status));
+    return AskDrive(netdisc::ControlStatus,NULL,0,&status,sizeof(status))>=0 && status.version==netdisc::Version;
+}
+static const char* DriveStateText(DWORD state) {
+    static const char* const text[]={"off","empty","connecting","mounting","has a disc","ejecting"};
+    return state<sizeof(text)/sizeof(text[0]) ? text[state] : "?";
+}
+static void NoteDrive(const netdisc::Status& s) {
+    char where[32]=""; if(s.address) nia::AddressText(s.address,where,sizeof(where));
+    Note("NetDisc360's drive: %s, server %s:%lu%s, disc %s (%lu sectors), %lu reads, %lu MB, %lu failed, %lu reconnects; %s",
+         DriveStateText(s.state),where[0] ? where : "none",s.port,s.connected ? " (connected)" : "",s.iso[0] ? s.iso : "none",s.sectors,
+         s.reads,s.readMb,s.failedReads,s.reconnects,s.note);
+}
+// The plugin is loaded under its name now or its name before.
+static bool PluginLoaded() { return GetModuleHandle("NetDisc360.xex") || GetModuleHandle("NetIsoTiles.xex"); }
+
+// The mount through the plugin's drive: it takes the request at once, and
+// the launcher follows its status until the drive has finished it. B ends
+// the wait, not the drive's work: it finishes the mount by itself.
+static const DWORD DriveWaitMs=120000;
+static Result MountWithDrive(const Settings& settings,const char* game) {
+    char line[128],title[96];
+    netdisc::MountRequest request; memset(&request,0,sizeof(request));
+    request.version=netdisc::Version; request.address=ServerAddress; request.port=DWORD(ServerPort);
+    strncpy_s(request.iso,settings.iso,_TRUNCATE);
+    DWORD ticket=0;
+    LONG status=AskDrive(netdisc::ControlMount,&request,sizeof(request),&ticket,sizeof(ticket));
+    if(status<0 || !ticket) {
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The drive in NetDisc360.xex didn't take the request (status %08X).",status);
+        return Fail(nia::StepMount,true,"The disc drive is busy",line,"Try again in a moment; if it keeps happening, reboot the Xbox.");
+    }
+    Note("Asked NetDisc360's drive for %s (ticket %lu).",settings.iso,ticket);
+    netdisc::Status s;
+    for(DWORD start=GetTickCount();;) {
+        if(!DriveState(s)) return Fail(nia::StepMount,true,"The disc drive stopped answering","NetDisc360.xex's drive didn't say how the mount went.","Reboot the Xbox and try again.");
+        if(LONG(s.done-ticket)>=0) break;
+        DWORD waited=(GetTickCount()-start)/1000;
+        if(s.state==netdisc::StateConnecting) ShowStep(nia::StepMount,0.12,"The disc drive is connecting to the server... %lu s",waited);
+        else ShowStep(nia::StepMount,0.2,"The server is opening the disc");
+        if(GetTickCount()-start>=DriveWaitMs) {
+            NoteDrive(s);
+            return Fail(nia::StepMount,true,"The disc drive didn't finish","NetDisc360.xex's drive was still busy after two minutes.","Try again; if it keeps happening, reboot the Xbox.");
+        }
+        if(!Pause(100)) return Cancelled;
+    }
+    NoteDrive(s);
+    // Another request finished after this one (a disc swap in between, say):
+    // what counts is whether the drive has this disc now.
+    DWORD result=s.done==ticket ? s.result : s.state==netdisc::StateMounted && !_stricmp(s.iso,settings.iso) ? DWORD(netdisc::ResultMounted) : DWORD(netdisc::ResultLost);
+    char where[32]; nia::AddressText(s.address ? s.address : ServerAddress,where,sizeof(where));
+    switch(result) {
+    case netdisc::ResultMounted:
+        return Mounted;
+    case netdisc::ResultNoNetwork:
+        return Fail(nia::StepMount,true,"The disc drive has no network","NetDisc360.xex's drive found the Xbox's network not started.","Reboot the Xbox and try again.");
+    case netdisc::ResultNoServer:
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The launcher reached the server at %s, but the disc drive didn't.",where);
+        return Fail(nia::StepMount,true,"The disc drive can't reach the server",line,"Try again in a moment.");
+    case netdisc::ResultNotOnServer:
+        _snprintf_s(title,sizeof(title),_TRUNCATE,"%s isn't on the server",game);
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The server doesn't have %s.",settings.iso);
+        return Fail(nia::StepMount,true,title,line,"It may have been renamed, moved or deleted on the PC.");
+    case netdisc::ResultNotADisc:
+        _snprintf_s(title,sizeof(title),_TRUNCATE,"The server can't read %s",game);
+        _snprintf_s(line,sizeof(line),_TRUNCATE,"The server opened %s, but sent an empty disc.",settings.iso);
+        return Fail(nia::StepMount,true,title,line,"The server's window on the PC may say why.");
+    default:
+        return Fail(nia::StepMount,true,"The server went away during the mount","The disc drive lost the server before the disc was in.","Check the server on the PC and try again.");
+    }
+}
+
+// The mount through NetISO.xex's folders (see the top of this file).
+static Result MountWithNetIso(const char* ini,const Settings& settings,const char* game) {
+    char line[128];
     LONG status=LinkDrive(IsoLink,IsoDevice);
     if(status<0) {
         _snprintf_s(line,sizeof(line),_TRUNCATE,"Linking %s failed (status %08X).",IsoDevice,status);
@@ -535,6 +717,45 @@ static Result Mount(const char* ini,const Settings& settings) {
         _snprintf_s(line,sizeof(line),_TRUNCATE,"The NetISO drive answered the mount with error %lu.",error);
         return Fail(nia::StepMount,true,title,line,"The server's window on the PC may say why.");
     }
+    return Mounted;
+}
+
+// Which drive mounts: the plugin's own when its device is there; NetISO.xex
+// when that is loaded (the plugin's drive is then off); else none, and the
+// screen says what to add.
+static Result MountDisc(const char* ini,const Settings& settings,const char* game) {
+    LONG status=0;
+    if(OpenDrive(status)) {
+        netdisc::Status s;
+        if(DriveState(s)) NoteDrive(s);
+        Result result=MountWithDrive(settings,game);
+        CloseDrive();
+        return result;
+    }
+    bool plugin=PluginLoaded(),netIso=GetModuleHandle("NetISO.xex")!=NULL;
+    Note("No NetDisc360 drive (status %08X); %s, %s.",status,plugin ? "NetDisc360.xex is loaded" : "NetDisc360.xex isn't loaded",
+         netIso ? "NetISO.xex is loaded" : "NetISO.xex isn't loaded");
+    if(netIso) return MountWithNetIso(ini,settings,game);
+    if(plugin)
+        return Fail(nia::StepMount,false,"The disc drive is off","NetDisc360.xex is loaded, but its disc drive isn't on.",
+                    "Hdd1:\\Apps\\NetDisc360\\disc.log says why. An older NetIsoTiles.xex has no drive:",
+                    "put the newest NetDisc360.xex in its place in launch.ini and reboot the Xbox.");
+    return Fail(nia::StepMount,false,"NetDisc360.xex isn't running","It is the console's disc drive for games from the server.",
+                "Add NetDisc360.xex to DashLaunch's plugins in launch.ini,","and reboot the Xbox.");
+}
+
+// The whole mount, on the worker thread: the server, the mount and the disc.
+static Result Mount(const char* ini,const Settings& settings) {
+    char game[96],line[128],line1[128];
+    nia::GameName(settings.iso,game,sizeof(game));
+    ShowStep(nia::StepServer,0.02,"Checking the NetISO server");
+    if(DiscIsGame(settings)) { Note("The game is already mounted."); return Mounted; }
+    Result server=WaitForServer(ini);
+    if(server!=Mounted) return server;
+
+    ShowStep(nia::StepMount,0.1,"Asking the server for the disc");
+    Result mounted=MountDisc(ini,settings,game);
+    if(mounted!=Mounted) return mounted;
 
     ShowStep(nia::StepDisc,0.3,"The disc is going in. Waiting for the console to read it");
     int quiet=IniNumber(ini,"quiet_ms",QuietMs);
@@ -675,6 +896,20 @@ static void StartDisc(const char* ini) {
     nia::IniValue(ini,"start",start,sizeof(start));
     ClearLaunchData();
     ScreenStop();
+    if(IniNumber(ini,"xbe",0)) {
+        char xefu[32];
+        if(nia::IniValue(ini,"xefu",xefu,sizeof(xefu)) && xefu[0])
+            Note("netiso.ini names the %s emulator; NetIsoTiles starts it instead of the console's pick.",xefu);
+        LONG status=LinkDrive(AuroraDiscLink,DiscDevice);
+        if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
+        else { Note("Starting %s in the original Xbox emulator",AuroraDiscXbe); Launch(AuroraDiscXbe); }
+        Note("Starting %s from %s",DiscXbeName,DiscMount);
+        CloseLog();
+        DWORD result=XLaunchNewImageEx(DiscXbeName,DiscMount,NULL,NovaLaunchFlags);
+        OpenLog(false);
+        Note("XamLoaderLaunchTitleEx returned %08X (%lu).",result,GetLastError());
+        return;
+    }
     if(!_stricmp(start,"media")) {
         Note("Starting the disc in the drive (start=media)");
         Launch(DetectMedia);
@@ -775,6 +1010,77 @@ static InstallChoice AskToInstall(const char* game,const Install& install) {
     return InstallBack;
 }
 
+// ---- A copy installed on this Xbox ----
+
+// local_copy in netiso.ini, which NetDisc360 writes when the same game (Title
+// ID and disc) is installed on the console too: extracted
+// ("Hdd1:\Games\Halo 3\default.xex") or as Games on Demand (the package's
+// header file under Content). Aurora lists that copy as a tile of its own,
+// with the same name, so this tile asks which copy to play. Asked before
+// anything goes over the network, so the local copy plays with the PC off.
+static bool MapPath(const char* path,char* out,size_t capacity);
+static void DevicePath(const char* path,char* out,size_t capacity);
+static void UnlinkDrives();
+static bool LocalCopy(const char* ini,char* local,size_t capacity) {
+    if(!nia::IniValue(ini,"local_copy",local,capacity) || !local[0]) return false;
+    char path[MAX_PATH];
+    bool there=MapPath(local,path,sizeof(path)) && GetFileAttributes(path)!=DWORD(-1);  // INVALID_FILE_ATTRIBUTES, which the Xbox headers don't have.
+    UnlinkDrives();
+    Note(there ? "It's installed on this Xbox too: %s" : "local_copy=%s isn't there; playing from the server.",local);
+    return there;
+}
+enum LocalChoice { LocalBack, LocalPlay, LocalNetwork };
+static LocalChoice AskLocalCopy(const char* game,const char* local) {
+    Problem.step=nia::StepServer; Problem.retry=true;
+    char where[MAX_PATH]; strcpy_s(where,local);
+    char* name=strrchr(where,'\\');
+    if(strstr(where,"\\Content\\")) { char* colon=strchr(where,':'); if(colon) colon[1]=0; }
+    else if(name && !_stricmp(name+1,"default.xex")) *name=0;
+    _snprintf_s(Problem.title,sizeof(Problem.title),_TRUNCATE,"%s is installed on this Xbox too",game);
+    if(strstr(local,"\\Content\\")) _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's on %s as Games on Demand, with its own tile in Aurora.",where);
+    else _snprintf_s(Problem.lines[0],sizeof(Problem.lines[0]),_TRUNCATE,"It's in %s, with its own tile in Aurora.",where);
+    _snprintf_s(Problem.lines[1],sizeof(Problem.lines[1]),_TRUNCATE,"A plays that copy: it loads faster and doesn't need the PC.");
+    _snprintf_s(Problem.lines[2],sizeof(Problem.lines[2]),_TRUNCATE,"X plays it from the PC over the network.");
+    Note("Asking: %s",Problem.title);
+    WORD button=ShowCard(true,"Play from this Xbox","Play from the PC");
+    if(button==XINPUT_GAMEPAD_A) { Note("A pressed: starting the copy on this Xbox."); return LocalPlay; }
+    if(button==XINPUT_GAMEPAD_X) { Note("X pressed: playing from the server."); return LocalNetwork; }
+    Note("Back to Aurora.");
+    return LocalBack;
+}
+// Starts the installed copy as Aurora starts it from its own tile. True to
+// play from the server instead, when that didn't start and the player
+// pressed X.
+// A Games on Demand package isn't an XEX: XLaunchNewImage on it went to the
+// Xbox dashboard (seen on the console). xam's XamContentLaunchImageFromFileInternal
+// (ordinal 599) mounts the package and starts the XEX in it, as for a game
+// bought on Xbox Live; it too returns only when the start failed.
+typedef DWORD (__stdcall* LaunchFromPackage)(const char* path,const char* xex);
+static const DWORD LaunchFromPackageOrdinal=599;
+static bool StartLocal(const char* local) {
+    char device[MAX_PATH]; DevicePath(local,device,sizeof(device));
+    ClearLaunchData();
+    ScreenStop();
+    if(strstr(local,"\\Content\\")) {
+        HANDLE xam=NULL; void* address=NULL;
+        if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,LaunchFromPackageOrdinal,&address)>=0 && address) {
+            Note("Starting %s from the Games on Demand package %s",DiscXexName,device);
+            CloseLog();
+            DWORD result=LaunchFromPackage(address)(device,DiscXexName);
+            OpenLog(false);
+            Note("XamContentLaunchImageFromFileInternal returned %08X (%lu).",result,GetLastError());
+        } else Note("xam has no XamContentLaunchImageFromFileInternal.");
+    } else {
+        Note("Starting %s",device);
+        Launch(device);
+    }
+    char line[128]; _snprintf_s(line,sizeof(line),_TRUNCATE,"Starting %s failed (error %lu).",local,GetLastError());
+    Fail(nia::StepStart,true,"The copy on this Xbox didn't start",line,"Start it from its own tile in Aurora, or play it from the PC.");
+    bool network=ShowCard(false,"Back to Aurora","Play from the PC")==XINPUT_GAMEPAD_X;
+    Note(network ? "X pressed: playing from the server." : "Back to Aurora.");
+    return network;
+}
+
 // Mounts the game and starts it, showing what goes wrong until the player
 // goes back to Aurora. mount_only=1 in netiso.ini mounts and goes back to
 // Aurora without starting the game, to tell whether the mount or the start
@@ -789,6 +1095,12 @@ static void LaunchGame(const char* ini) {
     EnterCriticalSection(&ShownLock);
     strcpy_s(Shown.iso,settings.iso); nia::GameName(settings.iso,Shown.game,sizeof(Shown.game)); Shown.titleId=settings.titleId;
     LeaveCriticalSection(&ShownLock);
+    static char local[MAX_PATH];
+    if(LocalCopy(ini,local,sizeof(local))) {
+        LocalChoice choice=AskLocalCopy(Shown.game,local);
+        if(choice==LocalBack) return;
+        if(choice==LocalPlay && !StartLocal(local)) return;
+    }
     // A game whose install disc is on the server checks for the install first,
     // and can start the install disc instead.
     static Install install;
@@ -834,7 +1146,7 @@ static const Drive Drives[]={
     {"Usb1:","\\??\\NIsoU1:","\\Device\\Mass1"},
 };
 static const int DriveCount=int(sizeof(Drives)/sizeof(Drives[0]));
-// "Hdd1:\NetISO" -> "NIsoH:\NetISO", linking the drive. Other paths (game:,
+// "Hdd1:\NetDisc360" -> "NIsoH:\NetDisc360", linking the drive. Other paths (game:,
 // a \Device path) are used as they are.
 static bool MapPath(const char* path,char* out,size_t capacity) {
     for(int i=0;i<DriveCount;++i) {
@@ -922,12 +1234,27 @@ static bool ParseServer(const char* text,DWORD& address,int& port) {
     address=inet_addr(host);
     return address!=INADDR_NONE && address!=0;
 }
-// server= in netiso.ini, or the NetISO plugin's own netiso.xex.txt.
+// server= in netiso.ini, else the server NetDisc360.xex's drive uses (from
+// its NetDisc360.ini or NetISO.xex.txt), else NetISO.xex.txt on Hdd1: or
+// Usb0:, as the NetISO plugin read it.
 static bool FindServer(const char* ini,DWORD& address,int& port) {
     char value[64];
     if(nia::IniValue(ini,"server",value,sizeof(value))) {
         if(ParseServer(value,address,port)) { strcpy_s(ServerSource,"this game's netiso.ini"); return true; }
         Note("server=%s in %s is not an IPv4 address.",value,IniFile); return false;
+    }
+    LONG status=0;
+    if(OpenDrive(status)) {
+        netdisc::Status s;
+        bool known=DriveState(s) && s.address;
+        CloseDrive();
+        if(known) {
+            address=s.address; port=int(s.port);
+            char where[32]; nia::AddressText(address,where,sizeof(where));
+            Note("Server %s:%d from NetDisc360's drive.",where,port);
+            strcpy_s(ServerSource,"NetDisc360.ini or NetISO.xex.txt");
+            return true;
+        }
     }
     static const char* plugin[]={"Hdd1:\\netiso.xex.txt","Usb0:\\netiso.xex.txt"};
     for(int i=0;i<int(sizeof(plugin)/sizeof(plugin[0]));++i) {
@@ -960,11 +1287,67 @@ static bool StartNetwork(int addressWaitMs) {
     return true;
 }
 
+// Wake-on-LAN ----
+// wake.ini, which NetDisc360 keeps in the helper's folder (Hdd1:\Apps\NetDisc360,
+// or next to game folders that aren't on the hard drive; see server/wake.h):
+// the PC's MAC address, its address and its network's broadcast address.
+static const char WakeLink[]="\\??\\NIsoW:",WakeIni[]="NIsoW:\\wake.ini";
+static char TileFolder[nia::BootFolderMax]="";  // The game folder as a device path, when started as the helper.
+static bool ReadWake(WakeInfo& wake) {
+    memset(&wake,0,sizeof(wake));
+    char text[512]="";
+    bool found=false;
+    // In NetDisc360's folder in Hdd1:\Apps; else next to this game's folder.
+    char path[nia::PathMax];
+    if(MapPath(nia::AppFolder,path,sizeof(path))) {
+        strcat_s(path,"\\wake.ini");
+        found=ReadText(path,text,sizeof(text));
+    }
+    char* slash=strrchr(TileFolder,'\\');
+    if(!found && slash && slash>TileFolder) {
+        char helper[nia::BootFolderMax];
+        _snprintf_s(helper,sizeof(helper),_TRUNCATE,"%.*s\\%s",int(slash-TileFolder),TileFolder,nia::HelperFolder);
+        if(LinkDrive(WakeLink,helper)>=0) { found=ReadText(WakeIni,text,sizeof(text)); UnlinkDrive(WakeLink); }
+    }
+    if(!found) { Note("No wake.ini, so the launcher can't wake the PC."); return false; }
+    char mac[32],address[32],broadcast[32];
+    if(!nia::IniValue(text,"mac",mac,sizeof(mac))) mac[0]=0;
+    unsigned v[6];
+    if(sscanf_s(mac,"%2x:%2x:%2x:%2x:%2x:%2x",v,v+1,v+2,v+3,v+4,v+5)!=6) { Note("wake.ini has no MAC address."); return false; }
+    for(int i=0;i<6;++i) wake.mac[i]=(unsigned char)v[i];
+    strcpy_s(wake.text,mac);
+    wake.address=nia::IniValue(text,"address",address,sizeof(address)) ? inet_addr(address) : INADDR_NONE;
+    wake.broadcast=nia::IniValue(text,"broadcast",broadcast,sizeof(broadcast)) ? inet_addr(broadcast) : INADDR_NONE;
+    return true;
+}
+// The magic packet (six FF bytes, then the MAC address 16 times) to UDP port
+// 9 of the PC's network, of every network, and of the PC itself.
+static void SendWake(const WakeInfo& wake) {
+    unsigned char packet[102];
+    memset(packet,0xFF,6);
+    for(int i=0;i<16;++i) memcpy(packet+6+i*6,wake.mac,6);
+    SOCKET s=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(s==INVALID_SOCKET) { Note("No socket for the wake packet (%d).",WSAGetLastError()); return; }
+    BOOL on=TRUE;
+    setsockopt(s,SOL_SOCKET,SO_BROADCAST,(const char*)&on,sizeof(on));
+    DWORD targets[3]={wake.broadcast,0xFFFFFFFF,wake.address};
+    int sent=0;
+    for(int i=0;i<3;++i) {
+        if(targets[i]==INADDR_NONE && i!=1) continue;
+        sockaddr_in to; memset(&to,0,sizeof(to));
+        to.sin_family=AF_INET; to.sin_port=htons(9); to.sin_addr.s_addr=targets[i];
+        if(sendto(s,(const char*)packet,sizeof(packet),0,(sockaddr*)&to,sizeof(to))==sizeof(packet)) ++sent;
+        else Note("Sending the wake packet to %08X failed (%d).",ntohl(targets[i]),WSAGetLastError());
+    }
+    closesocket(s);
+    Note("Sent a wake packet for %s (%d of 3 addresses).",wake.text,sent);
+}
+
 static unsigned char Launcher[4<<20],Boot[4<<20];
 static void Sync(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     char value[nia::PathMax],games[nia::PathMax];
-    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,"Hdd1:\\NetISO");
+    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,nia::GamesFolder);
     if(!MapPath(value,games,sizeof(games))) return;
     Note("Games folder %s",value);
     // The tile launcher that started this is the template; its execution
@@ -983,7 +1366,12 @@ static void Sync(const char* ini) {
     }
     if(!connected) return;
     nia::SyncResult result;
-    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result);
+    // The helper goes in NetDisc360's folder in Hdd1:\Apps when the games are
+    // on the hard drive, as the server puts it; else next to them.
+    char apps[nia::PathMax];
+    bool hdd=!_strnicmp(value,"Hdd1:",5) && MapPath(nia::AppFolder,apps,sizeof(apps));
+    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result,true,NULL,NULL,NULL,NULL,NULL,
+                      hdd ? apps : NULL);
     Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
     if(!ok) return;
@@ -1048,6 +1436,7 @@ void __cdecl main() {
     static char folder[nia::BootFolderMax];
     bool helper=StartedAsHelper(Started,folder,sizeof(folder));
     bool linked=folder[0] && UseTileFolder(folder);
+    if(folder[0]) strcpy_s(TileFolder,folder);
     OpenLog(true);
     NoteRun();
     if(linked) Note("Started as the helper for %s.",folder);

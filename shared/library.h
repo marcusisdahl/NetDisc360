@@ -6,7 +6,9 @@
 #include "isvr.h"
 
 namespace nia {
-enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxFolders = 1024, PathMax = 320, IniMax = 4096 };
+// MaxGames: the most ISOs Sync makes folders for (a safety limit; libraries
+// of a few thousand are normal).
+enum { ExecutionInfoSize = 24, FolderNameMax = 42, MaxGames = 65536, PathMax = 320, IniMax = 4096 };
 
 #ifdef _XBOX
 const char PathSeparator = '\\';
@@ -37,8 +39,10 @@ public:
 };
 
 // updated counts kept folders whose launcher was rewritten with this version;
-// failed counts files of kept folders that couldn't be written or removed.
-struct SyncResult { int added, kept, updated, removed, skipped, held, failed; };
+// failed counts files of kept folders that couldn't be written or removed;
+// installed counts ISOs that get no folder since their game is installed on
+// the console (see Wanted).
+struct SyncResult { int added, kept, updated, removed, skipped, held, failed, installed; };
 
 // Value of key in an ini text ("key=value" lines), or false.
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);
@@ -49,8 +53,13 @@ DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size);
 bool FixHeaderDigest(unsigned char* xex, DWORD size);
 // FATX-safe folder name for an ISO, unique among used (case-insensitive).
 void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out);
-// Reads the execution info of default.xex on the ISO mounted on client.
-bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity);
+// The game's name from its ISO's (or game folder's): no .iso, and without the release tags
+// at its end ("Halo 3 (USA, Europe) (En,Ja,...).iso" is "Halo 3").
+void FriendlyGameName(const char* isoName, char* out, size_t capacity);
+// Reads the execution info of default.xex on the ISO mounted on client. An
+// original Xbox disc (default.xbe, no default.xex) gets execution info made
+// from its certificate's Title ID, and xbe (if given) is set.
+bool GameInfo(IsvrClient& client, unsigned char* info, char* error, size_t capacity, bool* xbe = NULL);
 
 typedef void (*Note)(const char* text);
 
@@ -66,24 +75,42 @@ struct InstallNeed {
 typedef void (*FindInstall)(const char* iso, InstallNeed& need);
 
 // What a disc is in its game's set, from the server's disc map (see
-// server/discmap.h). Sync writes it into the game folder's netiso.ini as
-// disc_role and disc_label, where the NetIsoTiles plugin reads it for its
-// disc swap notices.
+// server/discmap.h), and the emulator an original Xbox game starts in (see
+// server/xefu.h). Sync writes them into the game folder's netiso.ini as
+// disc_role, disc_label and xefu, where the NetDisc360 plugin reads them for
+// its disc swap notices and to start that emulator. local is the same game
+// installed on the console, which Sync writes as local_copy, so the launcher
+// can offer to play that copy.
 struct DiscRoleInfo {
     bool known;      // false: netiso.ini is left as it is.
     char role[16];   // install, play, content, next or own; empty for a game on one disc.
     char label[64];  // The disc's own name ("Undead Nightmare"), or empty.
+    char xefu[32];   // xefu7, config_loader_xefu7, ...; empty for the console's own pick.
+    char local[PathMax];  // "Hdd1:\Games\Halo 3\default.xex" or a Games on Demand package; empty: none.
 };
 typedef void (*FindRole)(const char* iso, DiscRoleInfo& info);
+// Called before each of the server's ISOs is looked at (done of total), so a
+// big first sync can show how far it has got.
+typedef void (*Progress)(int done, int total);
+
+// Whether the console is to have a game folder for an ISO: not when the
+// same game is installed on it, which Aurora lists already.
+typedef bool (*Wanted)(const char* iso);
+// Told, after a sync, the game folder of each ISO that has one.
+typedef void (*Placed)(const char* iso, const char* folder);
 // launcher is the tile launcher XEX (any copy; its execution info is
 // overwritten), each game folder's default.xex. boot, if not NULL, is the
-// helper XEX without execution info that they share, kept in root as
-// HelperFolder\HelperXex (see shared/helper.h); the boot.xex a game folder
-// got before then goes.
+// helper XEX without execution info that they share, kept as HelperXex in
+// helperFolder (NetDisc360's folder, see shared/helper.h), or with none, in
+// root as HelperFolder\HelperXex; the boot.xex a game folder got before then
+// goes.
 // With removeGone false, folders whose ISO is gone are left and counted in held.
 // findInstall, if not NULL, is asked about each game folder's install.ini,
-// and findRole about the disc_role and disc_label in its netiso.ini.
+// and findRole about the disc_role, disc_label and xefu in its netiso.ini. An
+// ISO that wanted, if not NULL, says no to gets no folder, and loses the one
+// it has whatever removeGone says; placed, if not NULL, is told the folders.
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
-          FindInstall findInstall=NULL, FindRole findRole=NULL);
+          FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL,
+          Progress progress=NULL, const char* helperFolder=NULL);
 }

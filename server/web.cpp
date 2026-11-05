@@ -3,7 +3,9 @@
 // thread per connection, the page from web_page.h, and the password.
 #include "web.h"
 #include "web_page.h"
+#include "backup.h"
 #include "../shared/isvr.h"
+#include <algorithm>
 #include <map>
 #include <atomic>
 #include <ctype.h>
@@ -230,6 +232,29 @@ bool Same(const std::string& a, const std::string& b) {
 }
 
 std::mutex PasswordLock, LoginLock;
+// Wrong passwords by address (under LoginLock): after each one, that address
+// waits a second, doubling with each one more (up to a minute), before it may
+// try again. Others aren't held up.
+struct Tries { int wrong; double until; };
+std::map<DWORD,Tries> WrongTries;
+// Seconds the address still has to wait after its wrong passwords.
+double Waiting(DWORD address) {
+    std::lock_guard<std::mutex> hold(LoginLock);
+    std::map<DWORD,Tries>::iterator t=WrongTries.find(address);
+    double left=t==WrongTries.end() ? 0 : t->second.until-nia::Now();
+    return left>0 ? left : 0;
+}
+void Right(DWORD address) { std::lock_guard<std::mutex> hold(LoginLock); WrongTries.erase(address); }
+void Wrong(DWORD address) {
+    double now=nia::Now();
+    std::lock_guard<std::mutex> hold(LoginLock);
+    for(std::map<DWORD,Tries>::iterator i=WrongTries.begin();i!=WrongTries.end();)  // Old ones go.
+        if(i->second.until+3600<now) WrongTries.erase(i++); else ++i;
+    Tries& t=WrongTries[address];
+    if(t.until+3600<now) t.wrong=0;
+    ++t.wrong;
+    t.until=now+std::min(60.0,double(1<<std::min(t.wrong-1,6)));
+}
 std::string Hash;    // "salt:hash", under PasswordLock.
 std::string Secret;  // Signs the sessions with Hash, under PasswordLock (see SetSessionSecret).
 
@@ -252,20 +277,46 @@ bool CheckPassword(const std::string& password) {
     return colon!=std::string::npos && Same(Stretch(hash.substr(0,colon),password),hash.substr(colon+1));
 }
 
-// A session is its end (time()) and that signed with SessionKey, so it
-// outlasts a restart and ends when the password changes.
+// A session is its end (time()) and a random part, signed with SessionKey,
+// so it outlasts a restart and ends when the password changes; the random
+// part keeps two logins in the same second apart, so logging out of one
+// leaves the other. (Sessions from before had no random part: "<end>.<sig>".)
 std::string Session(const std::string& hash) {
     char end[24]; _snprintf_s(end,sizeof(end),_TRUNCATE,"%lld",(long long)time(NULL)+SessionDays*86400LL);
-    return std::string(end)+"."+Hex(Hmac(SessionKey(hash),end));
+    std::string signedPart=std::string(end)+"."+Hex(Random(8));
+    return signedPart+"."+Hex(Hmac(SessionKey(hash),signedPart));
+}
+
+// Sessions ended by logging out, until they would have run out anyway, so a
+// copied cookie stops working too (under PasswordLock). A restart forgets
+// them; the browser's own cookie is cleared at logout either way.
+std::map<std::string,long long> LoggedOut;
+
+void EndSession(const std::string& session) {
+    size_t dot=session.find('.');
+    if(dot==std::string::npos) return;
+    long long now=(long long)time(NULL);
+    std::lock_guard<std::mutex> hold(PasswordLock);
+    for(std::map<std::string,long long>::iterator i=LoggedOut.begin();i!=LoggedOut.end();)
+        if(i->second<=now) LoggedOut.erase(i++); else ++i;
+    if(LoggedOut.size()<10000) LoggedOut[session]=atoll(session.substr(0,dot).c_str());
+}
+
+bool EndedSession(const std::string& session) {
+    std::lock_guard<std::mutex> hold(PasswordLock);
+    return LoggedOut.count(session)!=0;
 }
 
 bool ValidSession(const std::string& session) {
+    if(EndedSession(session)) return false;
     std::string hash=PasswordHash();
     size_t dot=session.find('.');
     if(hash.empty() || dot==std::string::npos) return false;
     std::string end=session.substr(0,dot);
+    size_t last=session.rfind('.');
+    std::string signedPart=session.substr(0,last);  // "<end>.<random>", or "<end>" alone.
     long long now=(long long)time(NULL), until=atoll(end.c_str());
-    return until>now && until<=now+SessionDays*86400LL+60 && Same(Hex(Hmac(SessionKey(hash),end)),session.substr(dot+1));
+    return until>now && until<=now+SessionDays*86400LL+60 && Same(Hex(Hmac(SessionKey(hash),signedPart)),session.substr(last+1));
 }
 
 std::string SessionHeader(const std::string& value, long long seconds) {
@@ -320,6 +371,16 @@ struct Incoming {
     }
 };
 
+// The login cookie's value, if the request has one.
+std::string SessionIn(const Incoming& in) {
+    std::string cookies=in.Header("cookie");
+    size_t at=cookies.find(std::string(Cookie)+"=");
+    if(at==std::string::npos) return std::string();
+    at+=strlen(Cookie)+1;
+    size_t end=cookies.find(';',at);
+    return cookies.substr(at,end==std::string::npos ? std::string::npos : end-at);
+}
+
 const char* StatusText(int status) {
     switch(status) {
     case 200: return "OK";
@@ -328,6 +389,7 @@ const char* StatusText(int status) {
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 429: return "Too Many Requests";
     case 413: return "Payload Too Large";
     case 431: return "Request Header Fields Too Large";
     default: return "Error";
@@ -429,8 +491,29 @@ private:
             return Send(200,"text/html; charset=utf-8",page,
                         "Content-Encoding: gzip\r\nX-Frame-Options: DENY\r\n"
                         "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                        "img-src 'self' data: https://raw.githubusercontent.com; connect-src 'self' https://raw.githubusercontent.com https://api.github.com; "
+                        "img-src 'self' data: blob: https://raw.githubusercontent.com; connect-src 'self' https://raw.githubusercontent.com https://api.github.com; "
                         "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n",close);
+        }
+        // For Prometheus and the like, which can't log in on the page: the
+        // dashboard's password as HTTP Basic auth (any user name), or the
+        // dashboard's own login. Read-only.
+        if(r.method=="GET" && r.path=="/metrics") {
+            if(locked && !ValidSession(SessionIn(in))) {
+                std::string auth=in.Header("authorization"), pair;
+                size_t colon;
+                double wait=Waiting(peer_);
+                bool given=auth.size()>6 && !_strnicmp(auth.c_str(),"Basic ",6) && backup::FromBase64(auth.substr(6),pair) && (colon=pair.find(':'))!=std::string::npos;
+                if(wait>0) return Send(429,"text/plain","Too many wrong passwords; try again later.","",close);
+                if(!given || !CheckPassword(pair.substr(colon+1))) {
+                    if(given) Wrong(peer_);
+                    return Send(401,"text/plain","The dashboard's password, please (HTTP Basic auth, any user name).","WWW-Authenticate: Basic realm=\"NetDisc360\"\r\n",close);
+                }
+                Right(peer_);
+            }
+            r.path="/api/metrics";
+            Reply reply;
+            api_(r,reply);
+            return Send(reply.status,reply.type.c_str(),reply.body,"",close);
         }
         if(r.path.compare(0,5,"/api/")) return Send(404,"text/plain","Not here.","",close);
         if(r.method!="GET" && r.method!="POST") return Send(405,"application/json","{\"error\":\"GET or POST\"}","",close);
@@ -445,13 +528,7 @@ private:
         if((in.Header("x-netdisc").empty() && !download) || (!origin.empty() && !EndsWith(origin,("://"+in.Header("host")).c_str())) ||
            site=="cross-site" || site=="same-site")
             return Send(403,"application/json","{\"error\":\"Only the dashboard page can do that.\"}","",close);
-        std::string session;
-        std::string cookies=in.Header("cookie");
-        size_t at=cookies.find(std::string(Cookie)+"=");
-        if(at!=std::string::npos) {
-            at+=strlen(Cookie)+1;
-            session=cookies.substr(at,cookies.find(';',at)==std::string::npos ? std::string::npos : cookies.find(';',at)-at);
-        }
+        std::string session=SessionIn(in);
         bool in_=!locked || ValidSession(session);
         if(r.path=="/api/auth") {
             Json j; j.Open('{').Set("password",locked).Set("loggedIn",in_).Close('}');
@@ -460,12 +537,22 @@ private:
         if(r.path=="/api/login" && r.method=="POST") {
             Value v; const Value* password;
             std::string given=Parse(r.body,v) && (password=v.Get("password")) && password->type==Value::String ? password->text : "";
-            std::lock_guard<std::mutex> hold(LoginLock);  // One try at a time,
-            if(!locked || CheckPassword(given)) return Send(200,"application/json","{\"ok\":true}",locked ? SessionHeader(Session(PasswordHash()),SessionDays*86400LL) : "",close);
-            Sleep(1000);  // and a second each, so guessing is slow.
+            double wait=Waiting(peer_);
+            if(wait>0) {
+                char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"{\"error\":\"Too many wrong passwords. Try again in %.0f s.\"}",wait+0.5);
+                return Send(429,"application/json",text,"",close);
+            }
+            if(!locked || CheckPassword(given)) {
+                Right(peer_);
+                return Send(200,"application/json","{\"ok\":true}",locked ? SessionHeader(Session(PasswordHash()),SessionDays*86400LL) : "",close);
+            }
+            Wrong(peer_);
             return Send(401,"application/json","{\"error\":\"That isn't the password.\"}","",close);
         }
-        if(r.path=="/api/logout" && r.method=="POST") return Send(200,"application/json","{\"ok\":true}",SessionHeader("",0),close);
+        if(r.path=="/api/logout" && r.method=="POST") {
+            if(locked && in_) EndSession(session);
+            return Send(200,"application/json","{\"ok\":true}",SessionHeader("",0),close);
+        }
         if(!in_) return Send(401,"application/json","{\"error\":\"login\"}","",close);
         std::string before=PasswordHash();
         Reply reply;
