@@ -1826,7 +1826,7 @@ class Push(ServerTest):
         server, _ = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1")
         try:
             self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
-            self.assertEqual(sorted(os.listdir(self.games)), ["NetDisc360", "Skate 3"])
+            self.assertEqual(sorted(os.listdir(self.games)), ["Skate 3"])
             shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
             self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "Halo 3")), 15))
             self.assertTrue(self.wait_for(lambda: len(self.ftp.scans) == 2, 10))
@@ -1843,7 +1843,8 @@ class Push(ServerTest):
         self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
         server, port = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "1000")
         try:
-            self.assertTrue(self.wait_for(lambda: self.ftp.scans or os.path.isdir(os.path.join(self.games, "NetDisc360")), 15))
+            # The first push is done once it wrote the helper (Hdd1:\Apps\NetDisc360).
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans or os.path.isdir(os.path.join(self.xbox, "Hdd1", "Apps", "NetDisc360")), 15))
             time.sleep(2)
             self.assertFalse(os.path.isdir(os.path.join(self.games, "Halo 3")))
             shutil.rmtree(os.path.join(self.xbox, "Hdd1", "Games", "Halo 3"))
