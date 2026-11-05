@@ -73,6 +73,9 @@ class IsoReader {
     friend class GodPackage;
 public:
     bool Open(const IsoFile& disc);
+    // A disc made here of these files (name at its top, bytes), as the
+    // server serves an extracted game folder.
+    bool Open(const std::vector<std::pair<std::string,std::vector<unsigned char> > >& files);
     bool IsOpen() const { return image_.get()!=NULL; }
     void Close() { image_.reset(); }
     U64 Size() const { return image_.get() ? image_->Size() : 0; }
@@ -111,8 +114,12 @@ public:
     DWORD MediaId() const { return mediaId_; }
     // <Title ID>\00007000, where the package goes under Content\0000000000000000.
     std::string Folder() const;
-    // The header's name (the Media ID), and the folder of the Data files is it with .data.
+    // The header's name (the Media ID, or what SetName gave), and the folder of the Data files is it with .data.
     std::string Name() const;
+    void SetName(const std::string& name) { name_=name; }
+    // The PNG the Xbox home shows for it (the header's thumbnail and title
+    // thumbnail), set before Make; none if it's empty or doesn't fit.
+    void SetIcon(const std::vector<unsigned char>& png) { icon_=png; }
     int Parts() const { return int(masters_.size()); }
     U64 PartSize(int part) const;
     U64 Bytes() const;  // The Data files' and the header's.
@@ -123,10 +130,12 @@ private:
     DWORD PartBlocks(int part) const;
     bool Group(int part, U64 group, unsigned char* hashes);
     IsoReader* reader_ = NULL;
+    std::vector<unsigned char> icon_;
     DWORD titleId_ = 0, mediaId_ = 0;
     U64 start_ = 0, blocks_ = 0;  // The partition's first byte in the image, and its blocks.
     std::vector<std::vector<unsigned char> > masters_;
     std::vector<unsigned char> header_, group_;
+    std::string name_;
     long long groupAt_ = -1;  // Which group's hash block group_ is (part * 0x10000 + group).
 };
 // The Title ID, Media ID and disc number in the start of a default.xex (as

@@ -2,7 +2,7 @@
 // NetDisc360, a NetISO server for Aurora: one program in place of
 // netiso-srv. It serves the games in folders (and their subfolders) to the
 // NetISO plugin, noticing new ones without a restart, and keeps the console's
-// Hdd1:\NetISO game folders in step with them over Aurora's FTP server, with
+// Hdd1:\NetDisc360\Games game folders in step with them over Aurora's FTP server, with
 // NetISO Sync's own code (shared/library.cpp). The launcher XEXs it writes are
 // built into it. Its dashboard is a web page it serves itself (web.cpp), where
 // the settings can be changed while it runs.
@@ -91,6 +91,13 @@ const double SuspectSeconds = 20;
 const int ScanTries = 20;
 const size_t LogKeep = 3000, EventKeep = 100;
 
+// Where NetDisc360 keeps its files on a console (see shared/helper.h): the
+// game folders in the Xbox folder (Options::xboxFolder, DefaultXboxFolder
+// unless set), which Aurora scans on its own, and NetDisc360's own files (the
+// helper, wake.ini, the filter's markers) in XboxAppFolder. Both were in
+// OldXboxFolder before; MoveOldFolder moves a console's tiles from there.
+const char DefaultXboxFolder[]="/Hdd1/NetDisc360/Games", OldXboxFolder[]="/Hdd1/NetISO", HddAppFolder[]="/Hdd1/Apps/NetDisc360";
+
 struct Options {
     std::vector<std::string> folders;
     std::string ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
@@ -163,7 +170,9 @@ struct Options {
     int saveKeep;
     double saveDelay;
     std::string xboxUnity;  // XboxUnity's API (see titleupdates.h); --xboxunity for the tests.
-    Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder("/Hdd1/NetISO"), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
+    // How a console the dashboard sets nothing for gets each game (see TileChoice): folder, god or none.
+    std::string tileMode;
+    Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder(DefaultXboxFolder), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
                 port(IsvrPort), ftpPort(21), webPort(WebPort), push(true), filter(true), scan(true), verbose(false), pushOnce(false),
                 webLan(false), setupDone(false), wizardDone(false), toldTray(false), onlineWait(120), removeWait(60), installedEvery(300), pingSeconds(30),
                 backupEvery(7), backupKeep(5), updateCheck(true), updateAuto(false), updatePrerelease(false),
@@ -171,7 +180,7 @@ struct Options {
                 pluginSet("NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex"),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
                 namePort(ConsoleNamePort), showName(true), wake(true), saveBackup(true), saveKeep(10), saveDelay(10),
-                xboxUnity("https://xboxunity.net/Resources/Lib") {}
+                xboxUnity("https://xboxunity.net/Resources/Lib"), tileMode("folder") {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -191,6 +200,16 @@ DWORD HexName8(const std::string& text, bool& ok) {
 }
 std::string Hex8(DWORD v) { char text[12]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",(unsigned)v); return text; }
 
+
+// NetDisc360's own folder on a console: Hdd1:\Apps\NetDisc360, or, when the
+// game folders aren't on the hard drive, the NetDisc360 folder next to them
+// (as in Hdd1:\NetISO before). The tile launcher looks in both.
+std::string XboxAppFolder(const Options& o) {
+    return !_strnicmp(o.xboxFolder.c_str(),"/Hdd1/",6) ? std::string(HddAppFolder) : o.xboxFolder+"/"+HelperFolder;
+}
+// Whether the game folders are where NetDisc360 puts them unless told
+// otherwise, so a console's tiles in OldXboxFolder are moved there.
+bool DefaultLayout(const Options& o) { return !_stricmp(o.xboxFolder.c_str(),DefaultXboxFolder); }
 
 std::vector<unsigned char> Launcher, Boot;
 std::vector<unsigned char> WheelApp;  // NetDiscParty.xex, built in, to put on a console that hasn't got it (OpenWheel).
@@ -713,6 +732,11 @@ struct Console {
     // FollowLaunch).
     std::atomic<long long> launchedAt;
     std::atomic<bool> launchLeft;
+    // Its Games on Demand tiles (see GodTiles): their game folders in
+    // GodHome, by the listed name of their disc (lower case), and the
+    // packages of NetDisc360's that it has.
+    std::map<std::string,std::string> godTiles;
+    std::vector<InstalledGame> godPackages;
     // NetDisc360's marker for Aurora's "Hide PC games while NetDisc360 is
     // off" filter is on it (see aurora.h), so quitting deletes it.
     std::atomic<bool> marked;
@@ -793,6 +817,27 @@ void RefreshWake(const Console& console, FtpClient& ftp, const Options& o);
 // (see ConsoleName in aurora.h; "" if never).
 struct KnownConsole { std::string address; long long seen; std::string id, name; };
 std::vector<KnownConsole> Known;  // Under SettingsLock.
+
+// How a console gets each game, as its "Games on this console" on the
+// dashboard says: folder, a game folder in xboxFolder (Hdd1:\NetISO), as
+// always; god, a small Games on Demand package of the game's tile launcher
+// (see GodTiles), which the Xbox's own menu lists as well as Aurora, with
+// the game folder it starts from kept where Aurora doesn't look; none, not on
+// that console. A console's mode ("": the default, Options' tileMode) goes
+// for its games but those it names (by their listed name, lower case).
+const char TileFolder[]="folder", TileGod[]="god", TileNone[]="none";
+bool IsTileMode(const std::string& mode) { return mode==TileFolder || mode==TileGod || mode==TileNone; }
+struct TileChoice { std::string mode; std::map<std::string,std::string> games; };
+std::map<std::string,TileChoice> TileChoices;  // By the console's address, under SettingsLock.
+// What a console gets of a game (its listed name), under SettingsLock.
+std::string TileModeOf(const Options& o, const TileChoice* choice, const std::string& name) {
+    if(choice) {
+        std::map<std::string,std::string>::const_iterator game=choice->games.find(Lower(name));
+        if(game!=choice->games.end()) return game->second;
+        if(!choice->mode.empty()) return choice->mode;
+    }
+    return IsTileMode(o.tileMode) ? o.tileMode : std::string(TileFolder);
+}
 // This computer's addresses as far back as the settings file remembers
 // (own_addresses), newest last, so a NetISO.xex.txt naming an address it had
 // is told from one naming another server (see FollowAddress). Under SettingsLock.
@@ -2016,8 +2061,8 @@ const char FilterNetIsoBefore[] =  // As servers before the install disc filter 
     "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
     "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
     "end";
-// The server knows its own edit by these exact words, so they keep the name
-// as it was then ("NetDisc 360").
+// As servers before the NetDisc360 folders wrote it; the server knew its own
+// edit by these exact words, so they keep the name as it was then ("NetDisc 360").
 const char FilterNetIso[] =
     "function GameListFilterXbox360(Content)\n"
     "   -- Add only legit xbox 360 games\n"
@@ -2032,6 +2077,25 @@ const char FilterNetIso[] =
     "function GameListFilterNetIso(Content)\n"
     "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
     "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
+    "      and not (NetDiscInstallDisc ~= nil and NetDiscInstallDisc(Content))\n"
+    "end";
+// This server's edit. The tiles are in Hdd1:\NetDisc360\Games, or in
+// Hdd1:\NetISO on a console whose tiles haven't moved yet (MoveOldFolder).
+const char FilterNetDisc[] =
+    "function GameListFilterXbox360(Content)\n"
+    "   -- Add only legit xbox 360 games\n"
+    "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\n"
+    "end\n"
+    "\n"
+    "-- NetDisc360: its game tiles in Hdd1:\\NetDisc360\\Games (Hdd1:\\NetISO before)\n"
+    "-- play retail discs from the PC, so they count as Xbox 360 games here.\n"
+    "-- Aurora files them as Unsigned because they aren't retail-signed. The\n"
+    "-- NetISO Sync app itself stays out, and so do install discs, which their\n"
+    "-- game's tile starts (NetDiscInstallDisc is in User\\Scripts\\Content\\Filters).\n"
+    "function GameListFilterNetIso(Content)\n"
+    "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
+    "   return (string.find(directory, '\\\\netdisc360\\\\games\\\\', 1, true) ~= nil or string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil)\n"
+    "      and string.find(directory, '\\\\netiso sync', 1, true) == nil\n"
     "      and not (NetDiscInstallDisc ~= nil and NetDiscInstallDisc(Content))\n"
     "end";
 
@@ -2059,17 +2123,21 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
     }
     std::string text(data.begin(),data.end());
     bool crlf=text.find("\r\n")!=std::string::npos;
-    if(text.find(Lines(FilterNetIso,crlf))!=std::string::npos) {
-        if(announce) XboxLog(console,"Aurora's Xbox 360 category includes the NetISO games.");
+    if(text.find(Lines(FilterNetDisc,crlf))!=std::string::npos) {
+        if(announce) XboxLog(console,"Aurora's Xbox 360 category includes the NetDisc360 games.");
         return;
     }
     // An earlier server's edit gets this one's, without a new backup.
-    std::string before=Lines(FilterNetIsoBefore,crlf);
-    size_t at=text.find(before);
-    if(at!=std::string::npos) {
-        std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+before.size());
+    const char* const earlier[]={FilterNetIso,FilterNetIsoBefore};
+    size_t at;
+    for(int k=0;k<2;++k) {
+        std::string before=Lines(earlier[k],crlf);
+        at=text.find(before);
+        if(at==std::string::npos) continue;
+        std::string edited=text.substr(0,at)+Lines(FilterNetDisc,crlf)+text.substr(at+before.size());
         if(StoreChecked(ftp,path,edited))
-            XboxLog(console,"Aurora's Xbox 360 category now leaves install discs out (%s). Restart Aurora to see it.",path.c_str());
+            XboxLog(console,"updated NetDisc360's rule in Aurora's Xbox 360 category (%s): it takes the games in %s and leaves install discs out. Restart Aurora to see it.",
+                    path.c_str(),o.xboxFolder.c_str());
         else {
             XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
             StoreChecked(ftp,path,text);
@@ -2093,7 +2161,7 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
             std::string firstOriginal=Lines(FilterOriginal,keptCrlf);
             size_t from=first.find(firstOriginal);
             if(from!=std::string::npos) {
-                std::string whole=first.substr(0,from)+Lines(FilterNetIso,keptCrlf)+first.substr(from+firstOriginal.size());
+                std::string whole=first.substr(0,from)+Lines(FilterNetDisc,keptCrlf)+first.substr(from+firstOriginal.size());
                 if(text.size()<whole.size() && !whole.compare(0,text.size(),text)) {
                     if(StoreChecked(ftp,path,whole)) XboxLog(console,"Aurora's %s was cut short; wrote it again in full.",path.c_str());
                     else XboxLog(console,"Aurora's %s is cut short, and writing it again failed: %s",path.c_str(),ftp.Error());
@@ -2104,14 +2172,14 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
         if(announce) XboxLog(console,"Aurora's Xbox 360 filter isn't the one this program knows, so it is left alone; the NetISO games show under All.");
         return;
     }
-    std::string edited=text.substr(0,at)+Lines(FilterNetIso,crlf)+text.substr(at+original.size());
+    std::string edited=text.substr(0,at)+Lines(FilterNetDisc,crlf)+text.substr(at+original.size());
     if(!StoreChecked(ftp,backup,text) || !StoreChecked(ftp,path,edited)) {
         XboxLog(console,"couldn't update Aurora's Xbox 360 category: %s",ftp.Error());
         XboxEvent(console,EventWarning,"Couldn't add the games to Aurora's Xbox 360 category");
         StoreChecked(ftp,path,text);  // The original back, should the edit have got there cut short.
         return;
     }
-    XboxLog(console,"added the NetISO games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
+    XboxLog(console,"added the NetDisc360 games to Aurora's Xbox 360 category (%s; the original is kept as %s). Restart Aurora to see it.",path.c_str(),backup.c_str());
     XboxEvent(console,EventGood,"Games added to Aurora's Xbox 360 category; restart Aurora to see them there",
               std::string("Games added to Aurora's Xbox 360 category on ")+console.text+"; restart Aurora to see them there");
 }
@@ -2119,7 +2187,7 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
 // Install and content discs (see discmap.h) are started from their game's
 // tile, which offers the install, so Aurora needn't list their own tiles.
 // This user filter of ours hides them (Filters, User, "Hide install discs"),
-// and the Xbox 360 category leaves them out (FilterNetIso). They are told
+// and the Xbox 360 category leaves them out (FilterNetDisc). They are told
 // apart by Title ID and Media ID, which Aurora reads from their launchers.
 const char InstallFilterScript[] = "/User/Scripts/Content/Filters/NetDiscInstallDiscs.lua";
 std::string InstallFilter() {
@@ -2215,6 +2283,7 @@ std::string RecentFilter() {
 }
 int RefreshRemote(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& data);
 void EnsureFolder(FtpClient& ftp, const std::string& folder);
+void EnsureFolders(FtpClient& ftp, const std::string& folder);
 void RefreshRecentFilter(const Console& console, FtpClient& ftp, const Options& o) {
     std::string text=RecentFilter();
     std::string path=o.aurora+RecentFilterScript;
@@ -2427,6 +2496,23 @@ std::string ConsolePath(const std::string& ftpPath) {
     return out;
 }
 
+// How the console being pushed to gets each game (see TileChoice), under SyncLock.
+Options PushOptions;
+TileChoice PushChoice;
+bool PushChosen;
+// The games left out of the push's game folders since they're installed,
+// and since they're Games on Demand tiles or none.
+int PushLeftInstalled, PushLeftOther, PushWantGod;
+std::vector<std::pair<std::string,std::string> > PushGodTiles;  // Listed name, game folder in GodHome.
+// An original Xbox game has no Xbox 360 package to be: it keeps its folder.
+std::string PushMode(const char* iso) {
+    std::string mode=TileModeOf(PushOptions,PushChosen ? &PushChoice : NULL,iso);
+    if(mode!=TileGod) return mode;
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    for(size_t i=0;i<GamesList.size();++i) if(!_stricmp(GamesList[i].name.c_str(),iso)) return GamesList[i].xbe ? std::string(TileFolder) : mode;
+    return mode;
+}
+
 // Whether the console gets a game folder for a disc: not when the same game
 // (Title ID and disc) is installed on it, unless installed games keep theirs.
 bool WantedFor(const char* iso) {
@@ -2437,10 +2523,254 @@ bool WantedFor(const char* iso) {
     return true;
 }
 void PlacedAt(const char* iso, const char* folder) { PushTiles[Lower(iso)]=folder; }
+// The game folders in xboxFolder: the games that get one, and aren't installed.
+bool WantedFolder(const char* iso) {
+    if(!WantedFor(iso)) { ++PushLeftInstalled; return false; }
+    std::string mode=PushMode(iso);
+    if(mode==TileGod) ++PushWantGod;
+    if(mode!=TileFolder) { ++PushLeftOther; return false; }
+    return true;
+}
+// Those in GodHome, of the Games on Demand tiles.
+bool WantedGod(const char* iso) { return WantedFor(iso) && PushMode(iso)==TileGod; }
+void PlacedGod(const char* iso, const char* folder) { PushGodTiles.push_back(std::make_pair(std::string(iso),std::string(folder))); }
 
-bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o, const std::vector<InstalledGame>& installed) {
+// Games on Demand tiles ----------------------------------------------------------
+//
+// A game a console gets as Games on Demand (TileGod) has its game folder, made
+// by Sync as every game folder is, in GodHome, where Aurora doesn't look, and
+// a package in <drive>/Content/0000000000000000/<Title ID>/00007000 that holds
+// two files: default.xex, the game's tile launcher, and netiso.ini, whose
+// tile= names that game folder. The console takes the package for the game
+// installed, so its own menu lists it as well as Aurora, by the name, Title ID
+// and Media ID in its header. Started, the tile launcher (launcher/tile.cpp)
+// starts the game folder's default.xex, and from there it goes as a tile in
+// Aurora does: the plugin sees the tile's start, the helper mounts the disc
+// from this server. The package is a few hundred KB; its header's name
+// (GodTileName) tells it from a real copy of the game.
+
+std::string FtpDrive(const std::string& path) {
+    size_t slash=path.find('/',1);
+    return slash==std::string::npos ? path : path.substr(0,slash);
+}
+std::string GodHome(const Options& o) { return FtpDrive(o.xboxFolder)+"/NetDisc360/GOD"; }
+std::string GodContent(const Options& o) { return FtpDrive(o.xboxFolder)+"/Content/0000000000000000"; }
+
+// The storage Sync writes through, keeping the default.xex last read or
+// written in each folder, so a Games on Demand tile is made from its game
+// folder's launcher without reading it again.
+class KeptLaunchers : public Storage {
+public:
+    explicit KeptLaunchers(Storage& inner) : inner_(inner) {}
+    int ListFolders(const char* root, char names[][FolderNameMax + 1], int capacity) { return inner_.ListFolders(root,names,capacity); }
+    bool ReadFile(const char* path, unsigned char* data, DWORD capacity, DWORD& size) {
+        bool ok=inner_.ReadFile(path,data,capacity,size);
+        if(ok) Keep(path,data,size);
+        return ok;
+    }
+    bool Missing() { return inner_.Missing(); }
+    bool WriteFile(const char* path, const void* data, DWORD size) {
+        bool ok=inner_.WriteFile(path,data,size);
+        if(ok) Keep(path,static_cast<const unsigned char*>(data),size);
+        return ok;
+    }
+    bool MakeFolder(const char* path) { return inner_.MakeFolder(path); }
+    bool RemoveGame(const char* folder) { return inner_.RemoveGame(folder); }
+    int RemoveFile(const char* path) { return inner_.RemoveFile(path); }
+    unsigned long LastError() { return inner_.LastError(); }
+    std::map<std::string,std::vector<unsigned char> > launchers;  // By folder (lower case).
+private:
+    void Keep(const char* path, const unsigned char* data, DWORD size) {
+        std::string p(path);
+        size_t slash=p.find_last_of('/');
+        if(slash!=std::string::npos && Lower(p.substr(slash+1))=="default.xex") launchers[Lower(p.substr(0,slash))].assign(data,data+size);
+    }
+    Storage& inner_;
+};
+
+bool MakeFolders(FtpClient& ftp, const std::string& path, size_t from, std::string& error);
+bool DeleteTree(FtpClient& ftp, const std::string& folder, int depth, std::string& error);
+std::string ConsolePath(const std::string& ftpPath);
+std::string SizeText(U64 n);
+
+// Makes the package of a game folder's tile (its default.xex) in god.
+// What the Xbox home shows of a Games on Demand tile: its header's name and
+// icon. The name is Aurora's for the title (the game's own, as Aurora lists
+// its folder tile or package), else XboxUnity's, else the ISO's without its
+// release tags; the icon is XboxUnity's, the one Aurora shows. Each title is
+// asked of XboxUnity once while the server runs, and not at all for
+// GodArtRetrySeconds after it couldn't be reached.
+struct GodArt { std::string name; std::vector<unsigned char> icon; };
+std::mutex GodArtLock;
+std::map<DWORD,GodArt> UnityArt;            // Titles XboxUnity answered for.
+std::map<DWORD,std::string> AuroraTitles;   // Aurora's names, from consoles' content.db.
+time_t UnityDownAt=0;
+const double GodArtRetrySeconds=600;
+extern const char AuroraContentDb[];
+
+// XboxUnity's name and icon of a title; false if it couldn't be reached.
+bool AskUnityArt(const Options& o, DWORD titleId, GodArt& art) {
+    std::string body, file, error;
+    if(!tu::Get(o.xboxUnity+"/TitleList.php?page=0&count=10&search="+Hex8(titleId)+"&sort=3&direction=1&category=0&filter=0",body,1<<20,file,error)) {
+        Log("XboxUnity didn't answer for the name of %08X: %s",unsigned(titleId),error.c_str());
+        return false;
+    }
+    web::Value v;
+    const web::Value* items=web::Parse(body,v) && v.type==web::Value::Object ? v.Get("Items") : NULL;
+    for(size_t i=0;items && items->type==web::Value::Array && i<items->items.size() && art.name.empty();++i) {
+        const web::Value* id=items->items[i].Get("TitleID");
+        const web::Value* name=items->items[i].Get("Name");
+        if(id && id->type==web::Value::String && !_stricmp(id->text.c_str(),Hex8(titleId).c_str()) && name && name->type==web::Value::String) art.name=name->text;
+    }
+    // A PNG, which the header's 0x4000 bytes hold; XboxUnity has no icon for some titles.
+    std::vector<unsigned char> icon;
+    if(tu::Get(o.xboxUnity+"/Icon.php?tid="+Hex8(titleId),body,1<<20,file,error) && body.size()>8 && body.size()<=0x4000 && !memcmp(body.data(),"\x89PNG\r\n\x1a\n",8))
+        art.icon.assign(body.begin(),body.end());
+    return true;
+}
+
+// The name and icon a tile of titleId gets; listed is its listed name.
+GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed) {
+    GodArt art;
+    bool ask=false;
+    {
+        std::lock_guard<std::mutex> hold(GodArtLock);
+        std::map<DWORD,GodArt>::const_iterator known=UnityArt.find(titleId);
+        if(known!=UnityArt.end()) art=known->second;
+        else ask=!o.xboxUnity.empty() && (!UnityDownAt || difftime(time(NULL),UnityDownAt)>=GodArtRetrySeconds);
+    }
+    if(ask) {
+        GodArt asked;
+        bool answered=AskUnityArt(o,titleId,asked);
+        std::lock_guard<std::mutex> hold(GodArtLock);
+        if(answered) { UnityArt[titleId]=asked; art=asked; UnityDownAt=0; }
+        else UnityDownAt=time(NULL);
+    }
+    std::lock_guard<std::mutex> hold(GodArtLock);
+    std::map<DWORD,std::string>::const_iterator aurora=AuroraTitles.find(titleId);
+    if(aurora!=AuroraTitles.end()) art.name=aurora->second;
+    if(art.name.empty()) { char friendly[512]; FriendlyGameName(listed.c_str(),friendly,sizeof(friendly)); art.name=config::ToUtf8(friendly); }
+    return art;
+}
+
+// Reads Aurora's names of the titles on the console from its content.db, for
+// GodArtFor. Not those of NetDisc360's own packages, whose name may be the
+// one their header gave (and an older build's was the ISO's).
+void ReadAuroraTitles(FtpClient& ftp, const Options& o) {
+    std::vector<unsigned char> db;
+    std::vector<AuroraItem> items;
+    std::string why;
+    if(!ftp.Retrieve((o.aurora+AuroraContentDb).c_str(),db,size_t(256)<<20) || !ReadAuroraItems(db,items,why)) return;
+    std::map<DWORD,std::string> found;
+    for(size_t i=0;i<items.size();++i) {
+        const AuroraItem& item=items[i];
+        if(!item.titleId || item.titleName.empty() || found.count(item.titleId)) continue;
+        std::string directory=item.directory;
+        while(!directory.empty() && (directory[directory.size()-1]=='\\' || directory[directory.size()-1]=='/')) directory.erase(directory.size()-1);
+        size_t slash=directory.find_last_of("\\/");
+        if(IsGodTileName(slash==std::string::npos ? directory : directory.substr(slash+1))) continue;
+        found[item.titleId]=item.titleName;
+    }
+    std::lock_guard<std::mutex> hold(GodArtLock);
+    for(std::map<DWORD,std::string>::const_iterator i=found.begin();i!=found.end();++i) AuroraTitles[i->first]=i->second;
+}
+
+bool MakeGodTile(const std::vector<unsigned char>& xex, const std::string& folder, const std::string& title,
+                 const std::vector<unsigned char>& icon, IsoReader& reader, GodPackage& god, std::string& error) {
+    DWORD titleId=0, mediaId=0; int disc=0;
+    if(xex.size()<24 || !XexIds(&xex[0],DWORD(xex.size()),titleId,mediaId,disc) || !titleId) { error="its default.xex has no Title ID"; return false; }
+    god.SetIcon(icon);
+    std::string ini="; Written by NetDisc360: this Games on Demand package starts the game folder named here.\r\ntile="+ConsolePath(folder)+"\r\n";
+    std::vector<std::pair<std::string,std::vector<unsigned char> > > files;
+    files.push_back(std::make_pair(std::string("default.xex"),xex));
+    files.push_back(std::make_pair(std::string("netiso.ini"),std::vector<unsigned char>(ini.begin(),ini.end())));
+    if(!reader.Open(files)) { error=reader.Note(); return false; }
+    if(!god.Make(reader,title,[](U64, U64) { return true; },error)) return false;
+    god.SetName(GodTileName(mediaId,disc));
+    return true;
+}
+
+// Brings the console's Games on Demand tiles in line with the game folders
+// Sync put in GodHome (tiles: listed name, folder): a package that isn't
+// there as made here is written, its Data file first and its header last, so
+// a package cut short is never listed; NetDisc360's packages (had) of games
+// without a folder there are deleted. changed counts both; false if any
+// couldn't be, which the next push tries again.
+bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const std::vector<std::pair<std::string,std::string> >& tiles,
+              const std::map<std::string,std::vector<unsigned char> >& launchers, const std::vector<InstalledGame>& had, int& changed) {
+    changed=0;
+    bool ok=true;
+    std::string content=GodContent(o);
+    std::set<std::string> keep, there;
+    for(size_t i=0;i<had.size();++i) there.insert(Lower(had[i].path));
+    if(!tiles.empty()) ReadAuroraTitles(ftp,o);
+    for(size_t i=0;i<tiles.size();++i) {
+        std::string folder=GodHome(o)+"/"+tiles[i].second;
+        std::map<std::string,std::vector<unsigned char> >::const_iterator kept=launchers.find(Lower(folder));
+        std::vector<unsigned char> xex;
+        if(kept!=launchers.end()) xex=kept->second;
+        else if(!ftp.Retrieve((folder+"/default.xex").c_str(),xex,size_t(16)<<20)) {
+            XboxLog(console,"couldn't read %s/default.xex for its Games on Demand tile: %s",folder.c_str(),ftp.Error());
+            ok=false; continue;
+        }
+        DWORD titleId=0, mediaId=0; int disc=0;
+        GodArt art;
+        if(xex.size()>=24 && XexIds(&xex[0],DWORD(xex.size()),titleId,mediaId,disc) && titleId) {
+            art=GodArtFor(o,titleId,tiles[i].first);
+            // Each disc of a set its own name, as the Xbox home lists each.
+            DWORD info=ExecutionInfoOffset(&xex[0],DWORD(xex.size()));
+            std::string number="disc "+std::to_string(disc);
+            if(info && info+ExecutionInfoSize<=xex.size() && xex[info+19]>1 && disc>0 && Lower(art.name).find(number)==std::string::npos)
+                art.name+=" (Disc "+std::to_string(disc)+")";
+        }
+        IsoReader reader; GodPackage god; std::string error;
+        if(!MakeGodTile(xex,folder,art.name,art.icon,reader,god,error)) {
+            XboxLog(console,"couldn't make the Games on Demand tile of %s: %s.",tiles[i].first.c_str(),error.c_str());
+            ok=false; continue;
+        }
+        std::string packages=content+"/"+Hex8(god.TitleId())+"/00007000", header=packages+"/"+god.Name(), data=header+".data";
+        keep.insert(Lower(header));
+        // As made here: its header's start, whose digest covers the rest of
+        // it and so the hashes of the Data file, is the same.
+        std::vector<unsigned char> head;
+        size_t compare=std::min(god.Header().size(),size_t(0x400));
+        if(there.count(Lower(header)) && ftp.RetrieveHead(header.c_str(),head,compare) && head.size()==compare && !memcmp(&head[0],&god.Header()[0],compare)) continue;
+        bool written=MakeFolders(ftp,data+"/",FtpDrive(o.xboxFolder).size(),error);
+        for(int part=0;part<god.Parts() && written;++part) {
+            char name[16]; _snprintf_s(name,sizeof(name),_TRUNCATE,"/Data%04d",part);
+            written=ftp.StoreFrom((data+name).c_str(),god.PartSize(part),[&](U64 offset, unsigned char* bytes, DWORD length) { return god.Part(part,offset,bytes,length); },
+                                  [](U64) { return true; });
+            if(!written) error=ftp.Error();
+        }
+        if(written && !ftp.Store(header.c_str(),god.Header().data(),god.Header().size())) { written=false; error=ftp.Error(); }
+        if(!written) { XboxLog(console,"couldn't write the Games on Demand tile of %s (%s): %s",tiles[i].first.c_str(),header.c_str(),error.c_str()); ok=false; continue; }
+        XboxLog(console,"put %s in as Games on Demand (%s, %s), named \"%s\"%s, which starts %s.",WithoutIso(tiles[i].first).c_str(),header.c_str(),
+                SizeText(god.Bytes()).c_str(),art.name.c_str(),art.icon.empty() ? " with no icon" : " with its icon",folder.c_str());
+        ++changed;
+    }
+    for(size_t i=0;i<had.size();++i) {
+        const std::string& header=had[i].path;
+        if(keep.count(Lower(header))) continue;
+        std::string error;
+        bool gone=ftp.Delete(header.c_str()) || ftp.Missing();
+        if(!gone) error=ftp.Error();
+        std::string data=header+".data";
+        if(gone && ftp.Enters(data.c_str())) gone=DeleteTree(ftp,data,0,error);
+        std::string parent=header.substr(0,header.find_last_of('/'));
+        std::vector<FtpEntry> left;
+        if(gone && ftp.List(parent.c_str(),left) && left.empty()) ftp.RemoveFolder(parent.c_str());
+        if(!gone) { XboxLog(console,"couldn't delete the Games on Demand tile %s: %s",header.c_str(),error.c_str()); ok=false; continue; }
+        XboxLog(console,"deleted the Games on Demand tile %s: its game isn't one on this console any more.",header.c_str());
+        ++changed;
+    }
+    return ok;
+}
+
+bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o, const std::vector<InstalledGame>& installed,
+          const std::vector<InstalledGame>& godPackages) {
     std::vector<FtpEntry> entries;
-    ftp.MakeFolder(o.xboxFolder.c_str());
+    // A level at a time: Aurora's FTP makes no parent folders (/Hdd1/NetDisc360/Games on a console without NetDisc360).
+    EnsureFolders(ftp,o.xboxFolder);
     if(!ftp.List(o.xboxFolder.c_str(),entries)) {
         XboxLog(console,"couldn't list %s: %s",o.xboxFolder.c_str(),ftp.Error());
         XboxEvent(console,EventWarning,"Couldn't open "+o.xboxFolder);
@@ -2449,10 +2779,15 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
     RefreshSyncApp(console,ftp,entries,o);
     IsvrClient client(30);
     if(!client.Connect(htonl(0x7F000001),o.port,5) || !client.Ping()) { Log("Couldn't reach this server itself: %s",client.Error()); return false; }
-    FtpStorage storage(ftp);
-    bool ok;
+    FtpStorage ftpStorage(ftp);
+    KeptLaunchers storage(ftpStorage);
+    bool ok, godOk=true;
     std::string reason;
-    std::map<std::string,std::string> tiles;
+    std::map<std::string,std::string> tiles, godFolders;
+    std::vector<std::pair<std::string,std::string> > godTiles;
+    SyncResult god;
+    memset(&god,0,sizeof(god));
+    int leftInstalled=0, leftOther=0;
     {
         std::lock_guard<std::mutex> hold(SyncLock);
         Pushing=&console; LastPushNote.clear();
@@ -2462,18 +2797,64 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
             std::string path=ConsolePath(installed[i].path);
             if(!path.empty()) PushInstalled.insert(std::make_pair(std::make_pair(installed[i].titleId,installed[i].disc),path));
         }
-        PushTiles.clear();
+        PushOptions=o;
+        {
+            std::lock_guard<std::mutex> settings(SettingsLock);
+            std::map<std::string,TileChoice>::const_iterator c=TileChoices.find(console.text);
+            PushChosen=c!=TileChoices.end();
+            PushChoice=PushChosen ? c->second : TileChoice();
+        }
+        PushLeftInstalled=PushLeftOther=PushWantGod=0;
+        PushTiles.clear(); PushGodTiles.clear();
+        // The helper they share goes in NetDisc360's own folder (Hdd1:\Apps\NetDisc360).
+        std::string app=XboxAppFolder(o);
         ok=Sync(client,storage,o.xboxFolder.c_str(),Launcher.data(),DWORD(Launcher.size()),
-                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFor,PlacedAt,PushProgress);
-        console.pushTotal=0; console.pushDone=0;
+                Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,result,removeGone,InstallFor,RoleFor,WantedFolder,PlacedAt,PushProgress,
+                app.c_str());
         reason=LastPushNote;
+        leftInstalled=PushLeftInstalled; leftOther=PushLeftOther;
+        result.installed=leftInstalled;
+        // The Games on Demand tiles' game folders, when the console has any
+        // to have, or had: Sync takes those it should no longer have away.
+        bool had=false;
+        std::vector<FtpEntry> home;
+        if(ok && !PushWantGod && ftp.Enters(GodHome(o).c_str()) && ftp.List(GodHome(o).c_str(),home))
+            for(size_t i=0;i<home.size() && !had;++i) had=home[i].folder && _stricmp(home[i].name.c_str(),HelperFolder);
+        if(ok && (PushWantGod || had || !godPackages.empty())) {
+            std::string error;
+            if(!MakeFolders(ftp,GodHome(o)+"/",FtpDrive(o.xboxFolder).size(),error)) { XboxLog(console,"%s",error.c_str()); godOk=false; }
+            else godOk=Sync(client,storage,GodHome(o).c_str(),Launcher.data(),DWORD(Launcher.size()),
+                            Boot.empty() ? NULL : Boot.data(),DWORD(Boot.size()),PushNote,god,removeGone,InstallFor,RoleFor,WantedGod,PlacedGod,PushProgress,
+                            app.c_str());
+            if(!godOk) XboxLog(console,"updating the Games on Demand tiles' game folders stopped: %s",LastPushNote.c_str());
+        }
+        console.pushTotal=0; console.pushDone=0;
         tiles.swap(PushTiles);
+        godTiles.swap(PushGodTiles);
     }
+    int godChanged=0;
+    if(ok && godOk) godOk=GodTiles(console,ftp,o,godTiles,storage.launchers,godPackages,godChanged);
+    if(ok && godChanged) {
+        std::string reply, content=GodContent(o);
+        if(o.scan && ftp.Site(("INITIATESCAN "+content).c_str(),reply) && reply.find("Unable")==std::string::npos)
+            XboxLog(console,"asked Aurora to scan %s, so it lists the Games on Demand tiles now.",content.c_str());
+    }
+    for(size_t i=0;i<godTiles.size();++i) godFolders[Lower(godTiles[i].first)]=GodHome(o)+"/"+godTiles[i].second;
+    if(!godOk) ++result.failed;
     if(ok) {
         bool changed;
-        { std::lock_guard<std::mutex> hold(ConsoleLock); changed=console.tiles!=tiles; console.tiles.swap(tiles); }
+        {
+            std::lock_guard<std::mutex> hold(ConsoleLock);
+            changed=console.tiles!=tiles || (godOk && console.godTiles!=godFolders);
+            console.tiles.swap(tiles);
+            if(godOk) console.godTiles.swap(godFolders);
+        }
         if(changed) GamesChanged();
     }
+    if(ok && (god.added || god.removed || godChanged))
+        XboxLog(console,"Games on Demand tiles: %d game folder(s) added and %d removed in %s, %d package(s) written or deleted.",god.added,god.removed,GodHome(o).c_str(),godChanged);
+    if(ok && leftOther-int(godTiles.size())>0)
+        XboxLog(console,"%s get%s no tile: set so on the Consoles page.",Count(leftOther-int(godTiles.size()),"game","games").c_str(),leftOther-int(godTiles.size())==1 ? "s" : "");
     if(ok && result.failed) XboxLog(console,"game folders written: %d added, %d removed, %d kept (%d updated), %d skipped, %d file(s) failed; trying those again in %.0f s.",
                                     result.added,result.removed,result.kept,result.updated,result.skipped,result.failed,RetryFailedSeconds);
     else if(ok) XboxLog(console,"game folders up to date: %d added, %d removed, %d kept (%d updated), %d skipped.",result.added,result.removed,result.kept,result.updated,result.skipped);
@@ -2533,7 +2914,7 @@ const char AuroraContentDb[] = "/Data/Databases/content.db";
 struct ArtlessTile { std::string folder, title; };
 
 // Aurora's Directory for a game folder: the game folder's path without its
-// drive, with backslashes ("\NetISO\Halo 3" for /Hdd1/NetISO/Halo 3).
+// drive, with backslashes ("\NetDisc360\Games\Halo 3" for /Hdd1/NetDisc360/Games/Halo 3).
 std::string AuroraDirectory(const Options& o, const std::string& folder) {
     std::string path=o.xboxFolder;
     size_t drive=path.find('/',1);
@@ -2665,10 +3046,14 @@ struct PushState {
     // nothing else goes on with the console (see RestartWhenSafe).
     bool restartWanted;
     double restartSince;
+    bool moveChecked;            // Its tiles in OldXboxFolder were looked for, and moved (MoveOldFolder).
+    bool moveRestart;            // Tiles were moved, and Aurora is to restart once its scripts are written.
+    bool movedRestarted;         // Aurora was restarted once its rows had followed (FinishMove).
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
     PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), installedAt(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
-                  toldInstalled(false), installedChanged(false), restarted(false), restartWanted(false), restartSince(0) {}
+                  toldInstalled(false), installedChanged(false), restarted(false), restartWanted(false), restartSince(0),
+                  moveChecked(false), moveRestart(false), movedRestarted(false) {}
 };
 
 // Aurora's FTP server takes one upload at a time: two at once leave files
@@ -2681,9 +3066,11 @@ struct PushMark {
     ~PushMark();
 };
 // The games installed on the console, for its push and the dashboard (see installed.h).
-void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options& o, std::vector<InstalledGame>& found) {
+void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options& o, std::vector<InstalledGame>& found, std::vector<InstalledGame>& godPackages) {
     std::string error;
-    bool ok=s.installed.Find(ftp,InstalledFolders(o.installedFolders),o.xboxFolder,found,error);
+    std::vector<std::string> skip;
+    skip.push_back(o.xboxFolder); skip.push_back(GodHome(o));
+    bool ok=s.installed.Find(ftp,InstalledFolders(o.installedFolders),skip,found,godPackages,error);
     if(!ok && !s.toldInstalled)
         XboxLog(console,"couldn't look for the games installed on it (%s); %s.",error.c_str(),
                 found.empty() ? "until it can, its installed games get game folders too" : "going by what it found before");
@@ -2703,6 +3090,7 @@ void LookInstalled(Console& console, PushState& s, FtpClient& ftp, const Options
             changed=a.titleId!=b.titleId || a.disc!=b.disc || a.path!=b.path || a.god!=b.god;
         }
         console.installed=found;
+        console.godPackages=godPackages;
     }
     if(changed) GamesChanged();
 }
@@ -2802,6 +3190,12 @@ void LookTitleUpdatesNow(const std::vector<Console*>& consoles, const Options& o
 void EnsureFolder(FtpClient& ftp, const std::string& folder) {
     if(!ftp.Enters(folder.c_str()) && ftp.Code()/100==5) ftp.MakeFolder(folder.c_str());
 }
+// folder and the folders it is in, below its drive (/Hdd1/NetDisc360 for
+// /Hdd1/NetDisc360/Games).
+void EnsureFolders(FtpClient& ftp, const std::string& folder) {
+    std::string unused;
+    MakeFolders(ftp,folder+"/",FtpDrive(folder).size(),unused);
+}
 
 // Restarts Aurora on the console through its web server, if Aurora is what it shows.
 bool RestartAurora(const Console& console, const Options& o, const char* why) {
@@ -2822,7 +3216,20 @@ void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const 
     if(!ftp.List(o.xboxFolder.c_str(),entries)) return;
     std::vector<std::string> folders;
     for(size_t i=0;i<entries.size();++i) if(entries[i].folder) folders.push_back(entries[i].name);
-    std::string cleanup=CleanupScript(o.xboxFolder,folders), online=OnlineScript(o.xboxFolder,o.tidyAurora);
+    std::string helper=XboxAppFolder(o);
+    EnsureFolders(ftp,helper);
+    std::vector<FtpEntry> files;
+    bool listed=ftp.List(helper.c_str(),files);
+    // By the listing: a read of a file that isn't there can stall FtpDll's next one.
+    bool marker=false, shown=false, moving=false;
+    for(size_t i=0;i<files.size();++i) {
+        if(!files[i].folder && !_stricmp(files[i].name.c_str(),OnlineMarker)) marker=true;
+        if(!files[i].folder && !_stricmp(files[i].name.c_str(),ShownMarker)) shown=true;
+        if(!files[i].folder && !_stricmp(files[i].name.c_str(),MoveMarker)) moving=true;
+    }
+    // Moved tiles whose rows in Aurora haven't followed yet: the scripts move them.
+    std::string from=moving && DefaultLayout(o) ? std::string(OldXboxFolder) : std::string();
+    std::string cleanup=CleanupScript(o.xboxFolder,folders,from,helper), online=OnlineScript(o.xboxFolder,helper,from,folders,o.tidyAurora);
     if(cleanup.empty() || online.empty()) return;  // Game folders at a drive's top: no script could tell them apart.
     std::string cleanupPath=o.aurora+CleanupScriptPath, onlinePath=o.aurora+OnlineScriptPath;
     if(!ftp.Enters(o.aurora.c_str())) return;  // GuardFilter tells about that.
@@ -2836,16 +3243,7 @@ void RefreshAuroraScripts(Console& console, PushState& s, FtpClient& ftp, const 
     written=RefreshRemote(ftp,onlinePath,std::vector<unsigned char>(online.begin(),online.end()));
     if(written>0) XboxLog(console,"wrote Aurora's \"Hide PC games while NetDisc360 is off\" filter (%s). Restart Aurora, then pick it under Filters, User.",onlinePath.c_str());
     else if(written<0) XboxLog(console,"couldn't write %s: %s",onlinePath.c_str(),ftp.Error());
-    std::string helper=o.xboxFolder+"/"+HelperFolder;
-    EnsureFolder(ftp,helper);
-    std::vector<FtpEntry> files;
-    if(!ftp.List(helper.c_str(),files)) return;
-    // By the listing: a read of a file that isn't there can stall FtpDll's next one.
-    bool marker=false, shown=false;
-    for(size_t i=0;i<files.size();++i) {
-        if(!files[i].folder && !_stricmp(files[i].name.c_str(),OnlineMarker)) marker=true;
-        if(!files[i].folder && !_stricmp(files[i].name.c_str(),ShownMarker)) shown=true;
-    }
+    if(!listed) return;
     if(!marker) {
         static const char text[]="NetDisc360 runs on the PC; it deletes this file when it quits.\r\n";
         if(!ftp.Store((helper+"/"+OnlineMarker).c_str(),text,sizeof(text)-1)) { XboxLog(console,"couldn't write %s/%s: %s",helper.c_str(),OnlineMarker,ftp.Error()); return; }
@@ -2875,6 +3273,105 @@ void RestartWhenSafe(Console& console, PushState& s, const Options& o, int own) 
     }
     s.restartWanted=false;
     if(RestartAurora(console,o,"so its filter shows the PC games again")) XboxEvent(console,EventInfo,"Aurora restarted to show the PC games");
+}
+
+// Moves a console's tiles from OldXboxFolder, where servers before the
+// NetDisc360 folders put them, to the Xbox folder, and NetDisc360's own files
+// from its folder there (OldXboxFolder/NetDisc360) to XboxAppFolder. They're
+// renamed over FTP on the same drive, so nothing is copied or sent again. A
+// tile whose name is taken in the new folder (an older server put it back)
+// goes if it holds nothing but the launcher's own files, as Sync removes
+// one, else it stays; so does what isn't NetDisc360's (NetISO Sync). The
+// old folders go only once they're empty.
+// Aurora's rows follow the tiles at its next start (MoveLua, in the scripts
+// RefreshAuroraScripts writes while MoveMarker is in XboxAppFolder), so the
+// games keep their art, favourites and play history.
+// The number of tiles moved; -1 if the old folder couldn't be read.
+int MoveOldFolder(Console& console, FtpClient& ftp, const Options& o) {
+    if(!ftp.Enters(OldXboxFolder)) return ftp.Code()/100==5 ? 0 : -1;  // Not there: nothing to move.
+    std::vector<FtpEntry> old, here, appHere;
+    std::string app=XboxAppFolder(o);
+    EnsureFolders(ftp,o.xboxFolder); EnsureFolders(ftp,app);
+    if(!ftp.List(OldXboxFolder,old) || !ftp.List(o.xboxFolder.c_str(),here) || !ftp.List(app.c_str(),appHere)) {
+        XboxLog(console,"couldn't look at %s to move its games to %s: %s",OldXboxFolder,o.xboxFolder.c_str(),ftp.Error());
+        return -1;
+    }
+    auto has=[](const std::vector<FtpEntry>& list, const std::string& name) {
+        for(size_t i=0;i<list.size();++i) if(!_stricmp(list[i].name.c_str(),name.c_str())) return true;
+        return false;
+    };
+    int moved=0, kept=0, failed=0, own=0, dropped=0;
+    FtpStorage storage(ftp);
+    for(size_t i=0;i<old.size();++i) {
+        const FtpEntry& e=old[i];
+        std::string from=std::string(OldXboxFolder)+"/"+e.name;
+        if(e.folder && !_stricmp(e.name.c_str(),HelperFolder)) {
+            std::vector<FtpEntry> files;
+            if(!ftp.List(from.c_str(),files)) { ++failed; continue; }
+            for(size_t k=0;k<files.size();++k) {
+                std::string path=from+"/"+files[k].name;
+                if(has(appHere,files[k].name)) {
+                    // The new folder has its own already. The old helper goes, so no tile starts it.
+                    if(!files[k].folder && !_stricmp(files[k].name.c_str(),HelperXex)) ftp.Delete(path.c_str());
+                    continue;
+                }
+                if(ftp.Rename(path.c_str(),(app+"/"+files[k].name).c_str())) ++own;
+                else XboxLog(console,"couldn't move %s to %s: %s",path.c_str(),app.c_str(),ftp.Error());
+            }
+            ftp.RemoveFolder(from.c_str());  // Only once it's empty.
+            continue;
+        }
+        if(!e.folder || !_stricmp(e.name.c_str(),SyncFolder)) continue;
+        if(has(here,e.name)) { if(storage.RemoveGame(from.c_str())) ++dropped; else ++kept; continue; }
+        if(ftp.Rename(from.c_str(),(o.xboxFolder+"/"+e.name).c_str())) ++moved;
+        else { ++failed; XboxLog(console,"couldn't move %s to %s: %s",from.c_str(),o.xboxFolder.c_str(),ftp.Error()); }
+    }
+    bool empty=ftp.RemoveFolder(OldXboxFolder);  // Only once it's empty.
+    if(!moved && !own && !kept && !failed && !dropped) return 0;
+    XboxLog(console,"moved %s from %s to %s%s%s%s%s%s.",Count(moved,"game folder","game folders").c_str(),OldXboxFolder,o.xboxFolder.c_str(),
+            own ? (", and NetDisc360's own files to "+app).c_str() : "",
+            dropped ? (" (removed "+Count(dropped,"older copy","older copies")+" of tiles the new folder has)").c_str() : "",
+            kept ? (" ("+Count(kept,"folder","folders")+" left there: the same name is taken in the new folder)").c_str() : "",
+            failed ? (" ("+Count(failed,"folder","folders")+" couldn't be moved)").c_str() : "",
+            empty ? "; the old folder is gone" : "");
+    if(moved) {
+        static const char text[]="NetDisc360 moved its tiles here; Aurora's list follows them as it starts.\r\n";
+        if(!ftp.Store((app+"/"+MoveMarker).c_str(),text,sizeof(text)-1))
+            XboxLog(console,"couldn't write %s/%s, so Aurora's list may not follow the games: %s",app.c_str(),MoveMarker,ftp.Error());
+        XboxEvent(console,EventGood,"Games moved to "+ConsolePath(o.xboxFolder),
+                  "Games on "+std::string(console.text)+" moved to "+ConsolePath(o.xboxFolder));
+    }
+    return moved;
+}
+
+// What Aurora's scripts did with moved tiles (MovedMarker, see MoveLua). When
+// rows moved, Aurora is restarted once more, so its list shows them in their
+// new folder. MoveMarker goes once Aurora's list could be read, so the
+// scripts stop moving; if it couldn't, the cleanup script can do it.
+void FinishMove(Console& console, PushState& s, FtpClient& ftp, const Options& o) {
+    std::string app=XboxAppFolder(o);
+    std::vector<FtpEntry> files;
+    if(!ftp.List(app.c_str(),files)) return;
+    bool there=false;
+    for(size_t i=0;i<files.size();++i) if(!files[i].folder && !_stricmp(files[i].name.c_str(),MovedMarker)) there=true;
+    std::vector<unsigned char> data;
+    if(!there || !ftp.Retrieve((app+"/"+MovedMarker).c_str(),data,256)) return;
+    ftp.Delete((app+"/"+MovedMarker).c_str());
+    std::string done(data.begin(),data.end());
+    int rows=0, left=0, scanPath=0;
+    if(sscanf(done.c_str(),"moved=%d left=%d scanpath=%d",&rows,&left,&scanPath)!=3) {
+        XboxLog(console,"Aurora couldn't move its list to the games' new folder as it started (%s). Run Utilities, NetDisc360 Cleanup in Aurora to do it.",done.c_str());
+        XboxEvent(console,EventWarning,"Run NetDisc360 Cleanup in Aurora's Utilities to finish moving the games");
+        return;
+    }
+    ftp.Delete((app+"/"+MoveMarker).c_str());
+    if(!rows && !scanPath) return;
+    XboxLog(console,"Aurora's list follows the games to %s: %s moved%s%s.",o.xboxFolder.c_str(),Count(rows,"game","games").c_str(),
+            scanPath ? ", and its scan path with them" : "",
+            left ? (", "+Count(left,"game","games")+" stay on the list at their old place (Utilities, NetDisc360 Cleanup takes them off)").c_str() : "");
+    if(s.movedRestarted || !o.restartAurora) return;
+    s.movedRestarted=true;
+    RestartAurora(console,o,"so its list shows the games in their new folder");
 }
 
 void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o);
@@ -2948,8 +3445,8 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         console.recheck=false;
         s.installedAt=Now();
         std::string before=s.installedSeen;
-        std::vector<InstalledGame> found;
-        LookInstalled(console,s,ftp,o,found);
+        std::vector<InstalledGame> found, godPackages;
+        LookInstalled(console,s,ftp,o,found,godPackages);
         if(s.installedSeen!=before) {
             XboxLog(console,"what's installed on it changed; its game folders are written again.");
             s.installedChanged=true;
@@ -2957,6 +3454,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         }
     }
     if(o.filter && (back || pushDue)) GuardFilter(console,ftp,back,o);
+    if(o.auroraScripts && DefaultLayout(o) && (back || pushDue || scanDue)) FinishMove(console,s,ftp,o);
     if(back || pushDue) GuardAppArt(console,ftp,o);
     if(pushDue && !online && !s.toldWaiting) {
         XboxLog(console,"waiting for it to come online before writing game folders (its NetISO plugin connects to this server; at most %.0f s).",o.onlineWait);
@@ -2969,10 +3467,16 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         bool missing=FoldersMissing;
         // Before the push's own connections to this server count as the console's.
         if(o.followAddress) FollowAddress(console,s,ftp,o);
-        std::vector<InstalledGame> installed;
-        LookInstalled(console,s,ftp,o,installed);
+        // Tiles from before the NetDisc360 folders move first, so the push finds them.
+        if(DefaultLayout(o) && !s.moveChecked) {
+            int moved=MoveOldFolder(console,ftp,o);
+            s.moveChecked=moved>=0;
+            if(moved>0) s.moveRestart=true;
+        }
+        std::vector<InstalledGame> installed, godPackages;
+        LookInstalled(console,s,ftp,o,installed,godPackages);
         s.installedAt=Now();
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed)) {
+        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages)) {
             s.everPushed=true; s.pushed=state; s.installedChanged=false;
             console.recheck=false;  // The push looked at everything a recheck would.
             lookUpdates=true;
@@ -2981,6 +3485,18 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
             if(o.filter) { RefreshInstallFilter(console,ftp,o); RefreshRecentFilter(console,ftp,o); }
             PutPartyApp(console,ftp,o);
             if(o.auroraScripts) RefreshAuroraScripts(console,s,ftp,o);
+            // Aurora's list still has the moved games at their old place: its
+            // scripts move them as it starts.
+            if(s.moveRestart) {
+                s.moveRestart=false;
+                if(!o.auroraScripts)
+                    XboxLog(console,"Aurora's scripts are off in NetDisc360's settings, so its list can't follow the moved games: it adds them again as new games after its next scan of %s.",o.xboxFolder.c_str());
+                else if(!(o.restartAurora && RestartAurora(console,o,"so its list follows the games to their new folder")))
+                    XboxEvent(console,EventInfo,"Restart Aurora so its list follows the games to their new folder",
+                              "Restart Aurora on "+std::string(console.text)+" so its list follows the games to their new folder");
+                // A scan once it's back, which also looks for what its scripts did (FinishMove).
+                if(o.scan && !s.scanTries) { s.scanTries=o.pushOnce ? 1 : ScanTries; s.scanAt=Now()+(o.pushOnce ? 0 : ScanRetrySeconds); }
+            }
             // Folders held while a game folder is missing wait for it to come
             // back, which changes the state (see WatchLoop).
             s.retryAt=result.failed ? Now()+RetryFailedSeconds : result.held && !missing ? holdFrom+o.removeWait : result.skipped ? Now()+RetrySkippedSeconds : 0;
@@ -3301,6 +3817,7 @@ bool Save() {
     f.Set("ftp_user",o.ftpUser);
     f.Set("ftp_password",config::Protect(o.ftpPassword));
     f.Set("xbox_folder",o.xboxFolder);
+    f.Set("xbox_layout","2");
     f.Set("aurora",o.aurora);
     if(CanPush) f.Set("push",o.push ? "1" : "0");
     f.Set("category",o.filter ? "1" : "0");
@@ -3359,6 +3876,19 @@ bool Save() {
         f.Set(("choice"+Number(++n)).c_str(),c->first+"|"+copies+"|"+config::ToUtf8(c->second.path));
     }
     for(long long i=n+1;i<=before;++i) f.Remove(("choice"+Number(i)).c_str());
+    f.Set("tile_mode",o.tileMode);
+    std::map<std::string,TileChoice> tileChoices;
+    { std::lock_guard<std::mutex> hold(SettingsLock); tileChoices=TileChoices; }
+    before=Listed(f,"tile_choices");
+    n=0;
+    for(std::map<std::string,TileChoice>::const_iterator c=tileChoices.begin();c!=tileChoices.end();++c) {
+        if(c->second.mode.empty() && c->second.games.empty()) continue;
+        std::string value=c->first+"|"+c->second.mode;
+        for(std::map<std::string,std::string>::const_iterator g=c->second.games.begin();g!=c->second.games.end();++g) value+="|"+g->second+":"+config::ToUtf8(g->first);
+        f.Set(("tile_choice"+Number(++n)).c_str(),value);
+    }
+    f.Set("tile_choices",Number(n));
+    for(long long i=n+1;i<=before;++i) f.Remove(("tile_choice"+Number(i)).c_str());
     before=Listed(f,"consoles");
     f.Set("consoles",Number((long long)known.size()));
     // address|seen, then |id|name once its name was read (the name last: no bar is in it).
@@ -3422,6 +3952,15 @@ bool LoadConfig(Options& o) {
     std::string password;
     if(f.Has("ftp_password") && config::Unprotect(f.Get("ftp_password"),password)) o.ftpPassword=password;
     if(!f.Get("xbox_folder").empty()) o.xboxFolder=f.Get("xbox_folder");
+    // Settings from before the NetDisc360 folders have the Xbox folder of
+    // then, Hdd1:\NetISO, which was the default; it is the new default now,
+    // and the consoles' tiles move there (MoveOldFolder). Saved again, the
+    // settings say so (xbox_layout), so a later choice of the old folder stays.
+    if(f.Get("xbox_layout").empty()) {
+        std::string folder=o.xboxFolder;
+        while(folder.size()>1 && folder[folder.size()-1]=='/') folder.erase(folder.size()-1);
+        if(!_stricmp(folder.c_str(),OldXboxFolder)) o.xboxFolder=DefaultXboxFolder;
+    }
     if(!f.Get("aurora").empty()) o.aurora=f.Get("aurora");
     o.push=Flag(f,"push",o.push);
     o.filter=Flag(f,"category",o.filter);
@@ -3457,6 +3996,31 @@ bool LoadConfig(Options& o) {
     o.keepAwake=Flag(f,"keep_awake",o.keepAwake);
     o.showName=Flag(f,"show_name",o.showName);
     if(f.Has("auto_off_minutes")) o.autoOffMinutes=std::max(0,std::min(1440,int(f.Number("auto_off_minutes",0))));
+    if(IsTileMode(f.Get("tile_mode"))) o.tileMode=f.Get("tile_mode");
+    {
+        // "address|mode|style:listed name|..." (see TileChoice).
+        std::map<std::string,TileChoice> tileChoices;
+        for(long long i=1,n=Listed(f,"tile_choices");i<=n;++i) {
+            std::string value=f.Get(("tile_choice"+Number(i)).c_str());
+            std::vector<std::string> parts;
+            for(size_t at=0;at<=value.size();) {
+                size_t bar=value.find('|',at);
+                if(bar==std::string::npos) bar=value.size();
+                parts.push_back(value.substr(at,bar-at));
+                at=bar+1;
+            }
+            if(parts.size()<2 || inet_addr(parts[0].c_str())==INADDR_NONE) continue;
+            TileChoice& c=tileChoices[parts[0]];
+            if(IsTileMode(parts[1])) c.mode=parts[1];
+            for(size_t k=2;k<parts.size();++k) {
+                size_t colon=parts[k].find(':');
+                if(colon!=std::string::npos && colon+1<parts[k].size() && IsTileMode(parts[k].substr(0,colon)))
+                    c.games[Lower(config::FromUtf8(parts[k].substr(colon+1)))]=parts[k].substr(0,colon);
+            }
+        }
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        TileChoices.swap(tileChoices);
+    }
     {
         std::lock_guard<std::mutex> hold(SettingsLock);
         OwnAddresses.clear();
@@ -3559,7 +4123,7 @@ void WakeAdapter(const Options& o, std::string& mac, std::string& address) {
 std::mutex WakeLock;
 std::map<DWORD,std::string> WakeWritten;
 
-// Keeps wake.ini in the helper's folder on a console (Hdd1:\NetISO\NetDisc360)
+// Keeps wake.ini in the helper's folder on a console (Hdd1:\Apps\NetDisc360)
 // naming the adapter this computer reaches it with, so its launcher can
 // wake this computer (see wake.h); takes it away when waking is off.
 void RefreshWake(const Console& console, FtpClient& ftp, const Options& o) {
@@ -3573,7 +4137,7 @@ void RefreshWake(const Console& console, FtpClient& ftp, const Options& o) {
         }
         if(!mac.empty() && own) text=wake::Ini(mac,own,all);
     }
-    std::string path=o.xboxFolder+"/"+HelperFolder+"/wake.ini";
+    std::string path=XboxAppFolder(o)+"/wake.ini";
     {
         std::lock_guard<std::mutex> hold(WakeLock);
         std::map<DWORD,std::string>::const_iterator known=WakeWritten.find(console.address);
@@ -3587,7 +4151,7 @@ void RefreshWake(const Console& console, FtpClient& ftp, const Options& o) {
         if(has) XboxLog(console,"deleted %s: the Xbox doesn't wake this computer.",path.c_str());
         else if(o.wake) XboxLog(console,"no network adapter with a MAC address reaches it, so its launcher can't wake this computer.");
     } else {
-        ftp.MakeFolder((o.xboxFolder+"/"+HelperFolder).c_str());
+        EnsureFolders(ftp,XboxAppFolder(o));
         if(!ftp.Store(path.c_str(),text.data(),text.size())) { XboxLog(console,"couldn't write %s: %s",path.c_str(),ftp.Error()); return; }
         XboxLog(console,"wrote %s, so its launcher can wake this computer (%s).",path.c_str(),text.substr(4,17).c_str());
     }
@@ -4283,6 +4847,75 @@ bool RecentlyFolder(const std::string& folder) {
     return found;
 }
 
+// The consoles' choices of how they get the games (see TileChoice), with
+// each game by the name the dashboard shows it by.
+std::map<std::string,TileChoice> TileChoicesShown() {
+    std::map<std::string,TileChoice> choices;
+    { std::lock_guard<std::mutex> hold(SettingsLock); choices=TileChoices; }
+    std::map<std::string,std::string> names;
+    {
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<GamesList.size();++i) names[Lower(GamesList[i].name)]=config::ToUtf8(WithoutIso(GamesList[i].name));
+    }
+    for(std::map<std::string,TileChoice>::iterator c=choices.begin();c!=choices.end();++c) {
+        std::map<std::string,std::string> shown;
+        for(std::map<std::string,std::string>::const_iterator g=c->second.games.begin();g!=c->second.games.end();++g) {
+            std::map<std::string,std::string>::const_iterator name=names.find(g->first);
+            shown[name!=names.end() ? name->second : config::ToUtf8(WithoutIso(g->first))]=g->second;
+        }
+        c->second.games.swap(shown);
+    }
+    return choices;
+}
+// "tiles": {"mode": "" (the default), folder, god or none, "games": {name: mode}}.
+void TileChoiceJson(web::Json& j, const std::map<std::string,TileChoice>& choices, const std::string& address) {
+    std::map<std::string,TileChoice>::const_iterator c=choices.find(address);
+    j.Key("tiles").Open('{').Set("mode",c==choices.end() ? std::string() : c->second.mode).Key("games").Open('{');
+    if(c!=choices.end()) for(std::map<std::string,std::string>::const_iterator g=c->second.games.begin();g!=c->second.games.end();++g) j.Set(g->first.c_str(),g->second);
+    j.Close('}').Close('}');
+}
+
+bool Text(const web::Value& v, const char* key, std::string& out);
+bool Save();
+
+// POST /api/consoles/tiles {address, mode, games: {name: mode}}: how that
+// console gets the games; mode "" goes by the default, and games, if sent,
+// is every game that goes otherwise than mode.
+bool SetTileChoice(const web::Value& v, std::string& error) {
+    std::string address, mode;
+    if(!Text(v,"address",address) || inet_addr(address.c_str())==INADDR_NONE) { error="Send the console's address."; return false; }
+    bool modeSent=Text(v,"mode",mode);
+    if(modeSent && !mode.empty() && !IsTileMode(mode)) { error="A console gets its games as folder, god or none."; return false; }
+    const web::Value* games=v.Get("games");
+    std::map<std::string,std::string> picks;
+    if(games) {
+        if(games->type!=web::Value::Object) { error="games is {name: mode}."; return false; }
+        std::lock_guard<std::mutex> hold(GamesListLock);
+        for(size_t i=0;i<games->fields.size();++i) {
+            const std::string& name=games->fields[i].first;
+            const web::Value& m=games->fields[i].second;
+            if(m.type!=web::Value::String || (!m.text.empty() && !IsTileMode(m.text))) { error="A game goes as folder, god or none."; return false; }
+            if(m.text.empty()) continue;
+            const IsoFile* game=NULL;
+            for(size_t k=0;k<GamesList.size() && !game;++k) if(config::ToUtf8(WithoutIso(GamesList[k].name))==name) game=&GamesList[k];
+            if(!game) { error="There's no game called "+name+" here."; return false; }
+            picks[Lower(game->name)]=m.text;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(SettingsLock);
+        TileChoice& c=TileChoices[address];
+        if(modeSent) c.mode=mode;
+        if(games) c.games.swap(picks);
+        if(c.mode.empty() && c.games.empty()) TileChoices.erase(address);
+    }
+    Save();
+    Log("Xbox %s: its games come %s now (set on the dashboard).",address.c_str(),
+        mode==TileGod ? "as Games on Demand" : mode==TileNone ? "not at all" : mode==TileFolder ? "as game folders" : "as the default says");
+    ++PushGeneration;
+    return true;
+}
+
 void State(web::Reply& out) {
     Options o;
     std::vector<KnownConsole> known;
@@ -4319,7 +4952,7 @@ void State(web::Reply& out) {
         WakeAdapter(o,mac,address);
         j.Key("wakeAdapter").Open('{').Set("mac",mac).Set("address",address).Close('}');
     }
-    j.Set("skipInstalled",o.skipInstalled).Set("installedFolders",o.installedFolders).Set("auroraScripts",o.auroraScripts);
+    j.Set("skipInstalled",o.skipInstalled).Set("installedFolders",o.installedFolders).Set("auroraScripts",o.auroraScripts).Set("tileMode",o.tileMode);
     j.Set("restartAurora",o.restartAurora).Set("auroraWebUser",o.auroraWebUser).Set("auroraWebPasswordSet",!o.auroraWebPassword.empty());
     j.Set("auroraWebPort",o.auroraWebPort).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake).Set("autoOffMinutes",o.autoOffMinutes);
     j.Set("showName",o.showName).Set("tidyAurora",o.tidyAurora).Set("pluginSet",o.pluginSet).Set("pluginKit",o.pluginKit);
@@ -4356,6 +4989,7 @@ void State(web::Reply& out) {
     std::vector<Console*> consoles=AllConsoles();
     U64 total=0;
     double rate=0;
+    std::map<std::string,TileChoice> tileChoices=TileChoicesShown();
     j.Key("consoles").Open('[');
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
@@ -4383,7 +5017,9 @@ void State(web::Reply& out) {
             j.Close(']').Key("events").Open('[');
             for(size_t e=0;e<c.recent.size();++e)
                 j.Open('{').Set("time",c.recent[e].time).Set("kind",EventKinds[c.recent[e].kind]).Set("text",config::ToUtf8(c.recent[e].text)).Close('}');
-            j.Close(']').Close('}');
+            j.Close(']');
+            TileChoiceJson(j,tileChoices,c.text);
+            j.Set("godTiles",(long long)c.godTiles.size()).Close('}');
         }
     }
     for(size_t k=0;k<known.size();++k) {
@@ -4393,7 +5029,9 @@ void State(web::Reply& out) {
         j.Open('{').Set("address",known[k].address).Set("name",known[k].name).Set("id",known[k].id).Set("connections",0).Set("sent",0).Set("ftp",0).Set("synced",0LL).Set("mounted","");
         j.Set("playing",false).Set("inAurora",false).Set("ping",-1).Set("answers",false).Set("offline",false).Set("answered",0LL);
         j.Set("push",o.xboxes.empty() || std::find(o.xboxes.begin(),o.xboxes.end(),inet_addr(known[k].address.c_str()))!=o.xboxes.end());
-        j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']').Close('}');
+        j.Set("seen",known[k].seen).Key("rate").Open('[').Close(']').Key("events").Open('[').Close(']');
+        TileChoiceJson(j,tileChoices,known[k].address);
+        j.Set("godTiles",0LL).Close('}');
     }
     j.Close(']');
     double peak;
@@ -4464,6 +5102,7 @@ void Games(web::Reply& out) {
         for(size_t i=0;i<consoles.size();++i) {
             const Console& c=*consoles[i];
             for(std::map<std::string,std::string>::const_iterator t=c.tiles.begin();t!=c.tiles.end();++t) tiles[t->first].push_back(c.text);
+            for(std::map<std::string,std::string>::const_iterator t=c.godTiles.begin();t!=c.godTiles.end();++t) tiles[t->first].push_back(c.text);
             for(size_t k=0;k<c.installed.size();++k) {
                 std::vector<std::string>& on=installed[std::make_pair(c.installed[k].titleId,c.installed[k].disc)];
                 if(std::find(on.begin(),on.end(),std::string(c.text))==on.end()) on.push_back(c.text);
@@ -5238,8 +5877,8 @@ void SpeedTest(const web::Value& body, web::Reply& out) {
     if(!busy.owns_lock()) { out.Error(409,"A console's game folders are being written right now; try again in a moment."); return; }
     FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),30);
     if(!ftp.Open()) { out.Error(502,std::string("Aurora doesn't answer: ")+ftp.Error()); return; }
-    std::string folder=o.xboxFolder+"/"+HelperFolder;
-    ftp.MakeFolder(o.xboxFolder.c_str()); ftp.MakeFolder(folder.c_str());
+    std::string folder=XboxAppFolder(o);
+    EnsureFolders(ftp,folder);
     std::string path=folder+"/speed-test.tmp";
     std::vector<unsigned char> data(SpeedTestBytes);
     for(size_t i=0;i<data.size();++i) data[i]=(unsigned char)(i*2654435761u>>24);  // Not all zeros, should anything compress.
@@ -5373,7 +6012,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     }
     Text(v,"ftpPassword",next.ftpPassword);
     if(Text(v,"xboxFolder",text)) {
-        if(text.empty() || text[0]!='/') { error="The game folder on the Xbox is an FTP path like /Hdd1/NetISO."; return false; }
+        if(text.empty() || text[0]!='/') { error="The game folder on the Xbox is an FTP path like /Hdd1/NetDisc360/Games."; return false; }
         next.xboxFolder=FtpFolder(text);
     }
     if(Text(v,"aurora",text)) {
@@ -5398,6 +6037,10 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     Whole(v,"auroraWebPort",1,65535,next.auroraWebPort,error);
     if(!error.empty()) return false;
     Bool(v,"skipInstalled",next.skipInstalled);
+    if(Text(v,"tileMode",text)) {
+        if(!IsTileMode(text)) { error="Games come to a console as folder, god or none."; return false; }
+        next.tileMode=text;
+    }
     if(Text(v,"installedFolders",text)) {
         std::vector<std::string> folders=InstalledFolders(text);
         std::string list;
@@ -5469,6 +6112,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.saveBackup!=was.saveBackup) changed.push_back(next.saveBackup ? "game saves backed up after each game" : "game saves not backed up");
     if(next.saveKeep!=was.saveKeep) changed.push_back("keeping the newest "+Count(next.saveKeep,"save backup","save backups")+" of each game");
     if(next.skipInstalled!=was.skipInstalled) changed.push_back(next.skipInstalled ? "games installed on a console get no tile" : "installed games get a tile too");
+    if(next.tileMode!=was.tileMode) changed.push_back("new consoles get the games "+std::string(next.tileMode==TileGod ? "as Games on Demand" : next.tileMode==TileNone ? "not at all" : "as folders in "+next.xboxFolder));
     if(next.installedFolders!=was.installedFolders) changed.push_back("installed games looked for in "+(next.installedFolders.empty() ? std::string("Games on Demand only") : next.installedFolders));
     if(next.auroraScripts!=was.auroraScripts) changed.push_back(next.auroraScripts ? "Aurora scripts on" : "Aurora scripts off");
     if(next.restartAurora!=was.restartAurora) changed.push_back(next.restartAurora ? "Aurora restarted when the PC games appear or go" : "Aurora never restarted");
@@ -5493,7 +6137,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
         Settings.autoOffMinutes=next.autoOffMinutes; Settings.showName=next.showName; Settings.tidyAurora=next.tidyAurora;
-        Settings.pluginSet=next.pluginSet; Settings.pluginKit=next.pluginKit;
+        Settings.pluginSet=next.pluginSet; Settings.pluginKit=next.pluginKit; Settings.tileMode=next.tileMode;
     }
     // Pre-releases in or out changes which release is the newest.
     if(next.updatePrerelease!=was.updatePrerelease || (next.updateCheck && !was.updateCheck)) CheckSoon=true;
@@ -5502,7 +6146,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.xboxes!=was.xboxes || login || next.xboxFolder!=was.xboxFolder || next.aurora!=was.aurora ||
        (next.push && !was.push) || (next.filter && !was.filter) || next.skipInstalled!=was.skipInstalled ||
        next.installedFolders!=was.installedFolders || (next.auroraScripts && !was.auroraScripts) || next.tidyAurora!=was.tidyAurora ||
-       next.wake!=was.wake || next.wakeMac!=was.wakeMac) ++PushGeneration;
+       next.wake!=was.wake || next.wakeMac!=was.wakeMac || next.tileMode!=was.tileMode) ++PushGeneration;
     if(next.webLan!=was.webLan) StartWeb(Current(),true);
     if(!changed.empty()) {
         std::string what;
@@ -5631,7 +6275,7 @@ void Reload(std::vector<std::string>& notes) {
         Settings.restartAurora=o.restartAurora; Settings.auroraWebUser=o.auroraWebUser; Settings.auroraWebPassword=o.auroraWebPassword;
         Settings.auroraWebPort=o.auroraWebPort; Settings.followAddress=o.followAddress; Settings.keepAwake=o.keepAwake;
         Settings.autoOffMinutes=o.autoOffMinutes; Settings.showName=o.showName; Settings.tidyAurora=o.tidyAurora;
-        Settings.pluginSet=o.pluginSet; Settings.pluginKit=o.pluginKit;
+        Settings.pluginSet=o.pluginSet; Settings.pluginKit=o.pluginKit; Settings.tileMode=o.tileMode;
     }
     UpdateConsoles(o.xboxes);
     FoldersChangedAt=(long long)(Now()*1000);
@@ -6184,7 +6828,10 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     GodPackage god;
     std::string error;
     { std::lock_guard<std::mutex> hold(CopyLock); c.phase="prepare"; }
-    bool made=god.Make(reader,c.game,[&](U64 done, U64 total) {
+    // Named and with its icon in the Xbox home as a tile's package is (see GodArtFor).
+    std::string title=c.game;
+    if(disc.titleId) { GodArt art=GodArtFor(o,disc.titleId,disc.name); title=art.name; god.SetIcon(art.icon); }
+    bool made=god.Make(reader,title,[&](U64 done, U64 total) {
         std::lock_guard<std::mutex> hold(CopyLock);
         c.done=done; c.total=total;
         return !c.stop.load();
@@ -6803,7 +7450,7 @@ void TuFilesIn(FtpClient& ftp, const std::string& folder, DWORD titleId, const c
 }
 
 std::string TuAsideFolder(const Options& o, DWORD titleId) {
-    return o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+"/"+Hex8(titleId);
+    return XboxAppFolder(o)+"/"+TuBackupFolder+"/"+Hex8(titleId);
 }
 
 // Reads the update files of the titles on a console: each title's 000B0000
@@ -6928,7 +7575,7 @@ void MoveTusAside(FtpClient& ftp, const Options& o, ContentCopy& c, DWORD titleI
         std::string to=backup+"/"+(f.contentId.empty() ? "cache-"+tu::Sha1Hex(key.data(),key.size()).substr(0,16)+"-"+std::to_string(f.size) : f.contentId)+"/"+f.name;
         std::string why;
         if(RemoteSize(ftp,to)>=0) to=backup+"/"+tu::FatxName(f.contentId.substr(0,8)+"-"+std::to_string((long long)time(NULL)))+"/"+f.name;  // That one's there already.
-        if(!MakeFolders(ftp,to,o.xboxFolder.size()-1,why) || !ftp.Rename(f.path.c_str(),to.c_str())) {
+        if(!MakeFolders(ftp,to,FtpDrive(to).size(),why) || !ftp.Rename(f.path.c_str(),to.c_str())) {
             Log("Xbox %s: couldn't move the update %s out of the way (%s); it stays.",c.console.c_str(),f.path.c_str(),why.empty() ? ftp.Error() : why.c_str());
             continue;
         }
@@ -7035,7 +7682,7 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
             }
         }
     }
-    std::string helper=o.xboxFolder+"/"+HelperFolder;
+    std::string helper=XboxAppFolder(o);
     EnsureFolder(ftp,helper);
     std::vector<FtpEntry> files;
     ftp.List(helper.c_str(),files);
@@ -7184,7 +7831,7 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
     std::string aurora=TuInAurora(ftp,o,c,console,titleId,mediaId,&put,remote,&bytes);
     {
         std::lock_guard<std::mutex> hold(CopyLock);
-        c.note=moved.empty() ? aurora : "Moved the older "+std::string(moved.size()==1 ? "update" : "updates")+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+". "+aurora;
+        c.note=moved.empty() ? aurora : "Moved the older "+std::string(moved.size()==1 ? "update" : "updates")+" to "+XboxAppFolder(o)+"/"+TuBackupFolder+". "+aurora;
     }
     EndCopy(c,console,"done","");
 }
@@ -7249,7 +7896,7 @@ void OffTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId) {
     {
         std::lock_guard<std::mutex> hold(CopyLock);
         c.done=c.total; c.skipped=moved.empty() ? 1 : 0;
-        c.note=(moved.empty() ? std::string("It had no update of it on.") : "Moved "+std::to_string(moved.size())+" to "+o.xboxFolder+"/"+HelperFolder+"/"+TuBackupFolder+".")+" "+aurora;
+        c.note=(moved.empty() ? std::string("It had no update of it on.") : "Moved "+std::to_string(moved.size())+" to "+XboxAppFolder(o)+"/"+TuBackupFolder+".")+" "+aurora;
     }
     EndCopy(c,console,"done","");
 }
@@ -7270,7 +7917,7 @@ bool TuGame(const std::string& name, IsoFile& game, std::string& error) {
 // Whether the console has the game: a tile of it, or it installed.
 bool ConsoleHasGame(const Console& c, const IsoFile& g) {
     std::lock_guard<std::mutex> hold(ConsoleLock);
-    if(c.tiles.count(Lower(g.name))) return true;
+    if(c.tiles.count(Lower(g.name)) || c.godTiles.count(Lower(g.name))) return true;
     for(size_t i=0;i<c.installed.size();++i) if(c.installed[i].titleId==g.titleId) return true;
     return false;
 }
@@ -7585,6 +8232,8 @@ bool StartOn(Console& c, const IsoFile& game, bool preferInstalled, std::string&
         std::lock_guard<std::mutex> hold(ConsoleLock);
         std::map<std::string,std::string>::const_iterator t=c.tiles.find(Lower(game.name));
         if(t!=c.tiles.end()) tile=o.xboxFolder+"/"+t->second;
+        t=c.godTiles.find(Lower(game.name));
+        if(tile.empty() && t!=c.godTiles.end()) tile=t->second;  // A Games on Demand tile's folder, as it is.
         for(size_t i=0;i<c.installed.size() && installed.empty() && game.titleId;++i) {
             const InstalledGame& g=c.installed[i];
             if(g.titleId!=game.titleId || g.disc!=game.disc) continue;
@@ -7634,7 +8283,7 @@ std::string SameCopy(const std::vector<Console*>& consoles, const IsoFile& game)
         if(!consoles[i]) continue;
         const Console& c=*consoles[i];
         ++known;
-        if(c.tiles.count(Lower(game.name))) ++tiles;
+        if(c.tiles.count(Lower(game.name)) || c.godTiles.count(Lower(game.name))) ++tiles;
         bool has=false;
         for(size_t k=0;k<c.installed.size() && !has && game.titleId;++k) {
             const InstalledGame& g=c.installed[k];
@@ -8874,7 +9523,7 @@ std::vector<std::string> PartyGames(const Party& p) {
         bool all=true;
         for(size_t i=0;i<consoles.size() && all;++i) {
             const Console& c=*consoles[i];
-            bool has=c.tiles.count(Lower(games[g].name))>0;
+            bool has=c.tiles.count(Lower(games[g].name))>0 || c.godTiles.count(Lower(games[g].name))>0;
             for(size_t k=0;k<c.installed.size() && !has && games[g].titleId;++k) has=c.installed[k].titleId==games[g].titleId && !c.installed[k].god;
             all=has;
         }
@@ -10046,7 +10695,7 @@ std::vector<Console*> ConsolesAt(const std::vector<std::string>& addresses) {
 bool WriteProfileMarks(FtpClient& ftp, const Console& c, const Options& o) {
     std::vector<ProfileMark> marks, had;
     std::vector<unsigned char> data;
-    if(ftp.Retrieve((o.xboxFolder+"/"+HelperFolder+"/profiles.ini").c_str(),data,1<<20)) ReadProfileMarks(std::string(data.begin(),data.end()),had);
+    if(ftp.Retrieve((XboxAppFolder(o)+"/profiles.ini").c_str(),data,1<<20)) ReadProfileMarks(std::string(data.begin(),data.end()),had);
     {
         std::lock_guard<std::mutex> hold(GuestLock);
         for(size_t i=0;i<had.size();++i) {
@@ -10067,7 +10716,7 @@ bool WriteProfileMarks(FtpClient& ftp, const Console& c, const Options& o) {
     std::map<std::string,std::string> files;
     files["profiles.ini"]=ProfileMarksText(marks);
     std::string error;
-    if(WriteTree(ftp,o.xboxFolder+"/"+HelperFolder,files,error)) return true;
+    if(WriteTree(ftp,XboxAppFolder(o),files,error)) return true;
     Log("%s: couldn't write the list of NetDisc360's profiles there: %s",ConsoleWord(c).c_str(),error.c_str());
     return false;
 }
@@ -10197,8 +10846,8 @@ bool PartyAppProfileJob(Console& c, const std::vector<std::string>& gamertags, P
 // started from Aurora, its answer read once Aurora is back. False, with why
 // in error, if the job didn't run; done says how each profile went.
 bool RunProfileJob(Console& c, const Options& o, const std::vector<std::string>& gamertags, ProfileJobDone& done, std::string& error) {
-    std::string folder=o.xboxFolder+"/"+HelperFolder, device=DevicePath(folder), job=Number((long long)time(NULL));
-    if(device.empty()) { error="The helper is started from the hard drive only, and the game folders are in "+o.xboxFolder+"."; return false; }
+    std::string folder=XboxAppFolder(o), device=DevicePath(folder), job=Number((long long)time(NULL));
+    if(device.empty()) { error="The helper is started from the hard drive only, and NetDisc360's folder is in "+folder+"."; return false; }
     std::string why;
     if(!SafeSoon(c,StartWaitMost,why)) { error="Not now: "+why+"."; return false; }
     {
@@ -11404,12 +12053,15 @@ void GameLog(const std::string& address, const std::string& name, web::Reply& ou
     std::string folder;
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
+        Options o=Current();
         for(std::map<std::string,std::string>::const_iterator t=c->tiles.begin();t!=c->tiles.end() && folder.empty();++t)
+            if(Lower(config::ToUtf8(WithoutIso(t->first)))==Lower(name)) folder=o.xboxFolder+"/"+t->second;
+        for(std::map<std::string,std::string>::const_iterator t=c->godTiles.begin();t!=c->godTiles.end() && folder.empty();++t)
             if(Lower(config::ToUtf8(WithoutIso(t->first)))==Lower(name)) folder=t->second;
     }
     if(folder.empty()) { out.Error(400,"That console has no folder for it."); return; }
     Options o=Current();
-    std::string path=o.xboxFolder+"/"+folder;
+    std::string path=folder;
     Busy busy(c);
     FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),8);
     std::vector<FtpEntry> files;
@@ -11418,7 +12070,7 @@ void GameLog(const std::string& address, const std::string& name, web::Reply& ou
     const FtpEntry* log=NULL;
     for(size_t i=0;i<files.size() && !log;++i) if(!files[i].folder && !_stricmp(files[i].name.c_str(),"netiso.log")) log=&files[i];
     web::Json j;
-    j.Open('{').Set("folder",o.xboxFolder+"/"+config::ToUtf8(folder));
+    j.Open('{').Set("folder",config::ToUtf8(folder));
     if(!log) { j.Set("text","").Set("missing",true).Close('}'); out.body=j.Text(); return; }
     std::vector<unsigned char> data;
     if(!ftp.Retrieve((path+"/netiso.log").c_str(),data,4<<20)) { out.Error(400,std::string("Its netiso.log couldn't be read: ")+ftp.Error()+"."); return; }
@@ -11511,6 +12163,9 @@ void Api(const web::Request& r, web::Reply& out) {
         else out.Error(400,error);
     } else if(r.method=="POST" && r.path=="/api/copy") {
         if(StartGameCopy(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/consoles/tiles") {
+        if(SetTileChoice(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
     } else if(r.method=="POST" && r.path=="/api/console/remove") {
         if(StartRemove(body,error)) out.body="{\"ok\":true}";
@@ -11801,7 +12456,7 @@ void Usage() {
         "                          console that connects)\n"
         "  --ftp-user <name>       Aurora's FTP login (xboxftp)\n"
         "  --ftp-password <text>   (xboxftp; or set NETDISC_FTP_PASSWORD)\n"
-        "  --xbox-folder <path>    the game folder on the Xbox, as an FTP path (/Hdd1/NetISO)\n"
+        "  --xbox-folder <path>    the game folder on the Xbox, as an FTP path (/Hdd1/NetDisc360/Games)\n"
         "  --aurora <path>         Aurora's folder on the Xbox, as an FTP path (/Hdd1/Apps/Aurora)\n"
         "  --no-push               only serve games; leave the Xbox alone\n"
         "  --no-category           leave Aurora's Xbox 360 category alone\n"
@@ -12064,7 +12719,7 @@ void ServerStopping() {
         std::thread([c,o,left]() {
             Busy busy(c);
             FtpClient ftp(c->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),3);
-            std::string helper=o.xboxFolder+"/"+HelperFolder;
+            std::string helper=XboxAppFolder(o);
             std::vector<FtpEntry> files;
             bool shown=false;
             ftp.Delete((helper+"/"+OnlineMarker).c_str());
