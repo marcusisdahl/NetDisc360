@@ -1334,12 +1334,35 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
 static void WatchLink(),NoteLinkProgress(); // System Link, below
+// A game that quits goes back to Aurora or the Xbox home, and its disc
+// would stay in the drive until the next mount: so the next start, or a
+// disc entry, would find it there. Once a game has started from the drive's
+// disc (a tile's, one mounted from Aurora, or an original Xbox one in the
+// emulator), going home ejects it (EjectAfterGame); not before, so a disc
+// mounted from Aurora stays in until it's played. The eject waits until the
+// game has gone and Aurora or the Xbox home runs (the tray going out under a
+// running game is the console's cue to end it), and it's this watcher's:
+// threads created in a launch hook are parked and never run. A mount
+// meanwhile (another start) gives a new ticket, and that disc stays.
+static volatile LONG PlayedFromDisc=0,EjectTicket=0;
+static volatile DWORD EjectAt=0;
+static const DWORD EjectDelayMs=4000;
+static void WatchEject() {
+    if(!EjectTicket || LONG(GetTickCount()-EjectAt)<0) return;
+    DWORD ticket=DWORD(InterlockedExchange(&EjectTicket,0));
+    netdisc::Status status;
+    disc::GetStatus(status);
+    if(!ticket || PlayedFromDisc || status.state!=netdisc::StateMounted || status.ticket!=ticket) return;
+    SwapNote("Ejecting the drive's disc (ticket %u): its game has quit.",ticket);
+    disc::Eject();
+}
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
         WatchLink();
         NoteLinkProgress();
+        WatchEject();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -2051,7 +2074,7 @@ static bool XefuName(const char* name) {
 static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     if(!xex) return false;
     // Every title Aurora starts comes through here. A tile's path is short
-    // (Hdd1:\NetISO\<folder>\default.xex); a longer one, with room left for
+    // (Hdd1:\NetDisc360\Games\<folder>\default.xex); a longer one, with room left for
     // its device name and netiso.ini, is someone else's, and the _s calls
     // below would end Aurora over it.
     if(strlen(xex)+(mountPath ? strlen(mountPath)+1 : 0)>=MAX_PATH-64) return false;
@@ -2182,13 +2205,35 @@ static DWORD StartSwappedDisc() {
     Skip(false);
     return result;
 }
+// Going home after a game from the drive's disc: see WatchEject. Not for
+// the dashboard start a disc swap makes (SwapRestart takes it when it can):
+// that disc is the one the game asked for.
+static bool EndsWith(const char* text,const char* end) {
+    size_t n=strlen(text),m=strlen(end);
+    return n>=m && !_stricmp(text+n-m,end);
+}
+static bool HomeLaunch(const char* path) {
+    return !path || !path[0] || EndsWith(path,"\\dash.xex") || EndsWith(path,"\\aurora.xex");
+}
+static void EjectAfterGame(const char* path,DWORD flags) {
+    if(!HomeLaunch(path) || !disc::Active() || !PlayedFromDisc) return;
+    if(SwapStartedAt && GetTickCount()-SwapStartedAt<SwapRestartMs) return;
+    if(!InterlockedExchange(&PlayedFromDisc,0)) return;
+    netdisc::Status status;
+    disc::GetStatus(status);
+    if(status.state!=netdisc::StateMounted || !status.ticket) return;
+    EjectAt=GetTickCount()+EjectDelayMs;
+    InterlockedExchange(&EjectTicket,LONG(status.ticket));
+    SwapNote("Launch %s (flags %X) after a game from the drive's disc: it's ejected in %u s.",path && path[0] ? path : "of the Xbox home",flags,EjectDelayMs/1000);
+}
 static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     if(SwapRestart(path,flags)) return StartSwappedDisc();
     Handling handling=Handled(path,NULL);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,NULL);
     NoteLaunch(path,NULL,flags,LaunchKind(handling,disc));
-    if(disc) ArmSwap();
+    if(disc) { ArmSwap(); InterlockedExchange(&PlayedFromDisc,1); }
+    else if(handling==NotTile) EjectAfterGame(path,flags);
     StopLink();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
@@ -2200,13 +2245,18 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,mountPath);
     NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
-    if(disc) ArmSwap();
+    if(disc) { ArmSwap(); InterlockedExchange(&PlayedFromDisc,1); }
     static char emulator[MAX_PATH];
     if(handling==NotTile && !disc && EmulatorStart(path,mountPath)) {
+        // An original Xbox game: the emulator plays the drive's disc.
+        InterlockedExchange(&PlayedFromDisc,1);
         StartLink();
         path=Emulator(path,mountPath,emulator,sizeof(emulator));
     } else if(handling==NotTile && !disc && XefuStart(path)) StartLink();
-    else StopLink();
+    else {
+        if(handling==NotTile && !disc) EjectAfterGame(path,flags);
+        StopLink();
+    }
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;

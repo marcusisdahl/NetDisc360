@@ -2,7 +2,7 @@
 #pragma once
 // Wake-on-LAN for the launcher: NetDisc360 writes this computer's network
 // adapter (its MAC address, and where a wake packet reaches it) to
-// Hdd1:\NetISO\NetDisc360\wake.ini on each console, and a launcher that finds
+// Hdd1:\Apps\NetDisc360\wake.ini on each console, and a launcher that finds
 // the server asleep sends the magic packet there and waits for it
 // (launcher/main.cpp, WaitForServer).
 //
