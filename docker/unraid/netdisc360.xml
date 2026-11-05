@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!-- NetDisc360 for Unraid (Docker, Add Container, Template: paste this file's
+     raw address, or copy it to /boot/config/plugins/dockerMan/templates-user/).
+     See docs/nas.md. -->
+<Container version="2">
+  <Name>NetDisc360</Name>
+  <Repository>ghcr.io/marcusisdahl/netdisc360:latest</Repository>
+  <Registry>https://github.com/marcusisdahl/NetDisc360/pkgs/container/netdisc360</Registry>
+  <Network>host</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/marcusisdahl/NetDisc360/issues</Support>
+  <Project>https://github.com/marcusisdahl/NetDisc360</Project>
+  <Overview>Play your Xbox 360 games from this server over the network, in Aurora, like installed games: no space on the console's drive for the games themselves. NetDisc360 serves ISOs, extracted games and Games on Demand packages to the consoles' NetISO plugin and keeps each console's Aurora game list up to date. Host networking: consoles connect on port 4323, the dashboard is on port 8360.</Overview>
+  <Category>GameServers: MediaServer:Other</Category>
+  <WebUI>http://[IP]:[PORT:8360]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker/unraid/netdisc360.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docs/images/logo-mark.png</Icon>
+  <!-- Unraid's shares and appdata belong to nobody:users (99:100). -->
+  <ExtraParams>--user 99:100</ExtraParams>
+  <Config Name="Games" Target="/games" Default="/mnt/user/games/xbox360" Mode="ro" Description="The folder with your games: ISOs, extracted games and GOD packages, subfolders too. Read only." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/games/xbox360</Config>
+  <Config Name="Settings" Target="/config" Default="/mnt/user/appdata/netdisc360" Mode="rw" Description="Where the dashboard keeps its settings (netdisc.ini). Saved passwords are plain text here, so keep it private." Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/netdisc360</Config>
+  <Config Name="Dashboard password" Target="NETDISC_WEB_PASSWORD" Default="" Mode="" Description="Without one, anyone on your network can open the dashboard and change its settings." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Dashboard port" Target="NETDISC_WEB_PORT" Default="8360" Mode="" Description="The dashboard: http://your-server:8360" Type="Variable" Display="always" Required="false" Mask="false">8360</Config>
+  <Config Name="Aurora FTP user" Target="NETDISC_FTP_USER" Default="xboxftp" Mode="" Description="Aurora's FTP login (Aurora: Settings, FTP), to add your games to Aurora." Type="Variable" Display="always" Required="false" Mask="false">xboxftp</Config>
+  <Config Name="Aurora FTP password" Target="NETDISC_FTP_PASSWORD" Default="xboxftp" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="true">xboxftp</Config>
+  <Config Name="Consoles" Target="NETDISC_XBOX" Default="" Mode="" Description="Only these consoles' game folders are kept up to date: IP addresses, separated by commas. Empty: every console that connects." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Time zone" Target="TZ" Default="Etc/UTC" Mode="" Description="For the log's times, like Europe/Oslo." Type="Variable" Display="advanced" Required="false" Mask="false">Etc/UTC</Config>
+</Container>

@@ -9,6 +9,15 @@
 IDR_LAUNCHER RCDATA "..\\build\\NetISO Sync\\default.xex"
 IDR_BOOT RCDATA "..\\build\\NetISO Sync\\boot.xex"
 
+// Aurora's art (cover, background, icon and banner) for NetDisc360's own tile
+// and for FastFTP360, which the server puts in Aurora's GameData folder.
+IDR_ART_NETDISC_GC RCDATA "..\\art\\aurora\\netdisc360\\GCFFFF4E49.asset"
+IDR_ART_NETDISC_BK RCDATA "..\\art\\aurora\\netdisc360\\BKFFFF4E49.asset"
+IDR_ART_NETDISC_GL RCDATA "..\\art\\aurora\\netdisc360\\GLFFFF4E49.asset"
+IDR_ART_FASTFTP_GC RCDATA "..\\art\\aurora\\fastftp360\\GCFFFF4646.asset"
+IDR_ART_FASTFTP_BK RCDATA "..\\art\\aurora\\fastftp360\\BKFFFF4646.asset"
+IDR_ART_FASTFTP_GL RCDATA "..\\art\\aurora\\fastftp360\\GLFFFF4646.asset"
+
 // What Explorer and Task Manager show for the exe.
 1 VERSIONINFO
 FILEVERSION NETDISC_VERSION_NUMBERS

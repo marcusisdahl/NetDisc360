@@ -226,7 +226,7 @@ bool MakeFolder(const std::string& utf8Path) {
     return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY);
 }
 
-std::vector<Entry> Files(const std::string& utf8Folder) {
+static std::vector<Entry> Entries(const std::string& utf8Folder, bool folders) {
     std::vector<Entry> out;
     WIN32_FIND_DATAW found;
     std::string folder=utf8Folder;
@@ -234,7 +234,8 @@ std::vector<Entry> Files(const std::string& utf8Folder) {
     HANDLE search=FindFirstFileW(Wide(folder+"*",CP_UTF8).c_str(),&found);
     if(search==INVALID_HANDLE_VALUE) return out;
     do {
-        if(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+        if(!(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=!folders) continue;
+        if(folders && (!wcscmp(found.cFileName,L".") || !wcscmp(found.cFileName,L".."))) continue;
         // FILETIME counts 100 ns from 1601.
         long long time=(((long long)found.ftLastWriteTime.dwHighDateTime<<32)|found.ftLastWriteTime.dwLowDateTime)/10000000-11644473600LL;
         Entry e={Narrow(found.cFileName,CP_UTF8),((long long)found.nFileSizeHigh<<32)|found.nFileSizeLow,time};
@@ -243,6 +244,8 @@ std::vector<Entry> Files(const std::string& utf8Folder) {
     FindClose(search);
     return out;
 }
+std::vector<Entry> Files(const std::string& utf8Folder) { return Entries(utf8Folder,false); }
+std::vector<Entry> Folders(const std::string& utf8Folder) { return Entries(utf8Folder,true); }
 #else
 bool RemoveFile(const std::string& utf8Path) { return !unlink(utf8Path.c_str()); }
 
@@ -256,7 +259,7 @@ bool Stamp(const std::string& utf8Path, long long& size, long long& time) {
 
 bool MakeFolder(const std::string& utf8Path) { return !mkdir(utf8Path.c_str(),0700) || IsFolder(utf8Path); }
 
-std::vector<Entry> Files(const std::string& utf8Folder) {
+static std::vector<Entry> Entries(const std::string& utf8Folder, bool folders) {
     std::vector<Entry> out;
     DIR* dir=opendir(utf8Folder.c_str());
     if(!dir) return out;
@@ -264,12 +267,15 @@ std::vector<Entry> Files(const std::string& utf8Folder) {
     if(!folder.empty() && folder[folder.size()-1]!='/') folder+='/';
     while(struct dirent* d=readdir(dir)) {
         struct stat st;
-        if(stat((folder+d->d_name).c_str(),&st) || !S_ISREG(st.st_mode)) continue;
+        if(stat((folder+d->d_name).c_str(),&st) || !(folders ? S_ISDIR(st.st_mode) : S_ISREG(st.st_mode))) continue;
+        if(folders && (!strcmp(d->d_name,".") || !strcmp(d->d_name,".."))) continue;
         Entry e={d->d_name,(long long)st.st_size,(long long)st.st_mtime};
         out.push_back(e);
     }
     closedir(dir);
     return out;
 }
+std::vector<Entry> Files(const std::string& utf8Folder) { return Entries(utf8Folder,false); }
+std::vector<Entry> Folders(const std::string& utf8Folder) { return Entries(utf8Folder,true); }
 #endif
 }
