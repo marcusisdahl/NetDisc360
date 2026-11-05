@@ -491,6 +491,12 @@ Versions before this one kept everything in `Hdd1:\NetISO`. Now the game folders
 
 **Settings > Backups** keeps copies of your settings: `netdisc.ini` and the disc map, never your games. NetDisc360 backs them up by itself once a week (or every day, or turn it off), and before every update and every restore, keeping the newest five of those. **Back up now** makes one that stays until you delete it. Each backup can be downloaded, restored or deleted, and **Restore from a file** brings back one you downloaded, or a `netdisc.ini` by itself, for example on a new PC or from the Windows app into Docker. Restored settings apply at once; a changed port takes effect at the next start. The backups are zips in the `Backups` folder next to the settings file (`%APPDATA%\NetDisc360\Backups`, or `/config/Backups` in Docker).
 
+### Sync between computers
+
+Take a laptop along and your game save backups, profile backups and play history come with you. **Settings > Sync** connects NetDisc360 to a small sync service on your own Cloudflare account (a Worker that keeps the files in R2, usually within the free tier), set up once with the steps in [`sync/README.md`](sync/README.md). Each computer connects with the owner key and gets a key of its own. From then on each one syncs when it starts, every 5 minutes and after each save backup, so a save backed up on one computer shows under **Settings > Backups > Game saves** on the others, ready to restore on a console there. Game folders, consoles and passwords stay on each computer, and nothing is ever deleted in the cloud. The sidebar says when the last sync was, and **Settings > Sync** how much the cloud holds.
+
+**Saves follow the profile.** When a console is in Aurora, each profile on it gets that game's newest saves from your save backups, made on any console and synced from any computer. Nothing is lost on the way: if the console's saves are already in a backup (older ones), the newest simply go on; if they are in no backup, they are backed up first. When a profile played on two consoles since they last matched, both are kept and the dashboard asks which to use (**Keep this console's** makes them the newest everywhere, **Use the other's** puts those on this console). Only the saves of profiles that are on the console are touched, and only for games with a save backup. Turn it off under **Settings > Backups > Game saves**.
+
 ## The server in detail
 
 What `NetDisc360.exe` does, all from one file:

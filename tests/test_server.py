@@ -117,7 +117,7 @@ def build_server():
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/titleupdates.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp",
-                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/http.cpp", "server/sync.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -3928,8 +3928,8 @@ print('lua ok')
         self.assertFalse(os.path.exists(self.games))
 
 
-class Dashboard(ServerTest):
-    """The dashboard's web API, as web/index.html uses it."""
+class DashboardTest(ServerTest):
+    """A server with a settings file and the dashboard on port self.web."""
 
     def setUp(self):
         super().setUp()
@@ -3948,6 +3948,9 @@ class Dashboard(ServerTest):
         self.server.stdout.close()
         self.start(*extra)
 
+
+class Dashboard(DashboardTest):
+    """The dashboard's web API, as web/index.html uses it."""
     def test_sets_how_each_console_gets_the_games(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
@@ -4231,13 +4234,140 @@ class Dashboard(ServerTest):
             with open(save, "rb") as f:
                 self.assertEqual(f.read(), b"halo save 1")
             saves = self.json("GET", "/api/saves")["saves"]
-            self.assertEqual(len(saves), 2)  # The save before was kept already.
+            # The save before was kept already; the restored ones are the
+            # newest now (for the other consoles: saves follow the profile).
+            self.assertEqual(len(saves), 3)
+            status, _, data = self.call("GET", "/api/save?name=" + saves[0]["name"])
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+                self.assertIn(("restored_from=%s\r\n" % name).encode(), z.read("save.ini"))
             self.assertEqual(self.json("POST", "/api/saves/delete", {"name": saves[-1]["name"]}), {"ok": True})
-            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 1)
+            self.assertEqual(len(self.json("GET", "/api/saves")["saves"]), 2)
             self.assertEqual(self.call("POST", "/api/saves/restore", {"name": name, "address": "127.0.0.9"})[0], 400)
         finally:
             ftp.shutdown()
             ftp.server_close()
+
+    @staticmethod
+    def other_console_backup(folder, name, save, console="10.10.1.43", computer="Laptop"):
+        """A Halo 3 save backup made from another console (synced from another computer)."""
+        os.makedirs(folder, exist_ok=True)
+        with zipfile.ZipFile(os.path.join(folder, name), "w") as z:
+            z.writestr("save.ini", "title_id=4D5307E6\r\ngame=Halo 3\r\nprofile_E0000123456789AB=Marcus\r\n"
+                                   "time=0\r\nconsole=%s\r\ncomputer=%s\r\n" % (console, computer))
+            z.writestr("E0000123456789AB/Campaign", save)
+
+    def test_saves_follow_the_profile(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)  # Marcus played here: "halo save 1".
+        other = os.path.join(xbox, "Hdd1", "Content", "E0000123456789AB", "41560817", "00000001", "Save")
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        # Marcus played on another console too since: both played, so which to keep is asked.
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        state = self.state_when(lambda s: s["saveConflicts"], 30)
+        c = state["saveConflicts"][0]
+        self.assertEqual([c[k] for k in ("address", "title", "xuid", "gamertag", "game", "newest", "from")],
+                         ["127.0.0.2", "4D5307E6", "E0000123456789AB", "Marcus", "Halo 3", "4D5307E6_2026-11-01_10-00-00.zip", "10.10.1.43@Laptop"])
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 1")  # Nothing changed on the console before the answer.
+        held = c["held"]
+        self.assertIn(held, [b["name"] for b in self.json("GET", "/api/saves")["saves"]])
+        with zipfile.ZipFile(os.path.join(saves, held)) as z:
+            self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+            self.assertIn(b"held=1\r\n", z.read("save.ini"))
+        # Kept after a restart, and asked once.
+        self.restart("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        state = self.state_when(lambda s: s["consoles"] and s["consoles"][0].get("answers"), 20)
+        self.assertEqual(len(state["saveConflicts"]), 1)
+        self.assertEqual(self.call("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6",
+                                                                   "xuid": "E0000123456789AB", "keep": "both"})[0], 400)
+        # The other console's go on this one; this one's stay in their backup.
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "other"})
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 2")
+        with open(other, "rb") as f:
+            self.assertEqual(f.read(), b"other game")  # Other games' saves aren't touched.
+        self.assertEqual(self.call("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6",
+                                                                   "xuid": "E0000123456789AB", "keep": "other"})[0], 400)
+        # Newer saves from the other console (synced in): nothing here is lost,
+        # so they go on the console without asking.
+        self.other_console_backup(saves, "4D5307E6_2026-11-02_10-00-00.zip", b"halo save 3")
+        self.restart("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            with open(save, "rb") as f:
+                if f.read() == b"halo save 3":
+                    break
+            time.sleep(0.2)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 3")
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        self.assertIn("Marcus's newest saves of Halo 3 are on 127.0.0.2 now", [e["text"] for e in self.json("GET", "/api/state")["events"]])
+
+    def test_saves_of_this_console_can_be_kept(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        held = self.state_when(lambda s: s["saveConflicts"], 30)["saveConflicts"][0]["held"]
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "console"})
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+        # A new backup of this console's saves, the newest for every console now.
+        names = [b["name"] for b in self.json("GET", "/api/saves")["saves"]]
+        self.assertEqual(len(names), 3)
+        newest = [n for n in names if n not in (held, "4D5307E6_2026-11-01_10-00-00.zip")][0]
+        with zipfile.ZipFile(os.path.join(saves, newest)) as z:
+            ini = z.read("save.ini")
+            self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
+        self.assertIn(("restored_from=%s\r\n" % held).encode(), ini)
+        self.assertNotIn(b"held=1", ini)
+        time.sleep(3)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 1")
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+
+    def test_saves_follow_only_when_asked(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        with open(self.config, "w") as f:
+            f.write("[Server]\nsave_follow=0\n")
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        with open(save, "wb") as f:
+            f.write(b"")  # No saves of Halo 3 yet: the backup's would go on.
+        os.remove(save)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        self.other_console_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", b"halo save 2")
+        ftp_port = free_port()
+        ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
+        self.assertFalse(self.json("GET", "/api/state")["settings"]["saveFollow"])
+        time.sleep(4)
+        self.assertFalse(os.path.exists(save))
+        # On: the profile has no saves of it here, so the newest go on.
+        self.json("POST", "/api/settings", {"saveFollow": True})
+        deadline = time.time() + 30
+        while time.time() < deadline and not os.path.exists(save):
+            time.sleep(0.2)
+        with open(save, "rb") as f:
+            self.assertEqual(f.read(), b"halo save 2")
 
     def test_pings_each_console(self):
         # A ping now and then (a connect to its FTP port, refused here) shows
@@ -5923,6 +6053,168 @@ class Dashboard(ServerTest):
         self.assertEqual(self.call("POST", "/api/password", {"password": "x"}, cookie=cookie)[0], 400)
         self.assertTrue(self.json("GET", "/api/state", cookie=cookie)["settings"]["passwordFixed"])
 
+
+NODE = shutil.which("node")
+SYNC_OWNER = "owner-key-for-the-sync-tests-0123"
+
+
+@unittest.skipUnless(NODE, "needs node, for the sync Worker")
+class Sync(DashboardTest):
+    """Sync between computers, against the sync Worker (sync/) run by
+    tests/sync_worker.mjs with a bucket in memory. The test plays the other
+    computer (a laptop) through the Worker's API."""
+
+    def setUp(self):
+        super().setUp()
+        self.worker = subprocess.Popen([NODE, os.path.join(HERE, "sync_worker.mjs"), SYNC_OWNER],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        line = self.worker.stdout.readline()
+        self.assertTrue(line.startswith("listening "), line)
+        self.sync_port = int(line.split()[1])
+        self.url = "http://127.0.0.1:%d" % self.sync_port
+        self.folder = os.path.dirname(self.config)
+
+    def tearDown(self):
+        self.worker.kill()
+        self.worker.wait()
+        self.worker.stdout.close()
+        super().tearDown()
+
+    def cloud(self, method, path, key, body=None, sha=None):
+        """(status, bytes) from the Worker, as another computer."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.sync_port, timeout=10)
+        headers = {"Authorization": "Bearer " + key}
+        if sha:
+            headers["X-Sha256"] = sha
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        conn.close()
+        return response.status, data
+
+    def cloud_put(self, key, path, data):
+        status, answer = self.cloud("PUT", "/v1/object/" + path, key, data, hashlib.sha256(data).hexdigest())
+        self.assertEqual(status, 200, answer)
+
+    def cloud_keys(self, key, prefix):
+        status, data = self.cloud("GET", "/v1/list?prefix=" + prefix, key)
+        self.assertEqual(status, 200, data)
+        return [i["key"] for i in json.loads(data)["items"]]
+
+    @staticmethod
+    def save_zip(game):
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("save.ini", "title_id=4D5307E6\ngame=%s\n" % game)
+            z.writestr("E000000000000001/savegame.dat", b"\x01" * 100)
+        return out.getvalue()
+
+    def synced(self, after=0):
+        """The state once a pass after time after is done."""
+        state = self.state_when(lambda s: s["sync"]["last"] > after and not s["sync"]["running"], 20)
+        self.assertGreater(state["sync"]["last"], after, state["sync"])
+        return state
+
+    def test_backups_and_play_history_follow_between_computers(self):
+        # The laptop: connected with the owner key, with a save backup, a
+        # profile backup and its play history in the cloud already.
+        status, data = self.cloud("POST", "/v1/devices", SYNC_OWNER, json.dumps({"name": "Laptop"}).encode())
+        self.assertEqual(status, 200, data)
+        laptop = json.loads(data)
+        from_laptop = "4D5307E6_2026-11-01_10-00-00.zip"
+        self.cloud_put(laptop["key"], "files/saves/" + from_laptop, self.save_zip("Halo 3"))
+        profile = "files/profiles/E000000000000001/2026-11-01_10-00-00_10.10.1.43.zip"
+        self.cloud_put(laptop["key"], profile, b"profile zip")
+        self.cloud_put(laptop["key"], "state/%s/plays.ini" % laptop["id"], b"2|600|1700000000|halo 3\n")
+        laptop_users = b"[Users]\r\ncount=1\r\nuser1=u0123456789abcdef|Ola|Ola|E000000000000002|1700000000|0|1700000000|0\r\n"
+        self.cloud_put(laptop["key"], "state/%s/users.ini" % laptop["id"], laptop_users)
+        # This computer has a save backup of its own, and plays Halo 3 here.
+        saves = os.path.join(self.folder, "Saves")
+        os.makedirs(saves)
+        from_here = "4D5307E6_2026-11-02_20-00-00.zip"
+        with open(os.path.join(saves, from_here), "wb") as f:
+            f.write(self.save_zip("Halo 3"))
+        with open(os.path.join(self.folder, "plays.ini"), "w") as f:
+            f.write("1|60|1700001000|halo 3\n")
+        users = b"[Users]\r\ncount=1\r\nuser1=ufedcba9876543210|Marcus|Marcus|E000000000000001|1700000000|0|1700000000|0\r\n"
+        with open(os.path.join(self.folder, "users.ini"), "wb") as f:
+            f.write(users)
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.start()
+        self.assertFalse(self.json("GET", "/api/state")["sync"]["on"])
+        # A wrong key or address says why, and changes nothing.
+        status, _, data = self.call("POST", "/api/sync/connect", {"url": self.url, "key": "not-the-key"})
+        self.assertEqual(status, 400)
+        self.assertIn(b"isn't one of this sync's", data)
+        status, _, data = self.call("POST", "/api/sync/connect", {"url": "ftp://x", "key": SYNC_OWNER})
+        self.assertEqual(status, 400)
+        self.assertIn(b"https://", data)
+        r = self.json("POST", "/api/sync/connect", {"url": self.url + "/", "key": SYNC_OWNER, "name": "Home PC"})
+        self.assertTrue(r["sync"]["on"])
+        self.assertEqual(r["sync"]["name"], "Home PC")
+        self.assertEqual(r["sync"]["url"], self.url)
+        state = self.synced()
+        self.assertEqual(state["sync"]["failed"], 0, state["sync"])
+        self.assertGreater(state["sync"]["stored"], 0)
+        self.assertEqual(sorted((d["name"], d["self"]) for d in state["sync"]["devices"]), [("Home PC", True), ("Laptop", False)])
+        # The laptop's backups are here, this computer's in the cloud.
+        self.assertTrue(os.path.exists(os.path.join(saves, from_laptop)))
+        with open(os.path.join(self.folder, "Backups", "Profiles", "E000000000000001", "2026-11-01_10-00-00_10.10.1.43.zip"), "rb") as f:
+            self.assertEqual(f.read(), b"profile zip")
+        self.assertIn(from_laptop, [b["name"] for b in self.json("GET", "/api/saves")["saves"]])
+        self.assertIn("files/saves/" + from_here, self.cloud_keys(laptop["key"], "files/saves/"))
+        # The play history counts both computers.
+        self.state_when(lambda s: True)
+        games = self.json("GET", "/api/games")["games"]
+        halo = [g for g in games if g["name"] == "Halo 3"][0]
+        self.assertEqual((halo["plays"], halo["played"], halo["lastPlayed"]), (3, 660, 1700001000))
+        me = state["sync"]["id"]
+        status, data = self.cloud("GET", "/v1/object/state/%s/plays.ini" % me, laptop["key"])
+        self.assertEqual((status, data), (200, b"1|60|1700001000|halo 3\n"))
+        # The users go both ways too (merged by the Users page).
+        self.assertEqual(self.cloud("GET", "/v1/object/state/%s/users.ini" % me, laptop["key"]), (200, users))
+        with open(os.path.join(self.folder, "Sync", "devices", laptop["id"], "users.ini"), "rb") as f:
+            self.assertEqual(f.read(), laptop_users)
+        # The key is kept, not the owner key.
+        with open(self.config, encoding="utf-8") as f:
+            ini = f.read()
+        self.assertNotIn(SYNC_OWNER, ini)
+        self.assertIn("sync_id=" + me, ini)
+        # A backup deleted here isn't fetched again; a new one from the laptop is.
+        os.remove(os.path.join(saves, from_laptop))
+        newer = "4D5307E6_2026-11-03_09-00-00.zip"
+        self.cloud_put(laptop["key"], "files/saves/" + newer, self.save_zip("Halo 3"))
+        self.json("POST", "/api/sync/now", {})
+        self.synced(state["sync"]["last"])
+        self.assertFalse(os.path.exists(os.path.join(saves, from_laptop)))
+        self.assertTrue(os.path.exists(os.path.join(saves, newer)))
+        # After a restart it still syncs, as the same computer.
+        self.restart()
+        state = self.state_when(lambda s: s["sync"]["on"])
+        self.assertEqual(state["sync"]["id"], me)
+        # Off: this computer forgets its key; the backups stay.
+        r = self.json("POST", "/api/sync/off", {})
+        self.assertFalse(r["sync"]["on"])
+        self.assertTrue(os.path.exists(os.path.join(saves, newer)))
+        self.assertEqual(self.call("POST", "/api/sync/now", {})[0], 400)
+        halo = [g for g in self.json("GET", "/api/games")["games"] if g["name"] == "Halo 3"][0]
+        self.assertEqual(halo["plays"], 1)
+
+    def test_a_computer_can_be_taken_away(self):
+        self.start()
+        self.json("POST", "/api/sync/connect", {"url": self.url, "key": SYNC_OWNER, "name": "Home PC"})
+        status, data = self.cloud("POST", "/v1/devices", SYNC_OWNER, json.dumps({"name": "Old laptop"}).encode())
+        old = json.loads(data)
+        self.json("POST", "/api/sync/now", {})
+        state = self.state_when(lambda s: len(s["sync"]["devices"]) == 2, 20)
+        self.assertEqual(len(state["sync"]["devices"]), 2)
+        self.json("POST", "/api/sync/remove", {"id": old["id"]})
+        self.assertEqual(self.cloud("GET", "/v1/hello", old["key"])[0], 401)
+        state = self.state_when(lambda s: len(s["sync"]["devices"]) == 1, 20)
+        self.assertEqual([d["name"] for d in state["sync"]["devices"]], ["Home PC"])
+        # It can't take itself away.
+        status, _, data = self.call("POST", "/api/sync/remove", {"id": state["sync"]["id"]})
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@
 #include "guests.h"
 #include "picture.h"
 #include "saves.h"
+#include "sync.h"
 #include "installed.h"
 #include "party.h"
 #include "relay.h"
@@ -169,6 +170,13 @@ struct Options {
     bool saveBackup;
     int saveKeep;
     double saveDelay;
+    // Saves follow the profile (FollowConsole): newer saves of a profile go
+    // onto a console that has that profile when it's in Aurora.
+    bool saveFollow;
+    // Sync between computers (SyncLoop, sync.h): the sync Worker's address,
+    // this computer's key there (kept protected like the passwords), and its
+    // device id and name there. No key: no sync.
+    std::string syncUrl, syncKey, syncId, syncName;
     std::string xboxUnity;  // XboxUnity's API (see titleupdates.h); --xboxunity for the tests.
     // How a console the dashboard sets nothing for gets each game (see TileChoice): folder, god or none.
     std::string tileMode;
@@ -179,7 +187,7 @@ struct Options {
                 skipInstalled(true), installedFolders("/Hdd1/Games"), auroraScripts(true), restartAurora(true), tidyAurora(false), autoProfiles(true),
                 pluginSet("NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex"),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
-                namePort(ConsoleNamePort), showName(true), wake(true), saveBackup(true), saveKeep(10), saveDelay(10),
+                namePort(ConsoleNamePort), showName(true), wake(true), saveBackup(true), saveKeep(10), saveDelay(10), saveFollow(true),
                 xboxUnity("https://xboxunity.net/Resources/Lib"), tileMode("folder") {}
 };
 // The dashboard changes the settings while the server runs, so they're read
@@ -810,6 +818,12 @@ std::mutex& FtpLockFor(DWORD address) {
     return *m;
 }
 void QueueSaves(DWORD address, const std::string& game);
+void SyncSoon();
+void FollowStep();
+void FollowSoon(DWORD address);
+void FollowAllSoon();
+void SyncJson(::web::Json& j, const struct Options& o);
+void ConflictsJson(::web::Json& j);
 void RefreshWake(const Console& console, FtpClient& ftp, const Options& o);
 
 // A console that has used the server, kept in the settings file so the
@@ -1168,10 +1182,7 @@ void SaveUsers(const std::string& configPath, const Party& party) {
 }
 
 // plays.ini: a line "times|seconds|last|name" for each game (last: time()).
-void LoadPlays(const std::string& configPath) {
-    std::string path=PlaysPath(configPath), text;
-    if(path.empty() || !config::ReadFile(path,text,16<<20)) return;
-    std::lock_guard<std::mutex> hold(PlaysLock);
+void ReadPlays(const std::string& text, std::map<std::string,Played>& plays) {
     for(size_t at=0;at<text.size();) {
         size_t end=text.find('\n',at);
         std::string line=text.substr(at,end==std::string::npos ? std::string::npos : end-at);
@@ -1180,9 +1191,21 @@ void LoadPlays(const std::string& configPath) {
         Played p={0,0,0};
         int name=0;
         if(sscanf(line.c_str(),"%d|%lf|%lld|%n",&p.times,&p.seconds,&p.last,&name)<3 || !name || !line[name]) continue;
-        Plays[line.substr(size_t(name))]=p;
+        plays[line.substr(size_t(name))]=p;
     }
 }
+
+void LoadPlays(const std::string& configPath) {
+    std::string path=PlaysPath(configPath), text;
+    if(path.empty() || !config::ReadFile(path,text,16<<20)) return;
+    std::lock_guard<std::mutex> hold(PlaysLock);
+    ReadPlays(text,Plays);
+}
+
+// The play history of this computer's other devices in the sync (their
+// plays.ini, kept in Sync\devices\<id>\), added up: the dashboard counts
+// it with this computer's own. Under PlaysLock.
+std::map<std::string,Played> OtherPlays;
 
 void SavePlays() {
     std::string path=PlaysPath(Current().configPath), text;
@@ -1428,6 +1451,7 @@ void AuroraLoop() {
             XboxEvent(c,EventXbox,"Back in Aurora after "+game,std::string(c.text)+" is back in Aurora after "+game);
             { std::lock_guard<std::mutex> hold(ConsoleLock); game=c.mounted; }
             QueueSaves(c.address,game);
+            FollowSoon(c.address);
         }
         Sleep(1000);
     }
@@ -1511,6 +1535,7 @@ void GoOffline(Console& c, long long now) {
 
 void BackOnline(Console& c, const char* how) {
     c.offline=false;
+    FollowSoon(c.address);
     c.missed=0;
     c.recheck=true;
     XboxLog(c,"back online (%s).",how);
@@ -3836,6 +3861,11 @@ bool Save() {
     f.Set("wake_mac",o.wakeMac);
     f.Set("save_backup",o.saveBackup ? "1" : "0");
     f.Set("save_keep",Number(o.saveKeep));
+    f.Set("save_follow",o.saveFollow ? "1" : "0");
+    f.Set("sync_url",o.syncUrl);
+    f.Set("sync_key",o.syncKey.empty() ? std::string() : config::Protect(o.syncKey));
+    f.Set("sync_id",o.syncId);
+    f.Set("sync_name",o.syncName);
     f.Set("skip_installed",o.skipInstalled ? "1" : "0");
     f.Set("installed_folders",o.installedFolders);
     f.Set("aurora_scripts",o.auroraScripts ? "1" : "0");
@@ -3980,6 +4010,7 @@ bool LoadConfig(Options& o) {
     o.wake=Flag(f,"wake",o.wake);
     if(f.Has("wake_mac")) o.wakeMac=wake::CleanMac(f.Get("wake_mac"));
     o.saveBackup=Flag(f,"save_backup",o.saveBackup);
+    o.saveFollow=Flag(f,"save_follow",o.saveFollow);
     if(f.Has("save_keep")) o.saveKeep=std::max(1,std::min(100,int(f.Number("save_keep",o.saveKeep))));
     if(f.Has("save_delay")) o.saveDelay=double(std::max(0,std::min(600,int(f.Number("save_delay",10)))));  // Only for the tests.
     o.skipInstalled=Flag(f,"skip_installed",o.skipInstalled);
@@ -3991,6 +4022,10 @@ bool LoadConfig(Options& o) {
     o.restartAurora=Flag(f,"restart_aurora",o.restartAurora);
     if(!f.Get("aurora_web_user").empty()) o.auroraWebUser=f.Get("aurora_web_user");
     if(f.Has("aurora_web_password") && config::Unprotect(f.Get("aurora_web_password"),password)) o.auroraWebPassword=password;
+    // The sync's key only where it was made (it's protected for this Windows
+    // user): settings restored from another computer don't sync as that one.
+    o.syncUrl=f.Get("sync_url"); o.syncName=f.Get("sync_name"); o.syncKey.clear(); o.syncId.clear();
+    if(!f.Get("sync_key").empty() && config::Unprotect(f.Get("sync_key"),password) && !o.syncUrl.empty()) { o.syncKey=password; o.syncId=f.Get("sync_id"); }
     if(f.Has("aurora_web_port")) o.auroraWebPort=std::max(1,std::min(65535,int(f.Number("aurora_web_port",o.auroraWebPort))));
     o.followAddress=Flag(f,"follow_address",o.followAddress);
     o.keepAwake=Flag(f,"keep_awake",o.keepAwake);
@@ -4198,8 +4233,16 @@ std::map<std::string,std::string> SignedInTags(const Console& console, const Opt
     return tags;
 }
 
-bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::string& game, const Options& o, saves::Result& r, std::string& error) {
-    if(!saves::Take(ftp,SavesFolder(o),titleId,config::ToUtf8(game),o.saveKeep,r,error,SignedInTags(console,o))) {
+// Where a save backup came from, in its save.ini: the console and this
+// computer (its name in the sync, else its own).
+std::string ComputerName();
+std::string FromLines(const Console& console, const Options& o) {
+    return std::string("console=")+console.text+"\r\ncomputer="+(o.syncName.empty() ? ComputerName() : o.syncName)+"\r\n";
+}
+
+bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::string& game, const Options& o, saves::Result& r, std::string& error,
+              const std::string& extra=std::string()) {
+    if(!saves::Take(ftp,SavesFolder(o),titleId,config::ToUtf8(game),o.saveKeep,r,error,SignedInTags(console,o),FromLines(console,o)+extra)) {
         XboxLog(console,"couldn't back up the saves of %s: %s",game.c_str(),config::FromUtf8(error).c_str());
         return false;
     }
@@ -4208,6 +4251,8 @@ bool SaveGame(const Console& console, FtpClient& ftp, DWORD titleId, const std::
     else {
         XboxLog(console,"backed up the saves of %s: %d file(s) of %d profile(s), %s.",game.c_str(),r.files,r.profiles,r.name.c_str());
         XboxEvent(console,EventGood,"Saves of "+game+" backed up",std::string("Saves of ")+game+" backed up from "+console.text);
+        SyncSoon();
+        FollowAllSoon();
     }
     return true;
 }
@@ -4233,14 +4278,15 @@ void SaveLoop() {
     for(;;) {
         Sleep(1000);
         SaveJob job;
+        job.address=0;
         {
             std::lock_guard<std::mutex> hold(SaveJobLock);
             std::deque<SaveJob>::iterator due=SaveJobs.begin();
             while(due!=SaveJobs.end() && due->at>Now()) ++due;
-            if(due==SaveJobs.end()) continue;
-            job=*due;
-            SaveJobs.erase(due);
+            if(due!=SaveJobs.end()) { job=*due; SaveJobs.erase(due); }
         }
+        // No backup due: saves following their profile, a console at a time.
+        if(!job.address) { FollowStep(); continue; }
         Console* console=ConsoleIfKnown(job.address);
         Options o=Current();
         if(!console || !o.saveBackup || o.configPath.empty()) continue;
@@ -4354,10 +4400,305 @@ bool RestoreSaves(const web::Value& v, std::string& error) {
         XboxLog(*console,"restoring the saves of %s from %s stopped: %s",game.c_str(),name.c_str(),error.c_str());
         return false;
     }
+    // What was put back is these saves from now on, also for the profile's
+    // other consoles (FollowConsole takes the newest restored_from as theirs).
+    saves::Result after; std::string ignored;
+    SaveGame(*console,ftp,titleId,game,o,after,ignored,"restored_from="+name+"\r\n");
     ftp.Close();
     XboxLog(*console,"restored the saves of %s from %s (%d file(s)).",game.c_str(),name.c_str(),files);
     XboxEvent(*console,EventInfo,"Saves of "+game+" restored",std::string("Saves of ")+game+" restored on "+console->text);
     return true;
+}
+
+// Saves follow the profile -------------------------------------------------------
+//
+// The save backups (made here, or synced from other computers) say what each
+// profile's newest saves of a game are: those of the newest backup whose
+// saves of that profile weren't in an older one (or that a restore put back,
+// restored_from). When a console is in Aurora, each profile on it is
+// compared with that:
+//   - the same: nothing to do;
+//   - none there, or saves that are in a backup already (older ones): the
+//     newest go on the console, as nothing is lost;
+//   - saves that are in no backup: they're backed up. If the newest came
+//     from another console or computer, both played since, so the dashboard
+//     asks which to keep (a conflict); until then nothing is put on it.
+// Profiles not on the console are left alone.
+
+struct SaveConflict {
+    std::string address, title, xuid, gamertag, game;
+    std::string held;     // The backup of the console's saves.
+    std::string newest;   // The newest from elsewhere.
+    std::string from;     // Where that came from ("console@computer").
+    std::string digest;   // SHA-256 of the console's saves of that profile.
+};
+std::mutex FollowLock;
+std::vector<SaveConflict> Conflicts2;              // Under FollowLock; kept in save-conflicts.ini.
+std::map<DWORD,std::map<std::string,std::string> > FollowDone;  // Console -> title -> what was checked (under FollowLock).
+std::set<DWORD> FollowAsked;                        // Consoles to check (under FollowLock).
+
+std::string ConflictsPath(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"save-conflicts.ini"; }
+
+void SaveConflicts(const Options& o) {
+    std::string text, path=ConflictsPath(o);
+    if(path.empty()) return;
+    {
+        std::lock_guard<std::mutex> hold(FollowLock);
+        for(size_t i=0;i<Conflicts2.size();++i) {
+            const SaveConflict& c=Conflicts2[i];
+            text+=c.address+"|"+c.title+"|"+c.xuid+"|"+c.held+"|"+c.newest+"|"+c.digest+"|"+c.from+"|"+c.gamertag+"|"+c.game+"\n";
+        }
+    }
+    config::WriteFile(path,text,false);
+}
+
+void LoadConflicts(const Options& o) {
+    std::string text, path=ConflictsPath(o);
+    if(path.empty() || !config::ReadFile(path,text,1<<20)) return;
+    std::vector<SaveConflict> all;
+    for(size_t at=0;at<text.size();) {
+        size_t end=text.find('\n',at); if(end==std::string::npos) end=text.size();
+        std::string line=text.substr(at,end-at); at=end+1;
+        std::vector<std::string> f;
+        for(size_t from=0;;) {
+            size_t bar=line.find('|',from);
+            f.push_back(line.substr(from,bar==std::string::npos ? std::string::npos : bar-from));
+            if(bar==std::string::npos || f.size()==8) { if(bar!=std::string::npos) f.push_back(line.substr(bar+1)); break; }
+            from=bar+1;
+        }
+        if(f.size()<9) continue;
+        SaveConflict c={f[0],f[1],f[2],f[7],f[8],f[3],f[4],f[6],f[5]};
+        all.push_back(c);
+    }
+    std::lock_guard<std::mutex> hold(FollowLock);
+    Conflicts2.swap(all);
+}
+
+void FollowSoon(DWORD address) { std::lock_guard<std::mutex> hold(FollowLock); FollowAsked.insert(address); }
+void FollowAllSoon() {
+    std::vector<Console*> consoles=AllConsoles();
+    std::lock_guard<std::mutex> hold(FollowLock);
+    for(size_t i=0;i<consoles.size();++i) FollowAsked.insert(consoles[i]->address);
+}
+
+// Whether a console can be read now: it answers and is in Aurora, not in a game.
+bool InAuroraNow(Console& c) {
+    std::lock_guard<std::mutex> hold(ConsoleLock);
+    bool playing=c.connections>0 && !c.mounted.empty() && !c.inAurora;
+    return !playing && !c.offline && (c.answers || c.inAurora);
+}
+
+std::string GamertagIn(const std::map<std::string,std::string>& files, const std::string& xuid) {
+    std::map<std::string,std::string>::const_iterator ini=files.find("save.ini");
+    return ini==files.end() ? std::string() : saves::IniValue(ini->second,"profile_"+xuid);
+}
+std::string FromOf(const std::map<std::string,std::string>& files) {
+    std::map<std::string,std::string>::const_iterator ini=files.find("save.ini");
+    if(ini==files.end()) return std::string();
+    std::string console=saves::IniValue(ini->second,"console"), computer=saves::IniValue(ini->second,"computer");
+    return console.empty() ? std::string() : console+"@"+computer;
+}
+
+// Checks every profile on console against the backups (see above); false
+// if the console couldn't be read (asked again later).
+bool FollowConsole(Console& console) {
+    Options o=Current();
+    std::string folder=SavesFolder(o);
+    if(!o.saveFollow || !o.saveBackup || folder.empty()) return true;
+    std::vector<saves::Backup> list=saves::List(folder);
+    if(list.empty()) return true;
+    std::map<DWORD,std::vector<std::string> > byTitle;  // Oldest first.
+    for(size_t i=list.size();i-->0;) byTitle[list[i].titleId].push_back(list[i].name);
+    const std::string here=std::string(console.text)+"@"+(o.syncName.empty() ? ComputerName() : o.syncName);
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(console.address));
+    FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    std::vector<std::string> on;
+    std::string error;
+    if(!ftp.Open() || !saves::ProfilesOn(ftp,on,error)) return false;
+    std::string profiles;
+    for(size_t i=0;i<on.size();++i) profiles+=on[i]+",";
+    int put=0;
+    bool changed=false;
+    for(std::map<DWORD,std::vector<std::string> >::const_iterator t=byTitle.begin();t!=byTitle.end();++t) {
+        char title[9]; snprintf(title,sizeof(title),"%08X",(unsigned)t->first);
+        const std::string checked=t->second.back()+"|"+profiles;
+        {
+            std::lock_guard<std::mutex> hold(FollowLock);
+            if(FollowDone[console.address][title]==checked) continue;
+        }
+        // Each profile's newest saves of this game, and every saves it had.
+        struct Newest { std::string name, digest, from; std::set<std::string> seen; std::map<std::string,std::string> files; };
+        std::map<std::string,Newest> newest;
+        for(size_t b=0;b<t->second.size();++b) {
+            std::map<std::string,std::string> files;
+            if(!saves::Read(folder,t->second[b],files,error)) continue;
+            const std::string ini=files["save.ini"];
+            bool restored=!saves::IniValue(ini,"restored_from").empty(), held=saves::IniValue(ini,"held")=="1";
+            for(size_t p=0;p<on.size();++p) {
+                std::string mine=saves::ProfileSaves(files,on[p]);
+                if(mine.empty()) continue;
+                Newest& n=newest[on[p]];
+                std::string digest=web::Sha256Hex(mine);
+                if(!held && (!n.seen.count(digest) || restored)) { n.name=t->second[b]; n.digest=digest; n.from=FromOf(files); n.files=files; }
+                n.seen.insert(digest);
+            }
+        }
+        if(newest.empty()) {
+            std::lock_guard<std::mutex> hold(FollowLock);
+            FollowDone[console.address][title]=checked;
+            continue;
+        }
+        std::map<std::string,std::string> there;
+        if(!saves::Collect(ftp,t->first,there,error)) { XboxLog(console,"couldn't read the saves of %s to compare: %s",title,error.c_str()); return false; }
+        std::string game=GameOf(t->first);
+        if(game.empty()) game=title;
+        std::vector<std::string> push;
+        std::vector<SaveConflict> found;
+        bool backUp=false;
+        for(std::map<std::string,Newest>::iterator n=newest.begin();n!=newest.end();++n) {
+            if(n->second.name.empty()) continue;  // Only held backups of it.
+            std::string mine=saves::ProfileSaves(there,n->first), digest=mine.empty() ? std::string() : web::Sha256Hex(mine);
+            if(digest==n->second.digest) continue;
+            {
+                // Asked already: wait for the answer.
+                std::lock_guard<std::mutex> hold(FollowLock);
+                bool open=false;
+                for(size_t i=0;i<Conflicts2.size() && !open;++i)
+                    open=Conflicts2[i].address==console.text && Conflicts2[i].title==title && Conflicts2[i].xuid==n->first;
+                if(open) continue;
+            }
+            if(mine.empty() || n->second.seen.count(digest)) { push.push_back(n->first); continue; }
+            backUp=true;
+            if(!n->second.from.empty() && n->second.from!=here) {
+                SaveConflict c;
+                c.address=console.text; c.title=title; c.xuid=n->first; c.game=config::ToUtf8(game);
+                c.gamertag=GamertagIn(n->second.files,n->first); c.newest=n->second.name; c.from=n->second.from; c.digest=digest;
+                found.push_back(c);
+            }
+        }
+        if(backUp) {
+            saves::Result r;
+            std::string extra=found.empty() ? std::string() : "held=1\r\n";
+            if(!SaveGame(console,ftp,t->first,game,o,r,error,extra)) return false;
+            for(size_t i=0;i<found.size();++i) found[i].held=r.name;
+            changed=true;
+        }
+        if(!found.empty()) {
+            {
+                std::lock_guard<std::mutex> hold(FollowLock);
+                Conflicts2.insert(Conflicts2.end(),found.begin(),found.end());
+            }
+            SaveConflicts(o);
+            for(size_t i=0;i<found.size();++i) {
+                std::string who=found[i].gamertag.empty() ? found[i].xuid : found[i].gamertag;
+                XboxLog(console,"%s's saves of %s here differ from the newest from %s: both kept; the dashboard asks which to keep.",who.c_str(),game.c_str(),found[i].from.c_str());
+                XboxEvent(console,EventWarning,"Which saves of "+game+"?",who+"'s saves of "+game+" on "+console.text+" differ from the newest from "+found[i].from+". Choose which to keep under Settings, Backups.");
+            }
+        }
+        for(size_t i=0;i<push.size();++i) {
+            Newest& n=newest[push[i]];
+            int written=0;
+            if(!saves::PutFiles(ftp,n.files,push[i],written,error)) { XboxLog(console,"couldn't put the newer saves of %s on it: %s",game.c_str(),error.c_str()); return false; }
+            std::string who=GamertagIn(n.files,push[i]);
+            if(who.empty()) who=push[i];
+            XboxLog(console,"put %s's newest saves of %s on it (%s, %d file(s)).",who.c_str(),game.c_str(),n.name.c_str(),written);
+            XboxEvent(console,EventGood,"Saves of "+game+" brought over",who+"'s newest saves of "+game+" are on "+console.text+" now");
+            ++put;
+        }
+        std::lock_guard<std::mutex> hold(FollowLock);
+        // A backup made here changes the newest: checked again next time.
+        FollowDone[console.address][title]=backUp ? std::string() : checked;
+    }
+    ftp.Close();
+    if(changed) SyncSoon();
+    return true;
+}
+
+// The dashboard's answer to a conflict: keep "console" (its saves become the
+// newest everywhere) or "other" (the newest go on the console; its own stay
+// in their backup).
+bool ResolveConflict(const web::Value& v, std::string& error) {
+    Options o=Current();
+    std::string address, title, xuid, keep;
+    Text(v,"address",address); Text(v,"title",title); Text(v,"xuid",xuid); Text(v,"keep",keep);
+    SaveConflict c;
+    {
+        std::lock_guard<std::mutex> hold(FollowLock);
+        size_t i=0;
+        while(i<Conflicts2.size() && !(Conflicts2[i].address==address && Conflicts2[i].title==title && Conflicts2[i].xuid==xuid)) ++i;
+        if(i==Conflicts2.size()) { error="That was settled already."; return false; }
+        c=Conflicts2[i];
+    }
+    std::string folder=SavesFolder(o);
+    if(keep=="console") {
+        std::string made;
+        if(!saves::Copy(folder,c.held,"held","restored_from="+c.held+"\r\n",made,error)) return false;
+        Log("Saves of %s: keeping the ones from %s (%s), for every console.",c.game.c_str(),c.address.c_str(),made.c_str());
+    } else if(keep=="other") {
+        DWORD at=inet_addr(c.address.c_str());
+        Console* console=at==INADDR_NONE ? NULL : ConsoleIfKnown(at);
+        if(!console || !InAuroraNow(*console)) { error="Turn on "+c.address+" and go to Aurora first, so its saves can be changed."; return false; }
+        std::map<std::string,std::string> files;
+        if(!saves::Read(folder,c.newest,files,error)) return false;
+        std::lock_guard<std::mutex> ftpHold(FtpLockFor(console->address));
+        FtpClient ftp(console->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+        int written=0;
+        if(!ftp.Open() || !saves::PutFiles(ftp,files,c.xuid,written,error)) { if(error.empty()) error=ftp.Error(); return false; }
+        ftp.Close();
+        XboxLog(*console,"put the saves of %s from %s on it, as chosen (its own are kept in %s).",c.game.c_str(),c.from.c_str(),c.held.c_str());
+    } else { error="Choose which saves to keep."; return false; }
+    {
+        std::lock_guard<std::mutex> hold(FollowLock);
+        for(size_t i=0;i<Conflicts2.size();++i)
+            if(Conflicts2[i].address==address && Conflicts2[i].title==title && Conflicts2[i].xuid==xuid) { Conflicts2.erase(Conflicts2.begin()+i); break; }
+        FollowDone.clear();
+    }
+    SaveConflicts(o);
+    FollowAllSoon();
+    SyncSoon();
+    return true;
+}
+
+void ConflictsJson(web::Json& j) {
+    std::lock_guard<std::mutex> hold(FollowLock);
+    j.Key("saveConflicts").Open('[');
+    for(size_t i=0;i<Conflicts2.size();++i) {
+        const SaveConflict& c=Conflicts2[i];
+        j.Open('{').Set("address",c.address).Set("title",c.title).Set("xuid",c.xuid).Set("gamertag",c.gamertag).Set("game",c.game)
+         .Set("held",c.held).Set("newest",c.newest).Set("from",c.from).Close('}');
+    }
+    j.Close(']');
+}
+
+// Checks the consoles asked for, one at a time, between save backups: a
+// console stays asked for until it's in Aurora. Once a minute, consoles not
+// checked yet (new ones, and all after a start) are asked for.
+void FollowStep() {
+    static double lookedAt=-1e9, allAt=-1e9;
+    if(Now()-lookedAt>60) {
+        lookedAt=Now();
+        // Every 10 minutes all of them: a profile put on a console since (by
+        // hand, or by a party) gets its saves too. Games already checked with
+        // the same profiles cost one look at the console's profiles.
+        bool all=Now()-allAt>600;
+        if(all) allAt=Now();
+        std::vector<Console*> consoles=AllConsoles();
+        std::lock_guard<std::mutex> hold(FollowLock);
+        for(size_t i=0;i<consoles.size();++i) if(all || !FollowDone.count(consoles[i]->address)) FollowAsked.insert(consoles[i]->address);
+    }
+    std::vector<DWORD> asked;
+    { std::lock_guard<std::mutex> hold(FollowLock); asked.assign(FollowAsked.begin(),FollowAsked.end()); }
+    for(size_t i=0;i<asked.size();++i) {
+        Console* console=ConsoleIfKnown(asked[i]);
+        if(console && !InAuroraNow(*console)) continue;
+        { std::lock_guard<std::mutex> hold(FollowLock); FollowAsked.erase(asked[i]); }
+        if(!console) continue;
+        bool ok=FollowConsole(*console);
+        std::lock_guard<std::mutex> hold(FollowLock);
+        if(!ok) FollowDone.erase(asked[i]);
+        else FollowDone[asked[i]];  // Checked: not asked for again by the minute's look.
+        return;
+    }
 }
 
 // The dashboard ----------------------------------------------------------------
@@ -4934,6 +5275,8 @@ void State(web::Reply& out) {
     for(size_t i=0;i<addresses.size();++i) j.String(addresses[i]);
     j.Close(']');
 
+    SyncJson(j,o);
+    ConflictsJson(j);
     j.Key("settings").Open('{');
     j.Key("xboxes").Open('[');
     for(size_t i=0;i<o.xboxes.size();++i) { char text[16]; AddressText(o.xboxes[i],text,sizeof(text)); j.String(text); }
@@ -4946,7 +5289,7 @@ void State(web::Reply& out) {
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
     j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
-    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep);
+    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep).Set("saveFollow",o.saveFollow);
     {
         std::string mac,address;
         WakeAdapter(o,mac,address);
@@ -5113,7 +5456,14 @@ void Games(web::Reply& out) {
     std::vector<ConsoleUpdates> updates=UpdatesOf(ComparedConsoles());
     // The play history, with the games being played now counted so far.
     std::map<std::string,Played> plays;
-    { std::lock_guard<std::mutex> hold(PlaysLock); plays=Plays; }
+    {
+        std::lock_guard<std::mutex> hold(PlaysLock);
+        plays=Plays;
+        for(std::map<std::string,Played>::const_iterator p=OtherPlays.begin();p!=OtherPlays.end();++p) {
+            Played& mine=plays[p->first];
+            mine.times+=p->second.times; mine.seconds+=p->second.seconds; mine.last=std::max(mine.last,p->second.last);
+        }
+    }
     {
         std::lock_guard<std::mutex> hold(ConsoleLock);
         for(size_t i=0;i<consoles.size();++i)
@@ -6030,6 +6380,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(!error.empty()) return false;
     Bool(v,"wake",next.wake);
     Bool(v,"saveBackup",next.saveBackup);
+    Bool(v,"saveFollow",next.saveFollow);
     if(Text(v,"wakeMac",text)) {
         next.wakeMac=wake::CleanMac(text);
         if(next.wakeMac.empty() && !Trim(text).empty()) { error="\""+text+"\" isn't a MAC address like AA:BB:CC:DD:EE:FF."; return false; }
@@ -6110,6 +6461,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.wake!=was.wake) changed.push_back(next.wake ? "the Xbox can wake this computer" : "the Xbox doesn't wake this computer");
     if(next.wakeMac!=was.wakeMac) changed.push_back(next.wakeMac.empty() ? "waking this computer's own network adapter" : "waking "+next.wakeMac);
     if(next.saveBackup!=was.saveBackup) changed.push_back(next.saveBackup ? "game saves backed up after each game" : "game saves not backed up");
+    if(next.saveFollow!=was.saveFollow) changed.push_back(next.saveFollow ? "saves follow the profile to each console" : "saves stay on their console");
     if(next.saveKeep!=was.saveKeep) changed.push_back("keeping the newest "+Count(next.saveKeep,"save backup","save backups")+" of each game");
     if(next.skipInstalled!=was.skipInstalled) changed.push_back(next.skipInstalled ? "games installed on a console get no tile" : "installed games get a tile too");
     if(next.tileMode!=was.tileMode) changed.push_back("new consoles get the games "+std::string(next.tileMode==TileGod ? "as Games on Demand" : next.tileMode==TileNone ? "not at all" : "as folders in "+next.xboxFolder));
@@ -6132,7 +6484,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.scan=next.scan; Settings.setupDone=next.setupDone; Settings.wizardDone=next.wizardDone; Settings.webLan=next.webLan;
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
-        Settings.wake=next.wake; Settings.wakeMac=next.wakeMac; Settings.saveBackup=next.saveBackup; Settings.saveKeep=next.saveKeep;
+        Settings.wake=next.wake; Settings.wakeMac=next.wakeMac; Settings.saveBackup=next.saveBackup; Settings.saveKeep=next.saveKeep; Settings.saveFollow=next.saveFollow;
         Settings.skipInstalled=next.skipInstalled; Settings.installedFolders=next.installedFolders; Settings.auroraScripts=next.auroraScripts;
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
@@ -6148,6 +6500,11 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
        next.installedFolders!=was.installedFolders || (next.auroraScripts && !was.auroraScripts) || next.tidyAurora!=was.tidyAurora ||
        next.wake!=was.wake || next.wakeMac!=was.wakeMac || next.tileMode!=was.tileMode) ++PushGeneration;
     if(next.webLan!=was.webLan) StartWeb(Current(),true);
+    // Saves follow the profile again: every console is checked anew.
+    if((next.saveFollow && !was.saveFollow) || (next.saveBackup && !was.saveBackup)) {
+        { std::lock_guard<std::mutex> hold(FollowLock); FollowDone.clear(); }
+        FollowAllSoon();
+    }
     if(!changed.empty()) {
         std::string what;
         for(size_t i=0;i<changed.size();++i) what+=(i ? "; " : "")+changed[i];
@@ -6188,6 +6545,212 @@ bool ChooseCopy(const web::Value& v, std::string& error) {
     Event(EventInfo,"%s: playing the %s copy from now on",name.c_str(),kind.c_str());
     Save();
     return true;
+}
+
+// Sync between computers -------------------------------------------------------
+//
+// With a key (Settings, Sync between computers), the save backups (Saves\),
+// the profile backups (Backups\Profiles\) and the play history go to the
+// sync Worker on Cloudflare and come back on every other computer connected
+// to it (see sync.h): when NetDisc360 starts, every 5 minutes, after each
+// save backup and when asked. Each computer keeps its own settings.
+
+const double SyncEvery = 300;
+std::atomic<bool> SyncAsked(true);
+struct SyncState {
+    bool running;
+    long long last, lastOk;  // time() of the last pass, and of the last one without a failure.
+    int sent, got, failed;   // In the last pass.
+    std::string error;       // Its first failure.
+    std::vector<cloudsync::Device> devices;
+    std::map<std::string,std::string> sentDocs;  // SHA-256 of each document last sent (plays.ini, users.ini).
+    long long stored;        // Bytes kept in the cloud, as of the last pass that listed everything.
+    SyncState() : running(false), last(0), lastOk(0), sent(0), got(0), failed(0), stored(0) {}
+};
+std::mutex SyncStateLock;
+SyncState SyncNow;  // Under SyncStateLock.
+
+void SyncSoon() { SyncAsked=true; }
+
+std::string CloudFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Sync"; }
+
+std::string InFolder(const std::string& folder, const std::string& name) {
+#ifdef _WIN32
+    return folder+"\\"+name;
+#else
+    return folder+"/"+name;
+#endif
+}
+
+// The other devices' play history, from Sync\devices\<id>\plays.ini.
+void LoadOtherPlays(const Options& o) {
+    std::map<std::string,Played> all;
+    std::string devices=InFolder(CloudFolder(o),"devices");
+    std::vector<config::Entry> ids=o.syncKey.empty() ? std::vector<config::Entry>() : config::Folders(devices);
+    for(size_t i=0;i<ids.size();++i) {
+        std::string text;
+        std::map<std::string,Played> one;
+        if(ids[i].name==o.syncId || !config::ReadFile(InFolder(InFolder(devices,ids[i].name),"plays.ini"),text,16<<20)) continue;
+        ReadPlays(text,one);
+        for(std::map<std::string,Played>::const_iterator p=one.begin();p!=one.end();++p) {
+            Played& sum=all[p->first];
+            sum.times+=p->second.times; sum.seconds+=p->second.seconds; sum.last=std::max(sum.last,p->second.last);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(PlaysLock);
+        OtherPlays.swap(all);
+    }
+    std::lock_guard<std::mutex> hold(GamesListLock);
+    ++GamesVersion;
+}
+
+// The users of the other computers (Sync\devices\<id>\users.ini, see
+// users.h on the party branch) merged into this one's users.ini: the same
+// XUID is the same user, the line changed last wins, removals carry over.
+// A merge that changed users.ini sends it up on the next pass.
+void MergeOtherUsers(const Options& o) {
+    std::string devices=InFolder(CloudFolder(o),"devices");
+    std::vector<config::Entry> ids=config::Folders(devices);
+    for(size_t i=0;i<ids.size();++i) {
+        std::string text, error;
+        if(ids[i].name==o.syncId || !config::ReadFile(InFolder(InFolder(devices,ids[i].name),"users.ini"),text,16<<20)) continue;
+        if(!MergeUsersFile(text,error)) Log("Sync: couldn't take in the users of another computer: %s",config::FromUtf8(error).c_str());
+    }
+    SyncSoon();  // Sends this computer's users.ini if the merge changed it.
+}
+
+void SyncPass(const Options& o) {
+    const std::string folder=CloudFolder(o), url=o.syncUrl, key=o.syncKey;
+    config::MakeFolder(folder);
+    { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow.running=true; }
+    cloudsync::Report report;
+    std::string base=config::FolderOf(o.configPath);
+    cloudsync::Kind saves={"saves",base+"Saves",0};
+    cloudsync::Kind profiles={"profiles",InFolder(base+"Backups","Profiles"),1};
+    cloudsync::Files(url,key,saves,InFolder(folder,"saves.seen"),report);
+    int savesGot=report.got;
+    cloudsync::Files(url,key,profiles,InFolder(folder,"profiles.seen"),report);
+    // The play history and the users: this computer's own go up, the
+    // others' come down (to Sync\devices\<id>\).
+    std::map<std::string,std::string> sent;
+    std::string error;
+    { std::lock_guard<std::mutex> hold(SyncStateLock); sent=SyncNow.sentDocs; }
+    const std::string devicesFolder=InFolder(folder,"devices");
+    const std::string map=DiscMapPath(o.configPath), configFolder=map.substr(0,map.size()-9);
+    const char* const docs[]={"plays.ini","users.ini"};
+    for(size_t d=0;d<sizeof(docs)/sizeof(docs[0]);++d) {
+        std::string text;
+        if(config::ReadFile(configFolder+docs[d],text,16<<20) && !cloudsync::PutState(url,key,o.syncId,docs[d],text,sent[docs[d]],error)) {
+            ++report.failed; report.notes.push_back(error);
+        }
+        int before=report.got;
+        cloudsync::GetStates(url,key,o.syncId,docs[d],devicesFolder,report);
+        if(report.got==before) continue;
+        if(d==0) LoadOtherPlays(o);
+        else MergeOtherUsers(o);
+    }
+    if(savesGot) FollowAllSoon();
+    std::vector<cloudsync::Device> devices;
+    bool listed=cloudsync::Devices(url,key,devices,error);
+    if(!listed) { ++report.failed; report.notes.push_back(error); }
+    {
+        std::lock_guard<std::mutex> hold(SyncStateLock);
+        SyncNow.running=false;
+        SyncNow.last=(long long)time(NULL);
+        if(!report.failed) SyncNow.lastOk=SyncNow.last;
+        SyncNow.sent=report.sent; SyncNow.got=report.got; SyncNow.failed=report.failed;
+        SyncNow.error=report.notes.empty() ? std::string() : report.notes[0];
+        SyncNow.sentDocs=sent;
+        if(listed) SyncNow.devices=devices;
+        if(!report.failed || report.stored>SyncNow.stored) SyncNow.stored=report.stored;
+    }
+    if(report.sent || report.got) Log("Sync: sent %d and fetched %d backup(s) and play histories%s.",report.sent,report.got,
+                                      savesGot ? " (new save backups from your other computers are under Saves)" : "");
+    for(size_t i=0;i<report.notes.size() && i<5;++i) Log("Sync: %s",config::FromUtf8(report.notes[i]).c_str());
+}
+
+void SyncLoop() {
+    double next=0;
+    for(;;) {
+        Sleep(1000);
+        if(!SyncAsked && Now()<next) continue;
+        SyncAsked=false;
+        next=Now()+SyncEvery;
+        Options o=Current();
+        if(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty()) continue;
+        SyncPass(o);
+    }
+}
+
+std::string ComputerName() {
+    char name[256]={0};
+    if(gethostname(name,sizeof(name)-1) || !name[0]) return "NetDisc360";
+    return config::ToUtf8(name);
+}
+
+void SyncJson(web::Json& j, const Options& o) {
+    std::lock_guard<std::mutex> hold(SyncStateLock);
+    j.Key("sync").Open('{');
+    j.Set("on",!o.syncKey.empty()).Set("url",o.syncUrl).Set("id",o.syncId).Set("name",o.syncName).Set("computer",ComputerName());
+    j.Set("saved",!o.configPath.empty()).Set("running",SyncNow.running).Set("last",SyncNow.last).Set("lastOk",SyncNow.lastOk);
+    j.Set("sent",SyncNow.sent).Set("got",SyncNow.got).Set("failed",SyncNow.failed).Set("error",SyncNow.error).Set("stored",SyncNow.stored);
+    j.Key("devices").Open('[');
+    for(size_t i=0;i<SyncNow.devices.size();++i)
+        j.Open('{').Set("id",SyncNow.devices[i].id).Set("name",SyncNow.devices[i].name).Set("added",SyncNow.devices[i].added)
+         .Set("self",SyncNow.devices[i].id==o.syncId).Close('}');
+    j.Close(']').Close('}');
+}
+
+// The dashboard's Sync between computers: connect (url, key: the owner key
+// or another computer's, name), off, now, remove (id).
+void SyncApi(const std::string& what, const web::Value& v, web::Reply& out) {
+    Options o=Current();
+    std::string error;
+    if(what=="connect") {
+        std::string url, key, name;
+        Text(v,"url",url); Text(v,"key",key); Text(v,"name",name);
+        url=cloudsync::Base(url); key=Trim(key); name=Trim(name);
+        if(name.empty()) name=ComputerName();
+        if(o.configPath.empty()) { out.Error(400,"The settings aren't kept in a file (start NetDisc360 with --config), so there's nowhere to sync to."); return; }
+        if(key.empty()) { out.Error(400,"Paste the sync's key: the owner key, or a key from another computer's NetDisc360."); return; }
+        std::string id, deviceKey;
+        if(!cloudsync::Connect(url,key,name,id,deviceKey,error)) { out.Error(400,error); return; }
+        {
+            std::lock_guard<std::mutex> hold(SettingsLock);
+            Settings.syncUrl=url; Settings.syncKey=deviceKey; Settings.syncId=id; Settings.syncName=name;
+        }
+        { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow=SyncState(); }
+        Save();
+        Log("Sync: this computer is connected to %s as \"%s\".",url.c_str(),config::FromUtf8(name).c_str());
+        Event(EventGood,"Sync between computers is on");
+        SyncSoon();
+    } else if(what=="off") {
+        {
+            std::lock_guard<std::mutex> hold(SettingsLock);
+            Settings.syncKey.clear(); Settings.syncId.clear();
+        }
+        { std::lock_guard<std::mutex> hold(SyncStateLock); SyncNow=SyncState(); }
+        { std::lock_guard<std::mutex> hold(PlaysLock); OtherPlays.clear(); }
+        { std::lock_guard<std::mutex> hold(GamesListLock); ++GamesVersion; }
+        Save();
+        Log("Sync: turned off on this computer (its backups stay here and in the cloud).");
+    } else if(what=="now") {
+        if(o.syncKey.empty()) { out.Error(400,"Sync isn't on."); return; }
+        SyncSoon();
+    } else if(what=="remove") {
+        std::string id;
+        Text(v,"id",id);
+        if(o.syncKey.empty()) { out.Error(400,"Sync isn't on."); return; }
+        if(!cloudsync::Remove(o.syncUrl,o.syncKey,id,error)) { out.Error(400,error); return; }
+        Log("Sync: a computer's key was taken away (%s).",id.c_str());
+        SyncSoon();
+    } else { out.Error(404,"Not here."); return; }
+    web::Json j;
+    j.Open('{').Set("ok",true);
+    SyncJson(j,Current());
+    j.Close('}');
+    out.body=j.Text();
 }
 
 // Backups of the settings ---------------------------------------------------------
@@ -12341,6 +12904,9 @@ void Api(const web::Request& r, web::Reply& out) {
         else { out.type="application/zip"; out.download=name; }
     } else if(r.method=="POST" && r.path=="/api/saves/backup") {
         if(!SaveAll(body,out,error)) out.Error(400,error);
+    } else if(r.method=="POST" && r.path=="/api/saves/conflict") {
+        if(ResolveConflict(body,error)) out.body="{\"ok\":true}";
+        else out.Error(400,error);
     } else if(r.method=="POST" && r.path=="/api/saves/restore") {
         if(RestoreSaves(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
@@ -12350,7 +12916,8 @@ void Api(const web::Request& r, web::Reply& out) {
         Options o=Current();
         if(SavesFolder(o).empty() || !saves::Named(name) || !config::RemoveFile(SavePath(o,name))) out.Error(404,"That save backup isn't there any more.");
         else { Log("Deleted the save backup %s.",name.c_str()); out.body="{\"ok\":true}"; }
-    } else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
+    } else if(r.method=="POST" && !r.path.compare(0,10,"/api/sync/")) SyncApi(r.path.substr(10),body,out);
+    else if(r.method=="GET" && r.path=="/api/update") UpdateInfo(out);
     else if(r.method=="POST" && r.path=="/api/update/check") {
         if(!ChecksUpdates(Current())) out.Error(400,"The dashboard checks for updates itself here.");
         else { CheckForUpdate(error); UpdateInfo(out); }
@@ -12641,6 +13208,8 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
 
     LoadPlays(o.configPath);
+    LoadOtherPlays(o);
+    LoadConflicts(o);
     std::string where;
     for(size_t i=0;i<o.folders.size();++i) where+=(i ? ", " : "")+o.folders[i];
     std::vector<IsoFile> isos=Isos();
@@ -12701,6 +13270,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(AwakeLoop).detach();
 #endif
     std::thread(BackupLoop).detach();
+    std::thread(SyncLoop).detach();
     std::thread(SaveLoop).detach();
     std::thread(UpdateLoop).detach();
     Serve(listener);
