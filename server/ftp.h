@@ -9,6 +9,7 @@
 // fall one behind the commands, so any failure drops the connection and the
 // next command logs in again.
 #include "../shared/library.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,11 @@ public:
     // downloading the rest: the transfer is cut off there.
     bool RetrieveHead(const char* path, std::vector<unsigned char>& data, size_t bytes);
     bool Store(const char* path, const void* data, size_t size);
+    // A file too big to hold in memory: size bytes, which read(offset, data,
+    // length) gives part by part; progress(sent) hears after each part.
+    // Either one returning false stops it, leaving part of the file there.
+    bool StoreFrom(const char* path, U64 size, const std::function<bool(U64, unsigned char*, DWORD)>& read,
+                   const std::function<bool(U64)>& progress);
     bool MakeFolder(const char* path);
     bool Exists(const char* folder);
     // Whether folder is there, going into it. Unlike Exists, a folder that
@@ -44,6 +50,8 @@ public:
     bool Enters(const char* folder);
     bool Delete(const char* path);
     bool RemoveFolder(const char* path);
+    // Renames a file or folder (RNFR and RNTO, both full paths).
+    bool Rename(const char* from, const char* to);
     // A SITE command (FtpDll's own, such as INITIATESCAN); reply is its last
     // line. True for a 2xx reply.
     bool Site(const char* command, std::string& reply);

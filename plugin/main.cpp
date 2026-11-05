@@ -1,5 +1,10 @@
-// NetISO Tiles: a DashLaunch plugin that starts NetISO game tiles from inside
-// Aurora.
+// NetDisc360.xex: the DashLaunch plugin on the console (called NetIsoTiles.xex
+// before). It is the disc drive that plays games from the server (disc.cpp,
+// in place of cOz's NetISO.xex), and it looks after the game tiles: disc
+// swaps, the Guide, and the launches below.
+//
+// What follows is how the tile part came about, when NetISO.xex was still the
+// disc drive; with NetISO.xex loaded, all of it still applies.
 //
 // Whenever the game launcher (launcher/main.cpp) asked the NetISO plugin to
 // mount, the Guide was dead until the next reboot: right after the mount,
@@ -24,15 +29,20 @@
 // mounts from inside Aurora.
 //
 // A game started from a tile that asks for another of its discs gets that
-// disc's ISO mounted (see Disc swaps below), and NetISO's read size and
-// receive buffer are raised at start-up (see NetIsoTiles.ini below).
+// disc's ISO mounted (see Disc swaps below), an original Xbox game starts in
+// the emulator version its netiso.ini names (see Original Xbox emulator
+// below) and finds System Link games with Aurora's LiNK off (see Original
+// Xbox System Link below), and, with NetISO.xex loaded, NetISO's read size
+// and receive buffer are raised at start-up (see NetDisc360.ini below).
 #include <xtl.h>
 #include <ppcintrinsics.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include "../shared/isvr.h"
+#include "disc.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -84,7 +94,7 @@ static const char MountFolder[]="Mount";
 // After the mount the plugin fakes a tray open and close on its own thread,
 // and the console then reads the new disc. Reading the disc meanwhile broke
 // the game the launcher started, so the disc is left alone this long first.
-static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=256;
+static const int QuietMs=5000,MountWaitMs=30000,PollMs=500,MaxNames=4,MaxEntries=100000;
 
 // ---- Hooks ----
 
@@ -231,27 +241,9 @@ static void Unhook(Hook& hook) {
 // Appended to the tile's netiso.log, in the launcher's format.
 static HANDLE Log=INVALID_HANDLE_VALUE;
 static char LogLine[1024];
-// The log is a handle of Aurora's process, which the system thread doing
-// the mount can't write to, so its lines wait here until it's done.
-static volatile DWORD DeferThread=0;
-static char Deferred[16384];
-static size_t DeferredLength=0;
-static bool Deferring() { return DeferThread && DeferThread==GetCurrentThreadId(); }
 static void Write(const char* text) {
     if(Log==INVALID_HANDLE_VALUE) return;
-    if(Deferring()) {
-        size_t length=strlen(text);
-        if(DeferredLength+length<sizeof(Deferred)) { memcpy(Deferred+DeferredLength,text,length); DeferredLength+=length; }
-        return;
-    }
     DWORD done=0; WriteFile(Log,text,strlen(text),&done,NULL);
-}
-// Writes the system thread's lines once it has finished.
-static void WriteDeferred() {
-    DeferThread=0;
-    if(!DeferredLength) return;
-    Deferred[DeferredLength]=0; DeferredLength=0;
-    Write(Deferred);
 }
 static void Note(const char* format,...) {
     if(Log==INVALID_HANDLE_VALUE) return;
@@ -272,7 +264,7 @@ static void OpenLog(const char* folder) {
     SYSTEMTIME t; GetLocalTime(&t);
     DWORD up=GetTickCount()/1000;
     Write("\r\n");
-    Note("==== %04u-%02u-%02u, NetISO Tiles plugin built %s %s, console up %lu:%02lu:%02lu ====",
+    Note("==== %04u-%02u-%02u, NetDisc360 plugin built %s %s, console up %lu:%02lu:%02lu ====",
          t.wYear,t.wMonth,t.wDay,__DATE__,__TIME__,up/3600,up/60%60,up%60);
 }
 static void CloseLog() {
@@ -288,12 +280,10 @@ static void Show(const char* text) {
     wide[i]=0;
     Notice(0x22,0xFF,1,wide,NULL);
 }
-// Logged and shown. One the system thread asks for waits in Pending and is
-// shown from Aurora's thread.
-static char Pending[128];
+// Logged and shown.
 static void Tell(const char* text) {
     Note("Notice: %s",text);
-    if(Deferring()) strcpy_s(Pending,text); else Show(text);
+    Show(text);
 }
 
 // ---- NetISO's unload call ----
@@ -305,8 +295,8 @@ static void Tell(const char* text) {
 // launcher, the helper, this plugin on Aurora's thread) left the Guide dead
 // until reboot, and so did a failed one (seen on the console); that this
 // call is why is inferred, since there is no Guide app to close there. So
-// NetISO's import of it is pointed here: the plugin's own mount thread and
-// title threads skip it, and system threads such as the Guide's still get it.
+// NetISO's import of it is pointed here: title threads (Aurora's and the
+// games') skip it, and system threads such as the Guide's still get it.
 static const DWORD AppUnloadSelfOrdinal=581;
 static DWORD* const UnloadThunk=(DWORD*)0x9110c12c;
 static const DWORD* const UnloadCall=(const DWORD*)0x91104dc0;
@@ -315,7 +305,7 @@ typedef DWORD (*AppUnload)(DWORD,DWORD,DWORD,DWORD);
 static AppUnload AppUnloadSelf=NULL;
 static volatile LONG UnloadsSkipped=0;
 static DWORD UnloadHooked(DWORD a,DWORD b,DWORD c,DWORD d) {
-    if(KeGetCurrentProcessType()!=SystemProcess || Deferring()) { InterlockedIncrement(&UnloadsSkipped); return 0; }
+    if(KeGetCurrentProcessType()!=SystemProcess) { InterlockedIncrement(&UnloadsSkipped); return 0; }
     return AppUnloadSelf(a,b,c,d);
 }
 // Points NetISO's import of XamAppUnloadSelf at UnloadHooked, once. Checks
@@ -457,10 +447,14 @@ static LONG OpenFolder(const char* folder,HANDLE& handle) {
     char path[MAX_PATH]; sprintf_s(path,"%s\\",folder);
     return OpenPath(path,true,handle);
 }
-// Lists a folder by device path into Names; the number of names, or -1 when
-// it can't be opened. Stops at MaxNames, or if an entry comes back twice in a
-// row.
-static int ListFolder(const char* folder) {
+// Lists a folder by device path and keeps only the entry named want (any
+// case) in Names, so a library of thousands of ISOs needs no room for every
+// name; the number of entries listed, or -1 when it can't be opened. Stops
+// after MaxEntries, or if an entry comes back twice in a row.
+static int NamesKept=0;
+static char LastName[MAX_PATH];
+static int ListFolder(const char* folder,const char* want) {
+    NamesKept=0; LastName[0]=0;
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return -1; }
@@ -468,18 +462,22 @@ static int ListFolder(const char* folder) {
     for(;;) {
         LONG result=QueryFolder(handle,count==0);
         if(result<0) { if(result!=NoMoreFiles) Note("%s: listing stopped (status %08X)",folder,result); break; }
-        if(count==MaxNames) { Note("%s: more than %d entries; using the first %d.",folder,MaxNames,MaxNames); break; }
+        if(count==MaxEntries) { Note("%s: more than %d entries; stopping there.",folder,MaxEntries); break; }
+        char name[MAX_PATH];
         DWORD length=Entry.nameLength<MAX_PATH-1 ? Entry.nameLength : MAX_PATH-1;
-        memcpy(Names[count],Entry.name,length); Names[count][length]=0;
-        if(count && !strcmp(Names[count],Names[count-1])) { Note("%s: %s came back twice; stopping.",folder,Names[count]); break; }
+        memcpy(name,Entry.name,length); name[length]=0;
+        if(count && !strcmp(name,LastName)) { Note("%s: %s came back twice; stopping.",folder,name); break; }
+        strcpy_s(LastName,name);
+        if(want && !_stricmp(name,want) && NamesKept<MaxNames) strcpy_s(Names[NamesKept++],name);
         ++count;
     }
     NtClose(handle);
     Note("%s: %d entries",folder,count);
     return count;
 }
-static const char* FindName(int count,const char* name) {
-    for(int i=0;i<count;++i) if(!_stricmp(Names[i],name)) return Names[i];
+// One of the names the last ListFolder kept, as the server spells it.
+static const char* FindName(const char* name) {
+    for(int i=0;i<NamesKept;++i) if(!_stricmp(Names[i],name)) return Names[i];
     return NULL;
 }
 // The ISO's Mount folder, \Device\NetIso\<iso>\Mount, after listing the root
@@ -487,42 +485,29 @@ static const char* FindName(int count,const char* name) {
 // these folders doesn't mount. isoFolder gets the ISO's own folder.
 static bool FindMountFolder(const Settings& settings,char* folder,size_t capacity,char* isoFolder) {
     isoFolder[0]=0;
-    int count=ListFolder(IsoDevice);
+    int count=ListFolder(IsoDevice,settings.iso);
     if(count<0) return false;
-    const char* iso=FindName(count,settings.iso);
+    const char* iso=FindName(settings.iso);
     if(!iso) { Note("The server doesn't list %s.",settings.iso); return false; }
     sprintf_s(isoFolder,capacity,"%s\\%s",IsoDevice,iso);
-    count=ListFolder(isoFolder);
-    if(count>=0 && !FindName(count,MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
+    count=ListFolder(isoFolder,MountFolder);
+    if(count>=0 && !FindName(MountFolder)) Note("%s doesn't list %s; asking for it anyway.",isoFolder,MountFolder);
     sprintf_s(folder,capacity,"%s\\%s",isoFolder,MountFolder);
     return true;
 }
 // Opening and listing a Mount folder mounts: the plugin swaps the disc before
-// the listing returns (empty), then fakes the tray open and close. With hold,
-// the folder stays open (in MountHandle) until the caller closes it.
-static HANDLE MountHandle=NULL;
-static bool ListMountFolder(const char* folder,bool hold) {
+// the listing returns (empty), then fakes the tray open and close.
+static bool ListMountFolder(const char* folder) {
     HANDLE handle;
     LONG status=OpenFolder(folder,handle);
     if(status<0) { Note("%s: can't open (status %08X)",folder,status); return false; }
     LONG result=QueryFolder(handle,true);
     Note("%s: listed (status %08X)",folder,result);
-    if(hold) MountHandle=handle; else NtClose(handle);
+    NtClose(handle);
     return true;
-}
-static void CloseMountFolder() {
-    if(!MountHandle) return;
-    NtClose(MountHandle); MountHandle=NULL;
-    Note("Closed the Mount folder (hold_mount).");
 }
 
 static char Folder[MAX_PATH],Ini[2048];
-// Whole number from the tile's netiso.ini, or fallback.
-static int IniNumber(const char* key,int fallback) {
-    char value[16];
-    if(!IniValue(Ini,key,value,sizeof(value)) || !value[0]) return fallback;
-    return atoi(value);
-}
 
 // ---- Server ----
 
@@ -549,23 +534,84 @@ static bool ReadDeviceText(const char* path,char* text,DWORD capacity) {
     text[status.information]=0;
     return true;
 }
-// server= in the tile's netiso.ini, or the NetISO plugin's own netiso.xex.txt
-// on Hdd1: or Usb0:, as the launcher finds it.
+// ---- Settings files ----
+
+// The folder DashLaunch loaded this plugin from (launch.ini's plugin line),
+// as \Device\..., with its backslash; empty when unknown. Its settings and
+// the server's address sit next to it (as NetISO.xex.txt sat next to
+// NetISO.xex), or on the root of Usb0: or Hdd1:.
+static char OwnFolder[MAX_PATH]="";
+static void FindOwnFolder(HANDLE module) {
+    // The module handle is its loader entry, with FullDllName (a
+    // UNICODE_STRING: length in bytes, capacity, text) at 0x24.
+    const BYTE* entry=(const BYTE*)module;
+    if(!entry || !MmIsAddressValid((void*)entry) || !MmIsAddressValid((void*)(entry+0x2B))) return;
+    USHORT bytes=*(const USHORT*)(entry+0x24);
+    const WCHAR* name=*(const WCHAR* const*)(entry+0x28);
+    if(!bytes || !name || !MmIsAddressValid((void*)name) || !MmIsAddressValid((void*)((const BYTE*)name+bytes-1))) return;
+    char path[MAX_PATH]; size_t length=0;
+    for(size_t i=0;i<size_t(bytes/2) && length+1<sizeof(path);++i) path[length++]=name[i]>0 && name[i]<128 ? char(name[i]) : '?';
+    path[length]=0;
+    char* slash=strrchr(path,'\\');
+    if(!slash || path[0]!='\\' || strchr(path,'?')) return; // Only a kernel path, like \Device\Mass0\NetDisc360.xex.
+    slash[1]=0;
+    strcpy_s(OwnFolder,path);
+}
+
+// The settings below are read from NetDisc360.ini: the first one found of
+// the one next to this plugin and those on the root of Usb0: and Hdd1:
+// (NetIsoTiles.ini, its name before, if there is none). Returns which file
+// set key, or NULL.
+static const char* TuningValue(const char* key,char* value,size_t capacity) {
+    char own[2][MAX_PATH];
+    const char* files[6]={NULL,"\\Device\\Mass0\\NetDisc360.ini","\\Device\\Harddisk0\\Partition1\\NetDisc360.ini",
+                          NULL,"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
+    if(OwnFolder[0]) {
+        sprintf_s(own[0],"%sNetDisc360.ini",OwnFolder); files[0]=own[0];
+        sprintf_s(own[1],"%sNetIsoTiles.ini",OwnFolder); files[3]=own[1];
+    }
+    for(int i=0;i<6;++i) {
+        char text[1024];
+        if(!files[i] || !ReadDeviceText(files[i],text,sizeof(text))) continue;
+        return IniValue(text,key,value,capacity) ? files[i] : NULL;
+    }
+    return NULL;
+}
+// The server the console uses: server= in NetDisc360.ini, else the first
+// line of NetISO.xex.txt next to this plugin or on the root of Hdd1: or
+// Usb0: (as NetISO.xex read it). from names where it was found.
+static bool PluginServer(DWORD& address,int& port,char* from,size_t capacity) {
+    char value[64];
+    if(const char* file=TuningValue("server",value,sizeof(value))) {
+        if(ParseServer(value,address,port)) { sprintf_s(from,capacity,"server= in %s",file); return true; }
+        sprintf_s(from,capacity,"server=%s in %s isn't an IPv4 address",value,file);
+        return false;
+    }
+    char own[MAX_PATH]="";
+    if(OwnFolder[0]) sprintf_s(own,"%sNetISO.xex.txt",OwnFolder);
+    const char* const files[]={own,"\\Device\\Harddisk0\\Partition1\\netiso.xex.txt","\\Device\\Mass0\\netiso.xex.txt"};
+    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
+        char text[128];
+        if(!files[i][0] || !ReadDeviceText(files[i],text,sizeof(text))) continue;
+        text[strcspn(text,"\r\n")]=0;
+        if(ParseServer(text,address,port)) { sprintf_s(from,capacity,"%s",files[i]); return true; }
+    }
+    strcpy_s(from,capacity,"no server= in NetDisc360.ini and no NetISO.xex.txt");
+    return false;
+}
+
+// server= in the tile's netiso.ini, else the console's server (PluginServer),
+// as the launcher finds it.
 static bool FindServer(DWORD& address,int& port) {
     char value[64];
     if(IniValue(Ini,"server",value,sizeof(value))) {
         if(ParseServer(value,address,port)) return true;
         Note("server=%s in %s is not an IPv4 address.",value,IniName); return false;
     }
-    static const char* const plugin[]={"\\Device\\Harddisk0\\Partition1\\netiso.xex.txt","\\Device\\Mass0\\netiso.xex.txt"};
-    for(int i=0;i<int(sizeof(plugin)/sizeof(plugin[0]));++i) {
-        char text[128];
-        if(!ReadDeviceText(plugin[i],text,sizeof(text))) continue;
-        text[strcspn(text,"\r\n")]=0;
-        if(ParseServer(text,address,port)) { Note("Server %s from %s.",text,plugin[i]); return true; }
-    }
-    Note("No server address in %s or netiso.xex.txt.",IniName);
-    return false;
+    char from[MAX_PATH+48];
+    bool found=PluginServer(address,port,from,sizeof(from));
+    Note(found ? "Server from %s." : "No server: %s.",from);
+    return found;
 }
 // Whether the NetISO server answers, asked before anything touches the disc
 // drive or the NetISO drive. For a minute or two after boot the console can't
@@ -594,19 +640,31 @@ static ServerState CheckServer(char* where,size_t capacity) {
     return state;
 }
 
-// tiles_stop= in a game folder's netiso.ini stops the plugin after one step
-// and goes back to Aurora, with no notice and without the tile's launcher, to
-// find the step that kills the Guide: after the server check (server),
-// reading the disc drive (disc), listing the NetISO drive's root (root),
-// finding the ISO's Mount folder (iso), or the mount, before the start (mount).
-enum Step { StepServer, StepDisc, StepRoot, StepIso, StepMount, NoStop };
-static int StopStep() {
-    static const char* const steps[]={"server","disc","root","iso","mount"};
-    char value[16];
-    if(!IniValue(Ini,"tiles_stop",value,sizeof(value)) || !value[0]) return NoStop;
-    for(int i=0;i<NoStop;++i) if(!_stricmp(value,steps[i])) { Note("Test: stopping after %s (tiles_stop).",steps[i]); return i; }
-    Note("Unknown tiles_stop=%s; not stopping.",value);
-    return NoStop;
+// ---- NetDisc360's own disc drive ----
+
+// Mounts iso with this plugin's own drive (disc.cpp) and waits until the
+// drive has done it: its netdisc::Result, or ResultNone if the drive is off
+// or didn't finish in a minute (it waits up to 30 s for the network).
+// address 0 is the server the drive uses now.
+static DWORD DriveMount(const char* iso,DWORD address,int port) {
+    DWORD ticket=disc::Mount(address,port,iso);
+    if(!ticket) return netdisc::ResultNone;
+    DWORD result=netdisc::ResultNone;
+    for(DWORD start=GetTickCount();GetTickCount()-start<60000;Sleep(100))
+        if(disc::Finished(ticket,result)) return result;
+    return netdisc::ResultNone;
+}
+static const char* DriveResultText(DWORD result) {
+    switch(result) {
+    case netdisc::ResultMounted: return "mounted";
+    case netdisc::ResultEjected: return "ejected";
+    case netdisc::ResultNoNetwork: return "the console's network didn't come up";
+    case netdisc::ResultNoServer: return "the server didn't answer";
+    case netdisc::ResultNotOnServer: return "the server doesn't have it";
+    case netdisc::ResultNotADisc: return "the server sent an empty disc";
+    case netdisc::ResultLost: return "the server went away";
+    default: return "the drive didn't finish";
+    }
 }
 
 // What the plugin made of a tile.
@@ -616,37 +674,33 @@ enum Outcome {
     Cancelled   // back to Aurora, starting nothing
 };
 
-// Two test switches in a game folder's netiso.ini, to find what Aurora's file
-// browser does around its mount that keeps the Guide: hold_mount=1 keeps the
-// Mount folder open until the disc is the game, and relist=1 lists the ISO's
-// folder and the root again right after the mount, as a user leaving the
-// Mount folder would.
-static Outcome MountSteps(const Settings& settings,int stop) {
+static Outcome MountSteps(const Settings& settings) {
     bool game=DiscIsGame(settings);
     Note(game ? "The game is already mounted." : "The disc isn't the game.");
-    if(stop==StepDisc) return Cancelled;
     if(game) return Started;
-    if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
-    if(stop==StepRoot) { ListFolder(IsoDevice); return Cancelled; }
-    bool hold=IniNumber("hold_mount",0)!=0,relist=IniNumber("relist",0)!=0;
-    char folder[MAX_PATH],isoFolder[MAX_PATH];
-    bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
-    if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
-    if(stop==StepIso) return Cancelled;
-    LONG skipped=UnloadsSkipped;
-    if(!ListMountFolder(folder,hold)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
-    Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
-    if(relist) {
-        Note("Listing the ISO's folder and the root again (relist).");
-        if(isoFolder[0]) ListFolder(isoFolder);
-        ListFolder(IsoDevice);
+    if(disc::Active()) {
+        DWORD address=0; int port=nia::IsvrPort;
+        FindServer(address,port);
+        DWORD result=DriveMount(settings.iso,address,port);
+        Note("NetDisc360's drive: %s.",DriveResultText(result));
+        if(result!=netdisc::ResultMounted) {
+            Tell(result==netdisc::ResultNotOnServer ? "NetDisc360: the server doesn't list this game." : "NetDisc360 couldn't mount this game.");
+            return Fallback;
+        }
+    } else {
+        if(!GetModuleHandle("NetISO.xex")) Note("NetISO.xex isn't loaded.");
+        char folder[MAX_PATH],isoFolder[MAX_PATH];
+        bool found=FindMountFolder(settings,folder,sizeof(folder),isoFolder);
+        if(!found) { Tell("NetDisc360: the server doesn't list this game. Is it running?"); return Fallback; }
+        LONG skipped=UnloadsSkipped;
+        if(!ListMountFolder(folder)) { Tell("NetDisc360 couldn't mount this game."); return Fallback; }
+        Note("NetISO's unload calls skipped during the mount: %ld.",UnloadsSkipped-skipped);
     }
     Sleep(QuietMs);
     for(int waited=QuietMs;waited<QuietMs+MountWaitMs;waited+=PollMs) {
-        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); CloseMountFolder(); return stop==StepMount ? Cancelled : Started; }
+        if(DiscIsGame(settings)) { Note("The disc is the game %d ms after the mount.",waited); return Started; }
         Sleep(PollMs);
     }
-    CloseMountFolder();
     DWORD titleId=0,mediaId=0;
     if(DiscIds(titleId,mediaId)) Note("The disc is still %08X/%08X after %d ms.",titleId,mediaId,QuietMs+MountWaitMs);
     else Note("No readable disc after %d ms.",QuietMs+MountWaitMs);
@@ -654,46 +708,7 @@ static Outcome MountSteps(const Settings& settings,int stop) {
     return Fallback;
 }
 
-// tiles_thread=system in netiso.ini runs the drive steps on a system thread
-// while Aurora's thread waits, as a request from the Guide comes from the
-// system process. NetISO doesn't look at the requester's process in its
-// mount path apart from the unload call above (read from the binary), so
-// this is only a test switch.
-struct MountJob { const Settings* settings; int stop; Outcome outcome; };
-static MountJob Job;
-static DWORD WINAPI MountThread(void* job) {
-    DeferThread=GetCurrentThreadId(); // Aurora's thread is waiting meanwhile.
-    MountJob* mount=(MountJob*)job;
-    mount->outcome=MountSteps(*mount->settings,mount->stop);
-    return 0;
-}
-static const DWORD MountThreadMs=QuietMs+MountWaitMs+30000;
-// Set while a system thread that overran its time may still be running.
-static volatile bool ThreadOverran=false;
-static Outcome MountOnSystemThread(const Settings& settings,int stop) {
-    if(ThreadOverran) { Note("An earlier mount thread may still be running; not starting another."); return Fallback; }
-    Job.settings=&settings; Job.stop=stop; Job.outcome=Fallback;
-    Pending[0]=0;
-    Note("Mounting from a system thread.");
-    HANDLE thread=NULL; DWORD id=0;
-    LONG status=ExCreateThread(&thread,0x10000,&id,NULL,MountThread,&Job,SystemThread);
-    if(status<0) { Note("No system thread (status %08X); mounting from Aurora's thread.",status); return MountSteps(settings,stop); }
-    DWORD waited=WaitForSingleObject(thread,MountThreadMs);
-    CloseHandle(thread);
-    if(waited!=WAIT_OBJECT_0) {
-        // It still uses Job and keeps its lines to itself.
-        ThreadOverran=true;
-        Note("The system thread didn't finish in %lu ms.",MountThreadMs);
-        Tell("NetDisc360: the mount didn't finish.");
-        return Cancelled;
-    }
-    WriteDeferred();
-    if(Pending[0]) Show(Pending);
-    return Job.outcome;
-}
-
 static Outcome Mount(const Settings& settings) {
-    int stop=StopStep();
     char where[16]="";
     if(CheckServer(where,sizeof(where))==ServerDown) {
         static char text[96];
@@ -701,26 +716,12 @@ static Outcome Mount(const Settings& settings) {
         Tell(text);
         return Cancelled;
     }
-    if(stop==StepServer) return Cancelled;
-    char thread[16];
-    if(IniValue(Ini,"tiles_thread",thread,sizeof(thread)) && !_stricmp(thread,"system")) return MountOnSystemThread(settings,stop);
-    return MountSteps(settings,stop);
+    return MountSteps(settings);
 }
 
 // ---- NetISO's read size and receive buffer ----
 
-// Both are set in NetIsoTiles.ini on the root of Usb0: or Hdd1:, the first
-// one found. Returns which file set key, or NULL.
-static const char* TuningValue(const char* key,char* value,size_t capacity) {
-    static const char* const files[]={"\\Device\\Mass0\\NetIsoTiles.ini","\\Device\\Harddisk0\\Partition1\\NetIsoTiles.ini"};
-    for(int i=0;i<int(sizeof(files)/sizeof(files[0]));++i) {
-        char text[512];
-        if(!ReadDeviceText(files[i],text,sizeof(text))) continue;
-        return IniValue(text,key,value,capacity) ? files[i] : NULL;
-    }
-    return NULL;
-}
-
+// With NetISO.xex loaded: read_kb and rcv_kb in NetDisc360.ini (TuningValue).
 // NetISO.xex 1.0 splits every disc read into 4 KB requests and sends the next
 // only when the last one's data is in (its read loop at 0x911050cc, read from
 // the binary). Each request costs a round trip, about 0.6 ms through a USB
@@ -817,6 +818,32 @@ static void UnpatchReceiveBuffer() {
     ReceiveBytes=0;
 }
 
+// The own disc drive's settings, from NetDisc360.ini (TuningValue): read_kb
+// (the most asked for in one request, 64 when left out), read_depth (how
+// many requests are out at once, 4), rcv_kb (the connection's receive
+// buffer, 64; 0 leaves XNet's own), own_disc=0, which leaves the drive off,
+// and the server it connects to at start (PluginServer).
+static char DriveAbout[MAX_PATH+160];
+static void StartDrive() {
+    char value[16];
+    disc::Settings settings;
+    memset(&settings,0,sizeof(settings));
+    char from[MAX_PATH+48];
+    int port=nia::IsvrPort;
+    if(!PluginServer(settings.address,port,from,sizeof(from))) settings.address=0;
+    settings.port=port;
+    sprintf_s(DriveAbout,"Plugin folder %s; the server from %s.",OwnFolder[0] ? OwnFolder : "unknown",from);
+    settings.about=DriveAbout;
+    settings.readBytes=DWORD(DefaultReadKb)*1024;
+    if(TuningValue("read_kb",value,sizeof(value)) && atoi(value)>0) settings.readBytes=DWORD(atoi(value))*1024;
+    settings.depth=4;
+    if(TuningValue("read_depth",value,sizeof(value)) && atoi(value)>0) settings.depth=atoi(value);
+    settings.receiveBytes=DefaultReceiveKb*1024;
+    if(TuningValue("rcv_kb",value,sizeof(value)) && value[0]) settings.receiveBytes=atoi(value)*1024;
+    settings.enabled=!(TuningValue("own_disc",value,sizeof(value)) && !strcmp(value,"0"));
+    disc::Start(settings);
+}
+
 // ---- Disc swaps ----
 
 // A game asks for another of its discs with XSwapDisc, xam.xex 2600 (disc
@@ -852,9 +879,10 @@ static __declspec(naked) void SwapPreviousStub() {
         li r3,0x408
     }
 }
-// The tile a launch came from, for the disc start that follows it.
+// The tile a launch came from, for the disc start that follows it, and the
+// emulator its netiso.ini names for an original Xbox game (see Emulator).
 static char TileDevice[MAX_PATH];
-static struct { char folder[MAX_PATH]; DWORD titleId,at; } LastTile;
+static struct { char folder[MAX_PATH]; DWORD titleId,at; char xefu[32]; } LastTile;
 static bool TileFresh() { return LastTile.folder[0] && GetTickCount()-LastTile.at<10*60*1000; }
 // The armed game: its tile folder, Title ID and discs (by number), set on
 // the launching title's thread before the watcher is told; and the module
@@ -1225,8 +1253,12 @@ static DWORD WINAPI SwapThread(void*) {
     Settings settings; memset(&settings,0,sizeof(settings));
     strcpy_s(settings.iso,SwapIsos[disc]); settings.titleId=SwapTitle;
     char folder[MAX_PATH],isoFolder[MAX_PATH];
-    if(!FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
-    else if(!ListMountFolder(folder,false)) SwapNote("Can't open %s.",folder);
+    DWORD result=netdisc::ResultMounted;
+    // The drive keeps to the server of the disc in it.
+    if(disc::Active() && (result=DriveMount(settings.iso,0,0))!=netdisc::ResultMounted)
+        SwapNote("NetDisc360's drive couldn't mount %s: %s.",settings.iso,DriveResultText(result));
+    else if(!disc::Active() && !FindMountFolder(settings,folder,sizeof(folder),isoFolder)) SwapNote("The server doesn't list %s.",settings.iso);
+    else if(!disc::Active() && !ListMountFolder(folder)) SwapNote("Can't open %s.",folder);
     else {
         for(int waited=0;!in && waited<QuietMs+MountWaitMs;waited+=PollMs) {
             in=DiscNumber()==disc;
@@ -1284,8 +1316,9 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
     return 0;
 }
 
-// The watcher: one system thread, started with the plugin, that keeps the
-// armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
+// The watcher: one system thread, started with the plugin, that puts System
+// Link's function in xam's export table once Nova's is there (WatchLink), and
+// keeps the armed game's XSwapDisc import pointed at SwapDiscHooked while a game of
 // that Title ID runs, also after Nova changes it on a restart. (Watchers
 // created during the launch, as the first builds did, were parked in the
 // kernel and never ran; seen over xbdm.) ArmSwap gives it a new generation;
@@ -1297,10 +1330,36 @@ static DWORD SwapDiscHooked(DWORD disc,void* event,void* extra) {
 // notices from the game's own threads did. ArmSwap shows "ready" instead.
 static volatile LONG WatcherLoops=0,WatcherStop=0;
 static HANDLE Watcher=NULL;
+static void WatchLink(),NoteLinkProgress(); // System Link, below
+// A game that quits goes back to Aurora or the Xbox home, and its disc
+// would stay in the drive until the next mount: so the next start, or a
+// disc entry, would find it there. Once a game has started from the drive's
+// disc (a tile's, one mounted from Aurora, or an original Xbox one in the
+// emulator), going home ejects it (EjectAfterGame); not before, so a disc
+// mounted from Aurora stays in until it's played. The eject waits until the
+// game has gone and Aurora or the Xbox home runs (the tray going out under a
+// running game is the console's cue to end it), and it's this watcher's:
+// threads created in a launch hook are parked and never run. A mount
+// meanwhile (another start) gives a new ticket, and that disc stays.
+static volatile LONG PlayedFromDisc=0,EjectTicket=0;
+static volatile DWORD EjectAt=0;
+static const DWORD EjectDelayMs=4000;
+static void WatchEject() {
+    if(!EjectTicket || LONG(GetTickCount()-EjectAt)<0) return;
+    DWORD ticket=DWORD(InterlockedExchange(&EjectTicket,0));
+    netdisc::Status status;
+    disc::GetStatus(status);
+    if(!ticket || PlayedFromDisc || status.state!=netdisc::StateMounted || status.ticket!=ticket) return;
+    SwapNote("Ejecting the drive's disc (ticket %u): its game has quit.",ticket);
+    disc::Eject();
+}
 static DWORD WINAPI SwapWatch(void*) {
     LONG watching=0; DWORD seenAt=0,lastDetail=1; SwapLook last=Found;
     while(!WatcherStop) {
         InterlockedIncrement(&WatcherLoops);
+        WatchLink();
+        NoteLinkProgress();
+        WatchEject();
         if(!SwapArmed) { Sleep(500); continue; }
         LONG generation=SwapGeneration;
         if(generation!=watching) {
@@ -1407,6 +1466,604 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
     SwapNote("Launch %s%s%s (flags %X): %s.",mountPath ? mountPath : "",mountPath ? " " : "",path ? path : "(no path)",flags,what);
 }
 
+// ---- Original Xbox emulator ----
+//
+// An original Xbox disc starts the console's xbox.xex, which picks the
+// emulator version from its own list of games and starts it for the disc:
+// XamLoaderLaunchTitleEx("X:\xefu.xex","\Device\Cdrom0",...) for a game it
+// doesn't know, xefu6.xex for Burnout 3 (seen in the logs). A tile's
+// netiso.ini can name another one, xefu= (from the server's list, see
+// server/xefu.h): when the emulator starts for that tile's disc, the one it
+// names starts instead, from the same folder, if it's there. The files in
+// HddX:\Compatibility stay as they are, but for one: xefu2019 and xefu2021a
+// to c load xefutitle.xex, which the Hacked Xefu Pack has as
+// xefutitle2019.xex and xefutitle2021.xex. Xefu Spoofer copies the one that
+// goes with the version to xefutitle.xex, and so does this.
+
+// The Title ID in the certificate of the disc's default.xbe (little-endian,
+// at the certificate's address less the base address).
+static DWORD Little32(const BYTE* p) { return DWORD(p[0])|(DWORD(p[1])<<8)|(DWORD(p[2])<<16)|(DWORD(p[3])<<24); }
+static const char DiscXbe[]="\\Device\\Cdrom0\\default.xbe";
+static bool XbeTitle(DWORD& titleId) {
+    HANDLE file;
+    if(OpenPath(DiscXbe,false,file)<0) return false;
+    static BYTE header[0x120];
+    BYTE cert[12];
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=0;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,header,sizeof(header),&offset);
+    bool found=false;
+    if(read>=0 && status.information==sizeof(header) && !memcmp(header,"XBEH",4)) {
+        DWORD base=Little32(header+0x104),certificate=Little32(header+0x118);
+        offset.QuadPart=certificate-base;
+        IoStatusBlock more={0,0};
+        if(certificate>=base && NtReadFile(file,NULL,NULL,NULL,&more,cert,sizeof(cert),&offset)>=0 && more.information==sizeof(cert)) {
+            titleId=Little32(cert+8); found=titleId!=0;
+        }
+    }
+    NtClose(file);
+    return found;
+}
+// The emulator's folder as a device path for the kernel's calls, found by
+// opening name in it: xam's own path (X:\) through \??, or else where
+// HddX:\Compatibility is (xefu.xex names it).
+static const char CompatibilityDevice[]="\\Device\\Harddisk0\\SystemPartition\\Compatibility\\";
+static bool EmulatorFolder(const char* folder,const char* name,char* device,size_t capacity) {
+    char candidates[2][MAX_PATH];
+    if(sprintf_s(candidates[0],folder[0]=='\\' ? "%s" : "\\??\\%s",folder)<0) candidates[0][0]=0;
+    strcpy_s(candidates[1],CompatibilityDevice);
+    for(int i=0;i<2;++i) {
+        char path[MAX_PATH]; HANDLE file;
+        if(!candidates[i][0] || sprintf_s(path,"%s%s",candidates[i],name)<0 || OpenPath(path,false,file)<0) continue;
+        NtClose(file);
+        return strcpy_s(device,capacity,candidates[i])==0;
+    }
+    return false;
+}
+// Up to TitleChunk bytes of file from at: how many (0 at the end), or -1.
+// Small buffers keep the plugin's image at the size DashLaunch loads: with
+// two 64 KB ones here it grew by 128 KB and didn't load at all.
+static const DWORD TitleChunk=0x1000;
+static BYTE TitleFrom[TitleChunk],TitleNow[TitleChunk];
+static int ReadChunk(HANDLE file,BYTE* data,DWORD at) {
+    IoStatusBlock status={0,0}; LARGE_INTEGER offset; offset.QuadPart=at;
+    LONG read=NtReadFile(file,NULL,NULL,NULL,&status,data,TitleChunk,&offset);
+    if(read==LONG(0xC0000011)) return 0; // STATUS_END_OF_FILE
+    return read>=0 && status.information<=TitleChunk ? int(status.information) : -1;
+}
+// Whether the files at two device paths hold the same bytes.
+static bool SameFile(const char* first,const char* second) {
+    HANDLE one,two;
+    if(OpenPath(first,false,one)<0) return false;
+    if(OpenPath(second,false,two)<0) { NtClose(one); return false; }
+    bool same=false;
+    for(DWORD at=0;;) {
+        int a=ReadChunk(one,TitleFrom,at),b=ReadChunk(two,TitleNow,at);
+        if(a<0 || a!=b || memcmp(TitleFrom,TitleNow,size_t(a))) break;
+        if(!a) { same=true; break; }
+        at+=DWORD(a);
+    }
+    NtClose(one); NtClose(two);
+    return same;
+}
+// Makes xefutitle.xex in the emulator's folder (a device path) a copy of
+// from there, unless it is one already.
+static bool PutTitleFile(const char* folder,const char* from) {
+    char source[MAX_PATH],target[MAX_PATH];
+    if(sprintf_s(source,"%s%s",folder,from)<0 || sprintf_s(target,"%sxefutitle.xex",folder)<0) return false;
+    HANDLE in;
+    if(OpenPath(source,false,in)<0) { SwapNote("Can't read %s.",source); return false; }
+    if(SameFile(source,target)) { NtClose(in); return true; }
+    KernelString name={USHORT(strlen(target)),USHORT(sizeof(target)),target};
+    ObjectAttributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+    IoStatusBlock io={0,0}; HANDLE file=NULL;
+    // GENERIC_WRITE with SYNCHRONIZE, FILE_OVERWRITE_IF, a synchronous file.
+    LONG status=NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,0,5,0x60);
+    if(status>=0) {
+        for(DWORD done=0;;) {
+            int size=ReadChunk(in,TitleFrom,done);
+            if(size<=0) { if(size<0 || !done) status=-1; break; }
+            LARGE_INTEGER at; at.QuadPart=done;
+            status=NtWriteFile(file,NULL,NULL,NULL,&io,TitleFrom,DWORD(size),&at);
+            if(status>=0 && io.information!=DWORD(size)) status=-1;
+            if(status<0) break;
+            done+=DWORD(size);
+        }
+        NtClose(file);
+    }
+    NtClose(in);
+    if(status<0) { SwapNote("Can't write %s (status %08X).",target,status); return false; }
+    SwapNote("Copied %s to %s, which %s loads.",from,target,LastTile.xefu);
+    return true;
+}
+// What the emulator start for path from mountPath starts instead: the tile's
+// xefu in chosen, or path itself.
+static const char* Emulator(const char* path,const char* mountPath,char* chosen,size_t capacity) {
+    if(!path || !mountPath || _stricmp(mountPath,DiscDevice) || !TileFresh() || !LastTile.xefu[0]) return path;
+    const char* name=strrchr(path,'\\');
+    if(!name || _strnicmp(name+1,"xefu",4) || !_strnicmp(name+1,"xefutitle",9)) return path;
+    size_t folder=size_t(name+1-path);
+    char leaf[48];
+    if(folder>=MAX_PATH || folder+sizeof(leaf)>=capacity || sprintf_s(leaf,"%s.xex",LastTile.xefu)<0) return path;
+    memcpy(chosen,path,folder); chosen[folder]=0;
+    strcat_s(chosen,capacity,leaf);
+    if(!_stricmp(chosen,path)) return path; // What the console picked.
+    DWORD titleId=0;
+    if(!XbeTitle(titleId) || titleId!=LastTile.titleId) {
+        SwapNote("The disc isn't the tile's game (Title ID %08X), so %s starts as the console picked.",titleId,path);
+        return path;
+    }
+    char folderPath[MAX_PATH],device[MAX_PATH]; memcpy(folderPath,path,folder); folderPath[folder]=0;
+    if(!EmulatorFolder(folderPath,leaf,device,sizeof(device))) {
+        SwapNote("%s isn't there, so %s starts as the console picked.",chosen,path);
+        return path;
+    }
+    const char* title=!_strnicmp(LastTile.xefu,"xefu2019",8) ? "xefutitle2019.xex" : !_strnicmp(LastTile.xefu,"xefu2021",8) ? "xefutitle2021.xex" : NULL;
+    if(title && !PutTitleFile(device,title)) { SwapNote("So %s starts as the console picked.",path); return path; }
+    SwapNote("Starting %s instead of %s, as the tile's netiso.ini says.",chosen,path);
+    return chosen;
+}
+// ---- Original Xbox System Link ----
+//
+// The emulator sends and receives the game's LAN frames through xam's
+// NetDll_XnpEthernetInterceptSetCallbacks (109) and
+// NetDll_XnpEthernetInterceptXmit (110), as slot 1 (the title). Aurora's
+// Nova.xex puts its own function for each in xam's export table, for LiNK.
+// Nova's 110 passes the game's frames on to xam, so they go out (seen in a
+// capture on the PC). Its 109 keeps the game's callbacks to itself instead
+// of passing them on, and only LiNK hands the game frames, so with LiNK off
+// an original Xbox game hears nothing and no console finds another's System
+// Link game (read from Nova.xex 0.7b.2; seen with Halo and Halo 2).
+// With Nova not loaded, xam gets the game's callbacks and System Link works,
+// but only from a copy on the console's own drive: xam then hands the game
+// every frame that comes in, the game takes them all, and a disc streamed
+// over the network stops arriving (the game froze about 40 s in, and xbdm's
+// connection died with it; seen on both consoles).
+// So, once Nova has put its function for 109 in xam's export table (when
+// Aurora first starts after a boot), NetDisc360's watcher puts its own there
+// in Nova's place. It has to be the watcher: xam's export table can be
+// written from a system thread, as Nova does and as this plugin's hooks
+// write xam, but a store from a title's thread faults (the launch hooks run
+// on the title's; seen at the emulator's launch, from xbox.xex).
+// For the game (slot 1) it hands xam the game's callbacks itself, on the
+// game's thread (taking Nova's own callbacks off xam while the game runs, as
+// xam takes one set at a time), with its own callbacks in front of both of
+// the game's, which give the game only System Link frames (IPv4 from or to
+// 0.0.0.1) and leave every other frame to the console, so the disc stream
+// keeps coming. (With the game's first callback in front of the console's
+// frames, v13d, or its second, v13c, the console froze 9 to 43 s in, as
+// with Nova not loaded.) For anything else, or
+// with LiNK on, it calls Nova's. Nova loads once per boot, so its own call
+// to xam stays bound to xam's. xbox_link=nova (or off) in NetDisc360.ini
+// leaves it all to Nova.
+static const DWORD SetCallbacksOrdinal=109;
+static const DWORD SlotOneCompare=0x2F030001;
+// sent: xam's first callback (seen with the frames the console sends);
+// received: its second, with those that come in (Nova's own second one
+// takes LiNK's packets and leaves the rest, 0, and Nova hands a title the
+// frames LiNK receives through the title's second; its own first calls the
+// title's first). Nova registers its pair as (2, first, second, instance, 0).
+typedef LONG (*SetCallbacks)(DWORD slot,void* sent,void* received,void* context,DWORD more);
+// A title's callback; whatever xam passes after the frame goes on as it came.
+typedef LONG (*TitleFrames)(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10);
+typedef BYTE* (*NovaInstance)();
+// Nova's CSystemLink: whether LiNK runs.
+static const DWORD NovaLinkOn=0xC0;
+// Nova registers callbacks of its own at xam (slot 2) at each title's load,
+// LiNK on or off, and takes them back when the title ends (+0xD0 is 1 while
+// they're registered). xam takes one set of callbacks at a time: with Nova's
+// there, it answered 2735 (WSAEALREADY) to the game's (seen on both
+// consoles). Its two callbacks, before its function for 109 (Nova 0.7b.2):
+static const DWORD NovaRegistered=0xD0;
+static const DWORD NovaFramesBefore=0x18A0,NovaOtherBefore=0x18B0;
+static const DWORD NovaFramesCode[4]={0x2B030000,0x409A0008,0x4E800020,0x4800006C}; // cmplwi cr6,r3,0; bne +8; blr; b
+static const DWORD NovaOtherCode[4]={0x2B030000,0x409A0008,0x4E800020,0x48000014};
+
+// Where a bl at at goes, or 0.
+static DWORD CallTarget(const DWORD* at) {
+    DWORD word=*at;
+    if((word&0xFC000003)!=0x48000001) return 0;
+    DWORD offset=word&0x03FFFFFC;
+    if(offset&0x02000000) offset|=0xFC000000;
+    return DWORD(at)+offset;
+}
+// Nova's function at address: where it compares the slot, the call it makes
+// for slot 1 first (Nova's instance), and its call to xam's own for other
+// slots.
+struct NovaFunction { const DWORD* compare; const DWORD* instance; const DWORD* xam; };
+static bool IsNovaFunction(DWORD address,NovaFunction& function) {
+    const DWORD* code=(const DWORD*)address;
+    // xam's own code is at 0x81..., plugins like Nova at 0x91....
+    if(address<0x90000000 || !MmIsAddressValid((void*)code) || !MmIsAddressValid((void*)(code+40)) || code[0]!=0x7D8802A6) return false; // mflr r12
+    for(int i=1;i<14;++i) {
+        if(code[i]!=SlotOneCompare) continue;
+        if((code[i+1]&0xFFFF8003)!=0x409A0000) return false; // bne cr6, forward
+        const DWORD* other=code+i+1+((code[i+1]&0xFFFC)>>2);
+        if(other>code+32 || !CallTarget(code+i+2)) return false;
+        function.compare=code+i; function.instance=code+i+2; function.xam=NULL;
+        for(const DWORD* call=other;call<other+6;++call) if(CallTarget(call)) { function.xam=call; break; }
+        return function.xam!=NULL;
+    }
+    return false;
+}
+// The entry for ordinal in a module's export table, as Nova finds xam's: the
+// security info's export table (+0x160), whose entries are addresses less
+// the image base (its high half at +0x20); NULL if there is none.
+static DWORD* ExportEntry(HANDLE module,DWORD ordinal,DWORD& base) {
+    const BYTE* entry=(const BYTE*)module;
+    if(!entry || !MmIsAddressValid((void*)(entry+0x58))) return NULL;
+    const BYTE* header=*(const BYTE* const*)(entry+0x58);
+    if(!header || !MmIsAddressValid((void*)(header+0x10))) return NULL;
+    const BYTE* security=*(const BYTE* const*)(header+0x10);
+    if(!security || !MmIsAddressValid((void*)(security+0x160))) return NULL;
+    DWORD* table=*(DWORD* const*)(security+0x160);
+    if(!table || !MmIsAddressValid(table) || !MmIsAddressValid(table+10)) return NULL;
+    DWORD count=table[9],first=table[10];
+    if(ordinal<first || ordinal-first>=count || !MmIsAddressValid(table+11+(ordinal-first))) return NULL;
+    base=table[8]<<16;
+    return table+11+(ordinal-first);
+}
+
+// The kinds of frames, for the log: source MAC, type, and for IPv4 the
+// addresses, protocol and ports.
+struct FrameKind { BYTE source[6],broadcast,protocol; WORD type,fromPort,toPort; DWORD from,to,count; };
+static const int MaxKinds=16;
+struct FrameKinds { FrameKind kinds[MaxKinds]; volatile LONG count,lock; volatile DWORD left; };
+static void NoteKind(FrameKinds& table,const BYTE* frame,DWORD length) {
+    if(!frame || length<14 || InterlockedCompareExchange(&table.lock,1,0)) return;
+    FrameKind kind; memset(&kind,0,sizeof(kind));
+    memcpy(kind.source,frame+6,6);
+    kind.broadcast=frame[0]==0xFF ? 1 : (frame[0]&1) ? 2 : 0;
+    kind.type=WORD(frame[12]<<8|frame[13]);
+    if(kind.type==0x0800 && length>=34) {
+        kind.protocol=frame[23];
+        kind.from=DWORD(frame[26])<<24|DWORD(frame[27])<<16|DWORD(frame[28])<<8|frame[29];
+        kind.to=DWORD(frame[30])<<24|DWORD(frame[31])<<16|DWORD(frame[32])<<8|frame[33];
+        size_t header=size_t(frame[14]&15)*4;
+        if((kind.protocol==6 || kind.protocol==17) && header>=20 && 14+header+4<=length) {
+            kind.fromPort=WORD(frame[14+header]<<8|frame[15+header]);
+            kind.toPort=WORD(frame[16+header]<<8|frame[17+header]);
+        }
+    }
+    LONG count=table.count,i=0;
+    for(;i<count;++i) {
+        const FrameKind& k=table.kinds[i];
+        if(!memcmp(k.source,kind.source,6) && k.broadcast==kind.broadcast && k.type==kind.type && k.protocol==kind.protocol
+           && k.from==kind.from && k.to==kind.to && k.fromPort==kind.fromPort && k.toPort==kind.toPort) break;
+    }
+    if(i<count) ++table.kinds[i].count;
+    else if(count<MaxKinds) { kind.count=1; table.kinds[count]=kind; table.count=count+1; }
+    else ++table.left;
+    InterlockedExchange(&table.lock,0);
+}
+static size_t PutIp(char* out,size_t at,size_t capacity,DWORD ip,DWORD port) {
+    for(int i=0;i<4;++i) { if(i) at=Put(out,at,capacity,"."); at=PutNumber(out,at,capacity,(ip>>(24-8*i))&255,10,1); }
+    at=Put(out,at,capacity,":");
+    return PutNumber(out,at,capacity,port,10,1);
+}
+// Says which kinds of frames came, and starts over. Without the CRT's
+// formatting, so the watcher can too (see SwapNote).
+static void NoteKinds(FrameKinds& table,const char* what) {
+    FrameKind kinds[MaxKinds];
+    while(InterlockedCompareExchange(&table.lock,1,0)) Sleep(1);
+    LONG count=table.count<MaxKinds ? table.count : MaxKinds;
+    DWORD left=table.left;
+    memcpy(kinds,table.kinds,sizeof(FrameKind)*count);
+    table.count=0; table.left=0;
+    InterlockedExchange(&table.lock,0);
+    for(LONG i=0;i<count;++i) {
+        const FrameKind& k=kinds[i];
+        char text[160];
+        size_t at=Put(text,0,sizeof(text),"from ");
+        for(int b=0;b<6;++b) { if(b) at=Put(text,at,sizeof(text),"-"); at=PutNumber(text,at,sizeof(text),k.source[b],16,2); }
+        at=Put(text,at,sizeof(text),k.broadcast==1 ? " to all" : k.broadcast==2 ? " to a group" : "");
+        at=Put(text,at,sizeof(text),", type ");
+        at=PutNumber(text,at,sizeof(text),k.type,16,4);
+        if(k.type==0x0800) {
+            at=Put(text,at,sizeof(text),", ");
+            at=PutIp(text,at,sizeof(text),k.from,k.fromPort);
+            at=Put(text,at,sizeof(text)," to ");
+            at=PutIp(text,at,sizeof(text),k.to,k.toPort);
+            at=Put(text,at,sizeof(text),", protocol ");
+            at=PutNumber(text,at,sizeof(text),k.protocol,10,1);
+        }
+        SwapNote("System Link:   %s: %u frames %s.",what,k.count,text);
+    }
+    if(left) SwapNote("System Link:   %s: %u frames of other kinds.",what,left);
+}
+
+static BYTE* volatile LinkNova=NULL;
+static NovaInstance LinkInstance=NULL;          // Nova's function that gives its instance
+static SetCallbacks NovaSet=NULL,RealSet=NULL; // Nova's function for 109; xam's own, through Nova's import
+static bool LinkToNova=false;                   // xbox_link=nova (or off) in NetDisc360.ini
+static char LinkSetting[96]="";
+static HANDLE LinkXam=NULL;
+static DWORD* LinkEntry=NULL;                   // xam's export table entry for 109
+static DWORD LinkBase=0;
+static volatile bool LinkInstalled=false,LinkTried=false,LinkActive=false,LinkRegistered=false;
+static volatile DWORD LinkSets=0;
+static volatile LONG LinkXamResult=-1,LinkXamRetry=-1;
+static int LinkFirstMode=0;                     // xbox_link_first: 0 filter, 1 raw (the game's own), 2 none
+static volatile bool LinkDetail=false;          // xbox_link_log=1: the kinds of frames, the first ones, and notes every 5 s
+static void* LinkNovaFrames=NULL;               // Nova's own callbacks, to give back
+static void* LinkNovaOther=NULL;
+static volatile bool LinkMovedNova=false;
+static volatile LONG LinkNovaOff=-1,LinkNovaBack=-1; // what xam said to taking Nova's off and giving them back
+static DWORD LinkNotedAt=0,LinkNotedSeen=0,LinkRegisteredAt=0; // the watcher's last progress note; when xam took the game's
+static int LinkNotes=0;
+// An IPv4 frame from or to 0.0.0.1, as original Xbox consoles send System
+// Link. The frame may come with its Ethernet header or start at the IPv4
+// header, so both are looked at.
+static bool XboxIp(const BYTE* ip,DWORD length) {
+    return length>=20 && (ip[0]>>4)==4 && ((!ip[12] && !ip[13] && !ip[14] && ip[15]==1) || (!ip[16] && !ip[17] && !ip[18] && ip[19]==1));
+}
+static bool XboxFrame(const BYTE* frame,DWORD length) {
+    return (length>=34 && frame[12]==8 && !frame[13] && XboxIp(frame+14,length-14)) || XboxIp(frame,length);
+}
+
+// The first few frames each way, the first 64 bytes of each in hex, to see
+// how xam hands them over; each said once.
+static const int MaxDumps=4,DumpBytes=64;
+struct FrameDumps { BYTE bytes[MaxDumps][DumpBytes]; DWORD lengths[MaxDumps]; volatile LONG count,noted; };
+static void DumpFrame(FrameDumps& dumps,const BYTE* frame,DWORD length) {
+    if(!frame || dumps.count>=MaxDumps) return;
+    LONG at=InterlockedIncrement(&dumps.count)-1;
+    if(at>=MaxDumps) return;
+    dumps.lengths[at]=length;
+    memcpy(dumps.bytes[at],frame,length<DWORD(DumpBytes) ? length : DWORD(DumpBytes));
+}
+static void NoteDumps(FrameDumps& dumps,const char* what) {
+    LONG count=dumps.count<MaxDumps ? dumps.count : MaxDumps;
+    for(LONG i=dumps.noted;i<count;++i) {
+        char hex[DumpBytes*3+1]; size_t at=0; hex[0]=0;
+        DWORD shown=dumps.lengths[i]<DWORD(DumpBytes) ? dumps.lengths[i] : DWORD(DumpBytes);
+        for(DWORD b=0;b<shown;++b) { at=PutNumber(hex,at,sizeof(hex),dumps.bytes[i][b],16,2); at=Put(hex,at,sizeof(hex)," "); }
+        SwapNote("System Link:   %s frame %u, %u bytes: %s",what,DWORD(i+1),dumps.lengths[i],hex);
+    }
+    if(count>dumps.noted) dumps.noted=count;
+}
+// Each of the game's two callbacks while xam has ours in front of them, and
+// what came through: [0] xam's first, [1] its second.
+struct LinkWay {
+    TitleFrames volatile game;
+    volatile LONG other;                        // what xam is told for the frames left to the console (xbox_link_other)
+    volatile DWORD seen,unreadable,xbox,taken,left;
+    volatile LONG odd;
+    FrameKinds kinds;
+    FrameDumps first,link;                      // the first frames, and the first System Link ones
+};
+static LinkWay LinkWays[2];
+static const char* const LinkWayNames[2]={"first callback","second callback"};
+static void ResetWay(LinkWay& way) {
+    way.game=NULL;
+    way.seen=way.unreadable=way.xbox=way.taken=way.left=0; way.odd=0;
+    while(InterlockedCompareExchange(&way.kinds.lock,1,0)) Sleep(1);
+    way.kinds.count=0; way.kinds.left=0;
+    InterlockedExchange(&way.kinds.lock,0);
+    way.first.count=way.first.noted=0; way.link.count=way.link.noted=0;
+}
+static void NoteWay(int w) {
+    const LinkWay& way=LinkWays[w];
+    SwapNote("System Link: %s: %u frames (%u unreadable), %u of them System Link, which the game got (it said 1 to %u, 0 to %u, last other %X); xam was told %u for the rest.",
+             LinkWayNames[w],way.seen,way.unreadable,way.xbox,way.taken,way.left,DWORD(way.odd),DWORD(way.other));
+}
+// What xam calls with each frame, in front of one of the game's callbacks:
+// hands the game the System Link ones and says what it did with them; every
+// other frame is left to the console (0), for the disc stream.
+static LONG LinkFrame(LinkWay& way,void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    TitleFrames game=way.game;
+    if(!game) return way.other;
+    ++way.seen;
+    if(!frame || length<14 || length>0x4000 || !MmIsAddressValid(frame) || !MmIsAddressValid(frame+length-1)) { ++way.unreadable; return way.other; }
+    if(LinkDetail) { NoteKind(way.kinds,frame,length); DumpFrame(way.first,frame,length); }
+    if(!LinkActive || !XboxFrame(frame,length)) return way.other;
+    ++way.xbox;
+    if(LinkDetail) DumpFrame(way.link,frame,length);
+    LONG result=game(context,frame,length,r6,r7,r8,r9,r10);
+    if(result==1) ++way.taken;
+    else if(!result) ++way.left;
+    else way.odd=result;
+    return result;
+}
+static LONG LinkFirst(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[0],context,frame,length,r6,r7,r8,r9,r10);
+}
+static LONG LinkSecond(void* context,BYTE* frame,DWORD length,DWORD r6,DWORD r7,DWORD r8,DWORD r9,DWORD r10) {
+    return LinkFrame(LinkWays[1],context,frame,length,r6,r7,r8,r9,r10);
+}
+// xam's export 109 once installed: for the game while it runs, xam gets its
+// callbacks with LinkFirst and LinkSecond in front, on the game's thread (without
+// callbacks it takes them back); everything else goes to Nova's, as before.
+// Takes Nova's own callbacks off xam, to make room for the game's; true if
+// it did.
+static bool MoveNova() {
+    BYTE* nova=LinkNova;
+    if(LinkMovedNova || !nova || *(DWORD*)(nova+NovaRegistered)!=1) return false;
+    LinkNovaOff=RealSet(2,NULL,NULL,NULL,0);
+    LinkMovedNova=true;
+    return true;
+}
+// Gives Nova its callbacks back at xam, as Nova registers them, unless it
+// has already let go of them itself (its title ended).
+static void GiveNovaBack() {
+    if(!LinkMovedNova) return;
+    LinkMovedNova=false;
+    BYTE* nova=LinkNova;
+    if(!nova || *(DWORD*)(nova+NovaRegistered)!=1) { LinkNovaBack=-2; return; }
+    if(!LinkNovaFrames || !LinkNovaOther) { LinkNovaBack=-3; return; } // Nova registers them again at the next title's load
+    LinkNovaBack=RealSet(2,LinkNovaFrames,LinkNovaOther,nova,0);
+}
+static LONG LinkSetCallbacks(DWORD slot,void* sent,void* received,void* context,DWORD more) {
+    BYTE* nova=LinkNova;
+    if(slot!=1 || !LinkActive || (nova && *(DWORD*)(nova+NovaLinkOn))) return NovaSet(slot,sent,received,context,more);
+    ++LinkSets;
+    if(!sent && !received) {
+        if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+        LinkWays[0].game=LinkWays[1].game=NULL;
+        GiveNovaBack();
+        return NovaSet(slot,sent,received,context,more);
+    }
+    // Both go through ours (xbox_link_first=raw gives xam the game's first
+    // as it is, none leaves it out).
+    LinkWays[0].game=(TitleFrames)sent; LinkWays[1].game=(TitleFrames)received;
+    void* first=!sent || LinkFirstMode==2 ? NULL : LinkFirstMode==1 ? sent : (void*)LinkFirst;
+    void* second=received ? (void*)LinkSecond : NULL;
+    LinkRegisteredAt=GetTickCount(); LinkNotes=0;
+    LONG xam=RealSet(1,first,second,context,more),retry=xam;
+    if(retry && MoveNova()) retry=RealSet(1,first,second,context,more); // Nova's were in the way
+    if(retry) { // taken: once more after taking it back
+        RealSet(1,NULL,NULL,NULL,0);
+        retry=RealSet(1,first,second,context,more);
+    }
+    LinkXamResult=xam; LinkXamRetry=retry;
+    LinkRegistered=!retry;
+    SwapNote("System Link: xam said %X (in the end %X) to the game's callbacks as slot 1 (first %X %s, second %X %s); Nova's own were %s (%X).",
+             DWORD(xam),DWORD(retry),DWORD(sent),first==(void*)LinkFirst ? "behind ours" : first ? "as it is" : "left out",
+             DWORD(received),second ? "behind ours" : "none",LinkMovedNova ? "taken off" : "left",DWORD(LinkNovaOff));
+    if(LinkRegistered) return 0;
+    LinkWays[0].game=LinkWays[1].game=NULL;
+    GiveNovaBack();
+    return NovaSet(slot,sent,received,context,more);
+}
+// On any launch: takes the game's callbacks back from xam (on the title's
+// thread, as they were given: xam mustn't keep calling into a game that's
+// gone) and says what came in.
+static void StopLink() {
+    if(!LinkActive) return;
+    if(LinkRegistered) { RealSet(1,NULL,NULL,NULL,0); LinkRegistered=false; }
+    GiveNovaBack();
+    LinkActive=false; LinkWays[0].game=LinkWays[1].game=NULL;
+    SwapNote("System Link: the game set its callbacks %u times; xam said %X (in the end %X) to them as slot 1.",LinkSets,DWORD(LinkXamResult),DWORD(LinkXamRetry));
+    if(DWORD(LinkNovaOff)!=0xFFFFFFFF)
+        SwapNote("System Link: Nova's own callbacks were taken off xam (it said %X) and given back (%X; FFFFFFFE: Nova had let go of them, FFFFFFFD: not found).",
+                 DWORD(LinkNovaOff),DWORD(LinkNovaBack));
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+        ResetWay(LinkWays[w]);
+    }
+    LinkSets=0; LinkNotedSeen=0; LinkNotes=0;
+    LinkXamResult=LinkXamRetry=-1;
+    LinkNovaOff=LinkNovaBack=-1;
+}
+// Whether the four instructions at at are code's.
+static bool SameCode(const DWORD* at,const DWORD* code) {
+    if(!MmIsAddressValid((void*)at) || !MmIsAddressValid((void*)(at+3))) return false;
+    for(int i=0;i<4;++i) if(at[i]!=code[i]) return false;
+    return true;
+}
+// From the watcher, with xbox_link_log=1, while xam has the game's
+// callbacks: the counts so far every 5 s (a console that freezes never gets
+// to StopLink), for the first two minutes whether they change or not, so the
+// last note says when it froze; the kinds of frames for the first 30 s, and
+// the first frames once.
+static void NoteLinkProgress() {
+    if(!LinkDetail || !LinkActive || !LinkRegistered) return;
+    DWORD now=GetTickCount(),seen=LinkWays[0].seen+LinkWays[1].seen;
+    if(now-LinkNotedAt<5000 || (seen==LinkNotedSeen && now-LinkRegisteredAt>120000)) return;
+    LinkNotedAt=now; LinkNotedSeen=seen; ++LinkNotes;
+    SwapNote("System Link: %u s in:",(now-LinkRegisteredAt)/1000);
+    for(int w=0;w<2;++w) {
+        NoteWay(w);
+        if(LinkNotes<=6) NoteKinds(LinkWays[w].kinds,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].first,LinkWayNames[w]);
+        NoteDumps(LinkWays[w].link,"System Link");
+    }
+}
+// When the plugin starts: whether System Link is left to Nova.
+static void ReadLinkSetting() {
+    char value[16];
+    const char* from=TuningValue("xbox_link",value,sizeof(value));
+    LinkToNova=from && (!_stricmp(value,"nova") || !_stricmp(value,"off"));
+    if(LinkToNova) sprintf_s(LinkSetting,"xbox_link=%s in %s",value,from);
+}
+// From the watcher (a system thread; no CRT calls here, see SwapNote), until
+// done once this boot: once Nova's function for 109 is in xam's export table,
+// puts LinkSetCallbacks there in its place.
+static void WatchLink() {
+    if(LinkInstalled || LinkTried || LinkToNova) return;
+    if(!LinkEntry) {
+        HANDLE module=NULL;
+        DWORD base=0;
+        DWORD* entry=XexGetModuleHandle("xam.xex",&module)<0 ? NULL : ExportEntry(module,SetCallbacksOrdinal,base);
+        if(!entry) { LinkTried=true; SwapNote("System Link: xam's export table isn't where Nova's is found; left to Nova."); return; }
+        LinkXam=module; LinkBase=base; LinkEntry=entry;
+    }
+    DWORD at=LinkBase+*LinkEntry;
+    if(at<0x90000000) return; // xam's own still: Nova isn't loaded yet
+    if(at==DWORD(LinkSetCallbacks)) { LinkInstalled=true; return; }
+    LinkTried=true;
+    void* address=NULL;
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=at) {
+        SwapNote("System Link: xam's export table reads %X where xam says %X; left to Nova.",at,DWORD(address));
+        return;
+    }
+    NovaFunction set;
+    if(!IsNovaFunction(at,set)) { SwapNote("System Link: xam's export 109 (%X) isn't Nova's function as known; left as it is.",at); return; }
+    NovaInstance instance=(NovaInstance)CallTarget(set.instance);
+    SetCallbacks real=(SetCallbacks)CallTarget(set.xam);
+    if(!instance || !real) { SwapNote("System Link: Nova's function for 109 (%X) doesn't call what it should; left to Nova.",at); return; }
+    LinkInstance=instance; NovaSet=(SetCallbacks)at; RealSet=real;
+    const DWORD* novaFrames=(const DWORD*)(at-NovaFramesBefore);
+    const DWORD* novaOther=(const DWORD*)(at-NovaOtherBefore);
+    if(SameCode(novaFrames,NovaFramesCode) && SameCode(novaOther,NovaOtherCode)) {
+        LinkNovaFrames=(void*)novaFrames; LinkNovaOther=(void*)novaOther;
+    } else SwapNote("System Link: Nova's own callbacks aren't where Nova 0.7b.2 has them; while a game has System Link, Nova gets its back only at the next title.");
+    __sync(); // all of that before anyone can call LinkSetCallbacks
+    *LinkEntry=DWORD(LinkSetCallbacks)-LinkBase;
+    FlushCode(LinkEntry,4);
+    if(XexGetProcedureAddress(LinkXam,SetCallbacksOrdinal,&address)<0 || DWORD(address)!=DWORD(LinkSetCallbacks)) {
+        SwapNote("System Link: xam's export 109 reads %X after the change, not NetDisc360's %X; left to Nova.",DWORD(address),DWORD(LinkSetCallbacks));
+        return;
+    }
+    LinkInstalled=true;
+    SwapNote("System Link: xam's export 109 goes through NetDisc360 now (Nova's is %X); original Xbox games get System Link frames from xam.",at);
+}
+// When the emulator starts: System Link for this game, unless LiNK is on.
+// xbox_link_other=1 in NetDisc360.ini tells xam 1 instead of 0 for the
+// frames left to the console.
+static void StartLink() {
+    StopLink();
+    if(LinkToNova) { SwapNote("System Link: left to Nova (%s).",LinkSetting); return; }
+    if(!LinkInstalled) {
+        SwapNote(LinkTried ? "System Link: xam's export 109 doesn't go through NetDisc360 (see above); left to Nova."
+                           : "System Link: Nova's function for 109 never showed up in xam's export table (is Nova loaded?); left as it is.");
+        return;
+    }
+    BYTE* nova=LinkInstance();
+    if(!nova || !MmIsAddressValid(nova+NovaLinkOn)) { SwapNote("System Link: no Nova instance; left to Nova."); return; }
+    if(*(DWORD*)(nova+NovaLinkOn)) { SwapNote("System Link: LiNK is on, so it's left to Nova."); return; }
+    LinkNova=nova;
+    char value[16];
+    for(int w=0;w<2;++w) ResetWay(LinkWays[w]);
+    LinkWays[0].other=LinkWays[1].other=TuningValue("xbox_link_other",value,sizeof(value)) && !strcmp(value,"1") ? 1 : 0;
+    if(TuningValue("xbox_link_first_other",value,sizeof(value))) LinkWays[0].other=!strcmp(value,"1") ? 1 : 0;
+    LinkFirstMode=!TuningValue("xbox_link_first",value,sizeof(value)) ? 0 : !_stricmp(value,"raw") ? 1 : !_stricmp(value,"none") ? 2 : 0;
+    LinkDetail=TuningValue("xbox_link_log",value,sizeof(value)) && !strcmp(value,"1");
+    LinkRegistered=false;
+    LinkActive=true;
+    SwapNote("System Link: on for this game; it gets System Link frames, the console keeps the rest.");
+}
+// The emulator starting, for a disc or a copy on a drive.
+static bool XefuStart(const char* path) {
+    const char* name=path ? strrchr(path,'\\') : NULL;
+    return name && !_strnicmp(name+1,"xefu",4) && _strnicmp(name+1,"xefutitle",9);
+}
+// Whether path from mountPath is the console starting the emulator for an
+// original Xbox disc.
+static bool EmulatorStart(const char* path,const char* mountPath) {
+    return mountPath && !_stricmp(mountPath,DiscDevice) && XefuStart(path);
+}
+
+// xefu or config_loader_xefu, then letters, digits and _ (see server/xefu.h).
+static bool XefuName(const char* name) {
+    size_t start=!strncmp(name,"xefu",4) ? 4 : !strncmp(name,"config_loader_xefu",18) ? 18 : 0;
+    if(!start || !strncmp(name,"xefutitle",9) || strlen(name)>start+24) return false;
+    for(const char* c=name+start;*c;++c) if(!isalnum((unsigned char)*c) && *c!='_') return false;
+    return true;
+}
+
 // ---- Tiles ----
 
 // Whether xex (from mountPath, if given) is a NetISO tile: default.xex next to
@@ -1414,7 +2071,7 @@ static void NoteLaunch(const char* path,const char* mountPath,DWORD flags,const 
 static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     if(!xex) return false;
     // Every title Aurora starts comes through here. A tile's path is short
-    // (Hdd1:\NetISO\<folder>\default.xex); a longer one, with room left for
+    // (Hdd1:\NetDisc360\Games\<folder>\default.xex); a longer one, with room left for
     // its device name and netiso.ini, is someone else's, and the _s calls
     // below would end Aurora over it.
     if(strlen(xex)+(mountPath ? strlen(mountPath)+1 : 0)>=MAX_PATH-64) return false;
@@ -1434,6 +2091,8 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     OpenLog(Folder);
     Note("Tile %s",path);
     Note("ISO %s, Title ID %08X, Media ID %08X",settings.iso,settings.titleId,settings.mediaId);
+    Note("NetDisc360's disc drive: %s",disc::Note());
+    if(disc::Active()) return true;
     Note("NetISO reads: %s.",ReadLimitNote);
     Note("NetISO's receive buffer: %s; set on %ld connection(s), refused on %ld.",ReceiveNote,ReceiveSets,ReceiveRefusals);
     // Tried again for every tile: DllMain's try fails when launch.ini loads
@@ -1503,6 +2162,8 @@ static Handling Handled(const char* path,const char* mountPath) {
     Handling handling=NotTile;
     if(IsTile(path,mountPath,settings)) {
         strcpy_s(LastTile.folder,TileDevice); LastTile.titleId=settings.titleId; LastTile.at=GetTickCount();
+        if(!IniValue(Ini,"xefu",LastTile.xefu,sizeof(LastTile.xefu)) || !XefuName(LastTile.xefu)) LastTile.xefu[0]=0;
+        else Note("Original Xbox emulator: %s (from netiso.ini).",LastTile.xefu);
         SwapLogTo(LastTile.folder);
         PrepareDiscs(settings);
         // The tile's own launcher starts it (see the top of this file);
@@ -1540,13 +2201,36 @@ static DWORD StartSwappedDisc() {
     Skip(false);
     return result;
 }
+// Going home after a game from the drive's disc: see WatchEject. Not for
+// the dashboard start a disc swap makes (SwapRestart takes it when it can):
+// that disc is the one the game asked for.
+static bool EndsWith(const char* text,const char* end) {
+    size_t n=strlen(text),m=strlen(end);
+    return n>=m && !_stricmp(text+n-m,end);
+}
+static bool HomeLaunch(const char* path) {
+    return !path || !path[0] || EndsWith(path,"\\dash.xex") || EndsWith(path,"\\aurora.xex");
+}
+static void EjectAfterGame(const char* path,DWORD flags) {
+    if(!HomeLaunch(path) || !disc::Active() || !PlayedFromDisc) return;
+    if(SwapStartedAt && GetTickCount()-SwapStartedAt<SwapRestartMs) return;
+    if(!InterlockedExchange(&PlayedFromDisc,0)) return;
+    netdisc::Status status;
+    disc::GetStatus(status);
+    if(status.state!=netdisc::StateMounted || !status.ticket) return;
+    EjectAt=GetTickCount()+EjectDelayMs;
+    InterlockedExchange(&EjectTicket,LONG(status.ticket));
+    SwapNote("Launch %s (flags %X) after a game from the drive's disc: it's ejected in %u s.",path && path[0] ? path : "of the Xbox home",flags,EjectDelayMs/1000);
+}
 static DWORD LaunchTitleHooked(const char* path,DWORD flags) {
     if(SwapRestart(path,flags)) return StartSwappedDisc();
     Handling handling=Handled(path,NULL);
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,NULL);
     NoteLaunch(path,NULL,flags,LaunchKind(handling,disc));
-    if(disc) ArmSwap();
+    if(disc) { ArmSwap(); InterlockedExchange(&PlayedFromDisc,1); }
+    else if(handling==NotTile) EjectAfterGame(path,flags);
+    StopLink();
     DWORD result=((LaunchTitle)LaunchTitleHook.stub)(path,flags);
     if(handling==TileFallback) Skip(false);
     return result;
@@ -1557,14 +2241,25 @@ static DWORD LaunchTitleExHooked(const char* path,const char* mountPath,const ch
     if(handling==TileCancelled) return CancelledLaunch;
     bool disc=handling==NotTile && DiscStart(path,mountPath);
     NoteLaunch(path,mountPath,flags,LaunchKind(handling,disc));
-    if(disc) ArmSwap();
+    if(disc) { ArmSwap(); InterlockedExchange(&PlayedFromDisc,1); }
+    static char emulator[MAX_PATH];
+    if(handling==NotTile && !disc && EmulatorStart(path,mountPath)) {
+        // An original Xbox game: the emulator plays the drive's disc.
+        InterlockedExchange(&PlayedFromDisc,1);
+        StartLink();
+        path=Emulator(path,mountPath,emulator,sizeof(emulator));
+    } else if(handling==NotTile && !disc && XefuStart(path)) StartLink();
+    else {
+        if(handling==NotTile && !disc) EjectAfterGame(path,flags);
+        StopLink();
+    }
     DWORD result=((LaunchTitleEx)LaunchTitleExHook.stub)(path,mountPath,commandLine,flags);
     if(handling==TileFallback) Skip(false);
     return result;
 }
 
 BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
-    UNREFERENCED_PARAMETER(module); UNREFERENCED_PARAMETER(reserved);
+    UNREFERENCED_PARAMETER(reserved);
     if(reason==DLL_PROCESS_ATTACH) {
         HANDLE xam=NULL; void* address=NULL;
         if(XexGetModuleHandle("xam.xex",&xam)>=0 && XexGetProcedureAddress(xam,QueueNoticeOrdinal,&address)>=0) Notice=(QueueNotice)address;
@@ -1573,15 +2268,20 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         if(HookStart(LaunchTitleHook,LaunchTitleOrdinal,LaunchTitleHooked,LaunchTitleStub)
            && !HookStart(LaunchTitleExHook,LaunchTitleExOrdinal,LaunchTitleExHooked,LaunchTitleExStub))
             Unhook(LaunchTitleHook);
-        // NetISO.xex is loaded before this plugin in launch.ini; if not, the
-        // first tile patches its unload call, and its read size and receive
-        // buffer stay NetISO's own.
+        // With NetISO.xex loaded before this plugin in launch.ini, its unload
+        // call, read size and receive buffer are patched (if it comes after,
+        // the first tile patches its unload call). Without it, this plugin's
+        // own drive starts and is the disc drive at once (as NetISO.xex did).
+        FindOwnFolder(module);
         PatchUnload();
         PatchReadLimit();
         PatchReceiveBuffer();
+        StartDrive();
         FindSwapExports();
+        ReadLinkSetting();
         StartWatcher();
     } else if(reason==DLL_PROCESS_DETACH) {
+        disc::Stop();
         StopWatcher();
         UnpatchReceiveBuffer();
         UnpatchUnload();
