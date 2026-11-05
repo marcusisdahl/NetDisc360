@@ -53,6 +53,9 @@ DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size);
 bool FixHeaderDigest(unsigned char* xex, DWORD size);
 // FATX-safe folder name for an ISO, unique among used (case-insensitive).
 void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCount, char* out);
+// The game's name from its ISO's (or game folder's): no .iso, and without the release tags
+// at its end ("Halo 3 (USA, Europe) (En,Ja,...).iso" is "Halo 3").
+void FriendlyGameName(const char* isoName, char* out, size_t capacity);
 // Reads the execution info of default.xex on the ISO mounted on client. An
 // original Xbox disc (default.xbe, no default.xex) gets execution info made
 // from its certificate's Title ID, and xbe (if given) is set.
