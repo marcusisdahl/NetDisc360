@@ -383,6 +383,29 @@ public:
         double started=Seconds();
         Node root; root.folder=true; root.size=0; root.file=-1;
         if(!Walk(folder,root,true,error)) return false;
+        if(!Place(root,true,error)) return false;
+        char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"folder, %d file(s), read in %.1f s",int(paths_.size()),Seconds()-started);
+        description_=text;
+        return true;
+    }
+    // A disc of the files given (names at its top, and their bytes), kept here.
+    bool Open(const std::vector<std::pair<std::string,std::vector<unsigned char> > >& files, std::string& error) {
+        Node root; root.folder=true; root.size=0; root.file=-1;
+        for(size_t i=0;i<files.size();++i) {
+            if(files[i].first.empty() || files[i].first.size()>MaxName) { error="a file has no name, or one too long for a disc"; return false; }
+            Node child; child.name=files[i].first; child.folder=false; child.size=files[i].second.size(); child.file=int(memory_.size()); child.sector=child.bytes=0;
+            memory_.push_back(files[i].second); paths_.push_back(files[i].first);
+            root.children.push_back(child);
+        }
+        std::sort(root.children.begin(),root.children.end(),[](const Node& a, const Node& b) { return NameLess(a.name,b.name); });
+        // Made again the same, byte for byte: no date in it.
+        if(!Place(root,false,error)) return false;
+        char text[64]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%d file(s) made here",int(memory_.size()));
+        description_=text;
+        return true;
+    }
+private:
+    bool Place(Node& root, bool dated, std::string& error) {
         DWORD next=VolumeSector+1;
         if(!PlaceTables(root,next,error)) return false;
         metaEnd_=next;
@@ -392,16 +415,15 @@ public:
         memset(volume,0,Sector);
         memcpy(volume,Magic,MagicSize);
         PutLittle32(volume+20,root.sector); PutLittle32(volume+24,root.bytes);
-        U64 now=(U64(time(NULL))+11644473600ULL)*10000000ULL;  // FILETIME.
+        U64 now=dated ? (U64(time(NULL))+11644473600ULL)*10000000ULL : 0;  // FILETIME.
         PutLittle32(volume+28,DWORD(now)); PutLittle32(volume+32,DWORD(now>>32));
         memcpy(volume+0x7EC,Magic,MagicSize);
         WriteTables(root);
         partition_=PartitionStart(U64(next)*Sector);
         size_=ImageSize(partition_,partition_+U64(next)*Sector);
-        char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"folder, %d file(s), read in %.1f s",int(paths_.size()),Seconds()-started);
-        description_=text;
         return true;
     }
+public:
     U64 Size() const { return size_; }
     bool Read(U64 offset, unsigned char* data, DWORD length) {
         memset(data,0,length);
@@ -422,6 +444,7 @@ public:
         for(;e!=extents_.end() && e->start<to;++e) {
             if(e->start+e->size<=from) continue;
             U64 a=from>e->start ? from : e->start, b=to<e->start+e->size ? to : e->start+e->size;
+            if(!memory_.empty()) { memcpy(out+(a-from),&memory_[size_t(e->file)][size_t(a-e->start)],size_t(b-a)); continue; }
             File* f=Opened(e->file);
             // A file that got shorter since the mount reads as zeros past its end.
             if(!f || f->Read(a-e->start,out+(a-from),DWORD(b-a))<0) { failed_=paths_[size_t(e->file)]; return false; }
@@ -521,6 +544,7 @@ private:
         return open_[0].second.get();
     }
     std::vector<std::string> paths_;
+    std::vector<std::vector<unsigned char> > memory_;  // The files' bytes, for a disc made here.
     std::vector<Extent> extents_;
     std::vector<unsigned char> meta_;
     std::vector<std::pair<int,std::unique_ptr<File> > > open_;
@@ -1080,6 +1104,15 @@ bool IsoReader::Open(const IsoFile& disc) {
     return true;
 }
 
+bool IsoReader::Open(const std::vector<std::pair<std::string,std::vector<unsigned char> > >& files) {
+    Close();
+    std::unique_ptr<FolderImage> image(new FolderImage);
+    if(!image->Open(files,note_)) return false;
+    note_=image->Description();
+    image_.reset(image.release());
+    return true;
+}
+
 bool IsoReader::Locate(const std::string& path, U64& at, U64& size) {
     Volume volume;
     if(!image_.get() || !ImageVolume(*image_,volume)) return false;
@@ -1195,6 +1228,7 @@ std::string GodPackage::Folder() const {
 }
 
 std::string GodPackage::Name() const {
+    if(!name_.empty()) return name_;
     char text[16]; _snprintf_s(text,sizeof(text),_TRUNCATE,"%08X",mediaId_);
     return text;
 }
@@ -1289,11 +1323,30 @@ bool GodPackage::Make(IsoReader& reader, const std::string& title, const std::fu
     PutBig32(h+0x354,mediaId_); PutBig32(h+0x360,titleId_);
     h[0x364]=info[16]; h[0x365]=info[17]; h[0x366]=info[18]; h[0x367]=info[19];
     Sha1Block(&masters_[0][0],GodBlock,h+0x37D);
-    // The game's name, in UTF-16BE where Aurora and the dashboard show it (ASCII; others as _).
-    for(size_t i=0;i<title.size() && i<0x7F;++i) {
-        DWORD c=(unsigned char)title[i]<0x80 ? (unsigned char)title[i] : '_';
-        PutBig16(h+0x411+i*2,c); PutBig16(h+0x1691+i*2,c);
+    // The game's name (UTF-8), in UTF-16BE where Aurora and the dashboard
+    // show it: the display name of each of the 18 languages and the title
+    // name, 0x80 bytes each, so at most 63 characters and a zero.
+    std::vector<DWORD> name;
+    for(size_t i=0;i<title.size() && name.size()<0x3F;) {
+        unsigned char c=(unsigned char)title[i];
+        int more=c<0x80 ? 0 : (c&0xE0)==0xC0 ? 1 : (c&0xF0)==0xE0 ? 2 : (c&0xF8)==0xF0 ? 3 : -1;
+        DWORD code=more==0 ? c : more==1 ? c&0x1F : more==2 ? c&0x0F : c&0x07;
+        bool ok=more>=0 && i+more<title.size();
+        for(int k=1;ok && k<=more;++k) { unsigned char n=(unsigned char)title[i+k]; ok=(n&0xC0)==0x80; code=(code<<6)|(n&0x3F); }
+        i+=ok ? more+1 : 1;
+        // Beyond UTF-16's first plane, control characters and broken bytes: as _.
+        name.push_back(!ok || code<0x20 || code>0xFFFF || (code>=0xD800 && code<0xE000) ? '_' : code);
     }
+    for(size_t i=0;i<name.size();++i) {
+        for(int language=0;language<18;++language) PutBig16(h+0x411+language*0x80+i*2,name[i]);
+        PutBig16(h+0x1691+i*2,name[i]);
+    }
+    // The icon, as both thumbnails (version 1 metadata: 0x4000 bytes each).
+    static const unsigned char Png[8]={0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+    bool icon=icon_.size()>sizeof(Png) && icon_.size()<=0x4000 && !memcmp(&icon_[0],Png,sizeof(Png)) && Big32(h+0x3A9)==1;
+    memset(h+0x171A,0,0x8000);
+    PutBig32(h+0x1712,icon ? DWORD(icon_.size()) : 0); PutBig32(h+0x1716,icon ? DWORD(icon_.size()) : 0);
+    if(icon) { memcpy(h+0x171A,&icon_[0],icon_.size()); memcpy(h+0x571A,&icon_[0],icon_.size()); }
     h[0x35B]=0; h[0x35F]=0; h[0x391]=0;
     Sha1Block(h+0x344,0xACBC,h+0x32C);
     return true;

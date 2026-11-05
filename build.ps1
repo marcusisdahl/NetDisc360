@@ -61,7 +61,7 @@ try {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
-    Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
+    Write-Host "Built $sync. Copy it to Hdd1:\Apps\NetISO Sync on the console."
     Write-Host 'Built build\NetDisc360.xex. Add it as a DashLaunch plugin in place of NetIsoTiles.xex; it replaces NetISO.xex too.'
     Write-Host 'Built build\NetDisc360.exe. Start it: it opens its dashboard in your browser. NetDisc360.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }

@@ -62,12 +62,12 @@ bool Xbdm(DWORD address, int port, const std::string& command, std::string& erro
 // made COD's xbdm crash).
 bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error);
 
-// An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path
-// (\Device\Harddisk0\Partition1\NetISO\Halo 3); "" for another drive.
+// An FTP path on the hard drive (/Hdd1/NetDisc360/Games/Halo 3) as a device path
+// (\Device\Harddisk0\Partition1\NetDisc360\Games\Halo 3); "" for another drive.
 std::string DevicePath(const std::string& ftpPath);
 
 // The Lua scripts, with CRLF line ends as Aurora's own. tiles is the game
-// folder on the Xbox (/Hdd1/NetISO).
+// folder on the Xbox (/Hdd1/NetDisc360/Games).
 //
 // The Utilities script "NetDisc360 Cleanup": Aurora keeps a game in its list
 // when its folder is gone, so a tile NetDisc360 removed can stay there,
@@ -75,15 +75,27 @@ std::string DevicePath(const std::string& ftpPath);
 // recent games, favourites, hidden games and title settings), after asking:
 // the games listed from inside tiles whose folder isn't one of folders (the
 // folders in tiles now). It deletes no file.
-std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders);
+//
+// When from (the tiles' folder before, /Hdd1/NetISO) isn't "", both scripts
+// also move Aurora's scan path for from and its rows for the tiles there to
+// tiles (MoveLua), so a game keeps its art, favourites and play history when
+// its folder moved from from to tiles (MoveOldFolder in main.cpp). Only the
+// rows of tiles in folders move. The filter does it as Aurora starts; the
+// cleanup script, should that have found no Sql, when it is run. Each writes
+// what it did to MovedMarker in app, NetDisc360's folder on the Xbox.
+std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders, const std::string& from, const std::string& app);
 // The filter "Hide PC games while NetDisc360 is off" (Filters, User): it
 // hides the tiles while OnlineMarker wasn't there as Aurora started.
 // NetDisc360 keeps that file while it runs and deletes it when it quits.
 // The first time the filter is used after a start, it writes ShownMarker
 // ("online" or "offline"), so NetDisc360 can tell when Aurora hides the
 // games while it runs (and restart Aurora).
-std::string OnlineScript(const std::string& tiles);
-extern const char CleanupScriptPath[], OnlineScriptPath[], OnlineMarker[], ShownMarker[];
+// Its markers are in app.
+std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders);
+std::string MoveLua(const std::string& from, const std::string& tiles, const std::vector<std::string>& folders);
+// MoveMarker: NetDisc360 moved tiles to this console's tiles folder, and
+// Aurora's rows haven't followed yet; MovedMarker: what the scripts did.
+extern const char CleanupScriptPath[], OnlineScriptPath[], OnlineMarker[], ShownMarker[], MoveMarker[], MovedMarker[];
 
 // A game's title update as Aurora's own list should have it (TitleUpdateScript).
 struct AuroraTu {
