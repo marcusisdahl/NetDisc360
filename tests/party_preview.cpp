@@ -7,6 +7,7 @@
 //   party-preview <out-prefix> <party.txt> <ms> <ms> 1 players <c0,c1,c2,c3> <asking> <choosing> <leave in>
 //   party-preview <out-prefix> <party.txt> <ms> <ms> 1 setup <tab> <row> [<top>]
 //   party-preview <out-prefix> <party.txt> <ms> <ms> 1 host <row> | typing <controller> | updating | notice <text>
+//   party-preview <out-prefix> <party.txt> <ms> <ms> 1 pick <controller> <row> [<top> [<signed-in gamertag>]]
 // writes <out-prefix>-0000.bmp and on, the spin that far in; players draws
 // the players screen, each seat's controller (-1: not signed in) given.
 #define _CRT_SECURE_NO_WARNINGS
@@ -114,6 +115,10 @@ int main(int argc, char** argv) {
     if(!strcmp(mode,"typing") && argc>7) s.typing=atoi(argv[7]);
     if(!strcmp(mode,"updating")) s.updating=true;
     if(!strcmp(mode,"notice") && argc>7) { snprintf(s.notice,sizeof(s.notice),"%s",argv[7]); s.noticeGood=true; }
+    if(!strcmp(mode,"pick") && argc>8) {
+        s.picking=atoi(argv[7]); s.pickRow=atoi(argv[8]); s.pickTop=argc>9 ? atoi(argv[9]) : 0;
+        if(argc>10) snprintf(s.pickSigned,sizeof(s.pickSigned),"%s",argv[10]);
+    }
     double from=atof(argv[3]), to=argc>4 ? atof(argv[4]) : from, every=argc>5 ? atof(argv[5]) : 1;
     if(every<=0) every=1;
     int frame=0;

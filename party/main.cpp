@@ -500,6 +500,52 @@ bool SignedHere=false;      // Someone signed in on this screen (so everyone's i
 bool Stay=false;            // Y: no going back to Aurora by itself.
 DWORD AllInAt=0;
 
+// Joining from a list (Marcus 2026-11-05): "Who are you?" for the
+// controller that pressed A, with the users NetDisc360 knows (synced from
+// the other computers too); the row of the profile signed in on it is picked
+// to start with. A user's profile that isn't on this Xbox comes with the
+// others once the wheel seats them.
+void OpenPicker(int pad) {
+    party::Screen& f=Frame;
+    f.picking=pad; f.pickRow=0; f.pickTop=0; f.pickSigned[0]=0;
+    char gamertag[party::GamertagBytes]="", xuid[party::XuidBytes]="";
+    XUID id=0;
+    if(XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn) {
+        if(XUserGetName(DWORD(pad),gamertag,sizeof(gamertag))!=ERROR_SUCCESS) gamertag[0]=0;
+        if(XUserGetXUID(DWORD(pad),&id)==ERROR_SUCCESS && id) _snprintf_s(xuid,sizeof(xuid),_TRUNCATE,"%016I64X",id);
+    }
+    int user=party::UserOf(f.state,xuid,gamertag);
+    if(user<0 && gamertag[0]) {
+        for(char* c=gamertag;*c;++c) if(*c=='\t' || *c=='\n') *c=' ';
+        strcpy_s(f.pickSigned,gamertag);
+        f.pickRow=1;
+    }
+    for(int r=0;user>=0 && r<party::PickRows(f);++r) if(party::PickUser(f,r)==user) f.pickRow=r;
+    if(f.pickRow>=party::PickShown) f.pickTop=f.pickRow-party::PickShown+1;
+}
+void PickMove(int by) {
+    party::Screen& f=Frame;
+    int rows=party::PickRows(f);
+    f.pickRow+=by;
+    if(f.pickRow>=rows) f.pickRow=rows-1;
+    if(f.pickRow<0) f.pickRow=0;
+    if(f.pickRow<f.pickTop) f.pickTop=f.pickRow;
+    if(f.pickRow>=f.pickTop+party::PickShown) f.pickTop=f.pickRow-party::PickShown+1;
+}
+// A on the picked row: a new name types it; the signed-in profile joins
+// as itself (the server keeps it as theirs); a user joins by their name.
+void PickPress() {
+    party::Screen& f=Frame;
+    const int pad=f.picking, row=f.pickRow, user=party::PickUser(f,row);
+    f.picking=-1;
+    if(row==0) { OpenKeyboard(pad,KeyJoin); return; }
+    if(user>=0) { QueueEdit("join\t%s",f.state.users[user].name); return; }
+    XUID id=0;
+    if(f.pickSigned[0] && XUserGetSigninState(DWORD(pad))!=eXUserSigninState_NotSignedIn && XUserGetXUID(DWORD(pad),&id)==ERROR_SUCCESS && id)
+        QueueEdit("join\t%s\t%016I64X\t%s",f.pickSigned,id,f.pickSigned);
+    else OpenKeyboard(pad,KeyJoin);
+}
+
 int SeatOf(int pad) {
     for(int i=0;i<party::PerConsole;++i) if(Frame.players[i].controller==pad) return i;
     return -1;
@@ -655,6 +701,18 @@ void __cdecl main() {
         }
         if(frame.updating) { if(now-updatingAt>2500) break; }
         else if(KeyPad>=0 || ChooserOpen) {}  // The Guide has the controllers.
+        else if(frame.picking>=0 && (!st.valid || turning || st.voteOpen || frame.setup)) frame.picking=-1;
+        else if(frame.picking>=0) {
+            // "Who are you?": the controller that asked chooses; B goes back.
+            const int pad=frame.picking;
+            if(moved&XINPUT_GAMEPAD_DPAD_UP) PickMove(-1);
+            if(moved&XINPUT_GAMEPAD_DPAD_DOWN) PickMove(1);
+            if(pressed[pad]&XINPUT_GAMEPAD_LEFT_SHOULDER) PickMove(-party::PickShown);
+            if(pressed[pad]&XINPUT_GAMEPAD_RIGHT_SHOULDER) PickMove(party::PickShown);
+            PickMove(0);  // The list may have shrunk.
+            if(pressed[pad]&(XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_BACK)) frame.picking=-1;
+            else if(pressed[pad]&XINPUT_GAMEPAD_A) PickPress();
+        }
         else if(st.valid && st.voteOpen && !frame.setup) {
             // The game vote: each controller its own pick, A votes; the Gamemaster's Start ends it.
             static unsigned voteSeen=0;
@@ -702,8 +760,9 @@ void __cdecl main() {
                 if((any&XINPUT_GAMEPAD_A) && n) QueueEdit("gamemaster\t%s",st.known[choices[frame.hostRow]].address);
             } else if(st.valid) {
                 if((any&XINPUT_GAMEPAD_Y) && mine && mine->count && !turning) frame.view=party::ViewPlayers;
-                // Each player joins on their own controller: A, then their name.
-                if(!turning) for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { OpenKeyboard(pad,KeyJoin); break; }
+                // Each player joins on their own controller: A, then who they are
+                // (a user NetDisc360 knows, or a new name).
+                if(!turning) for(int pad=0;pad<4;++pad) if(pressed[pad]&XINPUT_GAMEPAD_A) { if(st.userCount) OpenPicker(pad); else OpenKeyboard(pad,KeyJoin); break; }
                 if(st.gamemaster && !turning) {
                     if(any&XINPUT_GAMEPAD_RIGHT_SHOULDER) { frame.setup=true; frame.setupTab=party::TabPlayers; frame.setupRow=frame.setupTop=0; }
                     if((any&XINPUT_GAMEPAD_LEFT_SHOULDER) && now-askedAt>1000) { askedAt=now; QueueEdit("voteopen"); }
