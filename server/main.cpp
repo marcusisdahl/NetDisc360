@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <random>
 #include <deque>
 #include <map>
@@ -9010,7 +9011,7 @@ bool ChangeParty(const web::Value& v, std::string& error) {
 }
 
 // The same team said to win again this soon is a double press.
-enum { WinAgainSeconds = 60, PartyTextPointsMost = 16 };
+enum { WinAgainSeconds = 60, PartyTextPointsMost = 16, PartyTextUsersMost = 48 };
 // How strong each of here is for a fair draw (Party::balance): their wins
 // this party, or their gamerscore (one not read yet: the others' average).
 // Empty: drawn at random.
@@ -9822,6 +9823,14 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
         std::string name;
         if(f.size()<2 || !CleanName(f[1],1,GuestNameMost,"Your name",name,error)) return error.empty() ? "Type a name." : error;
         std::string listed=GuestNamed(p,name);
+        // A user who isn't on this party's list yet (picked in the party
+        // app, or typed): their name as the Users page has it.
+        bool known=!listed.empty();
+        if(listed.empty() && what!="leave") {
+            std::lock_guard<std::mutex> hold(GuestLock);
+            User* u=UserNamed(Users,name);
+            if(u && !u->removed) { name=u->name; known=true; }
+        }
         if(what=="leave") {
             if(listed.empty()) return name+" isn't on the guest list.";
             Put(change,"guests",GuestsValue(p,listed,false));
@@ -9838,10 +9847,18 @@ std::string PartyEdit(const std::string& peer, const std::string& text, std::str
         if(what=="join" && f.size()>=3 && !f[2].empty()) AdoptGuestProfile(listed.empty() ? name : listed,strtoull(f[2].c_str(),NULL,16),f.size()>=4 ? f[3] : std::string(),peer);
         Log("%s joined the LAN party on %s.",(listed.empty() ? name : listed).c_str(),peer.c_str());
         MakeProfilesSoon(AutoMakeDelaySeconds);
-        said=listed.empty() ? "Welcome, "+name+"!" : "Welcome back, "+listed+"!";
+        std::string who=listed.empty() ? name : listed;
+        said=known ? "Welcome back, "+who+"!" : "Welcome, "+name+"!";
         // Welcome back with what they did at earlier LANs (Marcus 2026-11-02).
-        std::string earlier=listed.empty() ? std::string() : EarlierLans(listed);
+        std::string earlier=known ? EarlierLans(who) : std::string();
         if(!earlier.empty()) said+=" "+earlier;
+        // Their profile kept elsewhere comes with the others once the wheel seats them.
+        if(what=="join" && f.size()<3) {
+            GuestProfile* r=NULL;
+            std::vector<GuestProfile> records=GuestProfilesNow();
+            r=GuestProfileNamed(records,who);
+            if(r && !r->xuid.empty() && std::find(r->on.begin(),r->on.end(),peer)==r->on.end()) said+=" Your profile comes to your Xbox after the wheel.";
+        }
         if(what=="join" || what=="add") PartyFeed("join","%s",listed.empty() ? (name+" joined the party").c_str() : said.c_str());
         return "";
     }
@@ -10035,6 +10052,40 @@ void PartySpin(const web::Value& v, web::Reply& out) {
     out.body=j.Text();
 }
 
+std::string ProfilesFolder(const Options& o);
+// The users as the party app lists them to pick from (see PartyText).
+struct PartyUserLine { std::string name, gamertag, xuid, where, from; int gamerscore; long long last; };
+std::vector<PartyUserLine> PartyUsers(const std::string& address, const std::function<std::string(const std::string&)>& nameOf) {
+    Options o=Current();
+    std::vector<User> users;
+    std::vector<GuestProfile> records;
+    {
+        std::lock_guard<std::mutex> hold(GuestLock);
+        users=Users; records=GuestProfiles;
+    }
+    std::vector<PartyUserLine> out;
+    for(size_t i=0;i<users.size();++i) {
+        const User& u=users[i];
+        if(u.removed) continue;
+        GuestProfile* p=GuestProfileNamed(records,u.name);
+        PartyUserLine l;
+        l.name=u.name; l.gamerscore=u.gamerscore; l.last=u.lastParty;
+        l.xuid=p && !p->xuid.empty() ? p->xuid : u.xuid;
+        l.gamertag=p && !p->xuid.empty() ? p->gamertag : u.gamertag;
+        if(l.xuid.empty()) l.where="new";
+        else if(p && std::find(p->on.begin(),p->on.end(),address)!=p->on.end()) l.where="here";
+        else if(p && !p->on.empty()) { l.where="console"; l.from=nameOf(p->playedOn.empty() || std::find(p->on.begin(),p->on.end(),p->playedOn)==p->on.end() ? p->on[0] : p->playedOn); }
+        else l.where=ProfileCopies(KitPath(ProfilesFolder(o),l.xuid)).empty() ? "new" : "pc";
+        out.push_back(l);
+    }
+    std::stable_sort(out.begin(),out.end(),[](const PartyUserLine& a, const PartyUserLine& b) {
+        if(a.last!=b.last) return a.last>b.last;
+        return Lower(a.name)<Lower(b.name);
+    });
+    if(out.size()>PartyTextUsersMost) out.resize(PartyTextUsersMost);
+    return out;
+}
+
 // The party as NetDiscParty.xex reads it (see party/state.h): one line for
 // each thing, its fields after a tab. Names never hold a tab or a line end
 // (CleanName). address is the console that asks: its own name and seats.
@@ -10125,6 +10176,14 @@ std::string PartyText(unsigned long long version, const std::string& address) {
             line("guest",{p.guests[i].here ? "1" : "0",p.guests[i].name,Number(score),j!=joined.end() && j->second==address ? "1" : "0"});
         }
     }
+    // The users (the Users page, shared between computers by the sync), for
+    // a player to pick their own when joining (Marcus 2026-11-05): name,
+    // gamertag ("" before their profile is made), XUID, gamerscore (-1: not
+    // read), and where their profile is for this console: here, on another
+    // console (named), a copy kept on this computer (pc), or none yet (new).
+    // Those at a party latest first. A profile that isn't here comes with the
+    // others once the wheel seats them (PushSeatProfiles).
+    for(const PartyUserLine& u : PartyUsers(address,nameOf)) line("user",{u.name,u.gamertag,u.xuid,Number(u.gamerscore),u.where,u.from});
     // The consoles NetDisc360 knows, for the Gamemaster to choose from:
     // address, name, what it does (wheel, aurora, game or off) and whether
     // it's one of the party's.

@@ -18,9 +18,10 @@
 
 namespace party {
 Screen::Screen() : spinMs(0), time(0), link(LinkLooking), view(ViewWheel), asking(0), choosing(-1), leaveIn(-1), copying(false), noticeGood(false),
-                   setup(false), setupTab(TabPlayers), setupRow(0), setupTop(0), hostRow(0), typing(-1), updating(false) {
+                   setup(false), setupTab(TabPlayers), setupRow(0), setupTop(0), hostRow(0), typing(-1), updating(false),
+                   picking(-1), pickRow(0), pickTop(0) {
     memset(&state,0,sizeof(state));
-    server[0]=notice[0]=version[0]=0;
+    server[0]=notice[0]=version[0]=pickSigned[0]=0;
     for(int i=0;i<PerConsole;++i) { players[i].controller=-1; players[i].gamertag[0]=0; voteRow[i]=0; padOn[i]=true; }
 }
 
@@ -429,7 +430,7 @@ static void DrawLobby(const Screen& screen, float px, float py, float pw) {
         List->AddCircleFilled(ImVec2(px+58,py+56),24+3*pulse,Hex(ButtonA),32);
         Text(Heading,px+58-Width(Heading,"A")/2,py+36,Hex(Background),"A");
         TextFit(Heading,px+98,py+30,pw-130,Hex(White),"Press A to join the party");
-        TextFit(Body,px+98,py+82,pw-130,Hex(Muted),"On your own controller, then type your name");
+        TextFit(Body,px+98,py+82,pw-130,Hex(Muted),s.userCount ? "On your own controller, then pick your name" : "On your own controller, then type your name");
     }
     // Who's here.
     _snprintf_s(text,sizeof(text),_TRUNCATE,s.hereCount==1 ? "1 player here" : "%d players here",s.hereCount);
@@ -456,6 +457,81 @@ static void DrawLobby(const Screen& screen, float px, float py, float pw) {
         TextFit(Body,x+24,y+2,cw-24,Hex(White),s.here[i]);
     }
     if(!s.hereCount) TextFit(Body,px,gy,pw,Hex(Dim),"No one has joined yet.");
+}
+
+int PickRows(const Screen& screen) { return 1+(screen.pickSigned[0] ? 1 : 0)+screen.state.userCount; }
+int PickUser(const Screen& screen, int r) {
+    int u=r-1-(screen.pickSigned[0] ? 1 : 0);
+    return u>=0 && u<screen.state.userCount ? u : -1;
+}
+
+// Joining: "Who are you?", over the screen, for the controller that
+// pressed A: a new name, the profile signed in on it, or a user (their
+// profile here, on another console or kept on the PC comes with the others
+// once the wheel seats them).
+static void DrawPicker(const Screen& screen) {
+    const State& s=screen.state;
+    char text[256];
+    const float x=Left, y=Top+92, w=Right-Left, h=Bottom-70-y;
+    Box(0,0,1280,720,Hex(Background,205));
+    Box(x,y,w,h,Hex(Card),18);
+    _snprintf_s(text,sizeof(text),_TRUNCATE,"Who are you, controller %d?",screen.picking+1);
+    Text(Heading,x+32,y+22,Hex(White),text);
+    TextFit(Small,x+32,y+68,w-64,Hex(Muted),"Pick your name: your own profile comes to your Xbox with everyone's after the wheel, with your saves and gamerscore.");
+    const int rows=PickRows(screen);
+    const float rowH=52, top=y+108;
+    for(int r=screen.pickTop;r<rows && r<screen.pickTop+PickShown;++r) {
+        const float ry=top+(r-screen.pickTop)*(rowH+6);
+        const bool picked=r==screen.pickRow;
+        Box(x+24,ry,w-48,rowH,Hex(picked ? Raised : Mix(Card,Background,0.4f)),10);
+        if(picked) List->AddRect(ImVec2(x+24,ry),ImVec2(x+w-24,ry+rowH),Hex(Mix(s.accent,0xFFFFFF,0.35f)),10,0,3);
+        const float lx=x+48, ly=ry+12;
+        const int u=PickUser(screen,r);
+        if(r==0) {
+            List->AddCircleFilled(ImVec2(lx+15,ry+26),15,Hex(Green),24);
+            Box(lx+8,ry+24,14,4,Hex(Ink)); Box(lx+13,ry+19,4,14,Hex(Ink));
+            Text(Body,lx+46,ly,Hex(White),"I'm new: type a name");
+            TextRight(Small,x+w-48,ly+4,Hex(Muted),"gets a profile of their own");
+            continue;
+        }
+        if(u<0) {
+            // The profile signed in on this controller, which is no user's yet.
+            List->AddCircleFilled(ImVec2(lx+15,ry+26),15,Hex(Mix(s.accent,0xFFFFFF,0.3f)),24);
+            char first[2]={screen.pickSigned[0],0};
+            TextCentred(Small,lx+15,ry+15,30,Hex(Ink),first);
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"%s",screen.pickSigned);
+            TextFit(Body,lx+46,ly,w-460,Hex(White),text);
+            TextRight(Small,x+w-48,ly+4,Hex(Green),"signed in on this controller");
+            continue;
+        }
+        const User& usr=s.users[u];
+        bool here=false;
+        for(int g=0;g<s.guestCount;++g) if(!strcmp(s.guests[g].name,usr.name)) here=s.guests[g].here;
+        List->AddCircleFilled(ImVec2(lx+15,ry+26),15,Hex(here ? Green : Raised),24);
+        char initial[8]={0}; int n=0;
+        for(const char* c=usr.name;*c && n<6 && (n==0 || (*c&0xC0)==0x80);++c) initial[n++]=*c;
+        TextCentred(Small,lx+15,ry+15,30,Hex(here ? Ink : White),initial);
+        float nameW=Width(Body,usr.name);
+        if(nameW>w*0.34f) nameW=w*0.34f;
+        TextFit(Body,lx+46,ly,w*0.34f,Hex(White),usr.name);
+        if(usr.gamertag[0] && strcmp(usr.gamertag,usr.name)) {
+            if(usr.gamerscore>=0) _snprintf_s(text,sizeof(text),_TRUNCATE,"%s  /  %d G",usr.gamertag,usr.gamerscore);
+            else _snprintf_s(text,sizeof(text),_TRUNCATE,"%s",usr.gamertag);
+            TextFit(Small,lx+46+nameW+16,ly+4,w*0.26f,Hex(Muted),text);
+        } else if(usr.gamerscore>=0) {
+            _snprintf_s(text,sizeof(text),_TRUNCATE,"%d G",usr.gamerscore);
+            TextFit(Small,lx+46+nameW+16,ly+4,w*0.26f,Hex(Muted),text);
+        }
+        unsigned tone=Muted;
+        if(!strcmp(usr.where,"here")) { _snprintf_s(text,sizeof(text),_TRUNCATE,"Profile on this Xbox"); tone=Green; }
+        else if(!strcmp(usr.where,"console")) _snprintf_s(text,sizeof(text),_TRUNCATE,"Profile on %s: comes here",usr.from[0] ? usr.from : "another Xbox");
+        else if(!strcmp(usr.where,"pc")) _snprintf_s(text,sizeof(text),_TRUNCATE,"Profile kept on the PC: comes here");
+        else _snprintf_s(text,sizeof(text),_TRUNCATE,"Gets a new profile");
+        if(here) { _snprintf_s(text,sizeof(text),_TRUNCATE,"Joined"); tone=Green; }
+        TextRight(Small,x+w-48,ly+4,Hex(tone),text);
+    }
+    if(screen.pickTop>0) Text(Small,x+w/2-40,top-26,Hex(Dim),"More above");
+    if(screen.pickTop+PickShown<rows) Text(Small,x+w/2-40,top+PickShown*(rowH+6)-2,Hex(Dim),"More below");
 }
 
 // The Gamemaster's setup, over the screen: Players, Teams and Consoles.
@@ -803,6 +879,7 @@ void DrawUi(const Screen& screen) {
     // The Gamemaster's setup, over the rest; the game vote over everything.
     if(screen.setup && s.valid) DrawSetup(screen);
     else if(s.valid && s.voteOpen) DrawVote(screen);
+    else if(s.valid && screen.picking>=0) DrawPicker(screen);
 
     // A word back from the server: on the last spin or change (a problem), or good news.
     if(screen.notice[0]) {
@@ -833,8 +910,11 @@ void DrawUi(const Screen& screen) {
     List->AddLine(ImVec2(Left,Bottom-56),ImVec2(Right,Bottom-56),Hex(Raised),1);
     float bx=Left;
     const bool turning=s.valid && s.spinId && s.stepCount>0 && screen.spinMs<SpinMs(s);
-    if(s.valid && s.voteOpen && !screen.setup) {
-        bx=Button(bx,Bottom-40,"A",ButtonA,"Vote");
+    if(s.valid && screen.picking>=0 && !screen.setup && !s.voteOpen) {
+        bx=Button(bx,Bottom-40,"A",ButtonA,"That's me");
+        bx=Tag(bx,Bottom-40,"Up / Down","Choose");
+        bx=Button(bx,Bottom-40,"B",ButtonB,"Back");
+    } else if(s.valid && s.voteOpen && !screen.setup) {
         bx=Tag(bx,Bottom-40,"Up / Down","Choose");
         if(s.gamemaster) bx=Tag(bx,Bottom-40,"START","Spin now");
     } else if(screen.setup && s.valid) {
@@ -864,7 +944,7 @@ void DrawUi(const Screen& screen) {
         Spinner(bx+16,Bottom-24,10,screen.time,Muted);
         Text(Body,bx+38,Bottom-39,Hex(Muted),"Copying profiles, please wait");
         bx+=38+Width(Body,"Copying profiles, please wait")+32;
-    } else if(!(screen.setup && s.valid) && !(s.valid && s.voteOpen)) bx=Button(bx,Bottom-40,"B",ButtonB,"Aurora");
+    } else if(!(screen.setup && s.valid) && !(s.valid && s.voteOpen) && !(s.valid && screen.picking>=0)) bx=Button(bx,Bottom-40,"B",ButtonB,"Aurora");
     const char* where=screen.link==LinkConnected ? "Connected to NetDisc360 at %s" : screen.link==LinkLost ? "Lost NetDisc360 at %s, trying again" : screen.link==LinkWaiting ? "Waiting for the network" : "Looking for NetDisc360 %s";
     _snprintf_s(text,sizeof(text),_TRUNCATE,where,screen.server);
     float tw=Width(Small,text);

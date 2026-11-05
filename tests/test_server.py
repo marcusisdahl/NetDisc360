@@ -4774,6 +4774,46 @@ class Dashboard(ServerTest):
         self.assertEqual([(x["kind"], x["text"]) for x in self.json("GET", "/api/state")["party"]["feed"]],
                          [("join", "Gus joined the party"), ("join", "Welcome back, Ann! This is your 2nd LAN.")])
 
+    def test_players_pick_their_own_profile_in_the_party_app(self):
+        # Marcus 2026-11-05: in the party app a player picks who they are,
+        # also a user whose profile is only kept on the PC (synced from
+        # another computer); it comes to the console with the others.
+        self.start("--xbox", "127.0.0.2", "--xbox", "127.0.0.3")
+        self.assertEqual(self.edit_ask("127.0.0.2", "gamemaster\t127.0.0.2"), "ok\t127.0.0.2 is the Gamemaster.\n")
+        later = int(time.time())
+        text = ("[Users]\r\ncount=3\r\n"
+                "user1=u00000000000000a1|Marcus|GERYHA|E00000000000A003|1700000000|1|%d|0|48230|900|0|0|0|4|1700000100|Halo 3\r\n"
+                "user2=u00000000000000a2|Nora|Nora|E00000000000B001|1700000000|0|%d|0|-1|-1|0|0|0|1|1700000200|\r\n"
+                "user3=u00000000000000a3|Per||||0|%d|0|-1|-1|0|0|0|0|0|\r\n") % (later, later, later)
+        self.json("POST", "/api/users", {"action": "import", "text": text})
+        # Marcus's profile is kept on this PC (as the sync brings it); Nora's is nowhere.
+        kept = os.path.join(self.json("GET", "/api/users")["folder"], "E00000000000A003")
+        os.makedirs(kept)
+        with open(os.path.join(kept, "2026-11-01_20-00-00_10.10.1.44.zip"), "wb") as f:
+            f.write(b"PK")
+        with open(os.path.join(kept, "2026-11-01_20-00-00_10.10.1.44.ini"), "w") as f:
+            f.write("file=2026-11-01_20-00-00_10.10.1.44.zip\nname=Marcus\ngamertag=GERYHA\nxuid=E00000000000A003\nconsole=10.10.1.44\ntime=1762020000\ngamerscore=48230\n")
+        text, lines = self.party_text("127.0.0.3")
+        # Those at a party latest first; where each one's profile is for this console.
+        self.assertEqual(lines["user"], [["Nora", "Nora", "E00000000000B001", "-1", "new", ""],
+                                         ["Marcus", "GERYHA", "E00000000000A003", "48230", "pc", ""],
+                                         ["Per", "", "", "-1", "new", ""]])
+        # NetDiscParty.xex reads them, and finds the user of the profile signed in on a controller.
+        parsed = subprocess.run([build_party_parse(), "userof=e00000000000a003=Someone", "userof==geryha", "userof=E0000000000FFFFF=Nobody"],
+                                input=text.encode("utf-8"), capture_output=True, check=True).stdout.decode("utf-8").splitlines()
+        self.assertIn("user Marcus|GERYHA|E00000000000A003|48230|pc|", parsed)
+        self.assertIn("user Per|||-1|new|", parsed)
+        self.assertEqual([l for l in parsed if l.startswith("userof")],
+                         ["userof e00000000000a003|Someone 1", "userof |geryha 1", "userof E0000000000FFFFF|Nobody -1"])
+        # Picked: they join by their name as the Users page has it, and are told their profile comes.
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\tmarcus"),
+                         "ok\tWelcome back, Marcus! This is your 5th LAN: 48230 G so far. Your profile comes to your Xbox after the wheel.\n")
+        self.assertEqual([(g["name"], g["here"]) for g in self.json("GET", "/api/state")["party"]["guests"]], [("Marcus", True)])
+        # Their own profile, not a new one: it's on no console yet, and the kept copy goes to the seat.
+        record = next(g for g in self.json("GET", "/api/party/profiles")["profiles"] if g["name"] == "Marcus")
+        self.assertEqual((record["xuid"], record["gamertag"]), ("E00000000000A003", "GERYHA"))
+        self.assertEqual(self.edit_ask("127.0.0.3", "join\tGus"), "ok\tWelcome, Gus!\n")
+
     def test_party_from_the_console(self):
         self.start(*self.PARTY_CONSOLES + ("--xbox", "127.0.0.2", "--xbox", "127.0.0.3"))
         # No Gamemaster yet: the app shows the server's build, the palette and the consoles to choose from.
