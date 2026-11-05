@@ -495,6 +495,41 @@ std::string OnlineScript(const std::string& tiles, const std::string& app, const
         "NetDiscOnline = (not NetDiscRead) or NetDiscThere == true\n"
         "pcall(FileSystem.DeleteFile, NetDiscShown)\n"
         "local NetDiscTold = false\n";
+    std::string appInList=TilesInList(app);
+    if(appInList.size()>1) text+=
+        "\n"
+        "-- NetDisc360's helper (boot.xex in "+ScriptPath(app)+") starts the games from\n"
+        "-- their tiles; it is nothing to start from Aurora's list, where a scan path\n"
+        "-- like \\Apps finds it. Hidden there for each profile Aurora knows of.\n"
+        "local NetDiscApp = "+LuaQuote(appInList)+"\n"
+        R"lua(local function NetDiscHideHelper()
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT Id, Directory FROM ContentItems")
+   if not read or rows == nil then return end
+   local ids = {}
+   for _, row in pairs(rows) do
+      local folder = string.lower((string.gsub(row.Directory or "", "^[^\\]*:", "")))
+      if string.sub(folder, 1, 1) ~= "\\" then folder = "\\" .. folder end
+      if string.sub(folder, -1) ~= "\\" then folder = folder .. "\\" end
+      if folder == NetDiscApp and tonumber(row.Id) ~= nil then table.insert(ids, tonumber(row.Id)) end
+   end
+   if #ids == 0 then return end
+   local profiles = { [""] = true }
+   for _, name in ipairs({ "UserHidden", "UserFavorites", "UserRecentGames" }) do
+      local ran, found = pcall(Sql.ExecuteFetchRows, "SELECT DISTINCT ProfileId FROM Config." .. name)
+      if ran and found ~= nil then
+         for _, row in pairs(found) do
+            if type(row.ProfileId) == "string" then profiles[string.upper(row.ProfileId)] = true end
+         end
+      end
+   end
+   for _, id in ipairs(ids) do
+      for profile in pairs(profiles) do
+         pcall(Sql.Execute, "INSERT OR IGNORE INTO Config.UserHidden (ContentId, ProfileId) VALUES (" .. id .. ", '" .. (string.gsub(profile, "'", "''")) .. "')")
+      end
+   end
+end
+pcall(NetDiscHideHelper)
+)lua";
     std::string move=from.empty() ? std::string() : MoveLua(from,tiles,folders);
     if(!move.empty()) text+=
         "\n"

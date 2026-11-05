@@ -2026,11 +2026,21 @@ print('lua ok')
             for directory, scan in (("\\netiso\\halo 3", 2), ("\\NetISO\\Skate 3", 2), ("\\netiso\\gone game", 2), ("\\games\\halo 3", 1),
                                     ("Hdd1:\\NetISO\\Halo 3\\", 2), ("\\netiso sync\\x", 2)):
                 db.execute("INSERT INTO ContentItems (Directory, Executable, ScanPathId) VALUES (?, 'default.xex', ?)", (directory, scan))
+            # NetDisc360's helper, as Aurora's \Apps scan path finds it.
+            db.execute("INSERT INTO ContentItems (Directory, Executable, ScanPathId) VALUES ('\\apps\\netdisc360', 'boot.xex', 3)")
             db.commit()
             db.close()
             db = sqlite3.connect(settings)
             db.execute("CREATE TABLE ScanPaths ( Id INTEGER PRIMARY KEY AUTOINCREMENT, Path TEXT, DeviceId TEXT, Depth INTEGER )")
             db.execute("INSERT INTO ScanPaths (Path, DeviceId, Depth) VALUES ('\\Games', 'hdd', 1), ('\\NetISO', 'hdd', 1)")
+            for table in ("UserHidden", "UserFavorites"):
+                db.execute("CREATE TABLE %s ( Id INTEGER PRIMARY KEY AUTOINCREMENT, ContentId INTEGER, ProfileId TEXT COLLATE NOCASE, "
+                           "UNIQUE (ContentId, ProfileId) )" % table)
+            db.execute("CREATE TABLE UserRecentGames ( Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime INTEGER, ContentId INTEGER, "
+                       "ProfileId TEXT COLLATE NOCASE, UNIQUE (ContentId, ProfileId) )")
+            # Hidden by hand in the old folder; a favourite of another profile.
+            db.execute("INSERT INTO UserHidden (ContentId, ProfileId) VALUES (20, 'E00002F2FA71CA6F'), (20, '')")
+            db.execute("INSERT INTO UserFavorites (ContentId, ProfileId) VALUES (1, 'e0000bf5ae159e2b')")
             db.commit()
             db.close()
 
@@ -2040,16 +2050,20 @@ print('lua ok')
             rows = {}
             for query, table in (("SELECT Id, Path FROM Config.ScanPaths", "paths"), ("SELECT Id, Directory FROM ContentItems", "items")):
                 rows[table] = db.execute(query).fetchall()
+            profiles = db.execute("SELECT ProfileId FROM Config.UserHidden UNION SELECT ProfileId FROM Config.UserFavorites "
+                                  "UNION SELECT ProfileId FROM Config.UserRecentGames").fetchall()
             harness = os.path.join(self.tmp.name, "move.lua")
 
             def lua_rows(items, column):
                 return "{ " + ", ".join("{ Id = %d, %s = %s }" % (i, column, lua_string(v)) for i, v in items) + " }"
             with open(harness, "w") as f:
                 f.write("local paths = %s\nlocal items = %s\n" % (lua_rows(rows["paths"], "Path"), lua_rows(rows["items"], "Directory")))
+                f.write("local profiles = { %s }\n" % ", ".join("{ ProfileId = %s }" % lua_string(p) for p, in profiles))
                 f.write("files = {}\n"
                         "FileSystem = { FileExists = function(p) return files[p] ~= nil end, DeleteFile = function(p) files[p] = nil end,\n"
                         "   WriteFile = function(p, t) files[p] = t end }\n"
-                        "Sql = { ExecuteFetchRows = function(q) if string.find(q, 'ScanPaths') then return paths end return items end,\n"
+                        "Sql = { ExecuteFetchRows = function(q) if string.find(q, 'ScanPaths') then return paths end\n"
+                        "   if string.find(q, 'ProfileId') then return profiles end return items end,\n"
                         "   Execute = function(q) print('SQL ' .. q) return true end }\n"
                         "Script = { ShowMessageBox = function() return { Button = 2 } end, RefreshListOnExit = function() end }\n"
                         "GameListFilterCategories = { User = {} }\n"
@@ -2066,7 +2080,9 @@ print('lua ok')
             db.commit()
             items = db.execute("SELECT Id, Directory, ScanPathId FROM ContentItems ORDER BY Id").fetchall()
             paths = db.execute("SELECT Id, Path FROM Config.ScanPaths ORDER BY Id").fetchall()
+            hidden = db.execute("SELECT ContentId, upper(ProfileId) FROM Config.UserHidden ORDER BY ContentId, upper(ProfileId)").fetchall()
             db.close()
+            self.hidden = hidden
             return moved, items, paths
 
         # As Aurora starts (the filter), and from Utilities (the cleanup script).
@@ -2076,8 +2092,12 @@ print('lua ok')
             self.assertEqual(moved, "moved=3 left=1 scanpath=1", script)
             # Only the tiles that are in the new folder now; the scan path keeps its Id.
             self.assertEqual(items, [(1, "\\netdisc360\\games\\halo 3", 2), (2, "\\NetDisc360\\Games\\Skate 3", 2), (3, "\\netiso\\gone game", 2),
-                                     (4, "\\games\\halo 3", 1), (5, "Hdd1:\\NetDisc360\\Games\\Halo 3\\", 2), (6, "\\netiso sync\\x", 2)])
+                                     (4, "\\games\\halo 3", 1), (5, "Hdd1:\\NetDisc360\\Games\\Halo 3\\", 2), (6, "\\netiso sync\\x", 2),
+                                     (7, "\\apps\\netdisc360", 3)])
             self.assertEqual(paths, [(1, "\\Games"), (2, "\\NetDisc360\\Games")])
+            # As Aurora starts, the helper is hidden for every profile Aurora knows of.
+            helper = [(7, ""), (7, "E00002F2FA71CA6F"), (7, "E0000BF5AE159E2B")] if script == online else []
+            self.assertEqual(self.hidden, helper + [(20, ""), (20, "E00002F2FA71CA6F")])
             # Again: nothing left to do.
             moved, again, _ = run(script, call)
             self.assertEqual(moved, "moved=0 left=1 scanpath=0")
