@@ -12742,12 +12742,14 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
         }).detach();
     }
 #endif
-    StartWeb(o,false);
+    // The consoles given are known before the dashboard answers, so a page
+    // (or a test) asking about one right after the start finds it.
     for(size_t i=0;i<o.xboxes.size();++i) {
         Console* console=ConsoleAt(o.xboxes[i]);
         if(console && o.push) Log("Keeping %s on the Xbox at %s up to date.",o.xboxFolder.c_str(),console->text);
     }
     if(o.push && o.xboxes.empty()) Log("Keeping %s up to date on every Xbox that connects (or give --xbox).",o.xboxFolder.c_str());
+    StartWeb(o,false);
     std::thread(WatchLoop).detach();
     std::thread(RateLoop).detach();
     std::thread(AuroraLoop).detach();
