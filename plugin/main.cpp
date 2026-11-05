@@ -2071,7 +2071,7 @@ static bool XefuName(const char* name) {
 static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     if(!xex) return false;
     // Every title Aurora starts comes through here. A tile's path is short
-    // (Hdd1:\NetISO\<folder>\default.xex); a longer one, with room left for
+    // (Hdd1:\NetDisc360\Games\<folder>\default.xex); a longer one, with room left for
     // its device name and netiso.ini, is someone else's, and the _s calls
     // below would end Aurora over it.
     if(strlen(xex)+(mountPath ? strlen(mountPath)+1 : 0)>=MAX_PATH-64) return false;

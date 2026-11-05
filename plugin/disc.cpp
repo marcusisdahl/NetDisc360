@@ -243,12 +243,15 @@ static size_t Format(char* out,size_t at,size_t capacity,const char* format,va_l
     return at;
 }
 
-// ---- Log: Hdd1:\NetISO\NetDisc360\disc.log, this boot only ----
+// ---- Log: Hdd1:\Apps\NetDisc360\disc.log, this boot only ----
 
 // Written through the kernel's file calls, by the plugin's start (DllMain)
 // and by the worker, one line at a time. Times are seconds since the
-// console started.
-static char LogPath[]="\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360\\disc.log";
+// console started. In NetDisc360's folder (shared/helper.h); on a console
+// whose files the server hasn't moved there yet, where they were before.
+static char LogPath[]="\\Device\\Harddisk0\\Partition1\\Apps\\NetDisc360\\disc.log";
+static char OldLogPath[]="\\Device\\Harddisk0\\Partition1\\NetISO\\NetDisc360\\disc.log";
+static char* LogAt=LogPath;
 static bool LogStarted=false;
 static volatile LONG LogBusy=0;
 static void Delay(DWORD ms);
@@ -264,12 +267,19 @@ static void Log(const char* format,...) {
     at=Format(line,at,sizeof(line)-2,format,args);
     va_end(args);
     at=Put(line,at,sizeof(line),"\r\n");
-    Text name={USHORT(sizeof(LogPath)-1),USHORT(sizeof(LogPath)),LogPath};
-    Attributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
     IoStatus io={0,0}; HANDLE file=NULL;
     // GENERIC_WRITE with SYNCHRONIZE; FILE_OVERWRITE_IF the first time this
-    // boot, FILE_OPEN_IF after; a synchronous, non-directory file.
-    if(K.NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,LogStarted ? 3 : 5,0x60)>=0) {
+    // boot, FILE_OPEN_IF after; a synchronous, non-directory file. The other
+    // folder when one isn't there (the server can move them while it runs).
+    bool opened=false;
+    for(int tries=2;tries>0 && !opened;--tries) {
+        USHORT length=USHORT(strlen(LogAt));
+        Text name={length,USHORT(length+1),LogAt};
+        Attributes attributes={NULL,&name,0x40}; // OBJ_CASE_INSENSITIVE
+        opened=K.NtCreateFile(&file,0x40100000,&attributes,&io,NULL,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,LogStarted ? 3 : 5,0x60)>=0;
+        if(!opened) LogAt=LogAt==LogPath ? OldLogPath : LogPath;
+    }
+    if(opened) {
         LogStarted=true;
         LARGE_INTEGER end; end.LowPart=0xFFFFFFFF; end.HighPart=-1; // FILE_WRITE_TO_END_OF_FILE
         K.NtWriteFile(file,NULL,NULL,NULL,&io,line,DWORD(at),&end);

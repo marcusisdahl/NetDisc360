@@ -100,9 +100,10 @@ typedef bool (*Wanted)(const char* iso);
 typedef void (*Placed)(const char* iso, const char* folder);
 // launcher is the tile launcher XEX (any copy; its execution info is
 // overwritten), each game folder's default.xex. boot, if not NULL, is the
-// helper XEX without execution info that they share, kept in root as
-// HelperFolder\HelperXex (see shared/helper.h); the boot.xex a game folder
-// got before then goes.
+// helper XEX without execution info that they share, kept as HelperXex in
+// helperFolder (NetDisc360's folder, see shared/helper.h), or with none, in
+// root as HelperFolder\HelperXex; the boot.xex a game folder got before then
+// goes.
 // With removeGone false, folders whose ISO is gone are left and counted in held.
 // findInstall, if not NULL, is asked about each game folder's install.ini,
 // and findRole about the disc_role, disc_label and xefu in its netiso.ini. An
@@ -111,5 +112,5 @@ typedef void (*Placed)(const char* iso, const char* folder);
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone=true,
           FindInstall findInstall=NULL, FindRole findRole=NULL, Wanted wanted=NULL, Placed placed=NULL,
-          Progress progress=NULL);
+          Progress progress=NULL, const char* helperFolder=NULL);
 }
