@@ -2267,7 +2267,7 @@ main()
 assert(#done == 0)
 -- As Aurora starts, the filter's script does the same without asking:
 -- the rows of tiles without a default.xex (Skate 3 isn't one: no file).
-files = { ['Hdd1:\\NetISO\\halo 3\\default.xex'] = 'x' }
+files = { ['Hdd1:\\NetDisc360\\Games\\halo 3\\default.xex'] = 'x' }
 Script = nil
 GameListFilterCategories = { User = {} }
 dofile(%(online)r)
