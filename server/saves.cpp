@@ -19,7 +19,7 @@ const size_t MaxFile = 64 << 20, MaxTotal = 256 << 20;
 const char ProfileFolder[] = "FFFE07D1/00010000";
 const char SaveType[] = "00000001";
 
-std::string Hex(DWORD value) { char text[9]; snprintf(text,sizeof(text),"%08X",value); return text; }
+std::string Hex(DWORD value) { char text[9]; snprintf(text,sizeof(text),"%08X",(unsigned)value); return text; }
 bool HexName(const std::string& name, size_t length) {
     if(name.size()!=length) return false;
     for(size_t i=0;i<length;++i) if(!isxdigit((unsigned char)name[i])) return false;

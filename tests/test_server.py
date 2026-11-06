@@ -1836,6 +1836,22 @@ class Push(ServerTest):
         self.assertIn("1 game is installed on it", out)
         self.assertIn("0 games are installed on it", out)
 
+    def test_a_console_that_is_off_is_not_tried_for_its_installed_games(self):
+        # The look now and then at installed games, on a console that's been
+        # turned off since: quietly, a whole interval later, and no "Waiting
+        # for Aurora" though nothing was to be written.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        server, _ = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "2")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.ftp.shutdown()
+            self.ftp.server_close()
+            time.sleep(7)
+        finally:
+            server.kill()
+            out = server.stdout.read()
+        self.assertNotIn("waiting for its FTP server", out)
+
     def test_installed_games_are_looked_at_when_aurora_starts(self):
         # Aurora's NetISO plugin connecting (Aurora started again) is when
         # they're looked at, long before the slow look now and then.
