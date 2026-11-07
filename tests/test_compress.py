@@ -369,19 +369,22 @@ class Compress(ServerTest):
                 self.assertEqual(result.returncode, 0, result.stdout)
                 os.remove(iso)
                 self.web = free_port()
-                c = self.served(folder, name + ".iso", "--web-port", str(self.web))
-                self.assertEqual(c.size()[0] * SECTOR, XGD2_IMAGE)
-                self.assertEqual(c.read(0, 4096), bytes(4096))
-                self.assertEqual(c.read(XGD2 + 0x10000, 20), MAGIC)
-                self.assertEqual(c.read(XGD2 + 40 * SECTOR, len(game)), game)
-                self.assertEqual(c.read(XGD2 + 41 * SECTOR, 15000), b"MAP" * 5000)
-                games = self.json("GET", "/api/games")["games"]
-                self.assertEqual([(g["kind"], g["titleId"], g["xbe"]) for g in games], [("cso", "4D530004", True)])
-                c.close()
-                self.server.kill()
-                self.server.wait()
-                self.server.stdout.close()
-                self.server = None
+                try:
+                    c = self.served(folder, name + ".iso", "--web-port", str(self.web))
+                    self.assertEqual(c.size()[0] * SECTOR, XGD2_IMAGE)
+                    self.assertEqual(c.read(0, 4096), bytes(4096))
+                    self.assertEqual(c.read(XGD2 + 0x10000, 20), MAGIC)
+                    self.assertEqual(c.read(XGD2 + 40 * SECTOR, len(game)), game)
+                    self.assertEqual(c.read(XGD2 + 41 * SECTOR, 15000), b"MAP" * 5000)
+                    games = self.json("GET", "/api/games")["games"]
+                    self.assertEqual([(g["kind"], g["titleId"], g["xbe"]) for g in games], [("cso", "4D530004", True)])
+                    c.close()
+                finally:  # Each layout's server stops, even when a check fails.
+                    if self.server:
+                        self.server.kill()
+                        self.server.wait()
+                        self.server.stdout.close()
+                        self.server = None
 
     def test_stop_ends_only_its_own_disc(self):
         # Two discs of one archive: stopping the second (by the file it makes)
