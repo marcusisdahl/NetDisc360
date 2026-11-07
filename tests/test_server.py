@@ -117,7 +117,7 @@ def build_server():
     sources = [os.path.join(ROOT, p) for p in ("server/main.cpp", "server/discs.cpp", "server/discmap.cpp", "server/xefu.cpp", "server/ftp.cpp",
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/titleupdates.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp",
-                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/http.cpp", "server/sync.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/http.cpp", "server/sync.cpp", "server/health.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 
@@ -329,10 +329,11 @@ class Xbdm(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, host="127.0.0.1", port=0, jrpc=True):
+    def __init__(self, modules=None, host="127.0.0.1", port=0, jrpc=True):
         self.commands = []
         self.notes = []
         self.jrpc = jrpc
+        self.modules = modules  # [(name, base, size)] for "modules"; None: unknown command.
         outer = self
 
         class Handler(socketserver.StreamRequestHandler):
@@ -356,6 +357,12 @@ class Xbdm(socketserver.ThreadingTCPServer):
                     outer.commands.append(command)
                     if command in ("shutdown", "magicboot COLD"):
                         return  # the console powers off or restarts: xbdm closes without an answer
+                    if command == "modules" and outer.modules is not None:
+                        self.wfile.write(b"202- multiline response follows\r\n")
+                        for name, base, size in outer.modules:
+                            self.wfile.write(b'name="%s" base=0x%08x size=0x%08x check=0x00000000 timestamp=0x00000000\r\n' % (name.encode(), base, size))
+                        self.wfile.write(b".\r\n")
+                        continue
                     self.wfile.write(b"407- unknown command\r\n")
 
         super().__init__((host, port), Handler)
@@ -4624,6 +4631,112 @@ class Dashboard(DashboardTest):
             ftp.shutdown()
             ftp.server_close()
 
+    def test_health_finds_and_fixes_a_console(self):
+        def plugin_xex(base):
+            # An XEX2 header with only the image base header (0x10201).
+            return b"XEX2" + struct.pack(">IIIII", 0, 0x1000, 0, 0x400, 1) + struct.pack(">II", 0x10201, base) + bytes(64)
+
+        xbox = os.path.join(self.tmp.name, "xbox")
+        for folder in ("Usb0", "Hdd1/Apps/Aurora/Data/Databases", "Hdd1/NetISO"):
+            os.makedirs(os.path.join(xbox, folder))
+        launch = (b"[Paths]\r\nDefault = Hdd:\\Apps\\Aurora\\Aurora.xex\r\n; example plugin entry\r\n; plugin1 = Usb:\\plugin\\aplugin.xex\r\n[Plugins]\r\n"
+                  b"plugin1 = Usb:\\NetISO.xex\r\nplugin2 = Usb:\\NetDisc360.xex\r\nplugin3 = Usb:\\Xbdm.xex\r\n\r\n[Settings]\r\nliveblock = true\r\n")
+        files = {"Usb0/launch.ini": launch, "Usb0/NetISO.xex": b"NETISO", "Usb0/NetISO.xex.txt": b"10.0.0.99\r\n",
+                 "Usb0/NetDisc360.xex": plugin_xex(0x91380000), "Usb0/Xbdm.xex": b"XBDM", "Usb0/NetDisc360.ini": b"read_kb=256\r\nserver = 10.0.0.99:4323\r\n"}
+        for name, data in files.items():
+            with open(os.path.join(xbox, name), "wb") as f:
+                f.write(data)
+        databases = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data", "Databases")
+        settings, content = os.path.join(databases, "settings.db"), os.path.join(databases, "content.db")
+        with contextlib.closing(sqlite3.connect(settings)) as db, db:
+            db.execute("CREATE TABLE SystemSettings ( Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT COLLATE NOCASE, Value TEXT COLLATE NOCASE, UNIQUE (Name) )")
+            db.executemany("INSERT INTO SystemSettings (Name, Value) VALUES (?, ?)", [("PluginLoadAtBoot", "1"), ("PluginLiNK", "1"), ("PluginUPNP", "0")])
+        with contextlib.closing(sqlite3.connect(content)) as db, db:
+            db.execute("CREATE TABLE ContentItems (Id INTEGER PRIMARY KEY AUTOINCREMENT, Directory TEXT)")
+        plugin = os.path.join(self.tmp.name, "NetDisc360.xex")
+        with open(plugin, "wb") as f:
+            f.write(plugin_xex(0x91C00000))
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        # xbdm lists what runs: something else sits where the plugin loads.
+        xbdm = Xbdm([("xboxkrnl.exe", 0x80040000, 0x1A0000), ("aac.xex", 0x91380000, 0x20000), ("other.xex", 0x91C00000, 0x10000)], host="127.0.0.2")
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--xbdm-port", str(xbdm.port), "--plugin", plugin)
+
+            def check():
+                r = self.json("POST", "/api/health/check", {"address": "127.0.0.2"})
+                return r, {c["id"]: (c["tone"], c["fix"]) for c in r["checks"]}
+
+            def fix(name):
+                return self.json("POST", "/api/health/fix", {"address": "127.0.0.2", "fix": name})["note"]
+
+            r, checks = check()
+            self.assertTrue(r["ftp"] and r["xbdm"] and r["pluginFile"])
+            self.assertEqual(r["launchIni"], "/Usb0/launch.ini")
+            self.assertEqual([r["drive"][k] for k in ("slot", "name", "own", "found", "base", "server", "here")], [2, "NetDisc360.xex", True, True, "91380000", "10.0.0.99", False])
+            self.assertEqual(r["taken"], {"name": "other.xex", "base": "91C00000"})
+            self.assertEqual(checks, {"plugin-base": ("bad", "plugin-put"), "not-loaded": ("bad", ""), "server-other": ("warn", "server"),
+                                      "netiso-first": ("warn", "netiso-off"), "not-connected": ("bad", ""), "link-on": ("bad", "link-off")})
+            self.assertEqual(r["bad"], 4)
+            self.assertEqual(self.json("GET", "/api/state")["health"]["problems"], 1)
+            self.assertEqual(xbdm.commands, ["modules"])
+
+            # The right build in place of the old one, a copy of that kept here.
+            self.assertIn("Put this server's NetDisc360.xex (at 0x91C00000) in Usb:\\NetDisc360.xex.", fix("plugin-put"))
+            with open(os.path.join(xbox, "Usb0", "NetDisc360.xex"), "rb") as f:
+                self.assertEqual(f.read(), plugin_xex(0x91C00000))
+            kept = os.path.join(self.tmp.name, "console-backups", "127.0.0.2")
+            self.assertEqual(os.listdir(kept), [n for n in os.listdir(kept) if n.startswith("NetDisc360.xex-")])
+            with open(os.path.join(kept, os.listdir(kept)[0]), "rb") as f:
+                self.assertEqual(f.read(), plugin_xex(0x91380000))
+            # NetDisc360.ini names this computer; its other settings stay.
+            fix("server")
+            with open(os.path.join(xbox, "Usb0", "NetDisc360.ini"), "rb") as f:
+                self.assertRegex(f.read(), rb"^read_kb=256\r\nserver = 127\.0\.0\.\d+:4323\r\n$")
+            # NetISO.xex out of launch.ini, its line left with ; in front.
+            fix("netiso-off")
+            with open(os.path.join(xbox, "Usb0", "launch.ini"), "rb") as f:
+                self.assertEqual(f.read(), launch.replace(b"plugin1 = Usb:\\NetISO", b"; plugin1 = Usb:\\NetISO"))
+            self.assertEqual(len(os.listdir(kept)), 3)
+            r, checks = check()
+            self.assertEqual(checks["plugin-base"], ("good", ""))
+            self.assertEqual(checks["server"], ("good", ""))
+            self.assertNotIn("netiso-first", checks)
+            self.assertEqual(self.call("POST", "/api/health/fix", {"address": "127.0.0.2", "fix": "netiso-off"})[0], 400)
+
+            # LiNK: a script turns it off once as Aurora starts (no Aurora web server here to restart it).
+            self.assertIn("the next time it starts", fix("link-off"))
+            script = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscLinkOff.lua")
+            self.assertEqual(check()[1]["link-pending"], ("info", ""))
+            if lupa:
+                run_aurora_script(script, xbox, content, settings)
+                with contextlib.closing(sqlite3.connect(settings)) as db:
+                    self.assertEqual(db.execute("SELECT Name, Value FROM SystemSettings ORDER BY Id").fetchall(), [("PluginLoadAtBoot", "1"), ("PluginLiNK", "0"), ("PluginUPNP", "0")])
+                with open(os.path.join(xbox, "Hdd1", "Apps", "NetDisc360", "link-off.txt"), "rb") as f:
+                    self.assertEqual(f.read(), b"off\r\n")
+                # Once it ran, the script and its note go.
+                self.assertEqual(check()[1]["link-off"], ("good", ""))
+                self.assertFalse(os.path.exists(script))
+                self.assertFalse(os.path.exists(os.path.join(xbox, "Hdd1", "Apps", "NetDisc360", "link-off.txt")))
+            else:
+                print("Skipped running the Aurora script: no lupa (pip install lupa).", file=sys.stderr)
+
+            # launch.ini without NetDisc360.xex: it's added in the first free slot, as the copy there.
+            with open(os.path.join(xbox, "Usb0", "launch.ini"), "wb") as f:
+                f.write(b"[Plugins]\r\nplugin1 = Usb:\\Xbdm.xex\r\nplugin3 = Usb:\\JRPC2.xex\r\n")
+            r, checks = check()
+            self.assertEqual((checks["no-plugin"], r["pluginThere"], r["freeSlot"]), (("bad", "plugin-add"), "Usb:\\NetDisc360.xex", 2))
+            self.assertIn("as plugin 2", fix("plugin-add"))
+            with open(os.path.join(xbox, "Usb0", "launch.ini"), "rb") as f:
+                self.assertEqual(f.read(), b"[Plugins]\r\nplugin1 = Usb:\\Xbdm.xex\r\nplugin3 = Usb:\\JRPC2.xex\r\nplugin2 = Usb:\\NetDisc360.xex\r\n")
+            self.assertEqual(check()[1]["plugin-base"], ("good", ""))
+            # Nothing answers: it's off.
+            self.assertEqual([c["id"] for c in self.json("POST", "/api/health/check", {"address": "127.0.0.3"})["checks"]], ["offline"])
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+            xbdm.close()
+
     def test_finds_and_repairs_tiles_without_art(self):
         xbox = os.path.join(self.tmp.name, "xbox")
         aurora = os.path.join(xbox, "Hdd1", "Apps", "Aurora", "Data")
@@ -5822,6 +5935,100 @@ class Dashboard(DashboardTest):
             ftp.server_close()
             unity.shutdown()
             unity.server_close()
+
+    def test_marks_newer_title_updates_by_itself_and_puts_them_on(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        older, newest = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 1", 0x2000), tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2")
+        forza = tu_package(0x4D530910, 0x11112222, "Title Update 4")
+        kb = lambda data: (len(data) + 1023) // 1024
+        unity = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnityHandler)
+        unity.asked = []
+        unity.titles = {
+            "4D5307E6": {"Type": 1, "MediaIDS": [{"MediaID": "1A2B3C4D", "Updates": [
+                {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(kb(older)), "hash": content_id(older)},
+                {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(kb(newest)), "hash": content_id(newest)}]}]},
+            "4D530910": {"Type": 2, "Updates": [{"TitleUpdateID": "130", "Version": "4", "MediaID": "11112222", "Size": str(kb(forza)), "hash": content_id(forza)}]}}
+        unity.files = {"111": ("tu00000002_00000000", newest)}
+        threading.Thread(target=unity.serve_forever, daemon=True).start()
+        self.addCleanup(unity.server_close)
+        self.addCleanup(unity.shutdown)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000")
+        os.makedirs(updates)
+        with open(os.path.join(updates, "tu00000001_00000000"), "wb") as f:  # Halo 3 has an older one on.
+            f.write(older)
+        # Forza 4's newest is there, but someone switched it off: not nagged about.
+        aside = os.path.join(xbox, "Hdd1", "Apps", "NetDisc360", "Title updates", "4D530910", content_id(forza))
+        os.makedirs(aside)
+        with open(os.path.join(aside, "tu00000004_00000000"), "wb") as f:
+            f.write(forza)
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        launcher, boot = os.path.join(self.tmp.name, "launcher.xex"), os.path.join(self.tmp.name, "boot.xex")
+        for path in (launcher, boot):
+            with open(path, "wb") as f:
+                f.write(xex(execution_info(0, 0)) + b"LAUNCHER CODE")
+        with open(self.config, "w") as f:
+            f.write("[Server]\ntu_auto_delay=0\n")
+        args = ("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--launcher", launcher, "--boot", boot, "--push",
+                "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
+        self.start(*args)
+
+        def rows():
+            return {g["game"]: g for g in self.json("GET", "/api/titleupdates/all")["games"]}
+
+        def when(condition, seconds=60):
+            deadline = time.time() + seconds
+            while True:
+                found = rows()
+                if condition(found) or time.time() > deadline:
+                    return found
+                time.sleep(0.3)
+        # Nobody pressed anything: each game looked up, the console checked once it's in Aurora.
+        found = when(lambda r: "Halo 3" in r and r["Halo 3"]["consoles"][0]["checked"] and r["Halo 3"]["consoles"][0]["hasGame"])
+        halo = found["Halo 3"]["consoles"][0]
+        self.assertEqual((halo["behind"], halo["newest"], halo["has"], halo["newestOff"]), (True, False, "Title Update 1", False), found)
+        self.assertEqual(found["Halo 3"]["mediaId"], "1A2B3C4D")
+        bike = found["Forza 4"]["consoles"][0]
+        self.assertEqual((bike["behind"], bike["newestOff"], bike["has"]), (False, True, ""), found)
+        self.assertEqual(sorted(a.split("titleid=")[1] for a in unity.asked if "TitleUpdateInfo" in a), ["4D5307E6", "4D530910"])
+        state = self.json("GET", "/api/state")
+        self.assertGreater(state["titleUpdates"]["version"], 0)
+        self.assertTrue(state["settings"]["tuAuto"])
+        check = [j for j in state["installs"] if j["kind"] == "check"]
+        self.assertEqual([j["state"] for j in check], ["done"])
+        self.assertNotIn("title updates", json.dumps(state["events"]).lower())  # Quietly.
+        # Once a day: not looked up or checked again meanwhile.
+        asked = len(unity.asked)
+        time.sleep(3)
+        self.assertEqual(len(unity.asked), asked)
+        self.assertEqual(len([j for j in self.json("GET", "/api/state")["installs"] if j["kind"] == "check"]), 1)
+        # One click: the newest on each console behind with the game.
+        self.assertEqual(self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "behind": True})["queued"], 1)
+        job = self.state_when(lambda s: s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+        self.assertEqual((job["kind"], job["state"], job["label"]), ("update", "done", "Title update 2"), job["error"])
+        self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+        halo = when(lambda r: r["Halo 3"]["consoles"][0]["newest"])["Halo 3"]["consoles"][0]
+        self.assertEqual((halo["behind"], halo["newest"]), (False, True))
+        status, _, data = self.call("POST", "/api/titleupdates/install", {"game": "Halo 3", "behind": True})
+        self.assertEqual(status, 400)
+        self.assertIn("has its newest title update", json.loads(data)["error"])
+        self.assertEqual(self.json("POST", "/api/titleupdates/install", {"everything": True})["queued"], 0)  # Forza's stays off.
+        # XboxUnity's answers are kept: after a restart the Games page has them
+        # at once, without asking XboxUnity again.
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6", "xboxunity.json")))
+        self.json("POST", "/api/settings", {"tuAuto": False})
+        self.assertFalse(self.json("GET", "/api/state")["settings"]["tuAuto"])
+        asked = len(unity.asked)
+        self.restart(*args)
+        found = when(lambda r: len(r) == 2, 20)
+        self.assertEqual(found["Halo 3"]["newest"]["name"], "Title Update 2")
+        self.assertFalse(found["Halo 3"]["consoles"][0]["checked"])  # Off: not checked by itself.
+        self.assertEqual(len(unity.asked), asked)
+        self.assertFalse(self.json("GET", "/api/titleupdates/all")["auto"])
 
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash

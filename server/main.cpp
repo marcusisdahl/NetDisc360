@@ -17,6 +17,7 @@
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
+#include "health.h"
 #include "ftp.h"
 #include "guests.h"
 #include "picture.h"
@@ -103,6 +104,7 @@ const char DefaultXboxFolder[]="/Hdd1/NetDisc360/Games", OldXboxFolder[]="/Hdd1/
 struct Options {
     std::vector<std::string> folders;
     std::string ftpUser, ftpPassword, xboxFolder, aurora, launcherPath, bootPath;
+    std::string pluginPath;  // --plugin: the NetDisc360.xex the Health page puts on consoles, instead of the one built in.
     std::string configPath;  // The settings file (UTF-8), if there is one.
     std::string webAddress;  // Where the dashboard listens: 127.0.0.1 (this PC) or 0.0.0.0.
     int port, ftpPort, webPort;
@@ -179,6 +181,11 @@ struct Options {
     // device id and name there. No key: no sync.
     std::string syncUrl, syncKey, syncId, syncName;
     std::string xboxUnity;  // XboxUnity's API (see titleupdates.h); --xboxunity for the tests.
+    // Title updates looked for by themselves (TuAutoLoop): each game here on
+    // XboxUnity and each console checked about once a day, the first time
+    // tuAutoDelay seconds after the server started.
+    bool tuAuto;
+    double tuAutoDelay;
     // How a console the dashboard sets nothing for gets each game (see TileChoice): folder, god or none.
     std::string tileMode;
     Options() : ftpUser("xboxftp"), ftpPassword("xboxftp"), xboxFolder(DefaultXboxFolder), aurora("/Hdd1/Apps/Aurora"), webAddress("127.0.0.1"),
@@ -189,7 +196,7 @@ struct Options {
                 pluginSet("NetISO.xex, NetIsoTiles.xex, xbdm.xex, AutoDNS.xex, JRPC2.xex"),
                 auroraWebUser("xboxhttp"), auroraWebPassword("xboxhttp"), auroraWebPort(9999), followAddress(true), keepAwake(true), autoOffMinutes(0), xbdmPort(XbdmPort),
                 namePort(ConsoleNamePort), showName(true), wake(true), saveBackup(true), saveKeep(10), saveDelay(10), saveFollow(true),
-                xboxUnity("https://xboxunity.net/Resources/Lib"), tileMode("folder") {}
+                xboxUnity("https://xboxunity.net/Resources/Lib"), tuAuto(true), tuAutoDelay(300), tileMode("folder") {}
 };
 // The dashboard changes the settings while the server runs, so they're read
 // with Current() (a copy) and changed under SettingsLock.
@@ -231,6 +238,9 @@ bool InDocker;        // In the Docker image (NETDISC_DOCKER), which is updated 
 struct Preset { bool folders, xboxes, ftp; } Given;
 double StartedAt;
 std::atomic<long long> GameStarts(0);  // Mounts of a game by a console, for /metrics.
+// Raised each time what's known of title updates changes (XboxUnity's lists,
+// a console's check), so the dashboard asks for them again.
+std::atomic<long long> TuVersion(0);
 // The command line's options, under the settings file's: what a restored
 // backup's settings go over (Reload).
 Options CommandLine;
@@ -2337,7 +2347,7 @@ bool StoreChecked(FtpClient& ftp, const std::string& path, const std::string& da
     std::vector<unsigned char> back;
     // As bytes: a char above 0x7F isn't equal to the same unsigned char.
     return ftp.Store(path.c_str(),data.data(),data.size()) && ftp.Retrieve(path.c_str(),back,data.size()+1) &&
-           back.size()==data.size() && (data.empty() || !memcmp(&back[0],data.data(),data.size()));
+           back.size()==data.size() && (data.empty() || !memcmp(back.data(),data.data(),data.size()));
 }
 
 void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Options& o) {
@@ -4068,6 +4078,7 @@ bool Save() {
     f.Set("wake_mac",o.wakeMac);
     f.Set("save_backup",o.saveBackup ? "1" : "0");
     f.Set("save_keep",Number(o.saveKeep));
+    f.Set("tu_auto",o.tuAuto ? "1" : "0");
     f.Set("save_follow",o.saveFollow ? "1" : "0");
     f.Set("sync_url",o.syncUrl);
     f.Set("sync_key",o.syncKey.empty() ? std::string() : config::Protect(o.syncKey));
@@ -4220,6 +4231,8 @@ bool LoadConfig(Options& o) {
     o.saveFollow=Flag(f,"save_follow",o.saveFollow);
     if(f.Has("save_keep")) o.saveKeep=std::max(1,std::min(100,int(f.Number("save_keep",o.saveKeep))));
     if(f.Has("save_delay")) o.saveDelay=double(std::max(0,std::min(600,int(f.Number("save_delay",10)))));  // Only for the tests.
+    o.tuAuto=Flag(f,"tu_auto",o.tuAuto);
+    if(f.Has("tu_auto_delay")) o.tuAutoDelay=double(std::max(0,std::min(86400,int(f.Number("tu_auto_delay",300)))));  // Only for the tests.
     o.skipInstalled=Flag(f,"skip_installed",o.skipInstalled);
     if(f.Has("installed_folders")) o.installedFolders=f.Get("installed_folders");
     o.auroraScripts=Flag(f,"aurora_scripts",o.auroraScripts);
@@ -5395,6 +5408,8 @@ bool RecentlyFolder(const std::string& folder) {
     return found;
 }
 
+void HealthJson(web::Json& j);
+
 // The consoles' choices of how they get the games (see TileChoice), with
 // each game by the name the dashboard shows it by.
 std::map<std::string,TileChoice> TileChoicesShown() {
@@ -5496,7 +5511,7 @@ void State(web::Reply& out) {
     j.Set("password",!web::PasswordHash().empty()).Set("passwordFixed",PasswordFixed);
     j.Set("backupEvery",o.backupEvery).Set("backupKeep",o.backupKeep);
     j.Set("updateCheck",o.updateCheck).Set("updateAuto",o.updateAuto).Set("updatePrerelease",o.updatePrerelease);
-    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep).Set("saveFollow",o.saveFollow);
+    j.Set("wake",o.wake).Set("wakeMac",o.wakeMac).Set("saveBackup",o.saveBackup).Set("saveKeep",o.saveKeep).Set("saveFollow",o.saveFollow).Set("tuAuto",o.tuAuto);
     {
         std::string mac,address;
         WakeAdapter(o,mac,address);
@@ -5526,6 +5541,7 @@ void State(web::Reply& out) {
     { std::lock_guard<std::mutex> hold(GamesListLock); version=GamesVersion; }
     j.Key("library").Open('{').Set("games",int(games.size())).Set("duplicates",duplicates).Set("conflicts",conflicts);
     j.Set("version",version).Set("scanned",scanned).Close('}');
+    j.Key("titleUpdates").Open('{').Set("version",TuVersion.load()).Close('}');
     j.Key("folders").Open('[');
     for(size_t i=0;i<o.folders.size();++i) {
         int count=0;
@@ -5627,6 +5643,7 @@ void State(web::Reply& out) {
         }
     }
     j.Close(']');
+    HealthJson(j);
     CopiesJson(j);
     { std::lock_guard<std::mutex> hold(LogLock); j.Set("logId",LogCount); }
     j.Close('}');
@@ -6608,6 +6625,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(!error.empty()) return false;
     Bool(v,"wake",next.wake);
     Bool(v,"saveBackup",next.saveBackup);
+    Bool(v,"tuAuto",next.tuAuto);
     Bool(v,"saveFollow",next.saveFollow);
     if(Text(v,"wakeMac",text)) {
         next.wakeMac=wake::CleanMac(text);
@@ -6689,6 +6707,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
     if(next.wake!=was.wake) changed.push_back(next.wake ? "the Xbox can wake this computer" : "the Xbox doesn't wake this computer");
     if(next.wakeMac!=was.wakeMac) changed.push_back(next.wakeMac.empty() ? "waking this computer's own network adapter" : "waking "+next.wakeMac);
     if(next.saveBackup!=was.saveBackup) changed.push_back(next.saveBackup ? "game saves backed up after each game" : "game saves not backed up");
+    if(next.tuAuto!=was.tuAuto) changed.push_back(next.tuAuto ? "newer title updates looked for by themselves" : "title updates looked for only when you ask");
     if(next.saveFollow!=was.saveFollow) changed.push_back(next.saveFollow ? "saves follow the profile to each console" : "saves stay on their console");
     if(next.saveKeep!=was.saveKeep) changed.push_back("keeping the newest "+Count(next.saveKeep,"save backup","save backups")+" of each game");
     if(next.skipInstalled!=was.skipInstalled) changed.push_back(next.skipInstalled ? "games installed on a console get no tile" : "installed games get a tile too");
@@ -6713,6 +6732,7 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
         Settings.backupEvery=next.backupEvery; Settings.backupKeep=next.backupKeep;
         Settings.updateCheck=next.updateCheck; Settings.updateAuto=next.updateAuto; Settings.updatePrerelease=next.updatePrerelease;
         Settings.wake=next.wake; Settings.wakeMac=next.wakeMac; Settings.saveBackup=next.saveBackup; Settings.saveKeep=next.saveKeep; Settings.saveFollow=next.saveFollow;
+        Settings.tuAuto=next.tuAuto;
         Settings.skipInstalled=next.skipInstalled; Settings.installedFolders=next.installedFolders; Settings.auroraScripts=next.auroraScripts;
         Settings.restartAurora=next.restartAurora; Settings.auroraWebUser=next.auroraWebUser; Settings.auroraWebPassword=next.auroraWebPassword;
         Settings.auroraWebPort=next.auroraWebPort; Settings.followAddress=next.followAddress; Settings.keepAwake=next.keepAwake;
@@ -7363,9 +7383,10 @@ struct ContentCopy {
     long long queuedAt, startedAt, endedAt;  // time().
     double began;                     // Now() when sending started, for the speed.
     std::atomic<bool> stop;
+    bool quiet;                       // Started by the server itself (TuAutoLoop): how it ended goes in the log only.
     std::function<void(std::shared_ptr<ContentCopy>)> run;
     ContentCopy() : id(0), address(0), whole(false), total(0), done(0), copied(0), files(0), file(0), skipped(0),
-                    queuedAt(0), startedAt(0), endedAt(0), began(0), stop(false) {}
+                    queuedAt(0), startedAt(0), endedAt(0), began(0), stop(false), quiet(false) {}
 };
 std::mutex CopyLock;  // Guards the fields of each ContentCopy that change while it runs, and the lists below.
 std::vector<std::shared_ptr<ContentCopy> > Copies;  // The queued, running and latest finished ones, oldest first.
@@ -7423,6 +7444,7 @@ void EndCopy(ContentCopy& c, const Console* console, const char* state, const st
     else if(stopped) { text="Stopped installing "+c.game+"'s content"; kind=EventInfo; }
     else { text="Installing "+c.game+"'s content stopped; the log says why"; kind=EventWarning; }
     Log("Xbox %s: %s%s%s",where,text.c_str(),error.empty() ? "." : ": ",error.c_str());
+    if(c.quiet) return;
     if(console) XboxEvent(*console,kind,text);
     else Event(kind,"%s on %s",text.c_str(),where);
 }
@@ -8112,7 +8134,9 @@ struct ConsoleTus {
     long long checkedAt;  // time(); 0: never.
     std::vector<TuFile> files;
     std::string error;
-    ConsoleTus() : checkedAt(0) {}
+    std::set<DWORD> titles;  // The Title IDs the latest whole check looked for.
+    long long autoAt;        // When TuAutoLoop last queued a check of it (time()); 0: never.
+    ConsoleTus() : checkedAt(0), autoAt(0) {}
 };
 std::mutex TuLock;
 std::map<DWORD,TuTitle> TuInfo;          // By Title ID.
@@ -8121,6 +8145,13 @@ struct TuScanState { bool running; int done, total, found; long long startedAt, 
 
 const char TuBackupFolder[] = "Title updates";
 const double TuFresh = 6*3600;  // How long XboxUnity's list for a game is used before it's asked again.
+// TuAutoLoop: each game looked up on XboxUnity and each console checked
+// again after a day; a look-up or check that failed is tried again after an hour.
+const double TuAutoEvery = 24*3600, TuAutoRetry = 3600;
+// XboxUnity's latest answer for a game, kept next to its downloads
+// (TitleUpdates\<Title ID>\xboxunity.json) so a restart doesn't ask again:
+// the time it was asked (time()) on the first line, then the answer.
+const char TuInfoFile[] = "xboxunity.json";
 
 std::string TuCacheFolder(const Options& o) {
     return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"TitleUpdates";
@@ -8157,24 +8188,48 @@ int TuNumber(const TuFile& f, int offer, const std::vector<tu::Offer>& offers) {
     return offer>=0 && offers[size_t(offer)].version>0 ? offers[size_t(offer)].version : int(f.version);
 }
 
+// XboxUnity's answer for titleId kept on this PC (see TuInfoFile), into
+// TuInfo if it has nothing newer; under TuLock.
+void TuInfoFromDisk(const Options& o, DWORD titleId) {
+    std::string root=TuCacheFolder(o), text, error;
+    std::map<DWORD,TuTitle>::const_iterator known=TuInfo.find(titleId);
+    if(root.empty() || (known!=TuInfo.end() && known->second.fetchedAt)) return;
+    if(!config::ReadFile(root+"/"+Hex8(titleId)+"/"+TuInfoFile,text,4<<20)) return;
+    size_t line=text.find('\n');
+    long long at=line==std::string::npos ? 0 : atoll(text.substr(0,line).c_str());
+    std::vector<tu::Offer> offers;
+    if(at<=0 || !tu::ParseInfo(text.substr(line+1),offers,error)) return;
+    TuTitle& t=TuInfo[titleId];
+    t.offers=offers; t.error.clear();
+    t.fetchedAt=std::max(1e-3,Now()-double(std::max(0LL,(long long)time(NULL)-at)));
+    ++TuVersion;
+}
+
 // XboxUnity's updates for titleId, asked again when older than TuFresh (or refresh).
 bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std::string& error) {
+    Options o=Current();
     {
         std::lock_guard<std::mutex> hold(TuLock);
+        TuInfoFromDisk(o,titleId);
         std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(titleId);
         if(t!=TuInfo.end() && t->second.fetchedAt && Now()-t->second.fetchedAt<TuFresh && !refresh) {
             offers=t->second.offers; error=t->second.error;
             return error.empty();
         }
     }
-    Options o=Current();
     std::string body, name;
     bool ok=tu::Get(tu::InfoUrl(o.xboxUnity,titleId),body,4<<20,name,error) && tu::ParseInfo(body,offers,error);
+    std::string root=TuCacheFolder(o);
+    if(ok && !root.empty()) {
+        config::MakeFolder(root); config::MakeFolder(root+"/"+Hex8(titleId));
+        config::WriteFile(root+"/"+Hex8(titleId)+"/"+TuInfoFile,std::to_string((long long)time(NULL))+"\n"+body,false);
+    }
     std::lock_guard<std::mutex> hold(TuLock);
     TuTitle& t=TuInfo[titleId];
     t.fetchedAt=Now();
     if(ok) { t.offers=offers; t.error.clear(); }
     else t.error=error;
+    ++TuVersion;
     return ok;
 }
 
@@ -8307,8 +8362,9 @@ void CheckTus(std::shared_ptr<ContentCopy> job) {
     {
         std::lock_guard<std::mutex> hold(TuLock);
         ConsoleTus& t=TuConsoles[c.address];
-        if(ok) { t.files=files; t.checkedAt=(long long)time(NULL); t.error.clear(); }
+        if(ok) { t.files=files; t.checkedAt=(long long)time(NULL); t.error.clear(); t.titles=titles; }
         else if(c.state=="copying") t.error=error;
+        ++TuVersion;
     }
     if(!ok) { if(c.state=="copying") EndCopy(c,console,"failed",error); return; }
     Log("Xbox %s: it has %d title update file(s) for the games here.",c.console.c_str(),int(files.size()));
@@ -8316,9 +8372,9 @@ void CheckTus(std::shared_ptr<ContentCopy> job) {
     c.state="done"; c.endedAt=(long long)time(NULL); c.done=c.total; c.file=c.files;
 }
 
-bool QueueTuCheck(DWORD at, std::string& error) {
+bool QueueTuCheck(DWORD at, std::string& error, bool quiet=false) {
     std::shared_ptr<ContentCopy> job(new ContentCopy);
-    job->kind="check"; job->game="Title updates"; job->label="Check its title updates";
+    job->kind="check"; job->game="Title updates"; job->label="Check its title updates"; job->quiet=quiet;
     job->run=CheckTus;
     return AddCopy(job,at,error);
 }
@@ -8380,6 +8436,7 @@ void RefreshTus(FtpClient& ftp, const Options& o, DWORD address, DWORD titleId) 
     for(size_t i=0;i<files.size();++i) if(files[i].titleId==titleId || !files[i].path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder)) kept.push_back(files[i]);
     t.files.swap(kept);
     if(!t.checkedAt) t.checkedAt=(long long)time(NULL);
+    ++TuVersion;
 }
 
 // Aurora's own list of the updates it has on, kept like the dashboard's
@@ -8705,6 +8762,15 @@ bool ConsoleHasGame(const Console& c, const IsoFile& g) {
     return false;
 }
 
+// Whether a console's file f is XboxUnity's update u of the disc (titleId, mediaId).
+bool TuFileIs(const TuFile& f, const tu::Offer& u, DWORD titleId, DWORD mediaId, const Options& o) {
+    bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+    if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) return false;
+    std::string path, name;
+    return (!f.contentId.empty() && f.contentId==u.hash) || (u.size && tu::SameSize(f.size,u.size) && !cache) ||
+           (TuCached(o,titleId,u.id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
+}
+
 // Which of offers (newest first) a console's files are: the index of the
 // newest it has, or -1; other: it has an update of the disc that isn't one of them.
 int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::vector<tu::Offer>& offers, const Options& o, bool& other) {
@@ -8717,16 +8783,33 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
         if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
         bool known=false;
         for(size_t k=0;k<offers.size();++k) {
-            std::string path, name;
-            bool same=(!f.contentId.empty() && f.contentId==offers[k].hash) || (offers[k].size && tu::SameSize(f.size,offers[k].size) && !cache) ||
-                      (TuCached(o,titleId,offers[k].id,path,name) && !_stricmp(tu::FatxName(name).c_str(),f.name.c_str()));
-            if(!same) continue;
+            if(!TuFileIs(f,offers[k],titleId,mediaId,o)) continue;
             known=true;
             if(best<0 || int(k)<best) best=int(k);
         }
         if(!known && !cache) other=true;
     }
     return best;
+}
+
+// Where a console stands with a disc's updates, by its last check: has (see
+// TuOnConsole), newestOff: XboxUnity's newest is on it but switched off
+// (moved aside, or only in Aurora's store), and behind: the newest is out
+// and not on it at all. A console whose newest was switched off, by hand
+// or in Aurora, isn't behind: that was someone's choice. Nor is one that
+// has only an update XboxUnity doesn't list on.
+struct TuStanding {
+    int has; bool other, newestOff, behind;
+    TuStanding() : has(-1), other(false), newestOff(false), behind(false) {}
+};
+TuStanding TuStandingOf(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::vector<tu::Offer>& offers, const Options& o) {
+    TuStanding s;
+    if(!t.checkedAt || offers.empty()) return s;
+    s.has=TuOnConsole(t,titleId,mediaId,offers,o,s.other);
+    for(size_t i=0;i<t.files.size() && s.has!=0 && !s.newestOff;++i)
+        s.newestOff=t.files[i].where!="live" && TuFileIs(t.files[i],offers[0],titleId,mediaId,o);
+    s.behind=s.has!=0 && !s.newestOff && !(s.other && s.has<0);
+    return s;
 }
 
 void TuOfferJson(web::Json& j, const tu::Offer& u, DWORD titleId, const Options& o) {
@@ -8832,9 +8915,10 @@ bool SwitchTitleUpdate(const web::Value& body, bool off, std::string& error) {
 }
 
 // POST /api/titleupdates/install {game, id (default: the newest), address
-// (or all: each console with the game), keep (leave older ones where they are)}
-// or {everything: true}: the newest of every game to each console with it
-// that hasn't got it, by the last checks.
+// (or all: each console with the game; behind: each console behind with it,
+// see TuStanding), keep (leave older ones where they are)} or {everything:
+// true}: the newest of every game to each console behind with it, by the
+// last checks.
 bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued) {
     queued=0;
     Options o=Current();
@@ -8842,8 +8926,10 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
     bool everything=flag && flag->type==web::Value::Bool && flag->boolean;
     flag=body.Get("keep");
     bool replace=!(flag && flag->type==web::Value::Bool && flag->boolean);
+    flag=body.Get("behind");
+    bool behind=everything || (flag && flag->type==web::Value::Bool && flag->boolean);
     flag=body.Get("all");
-    bool all=everything || (flag && flag->type==web::Value::Bool && flag->boolean);
+    bool all=behind || (flag && flag->type==web::Value::Bool && flag->boolean);
     std::string name, id, address;
     Text(body,"game",name); Text(body,"id",id); Text(body,"address",address);
     std::vector<IsoFile> games;
@@ -8882,11 +8968,10 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
             const Console& c=*consoles[k];
             if(!all && address!=c.text) continue;
             if(all && (!ConsoleHasGame(c,g) || c.offline)) continue;
-            if(everything) {
+            if(behind) {
                 ConsoleTus t;
                 { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,ConsoleTus>::const_iterator f=TuConsoles.find(c.address); if(f==TuConsoles.end()) continue; t=f->second; }
-                bool other=false;
-                if(TuOnConsole(t,g.titleId,g.mediaId,offers,o,other)==0) continue;  // Has the newest.
+                if(!TuStandingOf(t,g.titleId,g.mediaId,offers,o).behind) continue;
             }
             DWORD at=INADDR_NONE;
             std::string one;
@@ -8895,7 +8980,8 @@ bool InstallTitleUpdates(const web::Value& body, std::string& error, int& queued
         }
     }
     if(!queued && !everything) {
-        error=why.empty() ? (all ? "No console has "+name+" (a tile of it, or it installed)." : "There's no console at "+address+".") : why;
+        error=!why.empty() ? why : behind ? "Every console with "+name+" has its newest title update, by the last checks."
+              : all ? "No console has "+name+" (a tile of it, or it installed)." : "There's no console at "+address+".";
         return false;
     }
     if(!queued && everything && !why.empty()) { error=why; return false; }
@@ -8942,6 +9028,79 @@ bool StartTuScan(std::string& error) {
     return true;
 }
 
+// Title updates looked for by themselves (settings: tuAuto). Once the
+// folders were read, what was kept of XboxUnity's answers is loaded, so the
+// Games page shows what's newer right after a start. From tuAutoDelay
+// seconds after the start, each game here is looked up on XboxUnity when
+// its answer is a day old (a new game at once; gently, one a second, like
+// the scan), and each console that's in Aurora, and answered its FTP, is
+// checked when its check is a day old or games came that it wasn't checked
+// for (at most once an hour). Not while a console plays, or has something
+// in its queue, nor in the first two minutes after a game ended.
+bool TuConsoleDue(const Console& c, const ConsoleTus* t, const std::set<DWORD>& titles, long long now) {
+    if(c.offline || c.ftp!=2 || !c.synced) return false;
+    {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        if(c.connections>0 && !c.mounted.empty() && !c.inAurora) return false;  // Playing.
+    }
+    long long ended=c.gameEndedAt;
+    if(ended && Now()*1000-ended<120000) return false;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        for(size_t i=0;i<Copies.size();++i)
+            if(Copies[i]->address==c.address && (Copies[i]->state=="queued" || Copies[i]->state=="copying")) return false;
+    }
+    if(!t) return true;
+    if(t->autoAt && now-t->autoAt<(long long)TuAutoRetry) return false;
+    if(!t->checkedAt || now-t->checkedAt>=(long long)TuAutoEvery) return true;
+    for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(!t->titles.count(*i)) return true;
+    return false;
+}
+
+void TuAutoLoop() {
+    std::set<DWORD> loaded;  // Titles whose kept answer was looked for.
+    for(;;Sleep(1000)) {
+        bool scanned;
+        { std::lock_guard<std::mutex> hold(GamesListLock); scanned=GamesScanned; }
+        if(!scanned) continue;
+        Options o=Current();
+        std::set<DWORD> titles=LibraryTitles();
+        {
+            std::lock_guard<std::mutex> hold(TuLock);
+            for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(loaded.insert(*i).second) TuInfoFromDisk(o,*i);
+        }
+        if(!o.tuAuto || Now()-StartedAt<o.tuAutoDelay) continue;
+        for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) {
+            bool due;
+            {
+                std::lock_guard<std::mutex> hold(TuLock);
+                if(TuScan.running) break;  // The scan asks for them.
+                std::map<DWORD,TuTitle>::const_iterator t=TuInfo.find(*i);
+                due=t==TuInfo.end() || !t->second.fetchedAt || Now()-t->second.fetchedAt>=(t->second.error.empty() ? TuAutoEvery : TuAutoRetry);
+            }
+            if(!due) continue;
+            if(!Current().tuAuto) break;
+            std::vector<tu::Offer> offers;
+            std::string error;
+            if(!LookupTus(*i,true,offers,error)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(*i).c_str(),error.c_str());
+            Sleep(1000);  // Gently: XboxUnity is run by volunteers.
+        }
+        long long now=(long long)time(NULL);
+        std::vector<Console*> consoles=AllConsoles();
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            ConsoleTus t;
+            bool known;
+            { std::lock_guard<std::mutex> hold(TuLock); std::map<DWORD,ConsoleTus>::const_iterator f=TuConsoles.find(c.address); known=f!=TuConsoles.end(); if(known) t=f->second; }
+            if(!TuConsoleDue(c,known ? &t : NULL,titles,now)) continue;
+            std::string error;
+            { std::lock_guard<std::mutex> hold(TuLock); TuConsoles[c.address].autoAt=now; }
+            if(QueueTuCheck(c.address,error,true)) XboxLog(c,"checking its title updates, as it does each day.");
+        }
+        if(o.tuAutoDelay>=60) Sleep(59000);
+    }
+}
+
 // GET /api/titleupdates/all: every game here with XboxUnity's newest update
 // for its disc (by the last look-up), and whether each console has it.
 void AllTitleUpdates(web::Reply& out) {
@@ -8957,9 +9116,10 @@ void AllTitleUpdates(web::Reply& out) {
     std::map<DWORD,TuTitle> info;
     std::map<DWORD,ConsoleTus> checks;
     TuScanState scan;
+    long long version=TuVersion;
     { std::lock_guard<std::mutex> hold(TuLock); info=TuInfo; checks=TuConsoles; scan=TuScan; }
     web::Json j;
-    j.Open('{').Key("scan").Open('{').Set("running",scan.running).Set("done",scan.done).Set("total",scan.total).Set("found",scan.found).Set("ended",scan.endedAt).Close('}');
+    j.Open('{').Set("version",version).Set("auto",o.tuAuto).Key("scan").Open('{').Set("running",scan.running).Set("done",scan.done).Set("total",scan.total).Set("found",scan.found).Set("ended",scan.endedAt).Close('}');
     j.Key("consoles").Open('[');
     for(size_t k=0;k<consoles.size();++k) {
         std::map<DWORD,ConsoleTus>::const_iterator t=checks.find(consoles[k]->address);
@@ -8972,16 +9132,17 @@ void AllTitleUpdates(web::Reply& out) {
         if(t==info.end()) continue;
         std::vector<tu::Offer> offers=tu::ForMedia(t->second.offers,g.mediaId);
         if(offers.empty()) continue;
-        j.Open('{').Set("game",config::ToUtf8(WithoutIso(g.name))).Set("titleId",Hex8(g.titleId)).Key("newest");
+        j.Open('{').Set("game",config::ToUtf8(WithoutIso(g.name))).Set("titleId",Hex8(g.titleId)).Set("mediaId",Hex8(g.mediaId)).Key("newest");
         TuOfferJson(j,offers[0],g.titleId,o);
         j.Key("consoles").Open('[');
         for(size_t k=0;k<consoles.size();++k) {
             const Console& c=*consoles[k];
             std::map<DWORD,ConsoleTus>::const_iterator ct=checks.find(c.address);
-            bool other=false;
-            int has=ct!=checks.end() && ct->second.checkedAt ? TuOnConsole(ct->second,g.titleId,g.mediaId,offers,o,other) : -1;
-            j.Open('{').Set("address",std::string(c.text)).Set("hasGame",ConsoleHasGame(c,g)).Set("checked",ct!=checks.end() && ct->second.checkedAt!=0)
-             .Set("newest",has==0).Set("has",has>=0 ? offers[size_t(has)].name : std::string()).Set("other",other).Close('}');
+            TuStanding st=ct!=checks.end() ? TuStandingOf(ct->second,g.titleId,g.mediaId,offers,o) : TuStanding();
+            bool hasGame=ConsoleHasGame(c,g);
+            j.Open('{').Set("address",std::string(c.text)).Set("hasGame",hasGame).Set("checked",ct!=checks.end() && ct->second.checkedAt!=0)
+             .Set("newest",st.has==0).Set("has",st.has>=0 ? offers[size_t(st.has)].name : std::string()).Set("other",st.other)
+             .Set("newestOff",st.newestOff).Set("behind",hasGame && st.behind).Close('}');
         }
         j.Close(']').Close('}');
     }
@@ -12992,6 +13153,457 @@ void SetupCheck(web::Reply& out) {
     out.body=j.Text();
 }
 
+// The Health page ---------------------------------------------------------------
+
+// What can keep a console from playing the PC's games, found as it is now:
+// Aurora runs and answers FTP, DashLaunch's launch.ini loads NetDisc360.xex,
+// the file there loads at 0x91C00000 (health::PluginBase), xbdm (where it's
+// loaded) lists it among what runs, its NetDisc360.ini names this computer,
+// NetISO.xex isn't in its way, and Nova's LiNK is off. Each finding is a
+// check {id, tone (good, info, warn or bad), fix}: fix names what
+// /api/health/fix can do about it ("" for nothing). The page words them.
+struct HealthSeen { long long at; int bad, warn; };
+std::mutex HealthLock;
+std::map<DWORD,HealthSeen> Healths;           // The latest check of each console, under HealthLock.
+std::map<DWORD,long long> HealthRestartedAt;  // When a fix restarted its Aurora (Now() ms), under HealthLock.
+std::vector<unsigned char> PluginFile;        // NetDisc360.xex to put on consoles (server.rc, or --plugin); empty: none.
+const char LinkOffDone[] = "link-off.txt";
+const double HealthRestartQuietSeconds = 45;  // Nothing goes to a console while Aurora starts (COD hung once).
+
+bool PluginFileGood() { return !PluginFile.empty() && health::XexBase(PluginFile.data(),PluginFile.size())==health::PluginBase; }
+
+// A DashLaunch path for an FTP one: /Usb0/NetDisc360.xex is Usb:\NetDisc360.xex,
+// /Hdd1/Plugins/NetDisc360.xex Hdd:\Plugins\NetDisc360.xex (see FtpPath).
+std::string DashLaunchPath(const std::string& ftpPath) {
+    size_t slash=ftpPath.find('/',1);
+    std::string device=ftpPath.substr(1,slash==std::string::npos ? std::string::npos : slash-1), rest=slash==std::string::npos ? std::string() : ftpPath.substr(slash);
+    std::string lower=Lower(device);
+    if(lower=="usb0") device="Usb";
+    else if(lower=="hdd1") device="Hdd";
+    for(size_t i=0;i<rest.size();++i) if(rest[i]=='/') rest[i]='\\';
+    return device+":"+rest;
+}
+
+// Whether the file at path is there, from its folder's listing (a read of a
+// file that isn't there can stall FtpDll's next one); name gets its name as
+// listed. listings keeps each folder's listing for the next.
+bool ListedFile(FtpClient& ftp, const std::string& path, std::map<std::string,std::vector<FtpEntry> >& listings, std::string* name=NULL) {
+    size_t cut=path.rfind('/');
+    if(cut==std::string::npos) return false;
+    std::string folder=cut ? path.substr(0,cut) : "/", file=path.substr(cut+1);
+    std::string key=Lower(folder);
+    if(!listings.count(key)) {
+        std::vector<FtpEntry>& entries=listings[key];
+        if(!ftp.Enters(folder.c_str()) || !ftp.List(folder.c_str(),entries)) entries.clear();
+    }
+    const std::vector<FtpEntry>& entries=listings[key];
+    for(size_t i=0;i<entries.size();++i)
+        if(!entries[i].folder && !_stricmp(entries[i].name.c_str(),file.c_str())) { if(name) *name=entries[i].name; return true; }
+    return false;
+}
+
+// Where a NetDisc360.xex that launch.ini doesn't load may be on the console.
+std::string PluginOnConsole(FtpClient& ftp, std::map<std::string,std::vector<FtpEntry> >& listings) {
+    static const char* const places[]={"/Usb0/NetDisc360.xex","/Hdd1/Plugins/NetDisc360.xex","/Hdd1/NetDisc360.xex","/Usb0/Plugins/NetDisc360.xex"};
+    for(size_t i=0;i<sizeof(places)/sizeof(places[0]);++i) if(ListedFile(ftp,places[i],listings)) return places[i];
+    return std::string();
+}
+
+// The settings file the plugin in folder reads (see PluginServerOnConsole):
+// the first NetDisc360.ini there or on the roots of Usb0: and Hdd1:, then
+// NetIsoTiles.ini, its old name; "" when there's none.
+std::string PluginIniOnConsole(FtpClient& ftp, const std::string& folder, std::map<std::string,std::vector<FtpEntry> >& listings) {
+    static const char* const names[]={"NetDisc360.ini","NetIsoTiles.ini"};
+    for(int n=0;n<2;++n) {
+        const std::string places[]={folder+names[n],std::string("/Usb0/")+names[n],std::string("/Hdd1/")+names[n]};
+        for(int i=0;i<3;++i) { std::string listed; if(ListedFile(ftp,places[i],listings,&listed)) return places[i].substr(0,places[i].rfind('/')+1)+listed; }
+    }
+    return std::string();
+}
+
+// Aurora's SystemSettings (settings.db, Name and Value): PluginLiNK is
+// Nova's LiNK. False with why in error if it couldn't be read.
+bool AuroraSystemSettings(FtpClient& ftp, const Options& o, std::map<std::string,std::string>& out, std::string& error) {
+    out.clear();
+    std::string folder=o.aurora+"/Data/Databases", name;
+    std::map<std::string,std::vector<FtpEntry> > listings;
+    if(!ListedFile(ftp,folder+"/settings.db",listings,&name)) { error="Aurora's settings.db isn't in "+folder+"."; return false; }
+    std::vector<unsigned char> data;
+    if(!ftp.Retrieve((folder+"/"+name).c_str(),data,64<<20)) { error=std::string("Couldn't read Aurora's settings.db: ")+ftp.Error(); return false; }
+    std::vector<std::string> columns;
+    columns.push_back("Name"); columns.push_back("Value");
+    std::vector<std::vector<SqlValue> > rows;
+    if(!ReadSqlTable(data,"SystemSettings",columns,rows,error)) { error="settings.db: "+error; return false; }
+    for(size_t i=0;i<rows.size();++i)
+        if(!rows[i][0].null) out[Lower(rows[i][0].text)]=rows[i][1].null ? std::string() : !rows[i][1].text.empty() ? rows[i][1].text : std::to_string(rows[i][1].number);
+    return true;
+}
+
+// Whether a copy, title update or other job writes to the console now.
+bool CopyingTo(DWORD address) {
+    std::lock_guard<std::mutex> hold(CopyLock);
+    for(size_t i=0;i<Copies.size();++i) if(Copies[i]->address==address && Copies[i]->state=="copying") return true;
+    return false;
+}
+
+// FtpLockFor(address), waiting up to seconds for a push or save backup to finish.
+bool LockFtp(DWORD address, double seconds) {
+    std::mutex& m=FtpLockFor(address);
+    for(double until=Now()+seconds;;Sleep(200)) {
+        if(m.try_lock()) return true;
+        if(Now()>=until) return false;
+    }
+}
+
+bool RestartedLately(DWORD address) {
+    std::lock_guard<std::mutex> hold(HealthLock);
+    std::map<DWORD,long long>::const_iterator r=HealthRestartedAt.find(address);
+    return r!=HealthRestartedAt.end() && Now()*1000-r->second<HealthRestartQuietSeconds*1000;
+}
+
+// The console's health as JSON (see HealthSeen), kept for the sidebar's count.
+void HealthOf(DWORD address, web::Json& j) {
+    Options o=Current();
+    Console* known=ConsoleIfKnown(address);
+    char text[16]; AddressText(address,text,sizeof(text));
+    struct Check { std::string id, tone, fix; };
+    std::vector<Check> checks;
+    auto add=[&](const char* id, const char* tone, const char* fix) { Check c={id,tone,fix ? fix : ""}; checks.push_back(c); };
+    bool playing=false, connected=known && known->connections>0;
+    if(known) { std::lock_guard<std::mutex> hold(ConsoleLock); playing=connected && !known->mounted.empty() && !known->inAurora; }
+    j.Open('{').Set("address",text).Set("at",(long long)time(NULL)).Set("known",known!=NULL).Set("connected",connected).Set("playing",playing)
+     .Set("pluginFile",PluginFileGood());
+    std::vector<std::string> addresses=PcAddresses();
+    auto finish=[&]() {
+        int bad=0, warn=0;
+        j.Key("checks").Open('[');
+        for(size_t i=0;i<checks.size();++i) {
+            bad+=checks[i].tone=="bad"; warn+=checks[i].tone=="warn";
+            j.Open('{').Set("id",checks[i].id).Set("tone",checks[i].tone).Set("fix",checks[i].fix).Close('}');
+        }
+        j.Close(']').Set("bad",bad).Set("warn",warn).Close('}');
+        HealthSeen seen={(long long)time(NULL),bad,warn};
+        std::lock_guard<std::mutex> hold(HealthLock);
+        Healths[address]=seen;
+    };
+    if(RestartedLately(address)) { add("restarting","info",NULL); finish(); return; }
+    // What runs on it, from xbdm: one question, answered at once.
+    std::string answer, xbdmError;
+    std::vector<health::Module> modules;
+    bool xbdm=XbdmAnswer(address,o.xbdmPort,"modules",answer,xbdmError) && health::ParseModules(answer,modules);
+    j.Set("xbdm",xbdm);
+    const health::Module* taken=NULL;
+    for(size_t i=0;i<modules.size() && !taken;++i)
+        if(modules[i].base<=health::PluginBase && health::PluginBase-modules[i].base<modules[i].size && PluginKind(modules[i].name)!=std::string("tiles")) taken=&modules[i];
+    if(taken) j.Key("taken").Open('{').Set("name",taken->name).Set("base",Hex8(taken->base)).Close('}');
+    auto loadedAs=[&](const std::string& name) -> const health::Module* {
+        for(size_t i=0;i<modules.size();++i) if(!_stricmp(modules[i].name.c_str(),name.c_str())) return &modules[i];
+        return NULL;
+    };
+    FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),8);
+    bool greets=ftp.Greets();
+    j.Set("ftp",greets);
+    if(!greets) {
+        // Aurora's FTP server doesn't run during a game.
+        add(playing ? "in-game" : xbdm ? "no-aurora" : "offline",playing || !xbdm ? "info" : "bad",NULL);
+        finish();
+        return;
+    }
+    if(!LockFtp(address,20)) { add("busy","info",NULL); finish(); return; }
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(address),std::adopt_lock);
+    if(!ftp.Open()) { j.Set("loginError",std::string(ftp.Error())); add("login","bad",NULL); finish(); return; }
+    std::map<std::string,std::vector<FtpEntry> > listings;
+    LaunchIni ini;
+    bool iniRead=ReadLaunchIni(ftp,ini,true);
+    j.Set("launchIni",ini.path);
+    if(!iniRead || ini.path.empty()) add("no-launch-ini","bad",NULL);
+    const std::pair<int,std::string>* drive=NULL;
+    const std::pair<int,std::string>* netiso=NULL;
+    std::set<int> slots;
+    for(size_t i=0;i<ini.plugins.size();++i) {
+        slots.insert(ini.plugins[i].first);
+        std::string path=FtpPath(ini.plugins[i].second);
+        const char* kind=PluginKind(path.substr(path.rfind('/')+1));
+        if(!drive && !strcmp(kind,"tiles")) drive=&ini.plugins[i];
+        if(!netiso && !strcmp(kind,"netiso")) netiso=&ini.plugins[i];
+    }
+    int free=0;
+    for(int s=1;s<=5 && !free;++s) if(!slots.count(s)) free=s;
+    j.Set("freeSlot",free).Set("plugins",(int)ini.plugins.size());
+    if(netiso) j.Key("netiso").Open('{').Set("slot",netiso->first).Set("path",netiso->second).Close('}');
+    bool ownDrive=false;
+    if(!ini.path.empty() && !drive) {
+        std::string there=PluginOnConsole(ftp,listings);
+        j.Set("pluginThere",there.empty() ? std::string() : DashLaunchPath(there));
+        add("no-plugin","bad",free && (!there.empty() || PluginFileGood()) ? "plugin-add" : NULL);
+        if(xbdm) {
+            const health::Module* m=loadedAs("NetDisc360.xex");
+            if(m) j.Key("loaded").Open('{').Set("name",m->name).Set("base",Hex8(m->base)).Close('}');
+        }
+    }
+    if(drive) {
+        std::string path=FtpPath(drive->second), name=path.substr(path.rfind('/')+1), folder=path.substr(0,path.rfind('/')+1);
+        ownDrive=Lower(name).find("netdisc360")!=std::string::npos;
+        j.Key("drive").Open('{').Set("slot",drive->first).Set("path",drive->second).Set("name",name).Set("own",ownDrive);
+        std::vector<unsigned char> data;
+        bool found=ListedFile(ftp,path,listings) && ftp.Retrieve(path.c_str(),data,16<<20);
+        DWORD base=found ? health::XexBase(data.data(),data.size()) : 0;
+        j.Set("found",found);
+        if(found) j.Set("base",Hex8(base)).Set("size",(long long)data.size()).Set("sha256",web::Sha256Hex(std::string(data.begin(),data.end())));
+        std::string from, server=found ? PluginServerOnConsole(ftp,folder,from) : std::string();
+        // This computer: one of its addresses, or the one the console reaches it at.
+        char reached[16]; AddressText(ftp.LocalAddress(),reached,sizeof(reached));
+        bool here=!server.empty() && (server==reached || std::find(addresses.begin(),addresses.end(),server)!=addresses.end());
+        if(found) j.Set("server",server).Set("serverFrom",from).Set("here",here);
+        const health::Module* m=xbdm ? loadedAs(name) : NULL;
+        if(m) j.Key("loaded").Open('{').Set("name",m->name).Set("base",Hex8(m->base)).Close('}');
+        j.Close('}');
+        if(!found) add("plugin-missing","bad",PluginFileGood() ? "plugin-put" : NULL);
+        else if(base!=health::PluginBase) add("plugin-base","bad",PluginFileGood() ? "plugin-put" : NULL);
+        else add("plugin-base","good",NULL);
+        if(xbdm) add(m ? "loaded" : "not-loaded",m ? "good" : "bad",NULL);
+        if(found) add(here ? "server" : "server-other",here ? "good" : ownDrive && !(netiso && netiso->first<drive->first) ? "bad" : "warn",here ? NULL : "server");
+    }
+    if(netiso && ownDrive) add(netiso->first<drive->first ? "netiso-first" : "netiso-after",netiso->first<drive->first ? "warn" : "bad","netiso-off");
+    if(ini.plugins.size()>5) add("too-many","warn",NULL);
+    if(drive || netiso) add(connected ? "connected" : "not-connected",connected ? "good" : "bad",NULL);
+    // Nova's LiNK, and the script that turns it off once it ran.
+    std::map<std::string,std::string> settings;
+    std::string settingsError;
+    std::string script=o.aurora+LinkOffScriptPath, done=XboxAppFolder(o)+"/"+LinkOffDone;
+    bool pending=ListedFile(ftp,script,listings), ran=ListedFile(ftp,done,listings);
+    if(ran) { ftp.Delete(script.c_str()); ftp.Delete(done.c_str()); pending=false; }
+    if(AuroraSystemSettings(ftp,o,settings,settingsError)) {
+        bool on=settings.count("pluginlink") && Trim(settings["pluginlink"])=="1";
+        bool nova=!settings.count("pluginloadatboot") || Trim(settings["pluginloadatboot"])!="0";
+        j.Set("link",on).Set("nova",nova);
+        if(on && pending) add("link-pending","info",NULL);
+        else if(on) add("link-on",nova ? "bad" : "warn","link-off");
+        else add("link-off","good",NULL);
+    } else { j.Set("linkError",settingsError); add("link-unknown","info",NULL); }
+    ftp.Close();
+    finish();
+}
+
+void HealthCheck(const web::Value& body, web::Reply& out) {
+    std::string text;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { out.Error(400,"Send the console's IPv4 address, like 192.168.1.30."); return; }
+    web::Json j;
+    HealthOf(address,j);
+    out.body=j.Text();
+}
+
+// For /api/state: the latest check of each console, and how many have a problem.
+void HealthJson(web::Json& j) {
+    std::lock_guard<std::mutex> hold(HealthLock);
+    int problems=0;
+    j.Key("health").Open('{').Key("consoles").Open('[');
+    for(std::map<DWORD,HealthSeen>::const_iterator h=Healths.begin();h!=Healths.end();++h) {
+        char text[16]; AddressText(h->first,text,sizeof(text));
+        problems+=h->second.bad>0;
+        j.Open('{').Set("address",text).Set("at",h->second.at).Set("bad",h->second.bad).Set("warn",h->second.warn).Close('}');
+    }
+    j.Close(']').Set("problems",problems).Close('}');
+}
+
+// Keeps a copy of a console's file on this computer before a fix changes it:
+// console-backups\<address>\<name>-<time> next to the settings file; without
+// one, next to the file on the console (<name>.netdisc-backup). False if it
+// couldn't be kept.
+bool KeepCopy(FtpClient& ftp, DWORD address, const std::string& path, const std::vector<unsigned char>& data, std::string& where) {
+    Options o=Current();
+    char text[16]; AddressText(address,text,sizeof(text));
+    std::string name=path.substr(path.rfind('/')+1);
+    if(!o.configPath.empty()) {
+        char stamp[32]; time_t now=time(NULL); struct tm t;
+#ifdef _WIN32
+        const char slash='\\';
+        bool known=!localtime_s(&t,&now);
+#else
+        const char slash='/';
+        bool known=localtime_r(&now,&t)!=NULL;
+#endif
+        if(!known || !strftime(stamp,sizeof(stamp),"%Y%m%d-%H%M%S",&t)) _snprintf_s(stamp,sizeof(stamp),_TRUNCATE,"%lld",(long long)now);
+        std::string folder=config::FolderOf(o.configPath)+"console-backups";
+        config::MakeFolder(folder);
+        folder+=slash+std::string(text);
+        config::MakeFolder(folder);
+        where=folder+slash+name+"-"+stamp;
+        return config::WriteFile(where,std::string(data.begin(),data.end()),false);
+    }
+    where=path+".netdisc-backup";
+    return ftp.Store(where.c_str(),data.data(),data.size());
+}
+
+bool StoreBytes(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& data) {
+    return StoreChecked(ftp,path,std::string(data.begin(),data.end()));
+}
+
+// POST /api/health/fix {address, fix}: one of the checks' fixes (see
+// HealthOf), made as the console is now, with a copy of each file it changes
+// kept first. note: what was done and what's left (a restart, mostly).
+bool HealthFix(const web::Value& body, std::string& note, std::string& error) {
+    std::string text, fix;
+    DWORD address;
+    if(!Text(body,"address",text) || (address=inet_addr(text.c_str()))==INADDR_NONE || !address) { error="Send the console's IPv4 address, like 192.168.1.30."; return false; }
+    Text(body,"fix",fix);
+    static const char* const fixes[]={"plugin-add","plugin-put","server","netiso-off","link-off"};
+    if(std::find_if(fixes,fixes+5,[&](const char* f) { return fix==f; })==fixes+5) { error="Send fix plugin-add, plugin-put, server, netiso-off or link-off."; return false; }
+    Options o=Current();
+    Console* known=ConsoleIfKnown(address);
+    if(known) {
+        std::lock_guard<std::mutex> hold(ConsoleLock);
+        if(known->connections>0 && !known->mounted.empty() && !known->inAurora) { error="It's in a game. Fix it once it's back in Aurora."; return false; }
+    }
+    if(CopyingTo(address)) { error="Something is being copied to it. Fix it once that's done."; return false; }
+    if(RestartedLately(address)) { error="Aurora is starting again. Try in a minute."; return false; }
+    if((fix=="plugin-put" || fix=="plugin-add") && !PluginFile.empty() && !PluginFileGood()) { error="The NetDisc360.xex this server has doesn't load at 0x91C00000 either."; return false; }
+    if(!LockFtp(address,20)) { error="Its FTP server is busy with a push or a save backup. Try again in a minute."; return false; }
+    std::lock_guard<std::mutex> ftpHold(FtpLockFor(address),std::adopt_lock);
+    FtpClient ftp(address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+    if(!ftp.Open()) { error=std::string("Aurora's FTP server: ")+ftp.Error()+"."; return false; }
+    std::map<std::string,std::vector<FtpEntry> > listings;
+    LaunchIni ini;
+    if(!ReadLaunchIni(ftp,ini,true) || (fix!="link-off" && ini.path.empty())) { error="No launch.ini found on it."; return false; }
+    const std::pair<int,std::string>* drive=NULL;
+    const std::pair<int,std::string>* netiso=NULL;
+    std::set<int> slots;
+    for(size_t i=0;i<ini.plugins.size();++i) {
+        slots.insert(ini.plugins[i].first);
+        std::string path=FtpPath(ini.plugins[i].second);
+        const char* kind=PluginKind(path.substr(path.rfind('/')+1));
+        if(!drive && !strcmp(kind,"tiles")) drive=&ini.plugins[i];
+        if(!netiso && !strcmp(kind,"netiso")) netiso=&ini.plugins[i];
+    }
+    std::vector<unsigned char> iniData, old;
+    std::string kept;
+    auto readIni=[&]() -> bool { if(!ftp.Retrieve(ini.path.c_str(),iniData,256<<10)) { error=std::string("Couldn't read ")+ini.path+": "+ftp.Error(); return false; } return true; };
+    auto keep=[&](const std::string& path, const std::vector<unsigned char>& data) -> bool {
+        if(KeepCopy(ftp,address,path,data,kept)) { Log("Xbox %s: kept a copy of %s in %s before the Health page's fix.",text,path.c_str(),config::FromUtf8(kept).c_str()); return true; }
+        error="Couldn't keep a copy of "+path+" first, so it wasn't changed.";
+        return false;
+    };
+    // NetDisc360.ini next to the plugin in folder names this computer (the
+    // address the console reaches it at): the one the plugin reads changed,
+    // else a new one there.
+    char here[16]; AddressText(ftp.LocalAddress(),here,sizeof(here));
+    auto pointHere=[&](const std::string& folder, std::string& changed) -> bool {
+        std::string path=PluginIniOnConsole(ftp,folder,listings);
+        std::vector<unsigned char> data;
+        if(!path.empty()) {
+            if(!ftp.Retrieve(path.c_str(),data,64<<10)) { error="Couldn't read "+path+": "+ftp.Error(); return false; }
+            if(!keep(path,data)) return false;
+        } else path=folder+"NetDisc360.ini";
+        std::string fixed=health::SetServer(std::string(data.begin(),data.end()),here);
+        if(!StoreChecked(ftp,path,fixed)) { error="Couldn't write "+path+": "+ftp.Error(); return false; }
+        changed=path;
+        return true;
+    };
+    const std::string restart=" Restart the Xbox: DashLaunch loads its plugins, and they read their settings, as it starts.";
+    if(fix=="plugin-add") {
+        if(drive) { error="launch.ini loads "+drive->second+" already."; return false; }
+        int free=0;
+        for(int s=1;s<=5 && !free;++s) if(!slots.count(s)) free=s;
+        if(!free) { error="launch.ini has 5 plugins, the most DashLaunch loads. Take one out first."; return false; }
+        std::string target=PluginOnConsole(ftp,listings);
+        bool put=target.empty();
+        if(put) {
+            if(!PluginFileGood()) { error="There's no NetDisc360.xex on the console, and this server has none built in to put there."; return false; }
+            // Next to launch.ini: on the USB stick for ABadAvatar consoles, Hdd1:\Plugins on RGH ones.
+            target=!Lower(ini.path).compare(0,5,"/hdd1") ? "/Hdd1/Plugins/NetDisc360.xex" : ini.path.substr(0,ini.path.rfind('/')+1)+"NetDisc360.xex";
+            EnsureFolder(ftp,target.substr(0,target.rfind('/')));
+            if(!StoreBytes(ftp,target,PluginFile)) { error="Couldn't write "+target+": "+ftp.Error(); return false; }
+        }
+        std::string server;
+        if(!pointHere(target.substr(0,target.rfind('/')+1),server)) return false;
+        if(!readIni() || !keep(ini.path,iniData)) return false;
+        std::string line=DashLaunchPath(target);
+        if(!StoreChecked(ftp,ini.path,health::SetPlugin(std::string(iniData.begin(),iniData.end()),free,line))) { error="Couldn't write "+ini.path+": "+ftp.Error(); return false; }
+        note=(put ? "Put NetDisc360.xex in "+line+" and added" : "Added "+line)+" to launch.ini as plugin "+std::to_string(free)+", and "+server+" names this computer ("+here+")."+restart;
+    }
+    else if(fix=="plugin-put") {
+        if(!drive) { error="launch.ini loads no NetDisc360.xex."; return false; }
+        if(!PluginFileGood()) { error="This server has no NetDisc360.xex built in to put there. Get it from NetDisc360's release on GitHub."; return false; }
+        std::string path=FtpPath(drive->second);
+        if(ListedFile(ftp,path,listings) && ftp.Retrieve(path.c_str(),old,16<<20) && !keep(path,old)) return false;
+        EnsureFolder(ftp,path.substr(0,path.rfind('/')));
+        if(!StoreBytes(ftp,path,PluginFile)) { error="Couldn't write "+path+": "+ftp.Error(); return false; }
+        note="Put this server's NetDisc360.xex (at 0x91C00000) in "+drive->second+"."+restart;
+    }
+    else if(fix=="server") {
+        if(!drive) { error="launch.ini loads no NetDisc360.xex."; return false; }
+        std::string path=FtpPath(drive->second), changed;
+        if(!pointHere(path.substr(0,path.rfind('/')+1),changed)) return false;
+        note=DashLaunchPath(changed)+" names this computer ("+std::string(here)+") now."+restart;
+    }
+    else if(fix=="netiso-off") {
+        if(!netiso) { error="launch.ini doesn't load NetISO.xex."; return false; }
+        if(!drive || Lower(drive->second).find("netdisc360")==std::string::npos) { error="NetISO.xex is the disc drive here: launch.ini has no NetDisc360.xex to take over."; return false; }
+        if(!readIni() || !keep(ini.path,iniData)) return false;
+        if(!StoreChecked(ftp,ini.path,health::CommentPlugin(std::string(iniData.begin(),iniData.end()),netiso->first))) { error="Couldn't write "+ini.path+": "+ftp.Error(); return false; }
+        note="Took "+netiso->second+" out of launch.ini (its line is still there, with ; in front), so NetDisc360.xex is the disc drive."+restart;
+    }
+    else {
+        std::string script=o.aurora+LinkOffScriptPath, done=XboxAppFolder(o)+"/"+LinkOffDone;
+        std::map<std::string,std::string> settings;
+        std::string why;
+        if(!AuroraSystemSettings(ftp,o,settings,why)) { error=why; return false; }
+        if(Trim(settings["pluginlink"])!="1") { error="LiNK is off in Aurora's settings already."; return false; }
+        std::vector<unsigned char> db;
+        std::string dbPath=o.aurora+"/Data/Databases/settings.db";
+        if(!ftp.Retrieve(dbPath.c_str(),db,64<<20) || !keep(dbPath,db)) { if(error.empty()) error="Couldn't read "+dbPath+" to keep a copy."; return false; }
+        EnsureFolders(ftp,XboxAppFolder(o));
+        if(ListedFile(ftp,done,listings)) ftp.Delete(done.c_str());
+        for(size_t at=1;(at=std::string(LinkOffScriptPath).find('/',at))!=std::string::npos;++at) EnsureFolder(ftp,o.aurora+std::string(LinkOffScriptPath).substr(0,at));
+        if(!StoreChecked(ftp,script,LinkOffScript(done))) { error="Couldn't write "+script+": "+ftp.Error(); return false; }
+        Log("Xbox %s: wrote %s, so Aurora turns LiNK off as it starts.",text,script.c_str());
+        ftp.Close();
+        AuroraWeb aurora(address,o.auroraWebPort,o.auroraWebUser,o.auroraWebPassword,5);
+        if(o.restartAurora && aurora.RestartAurora()) {
+            { std::lock_guard<std::mutex> hold(HealthLock); HealthRestartedAt[address]=(long long)(Now()*1000); }
+            Log("Xbox %s: restarted Aurora so it turns LiNK off.",text);
+            note="Aurora restarts now and turns LiNK off as it starts. Then restart the Xbox, so Nova starts without it.";
+        } else note="Aurora turns LiNK off the next time it starts. Restart Aurora, then the Xbox, so Nova starts without it.";
+        return true;
+    }
+    Log("Xbox %s: %s",text,note.c_str());
+    return true;
+}
+
+// Catches a console whose Aurora runs (it answers pings on its FTP port) but
+// whose plugin hasn't connected for HealthQuietSeconds: it gets a check, and
+// when that finds a problem, an event and (in the notification area) a
+// message, once until its plugin connects again.
+const double HealthQuietSeconds = 120;
+void HealthLoop() {
+    std::map<DWORD,long long> quietSince, told;
+    for(;;) {
+        Sleep(5000);
+        Options o=Current();
+        std::vector<Console*> consoles=AllConsoles();
+        long long now=(long long)(Now()*1000);
+        for(size_t i=0;i<consoles.size();++i) {
+            Console& c=*consoles[i];
+            if(c.connections>0 || !c.answers || c.offline || o.pingSeconds<=0) { quietSince.erase(c.address); told.erase(c.address); continue; }
+            long long& since=quietSince[c.address];
+            if(!since) since=now;
+            if(now-since<HealthQuietSeconds*1000 || told.count(c.address) || CopyingTo(c.address) || RestartedLately(c.address)) continue;
+            told[c.address]=now;
+            web::Json j;
+            HealthOf(c.address,j);
+            int bad;
+            { std::lock_guard<std::mutex> hold(HealthLock); bad=Healths[c.address].bad; }
+            if(!bad) continue;
+            XboxLog(c,"Aurora runs, but its plugin hasn't connected for %.0f s; the Health page lists %s.",HealthQuietSeconds,Count(bad,"problem","problems").c_str());
+            XboxEvent(c,EventWarning,"Aurora runs, but NetDisc360.xex isn't connected: see Health",std::string(c.text)+": Aurora runs, but NetDisc360.xex isn't connected");
+#ifdef _WIN32
+            if(InTray) Notify("Check "+std::string(c.text),"Aurora runs there, but NetDisc360.xex isn't connected. The Health page says why and can fix it.","#health");
+#endif
+        }
+    }
+}
+
 void Api(const web::Request& r, web::Reply& out) {
     web::Value body;
     if(r.method=="POST" && !web::Parse(r.body,body)) { out.Error(400,"That isn't JSON."); return; }
@@ -13002,6 +13614,12 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
     else if(r.method=="POST" && r.path=="/api/consoles/find") FindConsoles(body,out);
     else if(r.method=="POST" && r.path=="/api/consoles/check") CheckConsole(body,out);
+    else if(r.method=="POST" && r.path=="/api/health/check") HealthCheck(body,out);
+    else if(r.method=="POST" && r.path=="/api/health/fix") {
+        std::string note;
+        if(HealthFix(body,note,error)) { web::Json j; j.Open('{').Set("ok",true).Set("note",note).Close('}'); out.body=j.Text(); }
+        else out.Error(400,error);
+    }
     else if(r.method=="POST" && r.path=="/api/install") {
         if(StartCopy(body,error)) out.body="{\"ok\":true}";
         else out.Error(400,error);
@@ -13375,6 +13993,7 @@ bool ParseArguments(const std::vector<std::string>& args, Options& o, bool fromF
         else if(hasValue && a=="--ftp-port") o.ftpPort=atoi(args[++i].c_str());
         else if(hasValue && a=="--launcher") o.launcherPath=args[++i];
         else if(hasValue && a=="--boot") o.bootPath=args[++i];
+        else if(hasValue && a=="--plugin") o.pluginPath=args[++i];
         else if(hasValue && a=="--online-wait") o.onlineWait=atof(args[++i].c_str());
         else if(hasValue && a=="--remove-wait") o.removeWait=atof(args[++i].c_str());
         else if(hasValue && a=="--installed-every") o.installedEvery=atof(args[++i].c_str());
@@ -13461,6 +14080,10 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
     if(!CanPush) o.push=false;
     LoadAppArt(o);
+    // The NetDisc360.xex the Health page can put on a console (see HealthFix).
+    if(!o.pluginPath.empty() && !LoadFile(o.pluginPath,PluginFile)) { fprintf(stderr,"Can't read %s.\n",o.pluginPath.c_str()); return 2; }
+    if(o.pluginPath.empty()) BuiltIn(IDR_PLUGIN,PluginFile);
+    if(!PluginFile.empty() && !PluginFileGood()) Log("The NetDisc360.xex given doesn't load at 0x91C00000, so the Health page won't put it on consoles.");
 #ifdef _WIN32
     if(!InTray) o.updateAuto=false;
 #else
@@ -13550,6 +14173,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(RelayLoop).detach();
     std::thread(PingLoop).detach();
     std::thread(NamesLoop).detach();
+    std::thread(HealthLoop).detach();
     std::thread(SizeLoop).detach();
 #ifdef _WIN32
     std::thread(AwakeLoop).detach();
@@ -13558,6 +14182,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     std::thread(SyncLoop).detach();
     std::thread(SaveLoop).detach();
     std::thread(UpdateLoop).detach();
+    std::thread(TuAutoLoop).detach();
     Serve(listener);
     return 0;
 }

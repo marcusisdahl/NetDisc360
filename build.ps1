@@ -42,17 +42,6 @@ try {
     # backslashes in the paths, which unzip on Linux warns about.
     & python -c "import shutil; shutil.make_archive('build/NetISO-Sync', 'zip', 'build', 'NetISO Sync')"
     if ($LASTEXITCODE) { throw 'Zipping NetISO Sync failed.' }
-    # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
-    # Xbox's game folders current, with the tile launcher (default.xex) and the helper (boot.xex) built in
-    # (server/). Rebuilt every time so it carries the XEXs just made, and the
-    # dashboard page (web/index.html, made into server/web_page.h) and the
-    # System Link list (data/systemlink.json, made into server/systemlink.cpp).
-    & python tools\make_web.py
-    if ($LASTEXITCODE) { throw 'make_web.py failed.' }
-    & python tools\make_systemlink.py
-    if ($LASTEXITCODE) { throw 'make_systemlink.py failed.' }
-    & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
-    if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetDisc360.xex: the DashLaunch plugin, the console's disc drive for games
     # from the server (plugin/disc.cpp, in NetISO.xex's place) that also
     # handles tiles and disc swaps (plugin/main.cpp). NetIsoTiles.xex before.
@@ -69,6 +58,18 @@ try {
     if ($LASTEXITCODE) { throw 'imagexex failed for NetDisc360.xex.' }
     & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91C00000
     if ($LASTEXITCODE) { throw 'sysdll.py failed for NetDisc360.xex.' }
+    # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
+    # Xbox's game folders current, with the tile launcher (default.xex), the
+    # helper (boot.xex) and the plugin (NetDisc360.xex, for the Health page) built in
+    # (server/). Rebuilt every time so it carries the XEXs just made, the
+    # dashboard page (web/index.html, made into server/web_page.h) and the
+    # System Link list (data/systemlink.json, made into server/systemlink.cpp).
+    & python tools\make_web.py
+    if ($LASTEXITCODE) { throw 'make_web.py failed.' }
+    & python tools\make_systemlink.py
+    if ($LASTEXITCODE) { throw 'make_systemlink.py failed.' }
+    & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }

@@ -16,3 +16,7 @@
 #define IDR_ART_PARTY_GL 111
 // NetDiscParty.xex itself, which the server puts on a console to open the wheel there.
 #define IDR_PARTY_APP 112
+// The console plugin (build\NetDisc360.xex, built before the server), which
+// the Health page puts on a console whose copy is missing or loads at the
+// wrong address.
+#define IDR_PLUGIN 113
