@@ -1,0 +1,10 @@
+// NetDisc360's sync (see src/worker.js and README.md). Deploy from this
+// folder with `npx wrangler deploy` after making the bucket and the owner key.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "netdisc360-sync",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-01",
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "netdisc360-sync" }],
+  "observability": { "enabled": true }
+}

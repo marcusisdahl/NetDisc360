@@ -46,8 +46,12 @@ bool ReadFile(const std::string& utf8Path, std::string& data, size_t limit);  //
 // Replaces the file whole, through path.new; secret: readable by its owner only (not on Windows).
 bool WriteFile(const std::string& utf8Path, const std::string& data, bool secret);
 bool RemoveFile(const std::string& utf8Path);
+// The file's size and last change, finer than seconds where the system keeps
+// that, to tell whether it changed without reading it. False if missing.
+bool Stamp(const std::string& utf8Path, long long& size, long long& time);
 bool MakeFolder(const std::string& utf8Path);
 struct Entry { std::string name; long long size, time; };
-std::vector<Entry> Files(const std::string& utf8Folder);  // The files directly in it.
+std::vector<Entry> Files(const std::string& utf8Folder);    // The files directly in it.
+std::vector<Entry> Folders(const std::string& utf8Folder);  // The folders directly in it (not . or ..).
 std::string FolderOf(const std::string& path);            // Up to and with the last separator; "" if none.
 }

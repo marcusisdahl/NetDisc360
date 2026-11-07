@@ -104,6 +104,17 @@ class Sync(unittest.TestCase):
                     stored, computed = header_digest(right)
                     self.assertEqual(stored, computed, game)
 
+    def test_more_games_than_fixed_lists_held(self):
+        # Sync used to stop at 1,024 ISOs and 1,024 folders; libraries are bigger.
+        for i in range(1100):
+            self.add_iso("Game %04d.iso" % i, 0x1000 + i, 0x41000000 + i)
+        out = self.sync()
+        self.assertIn("The server has 1100 ISO(s).", out)
+        self.assertIn("added=1100", out)
+        self.assertEqual(len(os.listdir(self.games)), 1100)
+        out = self.sync()  # More folders than the first listing has room for.
+        self.assertIn("added=0 kept=1100 removed=0", out)
+
     def test_adds_new_isos_and_keeps_existing(self):
         self.add_iso("a.iso", 1, 0x11111111)
         self.assertIn("added=1", self.sync())
@@ -238,6 +249,24 @@ class Sync(unittest.TestCase):
         self.assertIn("added=1 kept=0 removed=0 skipped=2", out)
         self.assertIn("not an Xbox 360 game ISO", out)
         self.assertIn("no default.xex", out)
+
+    def test_an_original_xbox_disc_starts_its_xbe(self):
+        # No default.xex: the Title ID comes from default.xbe's certificate,
+        # and netiso.ini tells the launcher to start the XBE.
+        base, cert = 0x10000, 0x10180
+        xbe = bytearray(0x300)
+        xbe[0:4] = b"XBEH"
+        xbe[0x104:0x108] = base.to_bytes(4, "little")
+        xbe[0x118:0x11C] = cert.to_bytes(4, "little")
+        xbe[cert - base + 8:cert - base + 12] = (0x4D530004).to_bytes(4, "little")
+        write_iso(os.path.join(self.isos, "Halo.iso"), {"default.xbe": bytes(xbe)}, partition=(0xFDA0000, 0xFD90000))
+        out = self.sync()
+        self.assertIn("added=1", out)
+        with open(os.path.join(self.games, "Halo", "netiso.ini")) as f:
+            ini = f.read()
+        self.assertIn("title_id=4D530004", ini)
+        self.assertIn("media_id=00000000", ini)
+        self.assertIn("xbe=1", ini)
 
     def test_name_clash_gets_a_unique_folder(self):
         os.makedirs(os.path.join(self.games, "Halo"))  # Someone else's folder.

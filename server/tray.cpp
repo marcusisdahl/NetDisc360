@@ -119,7 +119,7 @@ std::wstring IniPath() {
     return ini;
 }
 
-// Whether a folder looks like it holds games: an ISO, an extracted game's
+// Whether a folder looks like it holds games: an ISO (or a compressed one, .cso), an extracted game's
 // default.xex or a GOD package's 00007000 folder, within a few levels.
 bool HasGames(const std::wstring& folder, int depth) {
     WIN32_FIND_DATAW found;
@@ -132,7 +132,7 @@ bool HasGames(const std::wstring& folder, int depth) {
         if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             games = !_wcsicmp(name.c_str(), L"00007000") || (depth > 0 && HasGames(folder + L"\\" + name, depth - 1));
         else
-            games = (name.size() > 4 && !_wcsicmp(name.c_str() + name.size() - 4, L".iso")) || !_wcsicmp(name.c_str(), L"default.xex");
+            games = (name.size() > 4 && (!_wcsicmp(name.c_str() + name.size() - 4, L".iso") || !_wcsicmp(name.c_str() + name.size() - 4, L".cso"))) || !_wcsicmp(name.c_str(), L"default.xex");
     } while (!games && FindNextFileW(search, &found));
     FindClose(search);
     return games;
@@ -192,6 +192,14 @@ void Quit() {
     ExitProcess(0);
 }
 
+// Quit from the menu, or Windows shutting down: unlike a restart, nothing
+// takes over, so the consoles hear first (ServerStopping).
+void Stop() {
+    Shell_NotifyIconW(NIM_DELETE, &Tray);
+    ServerStopping();
+    Quit();
+}
+
 void Menu(int x, int y) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, IdOpen, L"Open the dashboard");
@@ -223,8 +231,11 @@ LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         switch (LOWORD(wParam)) {
         case IdOpen: OpenDashboard(); break;
         case IdBoot: SetStartWithWindows(!StartsWithWindows()); break;
-        case IdQuit: Quit(); break;
+        case IdQuit: Stop(); break;
         }
+        return 0;
+    case WM_ENDSESSION:
+        if (wParam) Stop();
         return 0;
     case WM_SHOWDASHBOARD:  // Started again.
         OpenDashboard();
