@@ -7,7 +7,7 @@
 // On dev it is the next release's version with -dev (1.1.0-dev), so a dev
 // build says what it is, and counts as older than that release but newer
 // than the one before (it isn't offered that one as an update).
-#define NETDISC_VERSION "1.1.0-dev"
+#define NETDISC_VERSION "1.1.0"
 // The same for the exe's version resource (server.rc).
 #define NETDISC_VERSION_NUMBERS 1,1,0,0
 // The public key the in-app update checks each release's NetDisc360.exe
