@@ -5936,6 +5936,71 @@ class Dashboard(DashboardTest):
             unity.shutdown()
             unity.server_close()
 
+    def test_knows_a_cache_update_aurora_downloaded_by_its_header(self):
+        # Aurora keeps some updates in Hdd1:\Cache as TU_ files that are
+        # packages with a header, like those in 000B0000. One Aurora
+        # downloaded (not this PC) is known by that header: on, switched off
+        # and on again, and moved aside when another one goes on.
+        self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
+        older, newest = tu_package(0x4541096D, 0x55ABAB6C, "Title Update 1", 0x2000), tu_package(0x4541096D, 0x55ABAB6C, "Title Update 3")
+        kb = lambda data: (len(data) + 1023) // 1024
+        unity = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnityHandler)
+        unity.asked = []
+        unity.titles = {"4541096D": {"Type": 1, "MediaIDS": [{"MediaID": "55ABAB6C", "Updates": [
+            {"TitleUpdateID": "22167", "Version": "1", "Name": "SSX", "Size": str(kb(older)), "hash": content_id(older)},
+            {"TitleUpdateID": "22466", "Version": "3", "Name": "SSX", "Size": str(kb(newest)), "hash": content_id(newest)}]}]}}
+        unity.files = {"22466": ("tu00000002_00000000", newest)}
+        threading.Thread(target=unity.serve_forever, daemon=True).start()
+        xbox = os.path.join(self.tmp.name, "xbox")
+        cache = os.path.join(xbox, "Hdd1", "Cache")
+        updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4541096D", "000B0000")
+        os.makedirs(cache)
+        name = "TU_12K22BD_0000008000000.0000000000082"
+        with open(os.path.join(cache, name), "wb") as f:
+            f.write(older)
+        # Another game's Cache update with a header: never taken for this one's.
+        with open(os.path.join(cache, "TU_10LC20N_0000018000000.000000000028A"), "wb") as f:
+            f.write(tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 1", 0x2000))
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        try:
+            self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
+            self.state_when(lambda s: s["library"]["games"] == 1 and s["consoles"])
+
+            def checked():
+                self.json("POST", "/api/titleupdates/check", {"address": "127.0.0.2"})
+                self.state_when(lambda s: s["installs"] and all(j["state"] not in ("queued", "copying") for j in s["installs"]), 60)
+                console = self.json("GET", "/api/titleupdates?game=SSX")["consoles"][0]
+                return console, sorted((f["where"], f["offer"], f["path"].startswith("/Hdd1/Cache/")) for f in console["files"])
+
+            def run(path, body):
+                self.json("POST", path, dict(body, game="SSX", address="127.0.0.2"))
+                job = self.state_when(lambda s: s["installs"] and all(j["state"] not in ("queued", "copying") for j in s["installs"]), 60)["installs"][-1]
+                self.assertEqual(job["state"], "done", job["error"])
+
+            console, files = checked()
+            self.assertEqual((console["has"], files), ("22167", [("live", "22167", True)]))
+            # Off: it moves out of the Cache, and on again: back in it.
+            run("/api/titleupdates/off", {})
+            self.assertEqual(sorted(os.listdir(cache)), ["TU_10LC20N_0000018000000.000000000028A"])
+            console, files = checked()
+            self.assertEqual((console["has"], files), ("", [("aside", "22167", False)]))
+            run("/api/titleupdates/use", {"path": console["files"][0]["path"]})
+            self.assertIn(name, os.listdir(cache))
+            console, files = checked()
+            self.assertEqual((console["has"], files), ("22167", [("live", "22167", True)]))
+            # The newest goes on: the Cache one moves aside, so only one is on.
+            run("/api/titleupdates/install", {"id": "22466"})
+            self.assertEqual(sorted(os.listdir(cache)), ["TU_10LC20N_0000018000000.000000000028A"])
+            self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+            console, files = checked()
+            self.assertEqual((console["has"], files), ("22466", [("aside", "22167", False), ("live", "22466", False)]))
+        finally:
+            ftp.shutdown()
+            ftp.server_close()
+            unity.shutdown()
+            unity.server_close()
+
     def test_marks_newer_title_updates_by_itself_and_puts_them_on(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
