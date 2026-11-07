@@ -3452,6 +3452,100 @@ class Dashboard(DashboardTest):
             unity.shutdown()
             unity.server_close()
 
+    def test_marks_newer_title_updates_by_itself_and_puts_them_on(self):
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        older, newest = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 1", 0x2000), tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2")
+        forza = tu_package(0x4D530910, 0x11112222, "Title Update 4")
+        kb = lambda data: (len(data) + 1023) // 1024
+        unity = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeUnityHandler)
+        unity.asked = []
+        unity.titles = {
+            "4D5307E6": {"Type": 1, "MediaIDS": [{"MediaID": "1A2B3C4D", "Updates": [
+                {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(kb(older)), "hash": content_id(older)},
+                {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(kb(newest)), "hash": content_id(newest)}]}]},
+            "4D530910": {"Type": 2, "Updates": [{"TitleUpdateID": "130", "Version": "4", "MediaID": "11112222", "Size": str(kb(forza)), "hash": content_id(forza)}]}}
+        unity.files = {"111": ("tu00000002_00000000", newest)}
+        threading.Thread(target=unity.serve_forever, daemon=True).start()
+        self.addCleanup(unity.server_close)
+        self.addCleanup(unity.shutdown)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000")
+        os.makedirs(updates)
+        with open(os.path.join(updates, "tu00000001_00000000"), "wb") as f:  # Halo 3 has an older one on.
+            f.write(older)
+        # Forza 4's newest is there, but someone switched it off: not nagged about.
+        aside = os.path.join(xbox, "Hdd1", "Apps", "NetDisc360", "Title updates", "4D530910", content_id(forza))
+        os.makedirs(aside)
+        with open(os.path.join(aside, "tu00000004_00000000"), "wb") as f:
+            f.write(forza)
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        launcher, boot = os.path.join(self.tmp.name, "launcher.xex"), os.path.join(self.tmp.name, "boot.xex")
+        for path in (launcher, boot):
+            with open(path, "wb") as f:
+                f.write(xex(execution_info(0, 0)) + b"LAUNCHER CODE")
+        with open(self.config, "w") as f:
+            f.write("[Server]\ntu_auto_delay=0\n")
+        args = ("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--launcher", launcher, "--boot", boot, "--push",
+                "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
+        self.start(*args)
+
+        def rows():
+            return {g["game"]: g for g in self.json("GET", "/api/titleupdates/all")["games"]}
+
+        def when(condition, seconds=60):
+            deadline = time.time() + seconds
+            while True:
+                found = rows()
+                if condition(found) or time.time() > deadline:
+                    return found
+                time.sleep(0.3)
+        # Nobody pressed anything: each game looked up, the console checked once it's in Aurora.
+        found = when(lambda r: "Halo 3" in r and r["Halo 3"]["consoles"][0]["checked"] and r["Halo 3"]["consoles"][0]["hasGame"])
+        halo = found["Halo 3"]["consoles"][0]
+        self.assertEqual((halo["behind"], halo["newest"], halo["has"], halo["newestOff"]), (True, False, "Title Update 1", False), found)
+        self.assertEqual(found["Halo 3"]["mediaId"], "1A2B3C4D")
+        bike = found["Forza 4"]["consoles"][0]
+        self.assertEqual((bike["behind"], bike["newestOff"], bike["has"]), (False, True, ""), found)
+        self.assertEqual(sorted(a.split("titleid=")[1] for a in unity.asked if "TitleUpdateInfo" in a), ["4D5307E6", "4D530910"])
+        state = self.json("GET", "/api/state")
+        self.assertGreater(state["titleUpdates"]["version"], 0)
+        self.assertTrue(state["settings"]["tuAuto"])
+        check = [j for j in state["installs"] if j["kind"] == "check"]
+        self.assertEqual([j["state"] for j in check], ["done"])
+        self.assertNotIn("title updates", json.dumps(state["events"]).lower())  # Quietly.
+        # Once a day: not looked up or checked again meanwhile.
+        asked = len(unity.asked)
+        time.sleep(3)
+        self.assertEqual(len(unity.asked), asked)
+        self.assertEqual(len([j for j in self.json("GET", "/api/state")["installs"] if j["kind"] == "check"]), 1)
+        # One click: the newest on each console behind with the game.
+        self.assertEqual(self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "behind": True})["queued"], 1)
+        job = self.state_when(lambda s: s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+        self.assertEqual((job["kind"], job["state"], job["label"]), ("update", "done", "Title update 2"), job["error"])
+        self.assertEqual(os.listdir(updates), ["tu00000002_00000000"])
+        halo = when(lambda r: r["Halo 3"]["consoles"][0]["newest"])["Halo 3"]["consoles"][0]
+        self.assertEqual((halo["behind"], halo["newest"]), (False, True))
+        status, _, data = self.call("POST", "/api/titleupdates/install", {"game": "Halo 3", "behind": True})
+        self.assertEqual(status, 400)
+        self.assertIn("has its newest title update", json.loads(data)["error"])
+        self.assertEqual(self.json("POST", "/api/titleupdates/install", {"everything": True})["queued"], 0)  # Forza's stays off.
+        # XboxUnity's answers are kept: after a restart the Games page has them
+        # at once, without asking XboxUnity again.
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6", "xboxunity.json")))
+        self.json("POST", "/api/settings", {"tuAuto": False})
+        self.assertFalse(self.json("GET", "/api/state")["settings"]["tuAuto"])
+        asked = len(unity.asked)
+        self.restart(*args)
+        found = when(lambda r: len(r) == 2, 20)
+        self.assertEqual(found["Halo 3"]["newest"]["name"], "Title Update 2")
+        self.assertFalse(found["Halo 3"]["consoles"][0]["checked"])  # Off: not checked by itself.
+        self.assertEqual(len(unity.asked), asked)
+        self.assertFalse(self.json("GET", "/api/titleupdates/all")["auto"])
+
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash
         on the way: its data is the image's game partition, from start."""
