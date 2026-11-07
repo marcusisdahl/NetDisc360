@@ -645,6 +645,8 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 
 This makes `build\NetDisc360.exe` (with the launcher built in), `build\NetDisc360.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
 
+After a build, `.\store\package.ps1` (needs [7-Zip](https://www.7-zip.org/)) makes `build\NetDisc360-<version>.7z` for the Xbox 360 Homebrew Store, with `NetDisc360.xex`, [`store\readme.txt`](store/readme.txt) and the license, which the store unpacks into `Apps\NetDisc360\`, and `build\NetDisc360-<version>.ini`, the store entry made from [`store\consolemods.ini`](store/consolemods.ini).
+
 Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev), not `main`: each change there is published as the `dev` Docker image for testing, and `main` only gets `dev` merged into it for a release. To make a release, see [RELEASING.md](RELEASING.md).
 
 ## Tests
