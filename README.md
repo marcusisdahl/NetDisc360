@@ -275,8 +275,8 @@ NETDISC_TAG=latest
 **3. Start it.** In that folder:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/main/.env.example
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/marcusisdahl/NetDisc360/dev/.env.example
 mv .env.example .env && nano .env
 mkdir config && sudo chown 1000:1000 config
 docker compose up -d
