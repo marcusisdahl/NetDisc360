@@ -1,0 +1,13 @@
+{
+  "name": "netdisc360-party-relay",
+  "private": true,
+  "description": "NetDisc360's party relay on Cloudflare: guests join the LAN party and vote from their phones.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.2"
+  }
+}
