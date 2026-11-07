@@ -2,6 +2,7 @@
 #include "installed.h"
 #include "discs.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace nia {
@@ -28,6 +29,22 @@ bool TitleFolder(const std::string& name) {
     return true;
 }
 DWORD Big32(const unsigned char* p) { return (DWORD(p[0])<<24)|(DWORD(p[1])<<16)|(DWORD(p[2])<<8)|p[3]; }
+bool InsideAny(const std::string& path, const std::vector<std::string>& folders) {
+    for(size_t i=0;i<folders.size();++i) if(Inside(path,folders[i])) return true;
+    return false;
+}
+const char GodTilePrefix[] = "4E4433";  // "ND3".
+}
+
+std::string GodTileName(DWORD mediaId, int disc) {
+    char name[24]; _snprintf_s(name,sizeof(name),_TRUNCATE,"%s%02X%08X",GodTilePrefix,unsigned(disc)&0xFF,(unsigned)mediaId);
+    return name;
+}
+bool IsGodTileName(const std::string& name, int* disc) {
+    if(name.size()!=16 || _strnicmp(name.c_str(),GodTilePrefix,6)) return false;
+    for(size_t i=0;i<name.size();++i) if(!isxdigit((unsigned char)name[i])) return false;
+    if(disc) *disc=int(strtoul(name.substr(6,2).c_str(),NULL,16));
+    return true;
 }
 
 std::vector<std::string> InstalledFolders(const std::string& setting) {
@@ -60,7 +77,15 @@ bool InstalledGames::Ids(FtpClient& ftp, const std::string& path, const FtpEntry
     if(!ftp.RetrieveHead(path.c_str(),head,god ? GodHead : XexHead)) return false;  // Tried again next time.
     bool found=false;
     if(god) found=!head.empty() && GodIds(&head[0],DWORD(head.size()),titleId,mediaId,disc);
-    else if(head.size()>=24) {
+    else if(path.size()>4 && Lower(path.substr(path.size()-4))==".xbe") {
+        // An original Xbox game: the Title ID is in default.xbe's
+        // certificate, within its headers; it's disc 1, as the server has it.
+        DWORD headers=0;
+        found=!head.empty() && XbeIds(&head[0],DWORD(head.size()),titleId,&headers);
+        if(!found && headers>head.size() && headers<=HeaderMost && ftp.RetrieveHead(path.c_str(),head,headers))
+            found=!head.empty() && XbeIds(&head[0],DWORD(head.size()),titleId);
+        disc=1;
+    } else if(head.size()>=24) {
         found=XexIds(&head[0],DWORD(head.size()),titleId,mediaId,disc);
         DWORD header=Big32(&head[8]);
         if(!found && !memcmp(&head[0],"XEX2",4) && header>head.size() && header<=HeaderMost && ftp.RetrieveHead(path.c_str(),head,header))
@@ -72,29 +97,36 @@ bool InstalledGames::Ids(FtpClient& ftp, const std::string& path, const FtpEntry
     return found;
 }
 
-// A game is a folder with default.xex; one without is looked into, depth
-// folders down.
-bool InstalledGames::Walk(FtpClient& ftp, const std::string& folder, int depth, const std::string& skip,
+// A game is a folder with default.xex, or an original Xbox game's
+// default.xbe; one with neither is looked into, depth folders down.
+bool InstalledGames::Walk(FtpClient& ftp, const std::string& folder, int depth, const std::vector<std::string>& skip,
                           std::vector<InstalledGame>& out, std::string& error) {
     std::vector<FtpEntry> entries;
     if(!ftp.List(folder.c_str(),entries)) { error="couldn't list "+folder+": "+ftp.Error(); return false; }
+    size_t xex=entries.size(), xbe=entries.size();
     for(size_t i=0;i<entries.size();++i) {
-        if(entries[i].folder || Lower(entries[i].name)!="default.xex") continue;
-        std::string path=folder+"/"+entries[i].name;
+        if(entries[i].folder) continue;
+        std::string name=Lower(entries[i].name);
+        if(name=="default.xex") xex=i;
+        else if(name=="default.xbe") xbe=i;
+    }
+    if(xex<entries.size() || xbe<entries.size()) {
+        const FtpEntry& file=entries[xex<entries.size() ? xex : xbe];
+        std::string path=folder+"/"+file.name;
         InstalledGame game;
         game.path=path; game.god=false;
-        if(Ids(ftp,path,entries[i],false,game.titleId,game.disc)) out.push_back(game);
+        if(Ids(ftp,path,file,false,game.titleId,game.disc)) out.push_back(game);
         return true;
     }
     for(size_t i=0;i<entries.size() && depth>0;++i) {
         std::string child=folder+"/"+entries[i].name;
-        if(!entries[i].folder || Inside(child,skip)) continue;
+        if(!entries[i].folder || InsideAny(child,skip)) continue;
         if(!Walk(ftp,child,depth-1,skip,out,error)) return false;
     }
     return true;
 }
 
-bool InstalledGames::Gods(FtpClient& ftp, const std::string& drive, std::vector<InstalledGame>& out, std::string& error) {
+bool InstalledGames::Gods(FtpClient& ftp, const std::string& drive, std::vector<InstalledGame>& out, std::vector<InstalledGame>& tiles, std::string& error) {
     std::string content="/"+drive+ContentFolder;
     std::vector<FtpEntry> titles, files;
     if(!ftp.Enters(content.c_str())) {
@@ -118,20 +150,24 @@ bool InstalledGames::Gods(FtpClient& ftp, const std::string& drive, std::vector<
             if(files[f].folder) continue;  // A package's .data folder.
             InstalledGame game;
             game.path=packages+"/"+files[f].name; game.god=true;
-            if(Ids(ftp,game.path,files[f],true,game.titleId,game.disc)) out.push_back(game);
+            // NetDisc360's own tile of a game (see GodTileName) is no copy of it.
+            if(IsGodTileName(files[f].name,&game.disc)) { game.titleId=DWORD(strtoul(titles[t].name.c_str(),NULL,16)); tiles.push_back(game); }
+            else if(Ids(ftp,game.path,files[f],true,game.titleId,game.disc)) out.push_back(game);
         }
     }
     return true;
 }
 
-bool InstalledGames::Find(FtpClient& ftp, const std::vector<std::string>& folders, const std::string& skip,
-                          std::vector<InstalledGame>& found, std::string& error) {
-    std::vector<InstalledGame> out;
+bool InstalledGames::Find(FtpClient& ftp, const std::vector<std::string>& folders, const std::vector<std::string>& skip,
+                          std::vector<InstalledGame>& found, std::vector<InstalledGame>& tiles, std::string& error) {
+    std::vector<InstalledGame> out, own;
     std::vector<std::string> drives;
     bool ok=true;
-    for(size_t i=0;i<folders.size() && ok;++i) {
-        const std::string& folder=folders[i];
-        if(!Inside(folder,skip)) {
+    std::vector<std::string> all(folders);
+    all.insert(all.end(),skip.begin(),skip.end());
+    for(size_t i=0;i<all.size() && ok;++i) {
+        const std::string& folder=all[i];
+        if(i<folders.size() && !InsideAny(folder,skip)) {
             if(ftp.Enters(folder.c_str())) ok=Walk(ftp,folder,Depth,skip,out,error);
             else if(ftp.Code()/100!=5) { error="couldn't open "+folder+": "+ftp.Error(); ok=false; }
         }
@@ -141,9 +177,9 @@ bool InstalledGames::Find(FtpClient& ftp, const std::vector<std::string>& folder
         for(size_t k=0;k<drives.size() && !listed;++k) listed=Lower(drives[k])==Lower(drive);
         if(!listed) drives.push_back(drive);
     }
-    for(size_t i=0;i<drives.size() && ok;++i) ok=Gods(ftp,drives[i],out,error);
-    if(ok) last_=out;
-    found=last_;
+    for(size_t i=0;i<drives.size() && ok;++i) ok=Gods(ftp,drives[i],out,own,error);
+    if(ok) { last_=out; lastTiles_=own; }
+    found=last_; tiles=lastTiles_;
     return ok;
 }
 }

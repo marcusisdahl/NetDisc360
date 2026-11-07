@@ -16,17 +16,21 @@ RUN apt-get update \
 WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
+COPY third_party/iso2god/ third_party/iso2god/
 COPY third_party/miniz/ third_party/miniz/
 COPY third_party/lzma/ third_party/lzma/
 COPY tests/posix_compat.h tests/
+# The guests' gamer pictures (server/picture.cpp) draw letters with these.
+COPY third_party/imgui/imstb_truetype.h third_party/imgui/
+COPY third_party/fonts/roboto_medium.h third_party/fonts/
 # The dashboard page, made into server/web_page.h (it isn't kept in git).
 COPY web/ web/
-COPY tools/make_web.py tools/
+COPY tools/make_web.py tools/make_version.py tools/
 RUN python3 tools/make_web.py
 RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc \
-        server/main.cpp server/discs.cpp server/discmap.cpp server/ftp.cpp server/web.cpp server/config.cpp \
-        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/system.cpp \
-        server/compress.cpp server/codecs.cpp \
+        server/main.cpp server/discs.cpp server/discmap.cpp server/xefu.cpp server/ftp.cpp server/web.cpp server/config.cpp \
+        server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/titleupdates.cpp server/system.cpp server/saves.cpp server/wake.cpp \
+        server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp server/users.cpp server/http.cpp server/sync.cpp server/health.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
@@ -56,7 +60,7 @@ RUN fetch() { [ -n "$1" ] && curl -fsSL "$1" -o /tmp/launcher.zip \
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini tzdata \
+ && apt-get install -y --no-install-recommends tini tzdata curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 1000 netdisc \
  && useradd --system --uid 1000 --gid 1000 --no-create-home netdisc \
@@ -66,6 +70,7 @@ COPY --from=build /launcher/ /usr/local/share/netdisc/
 # Aurora's art for NetDisc360's own tile and FastFTP360 (server/main.cpp, LoadAppArt).
 COPY art/aurora/netdisc360/*.asset /usr/local/share/netdisc/aurora/netdisc360/
 COPY art/aurora/fastftp360/*.asset /usr/local/share/netdisc/aurora/fastftp360/
+COPY art/aurora/netdiscparty/*.asset /usr/local/share/netdisc/aurora/netdiscparty/
 COPY docker/entrypoint.sh /usr/local/bin/netdisc-entrypoint
 RUN chmod 0755 /usr/local/bin/netdisc-entrypoint
 USER netdisc

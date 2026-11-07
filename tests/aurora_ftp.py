@@ -12,6 +12,7 @@ import os
 import socket
 import socketserver
 import sys
+import threading
 import time
 
 
@@ -122,6 +123,12 @@ class Handler(socketserver.StreamRequestHandler):
                         conn.close()
                     self.reply("550 Could not open file.  Error:  2")
                     continue
+                if os.path.normcase(os.path.abspath(path)) in self.server.locked:
+                    # Open on the console (a signed-in profile's package): access denied.
+                    if conn:
+                        conn.close()
+                    self.reply("550 Could not open file.  Error:  5")
+                    continue
                 self.reply("150 Opening data connection")
                 with open(path, "rb") as f:
                     data = f.read()
@@ -148,6 +155,7 @@ class Handler(socketserver.StreamRequestHandler):
                         break
                     chunks.append(part)
                 conn.close()
+                self.server.gate.wait(60)  # Cleared by a test: uploads take that long.
                 with open(path, "wb") as f:
                     f.write(b"".join(chunks))
                 self.server.stored.append(argument)
@@ -201,6 +209,9 @@ class Server(socketserver.ThreadingTCPServer):
         super().__init__((host, port), Handler)
         self.root, self.user, self.password, self.host = root, user, password, host
         self.log, self.stored, self.scans, self.renamed = [], [], [], []
+        self.gate = threading.Event()
+        self.gate.set()
+        self.locked = set()  # Files the console has open (normcase'd absolute paths): RETR is refused.
 
 
 def main():

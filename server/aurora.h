@@ -56,13 +56,32 @@ private:
 // console off. false with why in error.
 enum { XbdmPort = 730 };
 bool Xbdm(DWORD address, int port, const std::string& command, std::string& error);
+// The same for a command that answers with lines ("modules": what runs on
+// the console, with where it's loaded): the answer after the greeting, up to
+// "bye". One connection that ends at once, never a notify listener (that
+// made COD's xbdm crash).
+bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error);
 
-// An FTP path on the hard drive (/Hdd1/NetISO/Halo 3) as a device path
-// (\Device\Harddisk0\Partition1\NetISO\Halo 3); "" for another drive.
+// The console's name, as set on it (Settings, System, Console Settings,
+// Console Name), and its fixed id (the UDN its media sharing gives, in lower
+// case without "uuid:"; it ends in its network card's address), from the
+// description its media sharing (UPnP, port 1027) gives without being asked
+// first. False, with why in error, when that doesn't answer (media sharing
+// off) or isn't an Xbox 360's. name is plain text (entities decoded, no
+// control characters or bars), at most ConsoleNameMost bytes.
+enum { ConsoleNamePort = 1027, ConsoleNameMost = 64 };
+bool ConsoleName(DWORD address, int port, std::string& name, std::string& id, std::string& error);
+// Shows text (ASCII; anything else becomes '?') in a notification on the
+// console's screen, through the JRPC2 plugin on its debug monitor (xbdm).
+// False, with why in error, when xbdm doesn't answer or JRPC2 isn't loaded.
+bool ConsoleNotify(DWORD address, int port, const std::string& text, std::string& error);
+
+// An FTP path on the hard drive (/Hdd1/NetDisc360/Games/Halo 3) as a device path
+// (\Device\Harddisk0\Partition1\NetDisc360\Games\Halo 3); "" for another drive.
 std::string DevicePath(const std::string& ftpPath);
 
 // The Lua scripts, with CRLF line ends as Aurora's own. tiles is the game
-// folder on the Xbox (/Hdd1/NetISO).
+// folder on the Xbox (/Hdd1/NetDisc360/Games).
 //
 // The Utilities script "NetDisc360 Cleanup": Aurora keeps a game in its list
 // when its folder is gone, so a tile NetDisc360 removed can stay there,
@@ -70,13 +89,60 @@ std::string DevicePath(const std::string& ftpPath);
 // recent games, favourites, hidden games and title settings), after asking:
 // the games listed from inside tiles whose folder isn't one of folders (the
 // folders in tiles now). It deletes no file.
-std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders);
+//
+// When from (the tiles' folder before, /Hdd1/NetISO) isn't "", both scripts
+// also move Aurora's scan path for from and its rows for the tiles there to
+// tiles (MoveLua), so a game keeps its art, favourites and play history when
+// its folder moved from from to tiles (MoveOldFolder in main.cpp). Only the
+// rows of tiles in folders move. The filter does it as Aurora starts; the
+// cleanup script, should that have found no Sql, when it is run. Each writes
+// what it did to MovedMarker in app, NetDisc360's folder on the Xbox.
+std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders, const std::string& from, const std::string& app);
 // The filter "Hide PC games while NetDisc360 is off" (Filters, User): it
 // hides the tiles while OnlineMarker wasn't there as Aurora started.
 // NetDisc360 keeps that file while it runs and deletes it when it quits.
 // The first time the filter is used after a start, it writes ShownMarker
 // ("online" or "offline"), so NetDisc360 can tell when Aurora hides the
-// games while it runs (and restart Aurora).
-std::string OnlineScript(const std::string& tiles);
-extern const char CleanupScriptPath[], OnlineScriptPath[], OnlineMarker[], ShownMarker[];
+// games while it runs (and restart Aurora). With tidy, it also takes the
+// games whose tile is gone off Aurora's list as Aurora starts, as the cleanup
+// script does but without asking (only while at least one tile is there).
+// Its markers are in app.
+std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders, bool tidy);
+std::string MoveLua(const std::string& from, const std::string& tiles, const std::vector<std::string>& folders);
+// MoveMarker: NetDisc360 moved tiles to this console's tiles folder, and
+// Aurora's rows haven't followed yet; MovedMarker: what the scripts did.
+extern const char CleanupScriptPath[], OnlineScriptPath[], OnlineMarker[], ShownMarker[], MoveMarker[], MovedMarker[];
+
+// A game's title update as Aurora's own list should have it (TitleUpdateScript).
+struct AuroraTu {
+    unsigned titleId, mediaId;
+    std::string hash;  // The Content ID (40 hex digits) of the one Aurora should have on; "": none.
+    // To add it to Aurora's list (content.db TitleUpdates) when it isn't
+    // there: backupPath "" adds nothing.
+    std::string name, file, size, device, livePath, backupPath;
+    unsigned base, version;
+    AuroraTu() : titleId(0), mediaId(0), base(0), version(0) {}
+};
+// The filter script NetDiscTitleUpdates.lua (TitleUpdateScriptPath, in
+// Aurora's folder). Aurora's title update manager makes each game's update
+// folder match the updates Aurora has on (settings.db ActiveTitleUpdates)
+// each time it starts the game: it copies the one on from its store and
+// deletes the others. So a change made on the dashboard has to be in that
+// list too. As Aurora starts, the script makes the list say wants, once:
+// it writes what it did to done (a script path, Hdd1:\...) and does nothing
+// while that file is there, so a later change in Aurora's own title update
+// screen stays. Each line of done: <Title ID> <Media ID> on|off|missing|error.
+std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::string& done);
+extern const char TitleUpdateScriptPath[];
+
+// The filter script NetDiscLinkOff.lua (LinkOffScriptPath, in Aurora's
+// folder), for the Health page's "Turn LiNK off": Nova's LiNK (Aurora's
+// Settings, Modules, Nova) passes System Link traffic through Nova, which
+// leaves streamed games deaf to the other consoles. As Aurora starts, the
+// script sets it off in Aurora's settings (settings.db SystemSettings,
+// PluginLiNK = 0) once and writes "off" (or "error") to done (an FTP path);
+// while done is there it does nothing, so LiNK switched on again in Aurora
+// stays on. Nova reads the setting as the console starts.
+std::string LinkOffScript(const std::string& done);
+extern const char LinkOffScriptPath[];
 }

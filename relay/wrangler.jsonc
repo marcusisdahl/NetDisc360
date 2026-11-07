@@ -1,0 +1,18 @@
+// NetDisc360's party relay (see src/worker.js). Deploy from this folder with
+// `npx wrangler deploy`; it prints the address to put in NetDisc360's
+// Settings (Party > Join from a phone).
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "netdisc360-party",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "observability": { "enabled": true }
+}

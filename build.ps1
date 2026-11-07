@@ -7,10 +7,20 @@ try {
     $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (!$vsPath) { throw 'Install Visual Studio C++ build tools.' }
     $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+    # Which build this is (shared/build_id.h): the same for everything below.
+    & python tools\make_version.py
+    if ($LASTEXITCODE) { throw 'make_version.py failed.' }
     & $msbuild launcher\NetIsoLauncher.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation failed. Check the SDK and RXDK integration.' }
     & $msbuild launcher\NetDiscTile.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
     if ($LASTEXITCODE) { throw 'Xbox compilation of the tile launcher failed.' }
+    # NetDiscParty.xex: the LAN party's raffle wheel on each console (party/),
+    # in a folder of its own for Hdd1:\NetISO, where Aurora lists it.
+    & $msbuild party\NetDiscParty.vcxproj /t:Build /p:Configuration=Release '/p:Platform=Xbox 360' /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Xbox compilation of NetDiscParty failed.' }
+    $party = 'build\NetDisc360 Party'
+    New-Item -ItemType Directory -Force $party | Out-Null
+    Copy-Item -LiteralPath build\xbox\NetDiscParty.xex -Destination "$party\default.xex" -Force
     # The folder to copy to the console: Sync is the tile launcher with a
     # netiso.ini that has no iso=, and it copies that tile launcher into each
     # game folder it makes (see shared/helper.h).
@@ -32,18 +42,11 @@ try {
     # backslashes in the paths, which unzip on Linux warns about.
     & python -c "import shutil; shutil.make_archive('build/NetISO-Sync', 'zip', 'build', 'NetISO Sync')"
     if ($LASTEXITCODE) { throw 'Zipping NetISO Sync failed.' }
-    # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
-    # Xbox's game folders current, with the tile launcher (default.xex) and the helper (boot.xex) built in
-    # (server/). Rebuilt every time so it carries the XEXs just made, and the
-    # dashboard page (web/index.html, made into server/web_page.h).
-    & python tools\make_web.py
-    if ($LASTEXITCODE) { throw 'make_web.py failed.' }
-    & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
-    if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     # NetDisc360.xex: the DashLaunch plugin, the console's disc drive for games
     # from the server (plugin/disc.cpp, in NetISO.xex's place) that also
     # handles tiles and disc swaps (plugin/main.cpp). NetIsoTiles.xex before.
-    # It is linked at its system base (0x91380000), which the public imagexex
+    # It is linked at its system base (0x91C00000; not 0x91380000, which is
+    # aac.xex's, loaded before the plugins on some consoles), which the public imagexex
     # refuses, so its PE header is patched to a title base for imagexex and
     # tools/sysdll.py then moves the XEX back to the system base, as a system
     # DLL like NetISO.xex. The code itself is never relocated.
@@ -53,13 +56,26 @@ try {
     if ($LASTEXITCODE) { throw 'sysdll.py pe-base failed.' }
     & $imagexex.FullName /IN:build\xbox\NetDisc360-title.dll /OUT:build\xbox\NetDisc360-title.xex /CONFIG:plugin\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for NetDisc360.xex.' }
-    & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91380000
+    & python tools\sysdll.py xex build\xbox\NetDisc360-title.xex build\NetDisc360.xex 0x91C00000
     if ($LASTEXITCODE) { throw 'sysdll.py failed for NetDisc360.xex.' }
+    # NetDisc360.exe: the PC server that replaces netiso-srv and keeps the
+    # Xbox's game folders current, with the tile launcher (default.xex), the
+    # helper (boot.xex) and the plugin (NetDisc360.xex, for the Health page) built in
+    # (server/). Rebuilt every time so it carries the XEXs just made, the
+    # dashboard page (web/index.html, made into server/web_page.h) and the
+    # System Link list (data/systemlink.json, made into server/systemlink.cpp).
+    & python tools\make_web.py
+    if ($LASTEXITCODE) { throw 'make_web.py failed.' }
+    & python tools\make_systemlink.py
+    if ($LASTEXITCODE) { throw 'make_systemlink.py failed.' }
+    & $msbuild server\NetDisc.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+    if ($LASTEXITCODE) { throw 'Server compilation failed. It needs the Visual Studio "Desktop development with C++" workload.' }
     if ($Tests) {
         & python tests\test_generator.py
         if ($LASTEXITCODE) { throw 'Generator tests failed.' }
     }
-    Write-Host "Built $sync. Copy it to Hdd1:\NetISO\NetISO Sync on the console."
+    Write-Host "Built $sync. Copy it to Hdd1:\Apps\NetISO Sync on the console."
+    Write-Host "Built $party. Copy it to Hdd1:\NetDisc360\Games\NetDisc360 Party on each console for the LAN party's raffle wheel (NetDisc360 puts it there itself)."
     Write-Host 'Built build\NetDisc360.xex. Add it as a DashLaunch plugin in place of NetIsoTiles.xex; it replaces NetISO.xex too.'
     Write-Host 'Built build\NetDisc360.exe. Start it: it opens its dashboard in your browser. NetDisc360.exe -h in a command prompt lists its options.'
 } finally { Pop-Location }

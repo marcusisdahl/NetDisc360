@@ -42,6 +42,7 @@
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
 #include "ui.h"
+#include "profiles.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -295,6 +296,16 @@ static bool ReadText(const char* path,char* text,DWORD capacity) {
     return ok!=FALSE;
 }
 
+// Whole small file; its size, or -1.
+static int ReadBytes(const char* path,void* data,DWORD capacity) {
+    HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return -1;
+    DWORD size=GetFileSize(file,NULL), done=0;
+    BOOL ok=size!=INVALID_FILE_SIZE && size<=capacity && ReadFile(file,data,size,&done,NULL) && done==size;
+    CloseHandle(file);
+    return ok ? int(done) : -1;
+}
+
 // ---- Game launcher ----
 
 struct Settings { char iso[MAX_PATH]; DWORD titleId,mediaId; };
@@ -436,6 +447,9 @@ static bool ListMountFolder(const char* folder) {
 
 static bool FindServer(const char* ini,DWORD& address,int& port);
 static bool StartNetwork(int addressWaitMs);
+struct WakeInfo { unsigned char mac[6]; DWORD address,broadcast; char text[18]; };
+static bool ReadWake(WakeInfo& wake);
+static void SendWake(const WakeInfo& wake);
 static char ServerSource[48]="";
 // The server WaitForServer found answering, for the drive (network byte order).
 static DWORD ServerAddress=0;
@@ -465,6 +479,9 @@ static bool Pause(int ms) {
 // two (seen on the console), so until it has been up this long the launcher
 // keeps trying instead of failing.
 static const DWORD BootSeconds=240,RetrySeconds=10;
+// A PC that NetDisc360 said can be woken (wake.ini) gets a wake packet when it
+// doesn't answer, again every WakeEverySeconds, and this long to wake up.
+static const DWORD WakeSeconds=90,WakeEverySeconds=10;
 static Result WaitForServer(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     if(!FindServer(ini,address,port))
@@ -476,29 +493,46 @@ static Result WaitForServer(const char* ini) {
     if(!StartNetwork(0)) return Fail(nia::StepServer,true,"The Xbox's network didn't start","XNetStartup or WSAStartup failed.","Reboot the Xbox and try again.");
     const DWORD start=GetTickCount();
     char error[160]="";
+    static WakeInfo wake;
+    bool wakeRead=false,canWake=false;
+    DWORD wokeAt=0,sentAt=0;
     for(;;) {
         if(CancelAsked) return Cancelled;
         XNADDR own;
-        if(XNetGetTitleXnAddr(&own)==XNET_GET_XNADDR_PENDING) strcpy_s(error,"The Xbox has no network address yet");
+        bool addressed=XNetGetTitleXnAddr(&own)!=XNET_GET_XNADDR_PENDING;
+        if(!addressed) strcpy_s(error,"The Xbox has no network address yet");
         else {
             nia::IsvrClient client(5);
             if(client.Connect(address,port,3) && client.Ping()) {
-                Note("The server answers.");
+                if(wokeAt) Note("The server answers, %lu s after the first wake packet.",(GetTickCount()-wokeAt)/1000);
+                else Note("The server answers.");
                 ServerAddress=address; ServerPort=port;
                 return Mounted;
             }
             strcpy_s(error,client.Error());
+            // Asleep, maybe: wake it, if NetDisc360 said how.
+            if(!wakeRead) { wakeRead=true; canWake=ReadWake(wake); }
+            if(canWake && (!sentAt || GetTickCount()-sentAt>=WakeEverySeconds*1000)) {
+                SendWake(wake);
+                sentAt=GetTickCount();
+                if(!wokeAt) wokeAt=sentAt;
+            }
         }
-        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000;
+        DWORD up=GetTickCount()/1000,waited=(GetTickCount()-start)/1000,waking=wokeAt ? (GetTickCount()-wokeAt)/1000 : 0;
         bool booting=up<BootSeconds;
-        if(!booting && waited>=RetrySeconds) break;
-        if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
+        if(!booting && waited>=RetrySeconds && (!wokeAt || waking>=WakeSeconds)) break;
+        if(wokeAt) ShowStep(nia::StepServer,0.05,"Waking the PC at %s... %lu s",where,waking);
+        else if(booting) ShowStep(nia::StepServer,0.05,"The Xbox's network is still starting after the reboot. Waiting for the server... %lu s",waited);
         else ShowStep(nia::StepServer,0.05,"Waiting for the NetISO server at %s... %lu s",where,waited);
         if(!Pause(1000)) return Cancelled;
     }
     Note("Can't reach the NetISO server: %s",error);
     char line0[128],line2[128];
     _snprintf_s(line0,sizeof(line0),_TRUNCATE,"Nothing answered at %s, port %d.",where,port);
+    if(wokeAt) {
+        _snprintf_s(line2,sizeof(line2),_TRUNCATE,"Wake-on-LAN must be on in its BIOS and network adapter. The address is in %s.",ServerSource);
+        return Fail(nia::StepServer,true,"The PC didn't wake up",line0,"The Xbox sent it wake packets for 90 s. If it's off or asleep,",line2);
+    }
     _snprintf_s(line2,sizeof(line2),_TRUNCATE,"are on the same network. The address is in %s.",ServerSource);
     return Fail(nia::StepServer,true,"Can't reach the NetISO server",line0,"Start NetDisc360 on the PC, and check that the PC and the Xbox",line2);
 }
@@ -715,7 +749,7 @@ static Result MountDisc(const char* ini,const Settings& settings,const char* gam
     if(netIso) return MountWithNetIso(ini,settings,game);
     if(plugin)
         return Fail(nia::StepMount,false,"The disc drive is off","NetDisc360.xex is loaded, but its disc drive isn't on.",
-                    "Hdd1:\\NetISO\\NetDisc360\\disc.log says why. An older NetIsoTiles.xex has no drive:",
+                    "Hdd1:\\Apps\\NetDisc360\\disc.log says why. An older NetIsoTiles.xex has no drive:",
                     "put the newest NetDisc360.xex in its place in launch.ini and reboot the Xbox.");
     return Fail(nia::StepMount,false,"NetDisc360.xex isn't running","It is the console's disc drive for games from the server.",
                 "Add NetDisc360.xex to DashLaunch's plugins in launch.ini,","and reboot the Xbox.");
@@ -874,6 +908,9 @@ static void StartDisc(const char* ini) {
     ClearLaunchData();
     ScreenStop();
     if(IniNumber(ini,"xbe",0)) {
+        char xefu[32];
+        if(nia::IniValue(ini,"xefu",xefu,sizeof(xefu)) && xefu[0])
+            Note("netiso.ini names the %s emulator; NetIsoTiles starts it instead of the console's pick.",xefu);
         LONG status=LinkDrive(AuroraDiscLink,DiscDevice);
         if(status<0) Note("Can't link %s (status %08X).",AuroraDiscLink,status);
         else { Note("Starting %s in the original Xbox emulator",AuroraDiscXbe); Launch(AuroraDiscXbe); }
@@ -1120,7 +1157,7 @@ static const Drive Drives[]={
     {"Usb1:","\\??\\NIsoU1:","\\Device\\Mass1"},
 };
 static const int DriveCount=int(sizeof(Drives)/sizeof(Drives[0]));
-// "Hdd1:\NetISO" -> "NIsoH:\NetISO", linking the drive. Other paths (game:,
+// "Hdd1:\NetDisc360" -> "NIsoH:\NetDisc360", linking the drive. Other paths (game:,
 // a \Device path) are used as they are.
 static bool MapPath(const char* path,char* out,size_t capacity) {
     for(int i=0;i<DriveCount;++i) {
@@ -1261,11 +1298,67 @@ static bool StartNetwork(int addressWaitMs) {
     return true;
 }
 
+// Wake-on-LAN ----
+// wake.ini, which NetDisc360 keeps in the helper's folder (Hdd1:\Apps\NetDisc360,
+// or next to game folders that aren't on the hard drive; see server/wake.h):
+// the PC's MAC address, its address and its network's broadcast address.
+static const char WakeLink[]="\\??\\NIsoW:",WakeIni[]="NIsoW:\\wake.ini";
+static char TileFolder[nia::BootFolderMax]="";  // The game folder as a device path, when started as the helper.
+static bool ReadWake(WakeInfo& wake) {
+    memset(&wake,0,sizeof(wake));
+    char text[512]="";
+    bool found=false;
+    // In NetDisc360's folder in Hdd1:\Apps; else next to this game's folder.
+    char path[nia::PathMax];
+    if(MapPath(nia::AppFolder,path,sizeof(path))) {
+        strcat_s(path,"\\wake.ini");
+        found=ReadText(path,text,sizeof(text));
+    }
+    char* slash=strrchr(TileFolder,'\\');
+    if(!found && slash && slash>TileFolder) {
+        char helper[nia::BootFolderMax];
+        _snprintf_s(helper,sizeof(helper),_TRUNCATE,"%.*s\\%s",int(slash-TileFolder),TileFolder,nia::HelperFolder);
+        if(LinkDrive(WakeLink,helper)>=0) { found=ReadText(WakeIni,text,sizeof(text)); UnlinkDrive(WakeLink); }
+    }
+    if(!found) { Note("No wake.ini, so the launcher can't wake the PC."); return false; }
+    char mac[32],address[32],broadcast[32];
+    if(!nia::IniValue(text,"mac",mac,sizeof(mac))) mac[0]=0;
+    unsigned v[6];
+    if(sscanf_s(mac,"%2x:%2x:%2x:%2x:%2x:%2x",v,v+1,v+2,v+3,v+4,v+5)!=6) { Note("wake.ini has no MAC address."); return false; }
+    for(int i=0;i<6;++i) wake.mac[i]=(unsigned char)v[i];
+    strcpy_s(wake.text,mac);
+    wake.address=nia::IniValue(text,"address",address,sizeof(address)) ? inet_addr(address) : INADDR_NONE;
+    wake.broadcast=nia::IniValue(text,"broadcast",broadcast,sizeof(broadcast)) ? inet_addr(broadcast) : INADDR_NONE;
+    return true;
+}
+// The magic packet (six FF bytes, then the MAC address 16 times) to UDP port
+// 9 of the PC's network, of every network, and of the PC itself.
+static void SendWake(const WakeInfo& wake) {
+    unsigned char packet[102];
+    memset(packet,0xFF,6);
+    for(int i=0;i<16;++i) memcpy(packet+6+i*6,wake.mac,6);
+    SOCKET s=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(s==INVALID_SOCKET) { Note("No socket for the wake packet (%d).",WSAGetLastError()); return; }
+    BOOL on=TRUE;
+    setsockopt(s,SOL_SOCKET,SO_BROADCAST,(const char*)&on,sizeof(on));
+    DWORD targets[3]={wake.broadcast,0xFFFFFFFF,wake.address};
+    int sent=0;
+    for(int i=0;i<3;++i) {
+        if(targets[i]==INADDR_NONE && i!=1) continue;
+        sockaddr_in to; memset(&to,0,sizeof(to));
+        to.sin_family=AF_INET; to.sin_port=htons(9); to.sin_addr.s_addr=targets[i];
+        if(sendto(s,(const char*)packet,sizeof(packet),0,(sockaddr*)&to,sizeof(to))==sizeof(packet)) ++sent;
+        else Note("Sending the wake packet to %08X failed (%d).",ntohl(targets[i]),WSAGetLastError());
+    }
+    closesocket(s);
+    Note("Sent a wake packet for %s (%d of 3 addresses).",wake.text,sent);
+}
+
 static unsigned char Launcher[4<<20],Boot[4<<20];
 static void Sync(const char* ini) {
     DWORD address=0; int port=nia::IsvrPort;
     char value[nia::PathMax],games[nia::PathMax];
-    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,"Hdd1:\\NetISO");
+    if(!nia::IniValue(ini,"games",value,sizeof(value))) strcpy_s(value,nia::GamesFolder);
     if(!MapPath(value,games,sizeof(games))) return;
     Note("Games folder %s",value);
     // The tile launcher that started this is the template; its execution
@@ -1284,7 +1377,12 @@ static void Sync(const char* ini) {
     }
     if(!connected) return;
     nia::SyncResult result;
-    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result);
+    // The helper goes in NetDisc360's folder in Hdd1:\Apps when the games are
+    // on the hard drive, as the server puts it; else next to them.
+    char apps[nia::PathMax];
+    bool hdd=!_strnicmp(value,"Hdd1:",5) && MapPath(nia::AppFolder,apps,sizeof(apps));
+    bool ok=nia::Sync(client,storage,games,Launcher,size,boot ? Boot : NULL,bootSize,NoteText,result,true,NULL,NULL,NULL,NULL,NULL,
+                      hdd ? apps : NULL);
     Note("%s: %d added, %d kept (%d updated), %d removed, %d skipped.",ok?"Done":"Stopped",result.added,result.kept,result.updated,result.removed,result.skipped);
     client.Close();
     if(!ok) return;
@@ -1340,6 +1438,189 @@ static bool UseTileFolder(const char* folder) {
     return true;
 }
 
+// ---- Guest profiles ----
+
+// The account fields of the console's profiles, in the log: how the
+// dashboard made them, for the helper to make its own the same way.
+static void NoteProfiles(const nia::ProfileInfo* profiles,int count) {
+    Note("The console has %d profiles:",count);
+    for(int i=0;i<count;++i) {
+        char tag[nia::GamertagMost+1];
+        for(int k=0;k<=nia::GamertagMost;++k) tag[k]=profiles[i].gamertag[k]<0x80 ? char(profiles[i].gamertag[k]) : '?';
+        Note("  %016I64X \"%s\": device %lu, reserved %08lX, live %08lX, cached %08lX, network %08lX, online XUID %016I64X",
+             profiles[i].xuid,tag,profiles[i].device,profiles[i].reservedFlags,profiles[i].liveFlags,profiles[i].cachedUserFlags,profiles[i].networkId,profiles[i].xuidOnline);
+    }
+}
+
+// Guest N's picture (pictureN= and picture_smallN=, PNG files beside the
+// job) on profile xuid, if the job has one; pictureN=ok or
+// picture_errorN=<why> in done. True if it's there now.
+static bool Picture(const char* job,int n,ULONGLONG xuid,const DWORD* openFlags,int openFlagCount,bool thumbnail,char* done,size_t& used,size_t capacity) {
+    char key[24],name[64],path[96];
+    sprintf_s(key,"picture%d",n);
+    if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) return false;
+    static BYTE big[64*1024],small[32*1024];
+    char why[400]="";
+    int bigSize=-1,smallSize=0;
+    if(strchr(name,'\\') || strchr(name,':') || strstr(name,"..")) sprintf_s(why,"%s isn't a file name.",name);
+    else {
+        sprintf_s(path,"game:\\%s",name);
+        bigSize=ReadBytes(path,big,sizeof(big));
+        if(bigSize<=0) sprintf_s(why,"couldn't read %s.",path);
+        sprintf_s(key,"picture_small%d",n);
+        if(bigSize>0 && nia::IniValue(job,key,name,sizeof(name)) && name[0] && !strchr(name,'\\') && !strchr(name,':') && !strstr(name,"..")) {
+            sprintf_s(path,"game:\\%s",name);
+            smallSize=ReadBytes(path,small,sizeof(small));
+            if(smallSize<=0) { smallSize=0; Note("Couldn't read %s; the big picture only.",path); }
+        }
+    }
+    bool ok=false;
+    if(bigSize>0) {
+        nia::ProfilePicture picture={big,DWORD(bigSize),smallSize ? small : NULL,DWORD(smallSize),openFlags,openFlagCount,thumbnail};
+        ok=nia::SetProfilePicture(xuid,picture,why,sizeof(why));
+        Note("%s %016I64X's picture: %s.",ok ? "Gave" : "Couldn't give",xuid,why);
+    } else Note("Couldn't give %016I64X its picture: %s",xuid,why);
+    if(ok) used+=sprintf_s(done+used,capacity-used,"picture%d=ok\r\n",n);
+    else {
+        for(char* c=why;*c;++c) if(*c=='\r' || *c=='\n') *c=' ';
+        used+=sprintf_s(done+used,capacity-used,"picture_error%d=%.240s\r\n",n,why);
+    }
+    return ok;
+}
+
+// The LAN party's guest profiles (see ProfileJob in shared/helper.h): true
+// if the helper was started for that job, which is then done. The screen is
+// the loading screen's, with the profiles as its steps.
+static bool ProfileJob() {
+    static char job[4096];
+    char path[64],donePath[64];
+    sprintf_s(path,"game:\\%s",nia::ProfileJob);
+    sprintf_s(donePath,"game:\\%s",nia::ProfileDone);
+    if(!ReadText(path,job,sizeof(job))) return false;
+    // First, so a crash or a freeze in xam doesn't start it again.
+    if(!DeleteFile(path)) Note("Couldn't delete %s (%lu).",path,GetLastError());
+    char number[32]="";
+    nia::IniValue(job,"job",number,sizeof(number));
+    static nia::ProfileInfo profiles[nia::ProfilesListed];
+    int listed=nia::ListProfiles(profiles,nia::ProfilesListed);
+    NoteProfiles(profiles,listed);
+    // As the console's own offline profiles are made, unless the job says otherwise.
+    nia::ProfileCall call=nia::DefaultProfileCall(profiles,listed);
+    char value[32];
+    if(nia::IniValue(job,"device",value,sizeof(value)) && value[0]) call.device=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"flags",value,sizeof(value)) && value[0]) call.flags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"reserved",value,sizeof(value)) && value[0]) call.reservedFlags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"cached",value,sizeof(value)) && value[0]) call.cachedUserFlags=strtoul(value,NULL,0);
+    call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
+    // xam turns down XUID 0 as an invalid argument (seen on the console), so
+    // each is asked with an offline XUID like the console's own (xam then
+    // makes it under one of its own).
+    bool ownXuid=IniNumber(job,"own_xuid",1)!=0, probe=IniNumber(job,"probe",0)!=0;
+    call.makeFolders=IniNumber(job,"make_folders",0)!=0;
+    ULONGLONG like=0;
+    for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
+    // guestN= a profile to make; profileN= one there already (its XUID),
+    // for its picture only.
+    static char names[nia::ProfileJobMost][nia::GamertagMost+1];
+    int count=0,slot[nia::ProfileJobMost];
+    ULONGLONG existing[nia::ProfileJobMost];
+    for(int i=1;i<=nia::ProfileJobMost;++i) {
+        char key[16]; sprintf_s(key,"guest%d",i);
+        char name[64];
+        existing[count]=0;
+        if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) {
+            sprintf_s(key,"profile%d",i);
+            if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0] || !(existing[count]=_strtoui64(name,NULL,16))) continue;
+        }
+        strncpy_s(names[count],name,_TRUNCATE);
+        slot[count++]=i;
+    }
+    // The pictures' ways in (see SetProfilePicture): open_flags= (hex, commas
+    // between), thumbnail=.
+    DWORD openFlags[8]={3,4,0};
+    int openFlagCount=3;
+    static char openList[64];
+    if(nia::IniValue(job,"open_flags",openList,sizeof(openList)) && openList[0]) {
+        openFlagCount=0;
+        for(char* at=openList;*at && openFlagCount<8;) {
+            char* end=NULL;
+            DWORD f=strtoul(at,&end,16);
+            if(end==at) break;
+            openFlags[openFlagCount++]=f;
+            at=*end==',' ? end+1 : end;
+        }
+    }
+    bool thumbnail=IniNumber(job,"thumbnail",0)!=0;
+    Note("Guest profiles, job %s: %d in it (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s%s).",number[0] ? number : "?",count,
+         call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",
+         call.makeFolders ? ", folders made first" : "",probe ? ", trying other ways too" : "");
+    Note("Pictures: XamProfileOpen flags %lX%s, %s.",openFlagCount ? openFlags[0] : 0,openFlagCount>1 ? " then others" : "",thumbnail ? "package thumbnail too" : "no package thumbnail");
+    strcpy_s(Shown.game,"Guest profiles");
+    ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
+    ScreenStart();
+    ScreenDraw();
+    static char done[8192];
+    size_t used=0;
+    used+=sprintf_s(done+used,sizeof(done)-used,"job=%s\r\n",number);
+    int made=0;
+    for(int n=0;n<count;++n) {
+        if(existing[n]) {
+            ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Giving a profile its picture (%d of %d)",n+1,count);
+            if(Picture(job,slot[n],existing[n],openFlags,openFlagCount,thumbnail,done,used,sizeof(done))) ++made;
+            continue;
+        }
+        ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Making %s (%d of %d)",names[n],n+1,count);
+        WCHAR gamertag[nia::GamertagMost+1];
+        size_t length=strlen(names[n]);
+        for(size_t k=0;k<=length;++k) gamertag[k]=WCHAR((unsigned char)names[n][k]);
+        // The XUID the server gave it (xuidN=), else one like the console's.
+        char key[16],given[32]="";
+        sprintf_s(key,"xuid%d",slot[n]);
+        ULONGLONG asked=nia::IniValue(job,key,given,sizeof(given)) && given[0] ? _strtoui64(given,NULL,16) : 0;
+        if(!asked && ownXuid) asked=nia::NewOfflineXuid(like,profiles,listed);
+        // With probe=, each way in turn until one works: as asked, then with
+        // zeroed tokens, then with xam picking the XUID, then each of
+        // probe_flags= (hex, commas between) as flags, as asked.
+        ULONGLONG xuid=0;
+        DWORD code=0;
+        char why[160]="";
+        bool ok=false;
+        static char flagList[256];
+        DWORD flags[24];
+        int flagCount=0;
+        if(nia::IniValue(job,"probe_flags",flagList,sizeof(flagList)))
+            for(char* at=flagList;*at && flagCount<24;) {
+                char* end=NULL;
+                DWORD f=strtoul(at,&end,16);
+                if(end==at) break;
+                flags[flagCount++]=f;
+                at=*end==',' ? end+1 : end;
+            }
+        for(int way=0;way<(probe ? 3+flagCount : 1) && !ok;++way) {
+            nia::ProfileCall tried=call;
+            tried.xuid=way==2 ? 0 : asked;
+            if(way==1) tried.zeroTokens=true;
+            if(way>=3) tried.flags=flags[way-3];
+            ok=nia::MakeProfile(gamertag,tried,xuid,code,why,sizeof(why),Wait);
+            Note("%s %s, way %d (flags %08lX, XUID asked %016I64X%s%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.flags,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",
+                 tried.makeFolders && tried.xuid ? ", folders made first" : "",ok ? "" : why,ok ? "" : ".");
+        }
+        if(ok) {
+            ++made;
+            Note("Made %s: %016I64X.",names[n],xuid);
+            used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",slot[n],xuid);
+            Picture(job,slot[n],xuid,openFlags,openFlagCount,thumbnail,done,used,sizeof(done));
+        } else used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
+    }
+    HANDLE file=CreateFile(donePath,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    DWORD wrote=0;
+    if(file==INVALID_HANDLE_VALUE || !WriteFile(file,done,DWORD(used),&wrote,NULL) || wrote!=used) Note("Couldn't write %s (%lu).",donePath,GetLastError());
+    if(file!=INVALID_HANDLE_VALUE) CloseHandle(file);
+    ShowStep(nia::StepStart,1.0,made==count ? "Made %d of %d guest profiles" : "Made %d of %d guest profiles (see netiso.log)",made,count);
+    Wait(1500);
+    return true;
+}
+
 void __cdecl main() {
     InitializeCriticalSection(&LogLock);
     InitializeCriticalSection(&ShownLock);
@@ -1349,11 +1630,19 @@ void __cdecl main() {
     static char folder[nia::BootFolderMax];
     bool helper=StartedAsHelper(Started,folder,sizeof(folder));
     bool linked=folder[0] && UseTileFolder(folder);
+    if(folder[0]) strcpy_s(TileFolder,folder);
     OpenLog(true);
     NoteRun();
     if(linked) Note("Started as the helper for %s.",folder);
     else if(folder[0]) Note("Started as the helper for %s, which couldn't be linked; using this folder's files.",folder);
     else if(helper) Note("Started as the helper.");
+    // Started from Aurora by the server for the guest profiles: back to Aurora.
+    if(!helper && ProfileJob()) {
+        CloseLog();
+        ScreenStop();
+        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+        return;
+    }
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];

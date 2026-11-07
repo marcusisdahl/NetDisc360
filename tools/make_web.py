@@ -86,6 +86,10 @@ def current(html):
 
 
 def main():
+    # Every build runs this one, so it makes shared/build_id.h too when it's missing.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import make_version
+    make_version.ensure()
     args = sys.argv[1:]
     if args[:1] == ["--icons"]:
         with open(PAGE, encoding="utf-8") as f:

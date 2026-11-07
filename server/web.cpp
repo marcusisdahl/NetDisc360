@@ -25,10 +25,11 @@ typedef socklen_t AddressLength;
 
 namespace web {
 namespace {
-// MaxBody is for a backup sent to /api/restore; everything else is small.
-// A request has RequestSeconds to arrive whole once it has started, and a
-// connection waits IdleSeconds for one at most.
-enum { MaxHeader = 16 << 10, MaxBody = 256 << 10, MaxSmallBody = 16 << 10, MaxConnections = 64, MaxConnectionsFrom = 16,
+// MaxBody is for a backup sent to /api/restore, MaxPictureBody for a LAN
+// party's picture sent to /api/party/asset (3 MB at most, in base64);
+// everything else is small. A request has RequestSeconds to arrive whole
+// once it has started, and a connection waits IdleSeconds for one at most.
+enum { MaxHeader = 16 << 10, MaxBody = 256 << 10, MaxPictureBody = 5 << 20, MaxSmallBody = 16 << 10, MaxConnections = 64, MaxConnectionsFrom = 16,
        IdleSeconds = 15, RequestSeconds = 30, MaxDepth = 32, SessionDays = 30, HashRounds = 20000 };
 const char Cookie[] = "netdisc_session";
 
@@ -369,6 +370,15 @@ struct Incoming {
         for(size_t i=0;i<headers.size();++i) if(headers[i].first==name) return headers[i].second;
         return std::string();
     }
+    // The session cookie's value; "" without one.
+    std::string SessionCookie() const {
+        std::string cookies=Header("cookie");
+        size_t at=cookies.find(std::string(Cookie)+"=");
+        if(at==std::string::npos) return std::string();
+        at+=strlen(Cookie)+1;
+        size_t end=cookies.find(';',at);
+        return cookies.substr(at,end==std::string::npos ? std::string::npos : end-at);
+    }
 };
 
 // The login cookie's value, if the request has one.
@@ -454,7 +464,12 @@ private:
         if(!in.Header("transfer-encoding").empty()) return 400;
         long long length=atoll(in.Header("content-length").c_str());
         if(length<0) return 400;
-        if(length>(in.target.compare(0,12,"/api/restore") ? MaxSmallBody : MaxBody)) return 413;
+        long long most=in.target.compare(0,12,"/api/restore") ? MaxSmallBody : MaxBody;
+        // A picture is big: only from the page, and logged in when there's a
+        // password, so no one else can have megabytes held for nothing.
+        if(in.method=="POST" && in.target=="/api/party/asset" && !in.Header("x-netdisc").empty() && (PasswordHash().empty() || ValidSession(in.SessionCookie())))
+            most=MaxPictureBody;
+        if(length>most) return 413;
         while(pending_.size()<size_t(length)) if(!Receive()) return -1;
         in.body=pending_.substr(0,size_t(length));
         pending_.erase(0,size_t(length));

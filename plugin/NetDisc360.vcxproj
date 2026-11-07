@@ -19,15 +19,15 @@
     <!-- No COMDAT folding: the trampolines are placeholder functions that are
          overwritten at start-up, and must stay separate. -->
     <Link><OutputFile>$(OutDir)NetDisc360.dll</OutputFile><LinkDLL>true</LinkDLL><OptimizeReferences>true</OptimizeReferences><EnableCOMDATFolding>false</EnableCOMDATFolding>
-      <BaseAddress>0x91380000</BaseAddress><FixedBaseAddress>true</FixedBaseAddress>
+      <BaseAddress>0x91C00000</BaseAddress><FixedBaseAddress>true</FixedBaseAddress>
       <AdditionalDependencies>xapilib.lib;xboxkrnl.lib;xnet.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <!-- Not packaged here: imagexex refuses the system base (see build.ps1 and xex.xml). -->
     <ImageXex><ExcludedFromBuild>true</ExcludedFromBuild></ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="disc.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
-  <ItemGroup><ClInclude Include="disc.h" /><ClInclude Include="..\shared\netdisc.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="disc.cpp" /><ClCompile Include="profiles_job.cpp" /><ClCompile Include="..\launcher\profiles.cpp" /><ClCompile Include="..\shared\isvr.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="disc.h" /><ClInclude Include="profiles_job.h" /><ClInclude Include="..\shared\netdisc.h" /><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /></ItemGroup>
   <ItemGroup><None Include="xex.xml" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- The Xbox 360 platform's ImageXex target ignores ExcludedFromBuild; this
