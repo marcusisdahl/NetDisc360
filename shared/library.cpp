@@ -221,6 +221,12 @@ void FolderName(const char* isoName, char used[][FolderNameMax + 1], int usedCou
     }
 }
 
+void FriendlyGameName(const char* isoName, char* out, size_t capacity) {
+    size_t length=strlen(isoName);
+    if(length>4 && !_stricmp(isoName+length-4,".iso")) length-=4;
+    FriendlyStem(isoName,length,out,capacity);
+}
+
 static bool Fail(char* error, size_t capacity, const char* text) { _snprintf_s(error,capacity,_TRUNCATE,"%s",text); return false; }
 static bool ReadIso(IsvrClient& client, U64 offset, DWORD length, unsigned char* data) {
     while(length) {
@@ -465,7 +471,7 @@ static void RefreshInstall(Storage& storage, const char* root, const Folder* fol
 
 bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned char* launcher, DWORD launcherSize,
           const unsigned char* boot, DWORD bootSize, Note note, SyncResult& result, bool removeGone, FindInstall findInstall,
-          FindRole findRole, Wanted wanted, Placed placed, Progress progress) {
+          FindRole findRole, Wanted wanted, Placed placed, Progress progress, const char* helperFolder) {
     memset(&result,0,sizeof(result));
     DWORD infoAt=ExecutionInfoOffset(launcher,launcherSize);
     if(!infoAt) { Say(note,"The launcher XEX has no execution info header."); return false; }
@@ -491,9 +497,14 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
     // without it.
     bool helperReady=false;
     if(boot) {
-        char helperFolder[PathMax],helperPath[PathMax]; Join(helperFolder,root,HelperFolder); Join(helperPath,helperFolder,HelperXex);
-        storage.MakeFolder(helperFolder);
-        int written=RefreshFile(storage,helperFolder,HelperXex,boot,bootSize);
+        char folder[PathMax],helperPath[PathMax];
+        if(helperFolder) strcpy_s(folder,helperFolder); else Join(folder,root,HelperFolder);
+        Join(helperPath,folder,HelperXex);
+        // NetDisc360's folder (Hdd1:\\Apps\\NetDisc360) can be the first in Apps.
+        for(char* at=folder+1;*at;++at)
+            if((*at=='/' || *at=='\\') && at[-1]!=':') { char c=*at; *at=0; storage.MakeFolder(folder); *at=c; }
+        storage.MakeFolder(folder);
+        int written=RefreshFile(storage,folder,HelperXex,boot,bootSize);
         if(written<0) { Say(note,"Couldn't write %s (error %lu); the game folders keep their own helper.",helperPath,storage.LastError()); ++result.failed; }
         else if(written>0) Say(note,"Put the helper the game folders share in %s.",helperPath);
         helperReady=written>=0;
@@ -643,7 +654,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         if(!removeGone && !installed) { ++result.held; continue; }
         char folder[PathMax]; Join(folder,root,folders[k].name);
         if(!storage.RemoveGame(folder)) { Say(note,"Couldn't remove %s.",folder); ++result.failed; continue; }
-        if(installed) Say(note,"Removed %s: the game on %s is installed on this console.",folders[k].name,folders[k].iso);
+        if(installed) Say(note,"Removed %s: %s gets no folder here on this console (it's installed there, or set so).",folders[k].name,folders[k].iso);
         else Say(note,"Removed %s (%s is no longer on the server).",folders[k].name,folders[k].iso);
         folders[k].game=false;
         ++result.removed;

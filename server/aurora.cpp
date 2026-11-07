@@ -10,6 +10,7 @@ namespace nia {
 const char CleanupScriptPath[] = "/User/Scripts/Utility/NetDisc360 Cleanup/Main.lua";
 const char OnlineScriptPath[] = "/User/Scripts/Content/Filters/NetDiscOnline.lua";
 const char OnlineMarker[] = "online.txt", ShownMarker[] = "shown.txt";
+const char MoveMarker[] = "move.txt", MovedMarker[] = "moved.txt";
 
 namespace {
 enum { ResponseMost = 1 << 20, ImageMost = 32 << 20 };
@@ -126,7 +127,7 @@ std::string Base64(const std::string& data) {
     return out;
 }
 
-// FTP path /Hdd1/NetISO/x as Aurora's scripts name it: Hdd1:\NetISO\x.
+// FTP path /Hdd1/NetDisc360/x as Aurora's scripts name it: Hdd1:\NetDisc360\x.
 std::string ScriptPath(const std::string& ftpPath) {
     size_t slash=ftpPath.find('/',1);
     std::string drive=ftpPath.substr(1,slash==std::string::npos ? std::string::npos : slash-1);
@@ -323,7 +324,83 @@ std::string DevicePath(const std::string& ftpPath) {
     return "\\Device\\Harddisk0\\Partition1"+rest;
 }
 
-std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders) {
+// The Lua function NetDiscMove (see MoveScript in aurora.h): Aurora's scan
+// path and rows for the tiles in from now point at tiles, for those whose
+// folder (in lower case) is one of folders. It returns what it did, for
+// MovedMarker: "unread" when it couldn't read Aurora's list, else
+// "moved=<rows> left=<rows still in from> scanpath=<0 or 1>".
+std::string MoveLua(const std::string& from, const std::string& tiles, const std::vector<std::string>& folders) {
+    std::string old=TilesInList(from), to=TilesInList(tiles);
+    if(old.size()<2 || to.size()<2) return std::string();
+    // Without the first backslash; "to" keeps its capitals as Aurora would write them.
+    old=old.substr(1);
+    size_t slash=tiles.find('/',1);
+    to=tiles.substr(slash+1)+"\\";
+    for(size_t i=0;i<to.size();++i) if(to[i]=='/') to[i]='\\';
+    std::string text=
+        "local NetDiscFrom, NetDiscTo = "+LuaQuote(old)+", "+LuaQuote(to)+"\n"
+        "local NetDiscHere = {\n";
+    for(size_t i=0;i<folders.size();++i) text+="   ["+LuaQuote(Lower(folders[i]))+"] = true,\n";
+    text+=R"lua(}
+-- "Hdd1:\NetISO\Halo 3" as "Hdd1:", "\" and "NetISO\Halo 3".
+local function NetDiscSplit(path)
+   local head, rest = string.match(path or "", "^([^\\]*:)(.*)$")
+   if head == nil then head, rest = "", path or "" end
+   local slash = ""
+   if string.sub(rest, 1, 1) == "\\" then slash, rest = "\\", string.sub(rest, 2) end
+   return head, slash, rest
+end
+local function NetDiscSql(text) return (string.gsub(text, "'", "''")) end
+local function NetDiscRun(sql)
+   local ran, result = pcall(Sql.Execute, sql)
+   return ran and result ~= false
+end
+local function NetDiscMove()
+   local fromLength, moved, left, scanPath, target = string.len(NetDiscFrom), 0, 0, 0, nil
+   -- The scan path first, kept with its Id, so the rows keep theirs.
+   local readPaths, paths = pcall(Sql.ExecuteFetchRows, "SELECT Id, Path FROM Config.ScanPaths")
+   if readPaths and paths ~= nil then
+      local old = nil
+      for _, row in pairs(paths) do
+         local head, slash, rest = NetDiscSplit(row.Path)
+         local folder = string.lower(rest)
+         if string.sub(folder, -1) ~= "\\" then folder = folder .. "\\" end
+         if folder == string.lower(NetDiscTo) then target = tonumber(row.Id) end
+         if folder == NetDiscFrom and old == nil then old = row end
+      end
+      if target == nil and old ~= nil and tonumber(old.Id) ~= nil then
+         local head, slash, rest = NetDiscSplit(old.Path)
+         local path = head .. slash .. string.sub(NetDiscTo, 1, string.len(NetDiscTo) - 1)
+         if string.sub(rest, -1) == "\\" then path = path .. "\\" end
+         if NetDiscRun("UPDATE Config.ScanPaths SET Path = '" .. NetDiscSql(path) .. "' WHERE Id = " .. tonumber(old.Id)) then scanPath = 1 end
+      end
+   end
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT Id, Directory FROM ContentItems")
+   if not read or rows == nil then return "unread" end
+   for _, row in pairs(rows) do
+      local id = tonumber(row.Id)
+      local head, slash, rest = NetDiscSplit(row.Directory)
+      local old = string.sub(rest, 1, fromLength)
+      if id ~= nil and string.lower(old) == NetDiscFrom then
+         local tile = string.match(string.lower(string.sub(rest, fromLength + 1)), "^[^\\]+")
+         if tile ~= nil and NetDiscHere[tile] then
+            -- Written as Aurora wrote the old one: in lower case if that was.
+            local to = NetDiscTo
+            if old == string.lower(old) then to = string.lower(to) end
+            local sql = "UPDATE ContentItems SET Directory = '" .. NetDiscSql(head .. slash .. to .. string.sub(rest, fromLength + 1)) .. "'"
+            -- Under the new folder's own scan path, if Aurora has one already.
+            if target ~= nil then sql = sql .. ", ScanPathId = " .. target end
+            if NetDiscRun(sql .. " WHERE Id = " .. id) then moved = moved + 1 else left = left + 1 end
+         elseif tile ~= nil then left = left + 1 end
+      end
+   end
+   return "moved=" .. moved .. " left=" .. left .. " scanpath=" .. scanPath
+end
+)lua";
+    return text;
+}
+
+std::string CleanupScript(const std::string& tiles, const std::vector<std::string>& folders, const std::string& from, const std::string& app) {
     std::string inList=TilesInList(tiles);
     if(inList.empty()) return std::string();
     std::string text=
@@ -331,7 +408,7 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
         "scriptAuthor = \"NetDisc360\"\n"
         "scriptVersion = 1\n"
         "scriptDescription = \"Takes games whose NetDisc360 tile is gone off Aurora's list. It deletes no file.\"\n"
-        "scriptPermissions = { \"sql\" }\n"
+        "scriptPermissions = { \"sql\", \"filesystem\" }\n"
         "\n"
         "-- Written by NetDisc360 each time it updates "+ScriptPath(tiles)+", with the\n"
         "-- folders there then. Aurora keeps a game on its list when its folder is\n"
@@ -357,7 +434,21 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
         "   return tile ~= nil and not Here[tile]\n"
         "end\n"
         "\n"
-        "function main()\n"
+        "function main()\n";
+    std::string move=from.empty() ? std::string() : MoveLua(from,tiles,folders);
+    if(!move.empty()) {
+        // Before main, at the top: the move's own functions.
+        text.insert(text.find("function main()\n"),
+            "-- NetDisc360 moved its tiles from "+ScriptPath(from)+" to "+ScriptPath(tiles)+".\n"
+            "-- Aurora's scan path and its rows for them follow them, so their art,\n"
+            "-- favourites and play history stay, if Aurora's start didn't do that yet.\n"
+            +move+"\n");
+        text+=
+        "   local ran, done = pcall(NetDiscMove)\n"
+        "   if ran then pcall(FileSystem.WriteFile, "+LuaQuote(ScriptPath(app+"/"+MovedMarker))+", done) end\n"
+        "   if ran and string.match(done or \"\", \"^moved=(%d+)\") ~= \"0\" and done ~= \"unread\" then Script.RefreshListOnExit(true) end\n";
+    }
+    text+=
         "   local read, rows = pcall(Sql.ExecuteFetchRows, \"SELECT Id, Directory FROM ContentItems\")\n"
         "   if not read or rows == nil then\n"
         "      Script.ShowMessageBox(\"NetDisc360 Cleanup\", \"Aurora's list couldn't be read, so nothing changed.\", \"OK\")\n"
@@ -385,8 +476,8 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
     return Crlf(text);
 }
 
-std::string OnlineScript(const std::string& tiles) {
-    std::string helper=tiles+"/NetDisc360/";
+std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders) {
+    std::string helper=app+"/";
     std::string inList=TilesInList(tiles);
     if(inList.empty()) return std::string();
     std::string text=
@@ -403,7 +494,53 @@ std::string OnlineScript(const std::string& tiles) {
         "-- Without the file functions, nothing is hidden.\n"
         "NetDiscOnline = (not NetDiscRead) or NetDiscThere == true\n"
         "pcall(FileSystem.DeleteFile, NetDiscShown)\n"
-        "local NetDiscTold = false\n"
+        "local NetDiscTold = false\n";
+    std::string appInList=TilesInList(app);
+    if(appInList.size()>1) text+=
+        "\n"
+        "-- NetDisc360's helper (boot.xex in "+ScriptPath(app)+") starts the games from\n"
+        "-- their tiles; it is nothing to start from Aurora's list, where a scan path\n"
+        "-- like \\Apps finds it. Hidden there for each profile Aurora knows of.\n"
+        "local NetDiscApp = "+LuaQuote(appInList)+"\n"
+        R"lua(local function NetDiscHideHelper()
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT Id, Directory FROM ContentItems")
+   if not read or rows == nil then return end
+   local ids = {}
+   for _, row in pairs(rows) do
+      local folder = string.lower((string.gsub(row.Directory or "", "^[^\\]*:", "")))
+      if string.sub(folder, 1, 1) ~= "\\" then folder = "\\" .. folder end
+      if string.sub(folder, -1) ~= "\\" then folder = folder .. "\\" end
+      if folder == NetDiscApp and tonumber(row.Id) ~= nil then table.insert(ids, tonumber(row.Id)) end
+   end
+   if #ids == 0 then return end
+   local profiles = { [""] = true }
+   for _, name in ipairs({ "UserHidden", "UserFavorites", "UserRecentGames" }) do
+      local ran, found = pcall(Sql.ExecuteFetchRows, "SELECT DISTINCT ProfileId FROM Config." .. name)
+      if ran and found ~= nil then
+         for _, row in pairs(found) do
+            if type(row.ProfileId) == "string" then profiles[string.upper(row.ProfileId)] = true end
+         end
+      end
+   end
+   for _, id in ipairs(ids) do
+      for profile in pairs(profiles) do
+         pcall(Sql.Execute, "INSERT OR IGNORE INTO Config.UserHidden (ContentId, ProfileId) VALUES (" .. id .. ", '" .. (string.gsub(profile, "'", "''")) .. "')")
+      end
+   end
+end
+pcall(NetDiscHideHelper)
+)lua";
+    std::string move=from.empty() ? std::string() : MoveLua(from,tiles,folders);
+    if(!move.empty()) text+=
+        "\n"
+        "-- NetDisc360 moved its tiles from "+ScriptPath(from)+" to "+ScriptPath(tiles)+".\n"
+        "-- As Aurora starts, its scan path and its rows for them follow them, so\n"
+        "-- their art, favourites and play history stay. What it did goes in\n"
+        "-- "+MovedMarker+" for NetDisc360, which then restarts Aurora so its list follows.\n"
+        +move+
+        "local NetDiscMoveRan, NetDiscMoveDone = pcall(NetDiscMove)\n"
+        "if NetDiscMoveRan then pcall(FileSystem.WriteFile, "+LuaQuote(ScriptPath(helper+MovedMarker))+", NetDiscMoveDone) end\n";
+    text+=
         "\n"
         "GameListFilterCategories.User[\"Hide PC games while NetDisc360 is off\"] = function(Content)\n"
         "   if not NetDiscTold then\n"

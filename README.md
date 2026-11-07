@@ -85,7 +85,7 @@ You need a modded Xbox 360 with DashLaunch and Aurora, and a Windows PC or a NAS
    plugin1 = Usb:\NetDisc360.xex
    ```
 
-3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetISO` with depth 1.
+3. In Aurora's settings, turn on the FTP server and add the scan path `Hdd1:\NetDisc360\Games` with depth 1.
 4. On the PC, start `NetDisc360.exe` and add your game folders on the dashboard that opens in your browser. On Linux or a NAS, run it with Docker Compose instead: get `docker-compose.yml` and `.env.example`, rename `.env.example` to `.env` and fill it in (see [Quick install with Docker Compose](#quick-install-with-docker-compose)), run `docker compose up -d` and open `http://<its address>:8360`.
 
 5. Reboot the console. Within a minute or two your games show up in Aurora's game list. Pick one and play.
@@ -140,7 +140,7 @@ NetDisc360 brings the PC side and the console plugin that ties it to Aurora. The
 
    `Default` is where your Aurora is; this makes the console boot straight into it. Leave out the `NetUsb360.xex` line if you don't use a USB network adapter, and number the others from `plugin1`. DashLaunch loads at most 5 plugins.
 
-4. **Turn on Aurora's FTP server and add the game folder.** Reboot the console into Aurora. In Aurora's settings, make sure the FTP server is on, and under Content, Scan paths, add `Hdd1:\NetISO` with depth 1 (the folder can be empty; the PC fills it).
+4. **Turn on Aurora's FTP server and add the game folder.** Reboot the console into Aurora. In Aurora's settings, make sure the FTP server is on, and under Content, Scan paths, add `Hdd1:\NetDisc360\Games` with depth 1 (the folder can be empty; the PC fills it).
 
    Aurora's FTP login is `xboxftp` / `xboxftp` unless you changed it. Changing it is a good idea (see [Security](#security)); then enter the same login on the PC.
 
@@ -186,7 +186,7 @@ Settings are saved in `%APPDATA%\NetDisc360\netdisc.ini`, with the FTP password 
 
 ### 3. Turn on the console
 
-Turn the console on. Within a minute or two of Aurora starting, the server adds a folder for each game to `Hdd1:\NetISO`, asks Aurora to scan it, and Aurora fetches the names and cover art. Your games are then in Aurora's game list next to your installed games, in the Xbox 360 category too. It doesn't matter whether the PC or the console starts first.
+Turn the console on. Within a minute or two of Aurora starting, the server adds a folder for each game to `Hdd1:\NetDisc360\Games`, asks Aurora to scan it, and Aurora fetches the names and cover art. Your games are then in Aurora's game list next to your installed games, in the Xbox 360 category too. It doesn't matter whether the PC or the console starts first.
 
 <p align="center">
   <img src="docs/images/aurora.jpg" alt="Aurora's game list on an Xbox 360, showing Call of Duty: Black Ops and other games served by NetDisc360 with their covers" width="800">
@@ -324,7 +324,7 @@ It uses the image `ghcr.io/marcusisdahl/netdisc360`, published with each release
 | `NETDISC_NO_CATEGORY` | | `true`: leave Aurora's Xbox 360 category alone. |
 | `NETDISC_NO_SCAN` | | `true`: don't ask Aurora to scan after changes. |
 | `NETDISC_NO_PUSH` | | `true`: only serve games; leave the console alone. |
-| `NETDISC_XBOX_FOLDER`, `NETDISC_AURORA` | `/Hdd1/NetISO`, `/Hdd1/Apps/Aurora` | As `--xbox-folder` and `--aurora`. |
+| `NETDISC_XBOX_FOLDER`, `NETDISC_AURORA` | `/Hdd1/NetDisc360/Games`, `/Hdd1/Apps/Aurora` | As `--xbox-folder` and `--aurora`. |
 | `NETDISC_PORT`, `NETDISC_FTP_PORT` | 4323, 21 | |
 | `NETDISC_VERBOSE` | | `true`: log every request. |
 | `TZ` | UTC | Your time zone, for the log's times. |
@@ -416,14 +416,14 @@ That is about as fast as the adapter goes on the console's USB 2.0 port. The con
 - `read_depth` is how many requests are in flight at once: `4` by default, up to `8`.
 - `rcv_kb` is the receive buffer for the drive's connection: `64` by default; `0` leaves the console's own.
 - The plugin reads the first `NetDisc360.ini` it finds: next to it, then on the root of the USB drive, then on the root of `Hdd1:`. An old `NetIsoTiles.ini` is read if there's none.
-- `Hdd1:\NetISO\NetDisc360\disc.log` says what the drive uses, each disc it mounts, and any read it had to retry.
+- `Hdd1:\Apps\NetDisc360\disc.log` says what the drive uses, each disc it mounts, and any read it had to retry.
 - With `NetISO.xex` still loaded first, `read_kb` (`4`, `16`, `64`, `256` or `1024`) and `rcv_kb` (`16` to `256`) patch NetISO's reads instead, as `NetIsoTiles.xex` did; each game's `netiso.log` then says what was set.
 
 ## How many games fit
 
 Each game takes about 3.3 MB on the console's drive:
 
-- **0.14 MB for its launcher**, the folder in `Hdd1:\NetISO` that Aurora shows as the game. All the games share one 2.9 MB helper in `Hdd1:\NetISO\NetDisc360`, which shows the loading screen and starts the disc.
+- **0.14 MB for its launcher**, the folder in `Hdd1:\NetDisc360\Games` that Aurora shows as the game. All the games share one 2.9 MB helper in `Hdd1:\Apps\NetDisc360`, which shows the loading screen and starts the disc.
 - **About 3.1 MB for its art**, which Aurora downloads for any game in its list: screenshots (1.3 MB), background (1 MB), cover (0.66 MB) and banner (measured on a console with 39 games).
 
 The game itself stays on your PC or NAS. A game's install content (GTA V's install disc puts 8.3 GB on the drive), title updates and DLC take space as they would with the disc. The table keeps 1 GB free for Aurora, your saves and updates.
@@ -455,16 +455,16 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 ## Troubleshooting
 
-**Check my setup** on the **Consoles** page checks the server and each console in one go: your game folders and what's in them, Aurora's FTP login, the game folder on the console, DashLaunch's `launch.ini` and its plugins, the address in `NetISO.xex.txt`, and whether Aurora's scan paths cover `Hdd1:\NetISO` (read from Aurora's own settings, never changed). On Windows it also says when the network is set to **Public**, where Windows Firewall keeps the consoles out, and offers to make it Private (Windows asks for an administrator's OK). **Copy report** copies the results without your addresses and Windows user name, to paste into an issue.
+**Check my setup** on the **Consoles** page checks the server and each console in one go: your game folders and what's in them, Aurora's FTP login, the game folder on the console, DashLaunch's `launch.ini` and its plugins, the address in `NetISO.xex.txt`, and whether Aurora's scan paths cover the game folder (`Hdd1:\NetDisc360\Games`) (read from Aurora's own settings, never changed). On Windows it also says when the network is set to **Public**, where Windows Firewall keeps the consoles out, and offers to make it Private (Windows asks for an administrator's OK). **Copy report** copies the results without your addresses and Windows user name, to paste into an issue.
 
-- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetISO` (depth 1; **Check my setup** tells), that Aurora's FTP server is on, and that the FTP login under the dashboard's **Settings > Xbox & Aurora** matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
-- **"The server doesn't answer" on the loading screen.** Check the `server=` address in `NetDisc360.ini` (or `NetISO.xex.txt`) against the one the dashboard shows (NetDisc360 fixes it by itself when the PC's address changed; restart the console after), and that Windows Firewall allows `NetDisc360.exe` on private networks and your network isn't set to Public (**Check my setup** tells). `Hdd1:\NetISO\NetDisc360\disc.log` says which file the address came from and whether the drive could connect. Right after a reboot the console needs a moment before it can reach the server.
+- **No games appear in Aurora.** Check that Aurora's scan paths include `Hdd1:\NetDisc360\Games` (depth 1; **Check my setup** tells), that Aurora's FTP server is on, and that the FTP login under the dashboard's **Settings > Xbox & Aurora** matches Aurora's. The **Consoles** page says whether each console's Aurora answers, and the **Log** page what the server is waiting for.
+- **"The server doesn't answer" on the loading screen.** Check the `server=` address in `NetDisc360.ini` (or `NetISO.xex.txt`) against the one the dashboard shows (NetDisc360 fixes it by itself when the PC's address changed; restart the console after), and that Windows Firewall allows `NetDisc360.exe` on private networks and your network isn't set to Public (**Check my setup** tells). `Hdd1:\Apps\NetDisc360\disc.log` says which file the address came from and whether the drive could connect. Right after a reboot the console needs a moment before it can reach the server.
 - **A game has no cover art.** On the **Consoles** page, click **Fix missing art** on the console's card while it's in Aurora. It lists the games Aurora has no cover for, and on **Fetch the art again** renames their folders so Aurora looks them up again. See [Cover art](#cover-art).
 - **"Can't listen on port 4323".** Another NetISO server (`netiso-srv`, `server.exe`, or a second copy of this one) is still running. Close it.
 - **"Choose which copy to play" on the Games page.** The same game is in your folders more than once. Pick the copy to play there; NetDisc360 remembers it. To free up space, delete the copies you don't play.
 - **The dashboard doesn't open.** Another program may be using port 8360; the log says so. Start the server with `--web-port` and another port. Opened from another device by a name rather than an address, it says to use the address until it has a password.
 - **"NetDisc360: this game asks for a disc it has no tile for".** The game's other disc isn't in your game folders. Add it; the server gives it a tile, and the swap works the next time you start the game.
-- **Something else.** Each game writes `netiso.log` in its folder on the console (`Hdd1:\NetISO\<game>`), with each step and why it stopped; the dashboard's **Log** page shows what the server did. [How it works](docs/how-it-works.md#logs) explains both.
+- **Something else.** Each game writes `netiso.log` in its folder on the console (`Hdd1:\NetDisc360\Games\<game>`), with each step and why it stopped; the dashboard's **Log** page shows what the server did. [How it works](docs/how-it-works.md#logs) explains both.
 
 ## Updating
 
@@ -481,25 +481,35 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 
 **To try what's coming next**, use the `dev` image: set `NETDISC_TAG=dev` in `.env` (or `image: ghcr.io/marcusisdahl/netdisc360:dev`), then `docker compose pull && docker compose up -d`. It is built from the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev) each time something is added there ([what's new since the last release](https://github.com/marcusisdahl/NetDisc360/compare/main...dev), [its tests](https://github.com/marcusisdahl/NetDisc360/actions/workflows/ci.yml?query=branch%3Adev), [its image builds](https://github.com/marcusisdahl/NetDisc360/actions/workflows/docker.yml?query=branch%3Adev)), so it can have bugs a release won't; back up your settings first (**Settings > Backups**). Set `NETDISC_TAG` back to `latest` and pull again to return to the releases.
 
-On its next visit to the console the new version replaces the launchers in `Hdd1:\NetISO` with its own by itself. Only `NetDisc360.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
+On its next visit to the console the new version replaces the launchers in `Hdd1:\NetDisc360\Games` with its own by itself. Only `NetDisc360.xex` needs a hand: copy the new one over the old one on your USB drive and reboot the console (the release notes say when it changed).
+
+### Moving from `Hdd1:\NetISO`
+
+Versions before this one kept everything in `Hdd1:\NetISO`. Now the game folders are in `Hdd1:\NetDisc360\Games`, which Aurora scans on its own, and NetDisc360's own files (the helper that starts the games, `wake.ini`, `disc.log`) are in `Hdd1:\Apps\NetDisc360` with your other apps. On its first visit the new version moves a console's game folders over by renaming them on the console's drive, so nothing is copied again. It then restarts Aurora, and as Aurora starts it moves its scan path `Hdd1:\NetISO` and its list of those games to the new folder, so they keep their cover art, favourites and play history; once that's done NetDisc360 restarts Aurora once more so the list shows it. A folder whose name is taken in the new place, or that isn't NetDisc360's (NetISO Sync), stays in `Hdd1:\NetISO`, which goes once it's empty. If you had set another game folder under **Settings > Xbox & Aurora**, nothing moves.
 
 ### Backups
 
 **Settings > Backups** keeps copies of your settings: `netdisc.ini` and the disc map, never your games. NetDisc360 backs them up by itself once a week (or every day, or turn it off), and before every update and every restore, keeping the newest five of those. **Back up now** makes one that stays until you delete it. Each backup can be downloaded, restored or deleted, and **Restore from a file** brings back one you downloaded, or a `netdisc.ini` by itself, for example on a new PC or from the Windows app into Docker. Restored settings apply at once; a changed port takes effect at the next start. The backups are zips in the `Backups` folder next to the settings file (`%APPDATA%\NetDisc360\Backups`, or `/config/Backups` in Docker).
+
+### Sync between computers
+
+Take a laptop along and your game save backups, profile backups and play history come with you. **Settings > Sync** connects NetDisc360 to a small sync service on your own Cloudflare account (a Worker that keeps the files in R2, usually within the free tier), set up once with the steps in [`sync/README.md`](sync/README.md). Each computer connects with the owner key and gets a key of its own. From then on each one syncs when it starts, every 5 minutes and after each save backup, so a save backed up on one computer shows under **Settings > Backups > Game saves** on the others, ready to restore on a console there. Game folders, consoles and passwords stay on each computer, and nothing is ever deleted in the cloud. The sidebar says when the last sync was, and **Settings > Sync** how much the cloud holds.
+
+**Saves follow the profile.** When a console is in Aurora, each profile on it gets that game's newest saves from your save backups, made on any console and synced from any computer. Nothing is lost on the way: if the console's saves are already in a backup (older ones), the newest simply go on; if they are in no backup, they are backed up first. When a profile played on two consoles since they last matched, both are kept and the dashboard asks which to use (**Keep this console's** makes them the newest everywhere, **Use the other's** puts those on this console). Only the saves of profiles that are on the console are touched, and only for games with a save backup. Turn it off under **Settings > Backups > Game saves**.
 
 ## The server in detail
 
 What `NetDisc360.exe` does, all from one file:
 
 - **Serves your games** to the NetISO plugin over the NetISO protocol (TCP port 4323), like `netiso-srv`. New and removed games are picked up without a restart: the folders are looked at every second, or, where that takes long (a big library on a NAS), less often, at most every 30 seconds, so the NAS's disks can sleep. A game added in between still starts at once.
-- **Keeps `Hdd1:\NetISO` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
+- **Keeps `Hdd1:\NetDisc360\Games` current** over Aurora's FTP. A new game gets its folder once its file has stopped changing for 10 s, named after the game without region, language and revision tags (`Banjo-Kazooie - Nuts & Bolts (USA) (En,Ja,Fr,De,Es,It).iso` becomes `Banjo-Kazooie - Nuts & Bolts`; tags like `(Disc 2)` stay). A removed game loses its folder, and launchers from an older build are replaced. Only folders that hold nothing but the launcher's own files are ever removed, and nothing is removed when the server has no games.
 - **Asks Aurora to scan** after adding or removing games (`SITE INITIATESCAN`, a command of Aurora's FTP server), so new games show up at once with their art.
 - **Puts the games in Aurora's Xbox 360 category** (see below).
 - **Gives NetDisc360 and FastFTP360 their art in Aurora**: cover, background, icon and banner (see [Cover art](#cover-art)).
 - **Serves each game once.** A game that is there more than once (the same Title ID and disc, as an ISO, a folder or a package) is a conflict: the dashboard shows a notice and a badge on **Games**, the activity list says so, and on Windows the icon shows a notification. The **Games** page lists every copy with its path; **Play this one** picks the copy to serve, and **Keep the copies that play now** settles all of them at once. The choice is kept in the settings file. Until you choose, an ISO is served before a GOD package before a folder. A copy that turns up later, or the chosen copy going, asks again.
 - **Tells an incomplete ISO.** An ISO shorter than the files on it say (a download or copy that stopped) is marked **Incomplete** on the **Games** page and the dashboard, since the game would crash where it reads the missing part. Copy it again.
 - **Keeps the games of a folder that's away.** A game folder that can't be read, or that had games and suddenly has none (a NAS share that isn't mounted shows as the empty folder under it), holds back every removal until its games are back, so they don't drop out of Aurora. The **Game folders** page shows it. If you emptied a folder on purpose, remove it from the list (or restart NetDisc360) and its games go.
-- **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetISO` is kept current on its own: one console being off doesn't hold up another.
+- **Serves several consoles at once.** Each console plays its own game, and each one's `Hdd1:\NetDisc360\Games` is kept current on its own: one console being off doesn't hold up another.
 - **Leaves out games installed on the console.** A game that is installed on the console's hard drive (in `Hdd1:\Games`, or as Games on Demand in `Content`) gets no tile, so Aurora doesn't list it twice; the installed copy plays as before. The **Games** page says where each game is installed. Turn it off, or name other folders, under **Settings > Xbox & Aurora**. With it off, the game keeps its NetISO tile too, and that tile asks which copy to play: **A** starts the copy on the Xbox (it loads faster and works with the PC off), **X** plays it from the PC.
 - **Takes old games off Aurora's list and hides the PC games while the PC is off**, with two scripts in Aurora (see [Aurora's scripts](#auroras-scripts)).
 - **Finds the PC again after its address changes.** A router can give the PC a new address after a restart, and the console then looks for the server at the old one. When a console is in Aurora and the address in its `NetDisc360.ini` (`server=`) or `NetISO.xex.txt` is one this PC had before (and nothing answers there now), NetDisc360 writes the new one in, and says to restart the console. Turn it off under **Settings > Xbox & Aurora**.
@@ -519,7 +529,7 @@ What `NetDisc360.exe` does, all from one file:
 | `--web-bind <address>` | 127.0.0.1 | Where the dashboard listens: `127.0.0.1` for this computer only, `0.0.0.0` for the network too (the Docker image's default). Set a password for it on the dashboard or with `NETDISC_WEB_PASSWORD`. |
 | `--xbox <address>` | every console that connects | Keep only this console's game folders up to date. Give it once for each console. |
 | `--ftp-user`, `--ftp-password` | `xboxftp` | Aurora's FTP login. |
-| `--xbox-folder <path>` | `/Hdd1/NetISO` | The game folder on the console, as an FTP path. |
+| `--xbox-folder <path>` | `/Hdd1/NetDisc360/Games` | The game folder on the console, as an FTP path. NetDisc360's own files go in `/Hdd1/Apps/NetDisc360`. |
 | `--aurora <path>` | `/Hdd1/Apps/Aurora` | Aurora's folder, for the Xbox 360 category. |
 | `--no-push` | | Only serve games; leave the console alone. |
 | `--no-category` | | Leave Aurora's Xbox 360 category alone. |
@@ -539,7 +549,7 @@ What `NetDisc360.exe` does, all from one file:
 
 ### Cover art
 
-Aurora looks a game up online (name and art) only once, when its scan first finds it, and a game it finds while the console is still coming online keeps its folder name and gets no art. Aurora's FTP server answers a minute or two before the console can reach out after a boot, so when Aurora's FTP comes back the server writes new game folders once the console has connected to it (the NetISO plugin does that as soon as it can), or after 2 minutes at most (`--online-wait`). After a game played over NetISO there is no wait. A game that has no art anyway gets it with **Fix missing art** on the **Consoles** page: the server reads Aurora's game database (`Data\Databases\content.db`) over FTP to find the games whose cover in Aurora's `Data\GameData` folder is missing or empty, renames each one's folder in `Hdd1:\NetISO` (to the game's name with its tags, or with a number), and asks Aurora to scan. Aurora then drops the old entry and looks the game up again, so it forgets anything else it kept for that entry. Renaming a folder by hand works the same way. The server keeps a renamed folder, since it matches folders to games by their `netiso.ini`.
+Aurora looks a game up online (name and art) only once, when its scan first finds it, and a game it finds while the console is still coming online keeps its folder name and gets no art. Aurora's FTP server answers a minute or two before the console can reach out after a boot, so when Aurora's FTP comes back the server writes new game folders once the console has connected to it (the NetISO plugin does that as soon as it can), or after 2 minutes at most (`--online-wait`). After a game played over NetISO there is no wait. A game that has no art anyway gets it with **Fix missing art** on the **Consoles** page: the server reads Aurora's game database (`Data\Databases\content.db`) over FTP to find the games whose cover in Aurora's `Data\GameData` folder is missing or empty, renames each one's folder in `Hdd1:\NetDisc360\Games` (to the game's name with its tags, or with a number), and asks Aurora to scan. Aurora then drops the old entry and looks the game up again, so it forgets anything else it kept for that entry. Renaming a folder by hand works the same way. The server keeps a renamed folder, since it matches folders to games by their `netiso.ini`.
 
 Aurora finds art on XboxUnity by Title ID, and XboxUnity has no entry for homebrew apps unless its admins add one, so Aurora leaves NetDisc360's own tile (Title ID FFFF4E49) and [FastFTP360](https://github.com/marcusisdahl/FastFTP360) (FFFF4646) without a cover. The server fills those in: when Aurora has scanned either app, its empty art files in Aurora's `Data\GameData` folder get the cover, background, icon and banner from [`art/aurora`](art/aurora). Restart Aurora to see them. Art that is already there is left alone.
 
@@ -553,8 +563,8 @@ The server also adds two filters of its own to Aurora (**Filters**, **User**), a
 
 NetDisc360 keeps two Lua scripts up to date in Aurora's `User\Scripts` folder:
 
-- **NetDisc360 Cleanup** (Aurora's **Utilities**). Aurora keeps a game on its list after its folder is gone, so a game you removed from your PC can stay in Aurora as a tile that starts nothing. The script finds the games listed from `Hdd1:\NetISO` whose folder isn't there any more, asks, and takes them off Aurora's list, along with their place in recent games, favourites and hidden games. It deletes no file. (Don't delete such a game from Aurora's own menu: that deletes files on the console's drive.)
-- **Hide PC games while NetDisc360 is off** (Aurora's filters, under **User**). With this filter on, Aurora lists the PC games only while NetDisc360 runs, and the console's own games always. NetDisc360 keeps a file named `online.txt` in `Hdd1:\NetISO\NetDisc360` while it runs and deletes it when it quits; the filter looks for it as Aurora starts. When Aurora is on screen and the list no longer matches (Aurora started before the PC did, or NetDisc360 quits), NetDisc360 restarts Aurora so the list follows. It never restarts Aurora during a game. **Restart Aurora when the PC games come or go** under **Settings > Xbox & Aurora** turns that off.
+- **NetDisc360 Cleanup** (Aurora's **Utilities**). Aurora keeps a game on its list after its folder is gone, so a game you removed from your PC can stay in Aurora as a tile that starts nothing. The script finds the games listed from `Hdd1:\NetDisc360\Games` whose folder isn't there any more, asks, and takes them off Aurora's list, along with their place in recent games, favourites and hidden games. It deletes no file. (Don't delete such a game from Aurora's own menu: that deletes files on the console's drive.)
+- **Hide PC games while NetDisc360 is off** (Aurora's filters, under **User**). With this filter on, Aurora lists the PC games only while NetDisc360 runs, and the console's own games always. NetDisc360 keeps a file named `online.txt` in `Hdd1:\Apps\NetDisc360` while it runs and deletes it when it quits; the filter looks for it as Aurora starts. When Aurora is on screen and the list no longer matches (Aurora started before the PC did, or NetDisc360 quits), NetDisc360 restarts Aurora so the list follows. It never restarts Aurora during a game. **Restart Aurora when the PC games come or go** under **Settings > Xbox & Aurora** turns that off.
 
 `--no-aurora-scripts` (or **Aurora extras** on the dashboard) stops writing them; scripts already there stay until you delete them.
 
@@ -615,13 +625,13 @@ Aurora keeps its own list of the update each game has on, and each time it start
 
 ## NetISO Sync (for other NetISO servers)
 
-If your PC runs another NetISO server (`netiso-srv`, `server.exe`) instead of NetDisc360, NetISO Sync makes the game folders from the console. `build\NetISO Sync\` is the launcher without a game: copied to `Hdd1:\NetISO\NetISO Sync` and started from Aurora, it asks the NetISO server for its ISOs, writes and removes game folders the way `NetDisc360.exe` does, and returns to Aurora. It reads ISOs only (no extracted folders or GOD packages, which only `NetDisc360.exe` serves) and doesn't change Aurora's category or start a scan.
+If your PC runs another NetISO server (`netiso-srv`, `server.exe`) instead of NetDisc360, NetISO Sync makes the game folders from the console. `build\NetISO Sync\` is the launcher without a game: copied to `Hdd1:\Apps\NetISO Sync` and started from Aurora, it asks the NetISO server for its ISOs, writes and removes game folders the way `NetDisc360.exe` does, and returns to Aurora. It reads ISOs only (no extracted folders or GOD packages, which only `NetDisc360.exe` serves) and doesn't change Aurora's category or start a scan.
 
 `server=` in its `netiso.ini` names the server if `netiso.xex.txt` doesn't, and `after=` names what to start when it's done (to run it at every boot as DashLaunch's Default, set `after=` to Aurora's XEX). `tools\netiso_aurora.py` makes the same folders on a PC, for copying by hand.
 
 ## How it works
 
-Each game's folder in `Hdd1:\NetISO` holds a small launcher with the game's own Title ID and Media ID, so Aurora scans it as that game. When you pick it, the launcher draws the loading screen, asks `NetDisc360.xex`'s drive (`\Device\NetDisc360`) to mount the game, waits until the disc in the drive is that game, and boots it the way Aurora's own disc entry does. The drive answers the console's disc reads from the server, fakes the tray opening and closing so the console reads the new disc, and gives games the disc's media ID, as cOz's `NetISO.xex` did, so games and Aurora see a real disc. With `NetISO.xex` loaded first, the plugin patches it in memory instead, so the Guide keeps working, reads go out in bigger pieces, and a game's disc swaps reach the server.
+Each game's folder in `Hdd1:\NetDisc360\Games` holds a small launcher with the game's own Title ID and Media ID, so Aurora scans it as that game. When you pick it, the launcher draws the loading screen, asks `NetDisc360.xex`'s drive (`\Device\NetDisc360`) to mount the game, waits until the disc in the drive is that game, and boots it the way Aurora's own disc entry does. The drive answers the console's disc reads from the server, fakes the tray opening and closing so the console reads the new disc, and gives games the disc's media ID, as cOz's `NetISO.xex` did, so games and Aurora see a real disc. With `NetISO.xex` loaded first, the plugin patches it in memory instead, so the Guide keeps working, reads go out in bigger pieces, and a game's disc swaps reach the server.
 
 [docs/how-it-works.md](docs/how-it-works.md) has the details: the disc drive, why the Guide died with NetISO, disc swaps, read speed, and the logs.
 
@@ -634,6 +644,8 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 ```
 
 This makes `build\NetDisc360.exe` (with the launcher built in), `build\NetDisc360.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
+
+After a build, `.\store\package.ps1` (needs [7-Zip](https://www.7-zip.org/)) makes `build\NetDisc360-<version>.7z` for the Xbox 360 Homebrew Store, with `NetDisc360.xex`, [`store\readme.txt`](store/readme.txt) and the license, which the store unpacks into `Apps\NetDisc360\`, and `build\NetDisc360-<version>.ini`, the store entry made from [`store\consolemods.ini`](store/consolemods.ini).
 
 Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev), not `main`: each change there is published as the `dev` Docker image for testing, and `main` only gets `dev` merged into it for a release. To make a release, see [RELEASING.md](RELEASING.md).
 

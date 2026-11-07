@@ -1,0 +1,15 @@
+{
+  "name": "netdisc360-sync",
+  "private": true,
+  "description": "NetDisc360's sync on Cloudflare: save and profile backups and play history follow you between PCs and laptops, kept in R2.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.2"
+  }
+}
