@@ -6,7 +6,7 @@
 // with fixed sizes, shared by the Xbox build and tests/party_preview.cpp.
 namespace party {
 enum { NameBytes = 132, AddressBytes = 16, WheelMost = 64, TeamsMost = 4, SeatsMost = 16, PerConsole = 4, KindBytes = 8, GamertagBytes = 32, NoteBytes = 200,
-       GuestsMost = 64, KnownMost = 16, PaletteMost = 8, VoteGamesMost = 10 };
+       GuestsMost = 64, KnownMost = 16, PaletteMost = 8, VoteGamesMost = 10, UsersMost = 48, XuidBytes = 20 };
 typedef char Name[NameBytes];
 
 // A turn of the wheel: from where the turn before left it to to degrees
@@ -25,6 +25,13 @@ struct Colour { char name[16]; unsigned fill, bright; bool ink; };
 // A guest on the list (kept from party to party): here at this one, their
 // gamerscore (-1: not read yet), and whether they joined on this console.
 struct Guest { Name name; bool here; int gamerscore; bool joinedHere; };
+// A user NetDisc360 knows (its Users page, shared between computers by its
+// sync), for a player to pick when joining: their name, their profile's
+// gamertag and XUID ("" before it's made), gamerscore (-1: not read), and
+// where the profile is for this console: "here" (on it), "console" (on
+// another: from names it), "pc" (a copy kept on the PC) or "new" (none yet:
+// NetDisc360 makes one). One that isn't here comes once the wheel seats them.
+struct User { Name name; char gamertag[GamertagBytes]; char xuid[XuidBytes]; int gamerscore; char where[KindBytes]; Name from; };
 // A console NetDisc360 knows: what it does now ("wheel", "aurora", "game"
 // or "off"), and whether it's one of the party's.
 struct Known { char address[AddressBytes]; Name name; char state[KindBytes]; bool inParty; };
@@ -65,6 +72,7 @@ struct State {
     int teamColour[TeamsMost];
     int guestCount; Guest guests[GuestsMost];
     int knownCount; Known known[KnownMost];
+    int userCount; User users[UsersMost];  // Latest at a party first.
     // Guest profiles this console's app is asked to make (the job's number;
     // "": none), while every party console shows the app: it gets the job
     // and the pictures from the server (PartyJobAsk) and answers there.
@@ -110,4 +118,7 @@ int TeamOf(const State& s, const char* name);
 // profiles (GuestGamertag in server/guests.h): letters and digits compared
 // without case, spaces or accents (Ø as O, Æ as AE), a long name cut short.
 bool GamertagOf(const char* gamertag, const char* name);
+// The user whose profile is the one with this XUID (16 hex digits, any
+// case) or, failing that, this gamertag; -1 if none.
+int UserOf(const State& s, const char* xuid, const char* gamertag);
 }

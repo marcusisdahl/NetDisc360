@@ -39,6 +39,11 @@ struct Screen {
     char version[48];   // This app's version and build ("v1.1.0-dev  c9c9b76").
     int voteRow[PerConsole];  // The game each controller has picked in the game vote (state.voteOpen).
     bool padOn[PerConsole];   // Which controllers are connected.
+    // Joining: the controller whose "Who are you?" list is open (-1: none),
+    // the row picked and the first row shown (Pick), and the gamertag of the
+    // profile signed in on it when that's no user's ("": none).
+    int picking, pickRow, pickTop;
+    char pickSigned[GamertagBytes];
     Screen();
 };
 // The setup's tabs, and how many rows each has: Players (Add a player, then
@@ -50,6 +55,12 @@ int SetupRows(const State& s, int tab);
 enum { SetupShown = 6 };  // Rows shown at once.
 // The Consoles tab's first rows: Open the party on all, Back to the party on all.
 enum { ConsoleActions = 2 };
+// The "Who are you?" list's rows: Type a new name, then the profile signed
+// in on the controller (when it's no user's), then each user (state.users).
+enum { PickShown = 6 };
+int PickRows(const Screen& screen);
+// Which user row r is (-1: Type a new name, or the signed-in profile).
+int PickUser(const Screen& screen, int r);
 // The consoles to choose the Gamemaster from (those that are on), by
 // hostRow: indices into s.known; count of them.
 int HostChoices(const State& s, int* out);

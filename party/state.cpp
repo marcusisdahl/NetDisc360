@@ -110,6 +110,11 @@ bool Parse(const char* text, unsigned length, State& s) {
             Guest& g=s.guests[s.guestCount++];
             g.here=atoi(NUMBER(0))==1; FIELD(1,g.name); g.gamerscore=atoi(NUMBER(2)); g.joinedHere=atoi(NUMBER(3))==1;
         }
+        else if(!strcmp(key,"user") && n>=6 && s.userCount<UsersMost) {
+            User& u=s.users[s.userCount++];
+            FIELD(0,u.name); FIELD(1,u.gamertag); FIELD(2,u.xuid); u.gamerscore=atoi(NUMBER(3)); FIELD(4,u.where); FIELD(5,u.from);
+            if(!u.name[0]) --s.userCount;
+        }
         else if(!strcmp(key,"known") && n>=4 && s.knownCount<KnownMost) {
             Known& k=s.known[s.knownCount++];
             FIELD(0,k.address); FIELD(1,k.name); FIELD(2,k.state); k.inParty=atoi(NUMBER(3))==1;
@@ -231,5 +236,20 @@ bool GamertagOf(const char* gamertag, const char* name) {
     // A gamertag holds 15 characters: a longer name keeps its start ("Kristoffer H").
     size_t length=strlen(tag);
     return length>=4 && strlen(gamertag)>=12 && !strncmp(tag,plain,length);
+}
+
+int UserOf(const State& s, const char* xuid, const char* gamertag) {
+    // XUIDs as 16 hex digits, compared without case.
+    for(int i=0;xuid && xuid[0] && i<s.userCount;++i) {
+        const char* a=s.users[i].xuid; const char* b=xuid;
+        while(*a && *b && (*a|0x20)==(*b|0x20)) { ++a; ++b; }
+        if(!*a && !*b && s.users[i].xuid[0]) return i;
+    }
+    for(int i=0;gamertag && gamertag[0] && i<s.userCount;++i) {
+        char a[64], b[64];
+        Plain(s.users[i].gamertag,a,sizeof(a)); Plain(gamertag,b,sizeof(b));
+        if(a[0] && !strcmp(a,b)) return i;
+    }
+    return -1;
 }
 }
