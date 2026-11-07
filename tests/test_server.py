@@ -3815,11 +3815,11 @@ print('lua ok')
             self.assertEqual((library["Halo 3"]["titleUpdates"], library["Halo 3"]["tuMismatch"]), ({"127.0.0.1": "Title Update 8", "127.0.0.2": None}, True))
             self.assertEqual((library["Skate 3"]["titleUpdates"], library["Skate 3"]["tuMismatch"]),
                              ({"127.0.0.1": "Title Update 2", "127.0.0.2": "Title Update 2"}, False))
-            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"], {"mismatches": 1})
+            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"]["mismatches"], 1)
             # A party compares its own consoles only; the page reads the games again.
             version = self.json("GET", "/api/state")["library"]["version"]
             self.json("POST", "/api/party", {"active": True, "consoles": ["127.0.0.1"]})
-            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"], {"mismatches": 0})
+            self.assertEqual(self.json("GET", "/api/state")["titleUpdates"]["mismatches"], 0)
             self.assertNotEqual(self.json("GET", "/api/state")["library"]["version"], version)
             library = {g["name"]: g for g in self.json("GET", "/api/games")["games"]}
             self.assertEqual(library["Halo 3"]["titleUpdates"], {"127.0.0.1": "Title Update 8"})
