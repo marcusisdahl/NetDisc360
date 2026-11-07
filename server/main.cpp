@@ -8130,6 +8130,12 @@ struct TuFile {
     DWORD version;      // From its header.
     TuFile() : size(0), titleId(0), mediaId(0), where("live"), version(0) {}
 };
+// A Cache update with no header that says whose it is: only one downloaded
+// here is known to be a game's (by its name). One Aurora downloaded can be a
+// package like those in 000B0000, and is known by its header like them.
+bool TuHeaderless(const TuFile& f) {
+    return !f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder) && !f.titleId;
+}
 struct ConsoleTus {
     long long checkedAt;  // time(); 0: never.
     std::vector<TuFile> files;
@@ -8292,9 +8298,9 @@ std::string TuAsideFolder(const Options& o, DWORD titleId) {
 }
 
 // Reads the update files of the titles on a console: each title's 000B0000
-// and the Cache's TU_ files, with each one's header (Cache updates have
-// none). With o, also those switched off: moved aside by this server, and in
-// Aurora's store (Data\TitleUpdates\<console>\<Title ID>\<Content ID>\).
+// and the Cache's TU_ files, with each one's header (a Cache update may have
+// none, see TuHeaderless). With o, also those switched off: moved aside by
+// this server, and in Aurora's store (Data\TitleUpdates\<console>\<Title ID>\<Content ID>\).
 bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<TuFile>& out, std::string& error, const Options* o=NULL) {
     out.clear();
     for(std::set<DWORD>::const_iterator t=titles.begin();t!=titles.end();++t) {
@@ -8335,6 +8341,7 @@ bool ReadConsoleTus(FtpClient& ftp, const std::set<DWORD>& titles, std::vector<T
         for(size_t i=0;i<cache.size();++i) {
             if(cache[i].folder || cache[i].name.compare(0,3,"TU_")) continue;
             TuFile f; f.path=std::string(tu::CacheFolder)+"/"+cache[i].name; f.name=cache[i].name; f.size=cache[i].size;
+            ReadTuHeader(ftp,f);
             out.push_back(f);
         }
     return true;
@@ -8395,8 +8402,8 @@ std::set<std::string> TuCachedNames(const Options& o, DWORD titleId) {
 
 // Moves the updates of the disc the console loads (but keep) aside, each to
 // <NetISO folder>\NetDisc360\Title updates\<Title ID>\<its Content ID>\, so
-// two of the same name don't meet. A Cache update counts when it was
-// downloaded here for the game (it has no header that says).
+// two of the same name don't meet. A Cache update counts when its header
+// says it's the disc's, or without one, when it was downloaded here for the game.
 void MoveTusAside(FtpClient& ftp, const Options& o, ContentCopy& c, DWORD titleId, DWORD mediaId, const std::string& keep, std::vector<std::string>& moved) {
     std::vector<TuFile> files;
     std::set<DWORD> one; one.insert(titleId);
@@ -8407,7 +8414,7 @@ void MoveTusAside(FtpClient& ftp, const Options& o, ContentCopy& c, DWORD titleI
     for(size_t i=0;i<files.size();++i) {
         const TuFile& f=files[i];
         if(!_stricmp(f.path.c_str(),keep.c_str())) continue;
-        bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+        bool cache=TuHeaderless(f);
         if(cache ? !cached.count(Lower(f.name)) : (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
         // A Cache update has no Content ID: its folder is named by its name and size, short enough for FATX.
         std::string key=Lower(f.name)+"-"+std::to_string(f.size);
@@ -8764,7 +8771,7 @@ bool ConsoleHasGame(const Console& c, const IsoFile& g) {
 
 // Whether a console's file f is XboxUnity's update u of the disc (titleId, mediaId).
 bool TuFileIs(const TuFile& f, const tu::Offer& u, DWORD titleId, DWORD mediaId, const Options& o) {
-    bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+    bool cache=TuHeaderless(f);
     if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) return false;
     std::string path, name;
     return (!f.contentId.empty() && f.contentId==u.hash) || (u.size && tu::SameSize(f.size,u.size) && !cache) ||
@@ -8779,7 +8786,7 @@ int TuOnConsole(const ConsoleTus& t, DWORD titleId, DWORD mediaId, const std::ve
     for(size_t i=0;i<t.files.size();++i) {
         const TuFile& f=t.files[i];
         if(f.where!="live") continue;  // Switched off.
-        bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+        bool cache=TuHeaderless(f);
         if(!cache && (f.titleId!=titleId || (f.mediaId && f.mediaId!=mediaId))) continue;
         bool known=false;
         for(size_t k=0;k<offers.size();++k) {
@@ -8847,9 +8854,9 @@ void TitleUpdates(const std::string& name, bool refresh, web::Reply& out) {
         j.Key("files").Open('[');
         for(size_t k=0;k<t.files.size();++k) {
             const TuFile& f=t.files[k];
-            bool cache=!f.path.compare(0,strlen(tu::CacheFolder),tu::CacheFolder);
+            bool cache=TuHeaderless(f);
             if(!cache && f.titleId!=g.titleId) continue;
-            // A Cache update has no header: only one downloaded here is known to be this game's.
+            // A Cache update without a header: only one downloaded here is known to be this game's.
             int offer=TuOfferOf(o,g.titleId,f,offers);
             if(cache && offer<0) continue;
             if(!cache && f.mediaId && f.mediaId!=g.mediaId) continue;  // Another version of the game's.
