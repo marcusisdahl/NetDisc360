@@ -34,4 +34,20 @@ enum { BootFolderMax = 260 };
 // the folder it is in.
 struct BootLaunch { char text[sizeof(BootData)]; DWORD started; char folder[BootFolderMax]; };
 enum { BootLaunchBefore = sizeof(BootData) + 4 };  // With no folder; sizeof(BootData) alone came before the timer.
+
+// The LAN party's guest profiles (launcher/profiles.h). The server leaves
+// ProfileJob in the helper's folder and starts the helper there from Aurora,
+// with no launch data. The job names the gamertags to make (guest1= to
+// guestN=, ASCII letters, digits and spaces) and the job's number (job=);
+// device=, flags= and zero_tokens= change how xam is called. pictureN= and
+// picture_smallN= name PNG files in the same folder (64 and 32 pixels
+// square) for guest N's gamer picture; profileN=<XUID> instead of guestN=
+// gives a profile that is there already its picture; open_flags= and
+// thumbnail= change how the picture is put in (nia::SetProfilePicture).
+// The helper deletes the job first (so a crash doesn't start it again),
+// makes each profile, writes ProfileDone (job=, then guestN=<offline XUID,
+// 16 hex digits> or errorN=<why>, and pictureN=ok or picture_errorN=<why>)
+// and goes back to Aurora. The server removes the pictures afterwards.
+const char ProfileJob[] = "profiles.job", ProfileDone[] = "profiles.done";
+enum { ProfileJobMost = 16 };
 }

@@ -42,7 +42,10 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include "../shared/isvr.h"
+#include "../server/version.h"
+#include "../shared/build_id.h"
 #include "disc.h"
+#include "profiles_job.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -2089,6 +2092,7 @@ static bool IsTile(const char* xex,const char* mountPath,Settings& settings) {
     char ini[MAX_PATH]; sprintf_s(ini,"%s\\%s",Folder,IniName);
     if(!ReadText(ini,Ini,sizeof(Ini)) || !ReadSettings(Ini,settings)) { UnlinkDrive(TileLink); return false; }
     OpenLog(Folder);
+    Note("NetDisc360.xex %s%s%s",NETDISC_VERSION,NETDISC_COMMIT[0] ? " " : "",NETDISC_COMMIT);
     Note("Tile %s",path);
     Note("ISO %s, Title ID %08X, Media ID %08X",settings.iso,settings.titleId,settings.mediaId);
     Note("NetDisc360's disc drive: %s",disc::Note());
@@ -2280,7 +2284,10 @@ BOOL APIENTRY DllMain(HANDLE module,DWORD reason,LPVOID reserved) {
         FindSwapExports();
         ReadLinkSetting();
         StartWatcher();
+        // The LAN party's guest profiles, made here under Aurora (profiles_job.h).
+        profilejob::Start(Note,Show);
     } else if(reason==DLL_PROCESS_DETACH) {
+        profilejob::Stop();
         disc::Stop();
         StopWatcher();
         UnpatchReceiveBuffer();

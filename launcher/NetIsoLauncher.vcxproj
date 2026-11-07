@@ -30,8 +30,8 @@
     </ImageXex>
     <Deploy><ExcludedFromBuild>true</ExcludedFromBuild></Deploy>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /><ClCompile Include="ui.cpp" /><ClCompile Include="imgui_impl_xbox360.cpp" />
+  <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\shared\isvr.cpp" /><ClCompile Include="..\shared\library.cpp" /><ClCompile Include="ui.cpp" /><ClCompile Include="profiles.cpp" /><ClCompile Include="imgui_impl_xbox360.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_draw.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_widgets.cpp"><WarningLevel>Level3</WarningLevel></ClCompile><ClCompile Include="..\third_party\imgui\imgui_tables.cpp"><WarningLevel>Level3</WarningLevel></ClCompile></ItemGroup>
-  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /><ClInclude Include="ui.h" /><ClInclude Include="imgui_impl_xbox360.h" /><ClInclude Include="..\third_party\imgui\imgui.h" /><None Include="xex.xml" /><None Include="sync.ini" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\shared\platform.h" /><ClInclude Include="..\shared\isvr.h" /><ClInclude Include="..\shared\library.h" /><ClInclude Include="ui.h" /><ClInclude Include="profiles.h" /><ClInclude Include="imgui_impl_xbox360.h" /><ClInclude Include="..\third_party\imgui\imgui.h" /><None Include="xex.xml" /><None Include="sync.ini" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

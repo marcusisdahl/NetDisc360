@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: The dashboard page, made into server/web_page.h (not kept in git)
         run: python3 tools/make_web.py
+      - name: The System Link list is built into the server
+        run: python3 tools/make_systemlink.py --check
       - name: Lua for running NetDisc360's Aurora scripts in the tests
         run: python3 -m pip install --quiet lupa
       - name: Server, discs, Sync and generator tests
@@ -41,7 +43,7 @@ jobs:
           x86_64-w64-mingw32-g++-posix -std=c++14 -O1 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS \
             -o NetDisc360-check.exe server/main.cpp server/tray.cpp server/web.cpp server/config.cpp server/discs.cpp \
             server/discmap.cpp server/xefu.cpp server/ftp.cpp server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/titleupdates.cpp \
-            server/system.cpp server/saves.cpp server/wake.cpp server/http.cpp server/sync.cpp server/health.cpp shared/isvr.cpp shared/library.cpp \
+            server/system.cpp server/saves.cpp server/wake.cpp server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp server/users.cpp server/http.cpp server/sync.cpp server/health.cpp shared/isvr.cpp shared/library.cpp \
             -static -lws2_32 -lwinhttp -liphlpapi -lbcrypt -lcrypt32 -lshell32 -lole32 -luuid -luser32 -lgdi32 -lcomctl32 -ladvapi32
 
   docker:

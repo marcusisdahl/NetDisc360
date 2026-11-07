@@ -28,6 +28,8 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
 // maxFile bytes; Unzip keeps only the names, in lower case, of files of
 // settings' size.
 bool Unpack(const std::string& data, std::map<std::string,std::string>& files, std::string& error, size_t maxFile);
+// The same for any stored zip of Zip's: its files by their paths in it, as they are.
+bool UnzipPaths(const std::string& data, std::map<std::string,std::string>& files, std::string& error);
 
 // Makes a backup of files in folder (made if need be); name gets its file name.
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,

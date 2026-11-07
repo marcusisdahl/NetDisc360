@@ -28,6 +28,13 @@ public:
     U64 Size() const { return size_; }
     bool Connected() const { return socket_!=INVALID_SOCKET; }
     bool Read(U64 offset, DWORD length, unsigned char* data);
+    // NetDisc360's own requests (NetDiscParty.xex, see Connection::PartyRequest
+    // in server/main.cpp): command with index, offset and length, and the
+    // reply's text (its length first, 4 bytes) into text, NUL-terminated.
+    // Longer text than capacity-1 bytes fails. Waits up to the client's
+    // timeout for the reply to start. body: length bytes sent after the
+    // request (PartySignIn's gamertag); NULL for none.
+    bool Text(int command, DWORD index, U64 offset, DWORD length, char* text, DWORD capacity, DWORD& size, const void* body=NULL);
     void Close();
     const char* Error() const { return error_; }
 private:
