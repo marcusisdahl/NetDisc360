@@ -1,12 +1,12 @@
 # Publishes the Docker image to ghcr.io/marcusisdahl/netdisc360:
 # - when a release is published: tagged with its version and latest, with that
-#   release's launchers (NetISO-Sync.zip, which must be attached before the
-#   release is published). It can also be run by hand for an existing release
+#   release's Xbox files (taken out of its NetDisc360.exe, which must be
+#   attached before the release is published). It can also be run by hand for an existing release
 #   tag.
 # - on every push to the dev branch: tagged dev (and dev-<commit>), for
-#   testing what will be in the next release. It uses the dev launchers
-#   (NetISO-Sync.zip on the dev-launchers pre-release, see RELEASING.md), or
-#   the latest release's when there are none.
+#   testing what will be in the next release. It uses the dev build's Xbox
+#   files (NetDisc360.exe on the dev-launchers pre-release, see RELEASING.md),
+#   or the latest release's when there are none.
 name: Docker image
 
 on:
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to publish (its NetISO-Sync.zip is used)
+        description: Release tag to publish (the Xbox files in its NetDisc360.exe are used)
         required: true
 
 permissions:
@@ -76,6 +76,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/${{ env.DEV == 'true' && 'download/dev-launchers' || format('download/{0}', env.TAG) }}/NetISO-Sync.zip
-            LAUNCHER_FALLBACK_URL=${{ env.DEV == 'true' && format('https://github.com/{0}/releases/latest/download/NetISO-Sync.zip', github.repository) || '' }}
+            LAUNCHER_URL=https://github.com/${{ github.repository }}/releases/${{ env.DEV == 'true' && 'download/dev-launchers' || format('download/{0}', env.TAG) }}/NetDisc360.exe
+            LAUNCHER_FALLBACK_URL=${{ env.DEV == 'true' && format('https://github.com/{0}/releases/latest/download/NetDisc360.exe', github.repository) || '' }}
             REQUIRE_LAUNCHER=1
