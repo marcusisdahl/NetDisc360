@@ -511,6 +511,15 @@ button.pill.tu:disabled { opacity: .6; cursor: default; }
 .wz-check.info .badge { background: var(--hover); color: var(--muted); }
 .wz-check .t { font-weight: 580; padding-top: 3px; }
 .wz-check .d { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.health .card-head { flex-wrap: wrap; }
+.health .wz-check { flex-wrap: wrap; }
+.health .wz-check > div { flex: 1 1 260px; min-width: 0; }
+.health .wz-check > .btn { margin-left: auto; flex: none; }
+@media (max-width: 600px) { .health .wz-check > .btn { margin-left: 38px; } }
+.health-sum { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 560; padding: 3px 9px; border-radius: 999px; background: var(--hover); color: var(--muted); }
+.health-sum.good { background: var(--good-soft); color: var(--good); }
+.health-sum.warn { background: var(--warn-soft); color: var(--warn); }
+.health-sum.bad { background: var(--bad-soft); color: var(--bad); }
 .wz-folders { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .wz-total { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .wz-total b { color: var(--text); }
@@ -751,6 +760,7 @@ const Nav = [
   ['games', 'Games', 'gamepad-2'],
   ['updates', 'Title updates', 'refresh-cw'],
   ['consoles', 'Consoles', 'monitor'],
+  ['health', 'Health', 'activity'],
   ['folders', 'Game folders', 'folder'],
   ['log', 'Log', 'scroll-text'],
   ['settings', 'Settings', 'settings'],
@@ -829,6 +839,7 @@ function updateFrame(problem) {
   for (const a of document.querySelectorAll('.nav a')) {
     const n = counts[a.dataset.page];
     if (a.dataset.page === 'games' && S.library.conflicts) fill($('.count', a), h('span.flag', { title: choosePhrase(S.library.conflicts) }, S.library.conflicts));
+    else if (a.dataset.page === 'health' && S.health && S.health.problems) fill($('.count', a), h('span.flag', { title: plural(S.health.problems, 'console has a problem', 'consoles have problems') }, S.health.problems));
     else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else if (a.dataset.page === 'updates' && tuGamesBehind().length) {
       const n = tuGamesBehind().length;
@@ -1887,7 +1898,7 @@ function queueCard(drawnKey) {
 Pages.consoles = root => {
   const list = h('div.consoles');
   const which = h('div'), queue = h('div');
-  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.', h('button.btn', { onclick: setupCheck }, ic('scan', 'sm'), 'Check my setup')), h('div.stack', queue, list, which));
+  root.append(header('Consoles', 'Every console that used this server. Several can play at once, each its own game.', h('a.btn', { href: '#health' }, ic('activity', 'sm'), 'Health'), h('button.btn', { onclick: setupCheck }, ic('scan', 'sm'), 'Check my setup')), h('div.stack', queue, list, which));
   let queued = '';
   let mounted = false, only;
   function form() {
@@ -2098,6 +2109,131 @@ async function missingArt(address, button) {
 }
 
 // Game folders ------------------------------------------------------------------------
+
+// Health: what keeps each console from playing the games here (Aurora not
+// running, NetDisc360.xex not loading, its address or server wrong, NetISO.xex
+// in the way, LiNK on), with a button for what NetDisc360 can fix. The server
+// finds each as a check {id, tone, fix} (/api/health/check); this words them.
+const HealthFixes = {
+  'plugin-add': ['Add it', 'Add NetDisc360.xex to launch.ini?', 'NetDisc360 keeps a copy of launch.ini on this computer, then adds NetDisc360.xex as a plugin and points its NetDisc360.ini here. Restart the Xbox afterwards.'],
+  'plugin-put': ['Put the right one there', 'Replace NetDisc360.xex on the console?', 'NetDisc360 keeps a copy of the console’s file on this computer, then puts its own NetDisc360.xex (loads at 0x91C00000) in its place. Restart the Xbox afterwards.'],
+  server: ['Point it here', 'Point NetDisc360.xex to this computer?', 'NetDisc360 keeps a copy of the file on this computer, then sets server= to this computer’s address. Restart the Xbox afterwards.'],
+  'netiso-off': ['Take NetISO.xex out', 'Take NetISO.xex out of launch.ini?', 'NetDisc360 keeps a copy of launch.ini on this computer, then puts ; in front of NetISO.xex’s line, so it’s easy to put back. Restart the Xbox afterwards.'],
+  'link-off': ['Turn LiNK off', 'Turn LiNK off in Aurora?', 'This changes Aurora’s own settings. NetDisc360 keeps a copy of Aurora’s settings.db on this computer, then adds a script that turns LiNK off once as Aurora starts, and restarts Aurora (only while it’s on screen). Restart the Xbox afterwards, so Nova starts without it.'],
+};
+const ftpShown = p => (p || '').replace(/^\/(\w+)\//, '$1:\\').replace(/\//g, '\\');
+
+function healthLines(r) {
+  const d = r.drive || {}, here = (S.addresses || []).join(' or ') || 'this computer';
+  const ini = r.launchIni ? h('code', ftpShown(r.launchIni)) : 'launch.ini';
+  const name = d.name || 'NetDisc360.xex';
+  const text = {
+    restarting: ['Aurora is starting again', 'NetDisc360 leaves it alone for a moment, so Aurora can load its plugins. Check again in a minute.'],
+    'in-game': ['It’s playing a game', 'Aurora’s FTP server doesn’t run during a game. Check again when it’s back in Aurora.'],
+    'no-aurora': ['Aurora isn’t answering', 'The console is on (its debug monitor answers), but Aurora’s FTP server isn’t. Start Aurora, with its FTP server on (Aurora’s settings, Network).'],
+    offline: ['Nothing answers at ' + r.address, 'It’s off, or not on this network.'],
+    busy: ['It’s busy', 'NetDisc360 is updating its games right now. Check again in a minute.'],
+    login: ['The FTP login didn’t work', 'Set Aurora’s FTP user name and password under Settings, Xbox & Aurora. (' + (r.loginError || '') + ')'],
+    'no-launch-ini': ['No launch.ini found', 'DashLaunch reads it from the root of the USB stick or the hard drive. Without it, no plugin loads.'],
+    'no-plugin': ['launch.ini doesn’t load NetDisc360.xex', r.pluginThere ? ['It’s on the console at ', h('code', r.pluginThere), '; add it as plugin ' + r.freeSlot + ' of ', ini, '.']
+      : !r.freeSlot ? ['It’s the disc drive the games come from. ', ini, ' has 5 plugins, the most DashLaunch loads: take one out to make room.']
+      : r.pluginFile ? 'It’s the disc drive the games come from. NetDisc360 can put its own copy on the console and add it as plugin ' + r.freeSlot + '.'
+      : ['It’s the disc drive the games come from. Get it from NetDisc360’s release, copy it to the console and add it to ', ini, '.']],
+    'plugin-missing': [name + ' isn’t where launch.ini says', [h('code', d.path || ''), r.pluginFile ? '. NetDisc360 can put its own copy there.' : '. Copy NetDisc360.xex from the release there.']],
+    'plugin-base': d.base === '91C00000' ? [name + ' loads at 0x91C00000', 'The address every console’s copy has.']
+      : [d.base === '00000000' ? name + ' isn’t an Xbox 360 XEX' : name + ' loads at 0x' + d.base + ', not 0x91C00000',
+        [d.base === '91380000' ? 'That’s an older build: some consoles load aac.xex there first, so it never loads. ' : 'It needs to be the same build every console has. ',
+          r.pluginFile ? 'NetDisc360 can put its own copy there.' : h('span', h('a', { href: 'https://github.com/marcusisdahl/NetDisc360/releases/latest', target: '_blank', rel: 'noopener noreferrer' }, 'Get the newest'), ' and copy it over ', h('code', d.path || ''), '.')]],
+    loaded: [name + ' is running', 'At 0x' + ((d.loaded || {}).base || '') + ', its debug monitor says.'],
+    'not-loaded': [name + ' isn’t running', r.taken ? r.taken.name + ' sits at 0x' + r.taken.base + ', where it should load, so it can’t.'
+      : (r.checks || []).some(c => c.id.startsWith('plugin-') && c.tone === 'bad') ? 'The problem above is why.'
+      : 'launch.ini lists it, but the console didn’t load it. If launch.ini changed since the console started, restart it.'],
+    server: [ftpShown(d.serverFrom) + ' points to this computer', d.server],
+    'server-other': [d.serverFrom ? ftpShown(d.serverFrom) + ' says ' + (d.server || 'nothing') : 'Nothing tells ' + name + ' where this computer is',
+      'So its disc drive looks for the games elsewhere. This computer is ' + here + '.'],
+    'netiso-first': ['NetISO.xex is the disc drive', ['NetDisc360.xex has its own, faster one, which stays off while NetISO.xex loads first. Take NetISO.xex out of ', ini, ' to use it.']],
+    'netiso-after': ['NetISO.xex loads after NetDisc360.xex', ['Two disc drives don’t mix. Take NetISO.xex out of ', ini, '.']],
+    'too-many': ['launch.ini has ' + r.plugins + ' plugins', 'DashLaunch loads 5 at most.'],
+    connected: ['Connected to NetDisc360', 'Its disc drive talks to this computer.'],
+    'not-connected': ['Not connected to NetDisc360', (r.checks || []).some(c => c.tone === 'bad' && c.id !== 'not-connected' && !c.id.startsWith('link'))
+      ? 'The problems above are why.' : 'Aurora runs, but its plugin hasn’t connected here. Restart the Xbox after a change to launch.ini or NetDisc360.ini.'],
+    'link-off': ['LiNK is off', 'Nova leaves System Link to the games, as original Xbox games streamed from here need.'],
+    'link-on': ['LiNK is on', r.nova ? 'Aurora’s LiNK (Settings, Modules, Nova) takes the System Link traffic, so original Xbox games streamed from here don’t find the other consoles.'
+      : 'Nova isn’t loaded, so it does nothing now, but it would take the System Link traffic once Nova loads.'],
+    'link-pending': ['LiNK goes off as Aurora starts', 'Restart Aurora, then the Xbox, so Nova starts without it.'],
+    'link-unknown': ['Couldn’t read whether LiNK is on', r.linkError || ''],
+  };
+  return (r.checks || []).map(c => [c, text[c.id] || [c.id, '']]);
+}
+
+Pages.health = root => {
+  const list = h('div.stack.health'), found = h('div');
+  const results = {}, checking = {};
+  let gone = false, scanned = null;
+  const addresses = () => [...new Set([...S.consoles.map(c => c.address), ...(scanned || []).filter(f => f.aurora).map(f => f.address)])];
+  async function check(address) {
+    checking[address] = true; draw();
+    try { results[address] = await api('health/check', { address }); }
+    catch (e) { results[address] = { address, failed: e.message, checks: [] }; }
+    checking[address] = false;
+    if (!gone) draw();
+  }
+  const checkAll = () => addresses().forEach(check);
+  async function fix(button, address, id) {
+    const [, title, what] = HealthFixes[id];
+    if (!await confirmBox(title, what, HealthFixes[id][0], id === 'link-off')) return;
+    button.disabled = true;
+    try {
+      const r = await api('health/fix', { address, fix: id });
+      toast(r.note);
+      // Aurora restarting: nothing goes to it while it loads its plugins.
+      setTimeout(() => { if (!gone) check(address); }, id === 'link-off' ? 50000 : 500);
+    } catch (e) { toast(e.message, true); button.disabled = false; }
+  }
+  async function scan(button) {
+    button.disabled = true;
+    fill(found, h('div.card', h('div.card-body', h('div.wz-status', h('span.wz-radar', ic('radar', 'sm')), h('span', 'Looking for consoles on this network…')))));
+    try {
+      const r = await api('consoles/find', {});
+      scanned = r.found;
+      const fresh = r.found.filter(f => !S.consoles.some(c => c.address === f.address));
+      fill(found, fresh.length ? h('div.notice.info', ic('radar'), h('span', 'Found ' + plural(fresh.length, 'console', 'consoles') + ' that haven’t connected here: ' + fresh.map(f => f.address).join(', ') + '. Checking ' + (fresh.length > 1 ? 'them' : 'it') + ' too.'))
+        : h('div.notice.info', ic('radar'), h('span', 'No other consoles on ' + r.networks.join(', ') + '.')));
+      fresh.filter(f => f.aurora || f.xbdm).forEach(f => check(f.address));
+    } catch (e) { fill(found, h('div.notice', ic('circle-alert'), h('span', e.message))); }
+    button.disabled = false;
+  }
+  function draw() {
+    const all = addresses();
+    if (!all.length) { fill(list, h('div.card', h('div.card-body', h('p.muted', 'No console has used NetDisc360 yet. Look for consoles on the network to check one whose plugin isn’t connecting.')))); return; }
+    fill(list, all.map(address => {
+      const r = results[address], busy = checking[address];
+      const bad = r ? r.checks.filter(c => c.tone === 'bad').length : 0, warn = r ? r.checks.filter(c => c.tone === 'warn').length : 0;
+      const sum = !r ? (busy ? 'Checking…' : 'Not checked') : r.failed ? 'The check didn’t work' : bad ? plural(bad, 'problem', 'problems') : warn ? plural(warn, 'thing', 'things') + ' to look at' : r.checks.some(c => c.tone === 'good') ? 'Healthy' : 'Nothing to check now';
+      const tone = !r || r.failed ? 'info' : bad ? 'bad' : warn ? 'warn' : r.checks.some(c => c.tone === 'good') ? 'good' : 'info';
+      const lines = r ? (r.failed ? [wzCheck('bad', 'The check didn’t work', r.failed)] : healthLines(r).map(([c, [title, detail]]) => {
+        const li = wzCheck(c.tone, title, detail);
+        if (c.fix && HealthFixes[c.fix] && (c.tone === 'bad' || c.tone === 'warn'))
+          li.append(h('button.btn.small', { onclick: e => fix(e.target, address, c.fix) }, ic('check', 'sm'), HealthFixes[c.fix][0]));
+        return li;
+      })) : [];
+      // Problems first, then the rest.
+      const order = { bad: 0, warn: 1, info: 2, good: 3 };
+      lines.sort((a, b) => order[['bad', 'warn', 'info', 'good'].find(t => a.classList.contains(t))] - order[['bad', 'warn', 'info', 'good'].find(t => b.classList.contains(t))]);
+      return h('div.card', h('div.card-head', ic('monitor'), h('h2', 'Xbox ' + address),
+          h('span.health-sum.' + tone, ic({ good: 'circle-check', warn: 'triangle-alert', bad: 'circle-alert', info: 'info' }[tone], 'sm'), sum),
+          h('button.btn.small', { style: { marginLeft: 'auto' }, disabled: busy, onclick: () => check(address) }, ic(busy ? 'loader-circle' : 'refresh-cw', busy ? 'sm spin' : 'sm'), busy ? 'Checking' : 'Check again')),
+        h('div.card-body', lines.length ? h('ul.wz-checks', lines) : h('p.muted', busy ? 'Reading launch.ini, the plugin and Aurora’s settings…' : ''),
+          r && r.at ? h('div.muted', { style: { fontSize: '12px', marginTop: '6px' } }, 'Checked ' + ago(r.at) + (r.xbdm === false && r.ftp ? '. Load xbdm.xex as a plugin to see what actually runs.' : '.')) : null));
+    }));
+  }
+  root.append(header('Health', 'Catches what keeps a console from playing the games here: Aurora not running, NetDisc360.xex not loading, LiNK on, and more. Fixes what it can.',
+    h('button.btn', { onclick: e => scan(e.target) }, ic('radar', 'sm'), 'Look on the network'),
+    h('button.btn.primary', { onclick: checkAll }, ic('refresh-cw', 'sm'), 'Check all')), h('div.stack', found, list));
+  draw();
+  checkAll();
+  return { leave() { gone = true; }, update() { const known = addresses().filter(a => !(a in results) && !checking[a]); known.forEach(check); } };
+};
 
 Pages.folders = root => {
   const list = h('div.card');

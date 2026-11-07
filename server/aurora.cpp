@@ -316,6 +316,26 @@ bool Xbdm(DWORD address, int port, const std::string& command, std::string& erro
     return true;
 }
 
+bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error) {
+    std::string response;
+    answer.clear();
+    bool ok=Exchange(address,port,command+"\r\nbye\r\n",5,response);
+    if(response.compare(0,3,"201")) {
+        error="its debug monitor (xbdm, port "+std::to_string(port)+") doesn't answer; it runs only where xbdm.xex is loaded as a DashLaunch plugin";
+        return false;
+    }
+    size_t line=response.find("\r\n");
+    answer=line==std::string::npos ? std::string() : response.substr(line+2);
+    size_t bye=answer.rfind("200- bye");
+    if(bye!=std::string::npos) answer.erase(bye);
+    if(answer.empty() || answer[0]!='2') {
+        error="its debug monitor answered \""+answer.substr(0,answer.find("\r\n"))+"\"";
+        return false;
+    }
+    (void)ok;
+    return true;
+}
+
 std::string DevicePath(const std::string& ftpPath) {
     std::string lower=Lower(ftpPath);
     if(lower.compare(0,5,"/hdd1") || (lower.size()>5 && lower[5]!='/')) return std::string();
@@ -549,6 +569,26 @@ pcall(NetDiscHideHelper)
         "   end\n"
         "   if NetDiscOnline then return true end\n"
         "   return string.find(\"\\\\\" .. string.lower(Content.Directory or \"\"), NetDiscTiles, 1, true) == nil\n"
+        "end\n";
+    return Crlf(text);
+}
+
+const char LinkOffScriptPath[] = "/User/Scripts/Content/Filters/NetDiscLinkOff.lua";
+
+std::string LinkOffScript(const std::string& done) {
+    std::string text=
+        "-- Written by NetDisc360 when \"Turn LiNK off\" was chosen on its Health page.\n"
+        "-- With LiNK on, Nova takes the System Link traffic of games streamed from\n"
+        "-- NetDisc360, so they don't find the other consoles. As Aurora starts, this\n"
+        "-- turns LiNK off in Aurora's settings once and writes what it did to\n"
+        "-- NetDiscLinkDone; while that file is there it does nothing, so LiNK\n"
+        "-- switched on again in Aurora stays on. Restart the console afterwards.\n"
+        "local NetDiscLinkDone = "+LuaQuote(ScriptPath(done))+"\n"
+        "\n"
+        "local NetDiscLinkRead, NetDiscLinkThere = pcall(FileSystem.FileExists, NetDiscLinkDone)\n"
+        "if Sql ~= nil and NetDiscLinkRead and NetDiscLinkThere ~= true then\n"
+        "   local ok, result = pcall(Sql.Execute, \"UPDATE Config.SystemSettings SET Value = '0' WHERE Name = 'PluginLiNK'\")\n"
+        "   pcall(FileSystem.WriteFile, NetDiscLinkDone, (ok and result ~= false) and \"off\\r\\n\" or \"error\\r\\n\")\n"
         "end\n";
     return Crlf(text);
 }
