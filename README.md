@@ -491,6 +491,12 @@ Versions before this one kept everything in `Hdd1:\NetISO`. Now the game folders
 
 **Settings > Backups** keeps copies of your settings: `netdisc.ini` and the disc map, never your games. NetDisc360 backs them up by itself once a week (or every day, or turn it off), and before every update and every restore, keeping the newest five of those. **Back up now** makes one that stays until you delete it. Each backup can be downloaded, restored or deleted, and **Restore from a file** brings back one you downloaded, or a `netdisc.ini` by itself, for example on a new PC or from the Windows app into Docker. Restored settings apply at once; a changed port takes effect at the next start. The backups are zips in the `Backups` folder next to the settings file (`%APPDATA%\NetDisc360\Backups`, or `/config/Backups` in Docker).
 
+### Sync between computers
+
+Take a laptop along and your game save backups, profile backups and play history come with you. **Settings > Sync** connects NetDisc360 to a small sync service on your own Cloudflare account (a Worker that keeps the files in R2, usually within the free tier), set up once with the steps in [`sync/README.md`](sync/README.md). Each computer connects with the owner key and gets a key of its own. From then on each one syncs when it starts, every 5 minutes and after each save backup, so a save backed up on one computer shows under **Settings > Backups > Game saves** on the others, ready to restore on a console there. Game folders, consoles and passwords stay on each computer, and nothing is ever deleted in the cloud. The sidebar says when the last sync was, and **Settings > Sync** how much the cloud holds.
+
+**Saves follow the profile.** When a console is in Aurora, each profile on it gets that game's newest saves from your save backups, made on any console and synced from any computer. Nothing is lost on the way: if the console's saves are already in a backup (older ones), the newest simply go on; if they are in no backup, they are backed up first. When a profile played on two consoles since they last matched, both are kept and the dashboard asks which to use (**Keep this console's** makes them the newest everywhere, **Use the other's** puts those on this console). Only the saves of profiles that are on the console are touched, and only for games with a save backup. Turn it off under **Settings > Backups > Game saves**.
+
 ## The server in detail
 
 What `NetDisc360.exe` does, all from one file:
@@ -530,6 +536,7 @@ What `NetDisc360.exe` does, all from one file:
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--installed <folders>` | `/Hdd1/Games` | Where games installed on the console are, as FTP paths with semicolons between. Those, and Games on Demand, get no tile. |
 | `--no-installed` | | Give installed games a tile too, which asks which copy to play. |
+| `--installed-every <s>` | 300 | How often each console's installed games are looked at again, so a game installed or deleted on the console (in Aurora, over FTP) gets or loses its tile. They're also looked at when Aurora starts and when a game ends; `0`: only then. |
 | `--no-aurora-scripts` | | Don't write the cleanup script and the "Hide PC games while NetDisc360 is off" filter. |
 | `--aurora-web-port <n>` | 9999 | Aurora's web server, for starting games from the dashboard, the console's status and screenshots, and restarting Aurora. |
 | `--xbdm-port <n>` | 730 | The consoles' debug monitor (`xbdm.xex`), which turns them off. |
@@ -638,6 +645,8 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 ```
 
 This makes `build\NetDisc360.exe` (with the launcher built in), `build\NetDisc360.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
+
+After a build, `.\store\package.ps1` (needs [7-Zip](https://www.7-zip.org/)) makes `build\NetDisc360-<version>.7z` for the Xbox 360 Homebrew Store, with `NetDisc360.xex`, [`store\readme.txt`](store/readme.txt) and the license, which the store unpacks into `Apps\NetDisc360\`, and `build\NetDisc360-<version>.ini`, the store entry made from [`store\consolemods.ini`](store/consolemods.ini).
 
 Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev), not `main`: each change there is published as the `dev` Docker image for testing, and `main` only gets `dev` merged into it for a release. To make a release, see [RELEASING.md](RELEASING.md).
 

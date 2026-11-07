@@ -246,12 +246,17 @@ private:
 // hash block and 0xCC data blocks, 4 KB each; every file but the last holds
 // 0xA1C4 data blocks. Xenia reads them the same way (stfs_container_device.cc).
 // Packages made with iso2god (the "XSF" layout) have the volume descriptor at
-// 0x10000 of the data, ones from Microsoft ("EGDF") at 0.
+// 0x10000 of the data, ones from Microsoft ("EGDF") at 0. In an EGDF package
+// only the descriptor's block comes from there: the data after it is the
+// partition from the header's start block on (4 KB blocks), and the empty
+// sectors in between aren't in the package. Xenia subtracts the same start
+// (svod_container_device.cc BlockToOffset). Red Faction Guerrilla's
+// default.xex was only found this way.
 
 enum { GodBlock = 0x1000, GodGroupData = 0xCC, GodPartData = 0xA1C4, GodContentType = 0x7000, GodHeaderRead = 0x600 };
 const U64 GodPartBytes = U64(GodPartData)*GodBlock;
 
-struct GodHeader { DWORD titleId, mediaId; int disc, discs; std::string title; };
+struct GodHeader { DWORD titleId, mediaId, dataStart; int disc, discs; std::string title; };
 
 bool ReadGodHeader(const std::string& path, GodHeader& header) {
     File f; unsigned char h[GodHeaderRead];
@@ -259,6 +264,8 @@ bool ReadGodHeader(const std::string& path, GodHeader& header) {
     if(memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) return false;
     if(Big32(h+0x344)!=GodContentType) return false;
     header.titleId=Big32(h+0x360); header.mediaId=Big32(h+0x354); header.disc=h[0x366]; header.discs=h[0x367];
+    // The SVOD volume descriptor's start data block, 24 bits little-endian.
+    header.dataStart=DWORD(h[0x395])|(DWORD(h[0x396])<<8)|(DWORD(h[0x397])<<16);
     header.title.clear();
     for(int i=0;i<0x80;++i) {  // UTF-16BE, from 0x411.
         unsigned c=(unsigned(h[0x411+i*2])<<8)|h[0x412+i*2];
@@ -300,18 +307,33 @@ public:
             if(!memcmp(magic,Magic,MagicSize)) { magicAt_=at[i]; found=true; }
         }
         if(!found) { error="it holds no Xbox 360 disc"; return false; }
-        U64 partition=PartitionStart(dataBytes_+0x10000-magicAt_);
-        base_=partition+0x10000-magicAt_;
-        size_=ImageSize(partition,base_+dataBytes_);
+        GodHeader h;
+        U64 start=0;  // Where the data after the first block is in the partition.
+        if(!magicAt_ && dataBytes_>GodBlock && ReadGodHeader(header,h)) start=U64(h.dataStart)*GodBlock;
+        U64 partition=PartitionStart(start ? start+dataBytes_-GodBlock : dataBytes_+0x10000-magicAt_);
+        runs_.clear();
+        if(start) {
+            Run rest={ partition+start, GodBlock, dataBytes_-GodBlock }, first={ partition+0x10000, 0, GodBlock };
+            runs_.push_back(rest); runs_.push_back(first);  // The descriptor last, so it wins if they overlap.
+        } else {
+            Run all={ partition+0x10000-magicAt_, 0, dataBytes_ };
+            runs_.push_back(all);
+        }
+        U64 end=0;
+        for(size_t i=0;i<runs_.size();++i) if(runs_[i].image+runs_[i].length>end) end=runs_[i].image+runs_[i].length;
+        size_=ImageSize(partition,end);
         return true;
     }
     U64 Size() const { return size_; }
     bool Read(U64 offset, unsigned char* data, DWORD length) {
         memset(data,0,length);
         U64 end=offset+length;
-        if(end<=base_ || offset>=base_+dataBytes_) return true;
-        U64 from=offset<base_ ? base_ : offset, to=end>base_+dataBytes_ ? base_+dataBytes_ : end;
-        return ReadData(from-base_,data+(from-offset),DWORD(to-from));
+        for(size_t i=0;i<runs_.size();++i) {
+            const Run& r=runs_[i];
+            U64 from=offset<r.image ? r.image : offset, to=end>r.image+r.length ? r.image+r.length : end;
+            if(from<to && !ReadData(r.data+(from-r.image),data+(from-offset),DWORD(to-from))) return false;
+        }
+        return true;
     }
     std::string Description() const {
         char text[64]; _snprintf_s(text,sizeof(text),_TRUNCATE,"GOD package, %d part(s)",int(parts_.size()));
@@ -332,9 +354,13 @@ private:
         }
         return true;
     }
+    // Where the package's data is on the disc: from image, length bytes of
+    // data from data on.
+    struct Run { U64 image, data, length; };
     std::vector<std::unique_ptr<File> > parts_;
+    std::vector<Run> runs_;
     DWORD last_;
-    U64 dataBytes_, magicAt_, base_, size_;
+    U64 dataBytes_, magicAt_, size_;
 };
 
 // Extracted games ------------------------------------------------------------
@@ -857,9 +883,15 @@ void AddGod(const std::string& folder, int depth, const Entry& header, std::vect
     std::vector<Entry> parts;
     if(List(path+".data",parts)) for(size_t i=0;i<parts.size();++i) disc.size+=parts[i].size;
     // <game>\<Title ID>\00007000\<header>: the game's folder names it, as the
-    // user named it. Without one, the title in the package does.
-    std::string name;
-    if(depth>=3) name=CleanName(Leaf(Parent(Parent(folder))));
+    // user named it, also with the Title ID or 00007000 folder left out
+    // (<game>\00007000\<header> was named after the folder above <game>).
+    // Without one, the title in the package does.
+    std::string name, at=folder;
+    int up=depth;
+    char titleId[16]; _snprintf_s(titleId,sizeof(titleId),_TRUNCATE,"%08X",(unsigned)h.titleId);
+    if(up>0 && !_stricmp(Leaf(at).c_str(),"00007000")) { at=Parent(at); --up; }
+    if(up>0 && !_stricmp(Leaf(at).c_str(),titleId)) { at=Parent(at); --up; }
+    if(up>0) name=CleanName(Leaf(at));
     if(name.empty()) name=CleanName(h.title);
     if(name.empty()) name=CleanName(header.name);
     if(h.discs>1 && h.disc>0) { char suffix[24]; _snprintf_s(suffix,sizeof(suffix),_TRUNCATE," - Disc %d",h.disc); name+=suffix; }

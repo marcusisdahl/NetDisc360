@@ -19,7 +19,7 @@ const size_t MaxFile = 64 << 20, MaxTotal = 256 << 20;
 const char ProfileFolder[] = "FFFE07D1/00010000";
 const char SaveType[] = "00000001";
 
-std::string Hex(DWORD value) { char text[9]; snprintf(text,sizeof(text),"%08X",value); return text; }
+std::string Hex(DWORD value) { char text[9]; snprintf(text,sizeof(text),"%08X",(unsigned)value); return text; }
 bool HexName(const std::string& name, size_t length) {
     if(name.size()!=length) return false;
     for(size_t i=0;i<length;++i) if(!isxdigit((unsigned char)name[i])) return false;
@@ -151,14 +151,14 @@ bool Titles(nia::FtpClient& ftp, std::set<DWORD>& titles, std::string& error) {
 }
 
 bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const std::string& game, int keep,
-          Result& result, std::string& error, const std::map<std::string,std::string>& known) {
+          Result& result, std::string& error, const std::map<std::string,std::string>& known, const std::string& extra) {
     result=Result(); result.profiles=0; result.files=0; result.bytes=0; result.same=false;
     std::vector<std::string> profiles;
     if(!Profiles(ftp,profiles,error)) return false;
     std::map<std::string,std::string> files;
     std::string ini="[Save]\r\ntitle_id="+Hex(titleId)+"\r\ngame="+game+"\r\n";
     long long now=(long long)time(NULL);
-    ini+="time="+std::to_string(now)+"\r\n";
+    ini+="time="+std::to_string(now)+"\r\n"+extra;
     size_t total=0;
     for(size_t p=0;p<profiles.size();++p) {
         std::string profileFolder=std::string(ContentFolder)+"/"+profiles[p], titleName, typeName;
@@ -243,6 +243,12 @@ bool Put(nia::FtpClient& ftp, const std::string& data, int& written, std::string
     written=0;
     std::map<std::string,std::string> files;
     if(!backup::Unpack(data,files,error,MaxFile)) return false;
+    return PutFiles(ftp,files,std::string(),written,error);
+}
+
+bool PutFiles(nia::FtpClient& ftp, const std::map<std::string,std::string>& in, const std::string& only, int& written, std::string& error) {
+    written=0;
+    std::map<std::string,std::string> files=in;
     if(!files.count("save.ini")) { error="That isn't a save backup."; return false; }
     std::string title=Upper(Value(files["save.ini"],"title_id"));
     if(!HexName(title,8)) { error="That save backup names no Title ID."; return false; }
@@ -254,6 +260,7 @@ bool Put(nia::FtpClient& ftp, const std::string& data, int& written, std::string
         if(slash==std::string::npos) continue;
         std::string profile=f->first.substr(0,slash), name=f->first.substr(slash+1), there;
         if(!HexName(profile,16) || name.empty() || name.find_first_of("/\\")!=std::string::npos || name==".." || name==".") continue;
+        if(!only.empty() && Upper(profile)!=Upper(only)) continue;
         bool known=false;
         for(size_t i=0;i<profiles.size() && !known;++i) if(Upper(profiles[i])==profile) { known=true; there=profiles[i]; }
         if(!known) continue;
@@ -267,6 +274,94 @@ bool Put(nia::FtpClient& ftp, const std::string& data, int& written, std::string
         ++written;
     }
     if(!written) { error="None of the profiles in that backup are on this console."; return false; }
+    return true;
+}
+
+bool ProfilesOn(nia::FtpClient& ftp, std::vector<std::string>& xuids, std::string& error) {
+    std::vector<std::string> profiles;
+    if(!Profiles(ftp,profiles,error)) return false;
+    xuids.clear();
+    for(size_t i=0;i<profiles.size();++i) xuids.push_back(Upper(profiles[i]));
+    return true;
+}
+
+bool Collect(nia::FtpClient& ftp, DWORD titleId, std::map<std::string,std::string>& files, std::string& error) {
+    files.clear();
+    std::vector<std::string> profiles;
+    if(!Profiles(ftp,profiles,error)) return false;
+    size_t total=0;
+    for(size_t p=0;p<profiles.size();++p) {
+        std::string profileFolder=std::string(ContentFolder)+"/"+profiles[p], titleName, typeName;
+        std::vector<nia::FtpEntry> entries;
+        if(!ftp.List(profileFolder.c_str(),entries)) { error=ftp.Error(); return false; }
+        if(!Has(entries,Hex(titleId),titleName)) continue;
+        if(!ftp.List((profileFolder+"/"+titleName).c_str(),entries)) { error=ftp.Error(); return false; }
+        if(!Has(entries,SaveType,typeName)) continue;
+        std::string saveFolder=profileFolder+"/"+titleName+"/"+typeName;
+        if(!ftp.List(saveFolder.c_str(),entries)) { error=ftp.Error(); return false; }
+        for(size_t i=0;i<entries.size();++i) {
+            if(entries[i].folder) continue;
+            std::vector<unsigned char> data;
+            if(!ftp.Retrieve((saveFolder+"/"+entries[i].name).c_str(),data,MaxFile)) { error=ftp.Error(); return false; }
+            total+=data.size();
+            if(total>MaxTotal) { error="This game's saves are over 256 MB together."; return false; }
+            files[Upper(profiles[p])+"/"+entries[i].name].assign(data.begin(),data.end());
+        }
+    }
+    return true;
+}
+
+std::string ProfileSaves(const std::map<std::string,std::string>& files, const std::string& xuid) {
+    std::string out, prefix=Upper(xuid)+"/";
+    for(std::map<std::string,std::string>::const_iterator f=files.begin();f!=files.end();++f) {
+        if(Upper(f->first.substr(0,prefix.size()))!=prefix) continue;
+        std::string name=f->first.substr(prefix.size());
+        out+=std::to_string(name.size())+":"+name+std::to_string(f->second.size())+":"+f->second;
+    }
+    return out;
+}
+
+bool Read(const std::string& folder, const std::string& name, std::map<std::string,std::string>& files, std::string& error) {
+    std::string data;
+    files.clear();
+    if(!Named(name) || !config::ReadFile(Path(folder,name),data,MaxTotal+(16<<20))) { error=name+" couldn't be read."; return false; }
+    if(!backup::Unpack(data,files,error,MaxFile)) return false;
+    if(!files.count("save.ini")) { error=name+" isn't a save backup."; return false; }
+    return true;
+}
+
+std::string IniValue(const std::string& ini, const std::string& key) { return Value(ini,key); }
+
+bool Copy(const std::string& folder, const std::string& name, const std::string& drop, const std::string& extra, std::string& made, std::string& error) {
+    std::map<std::string,std::string> files;
+    if(!Read(folder,name,files,error)) return false;
+    // save.ini without the drop key's line, with time and extra anew.
+    std::string ini, old=files["save.ini"];
+    long long now=(long long)time(NULL);
+    for(size_t at=0;at<old.size();) {
+        size_t end=old.find('\n',at); if(end==std::string::npos) end=old.size();
+        std::string line=old.substr(at,end-at); at=end+1;
+        if(!line.empty() && line[line.size()-1]=='\r') line.erase(line.size()-1);
+        if(line.empty() || (!drop.empty() && !line.compare(0,drop.size()+1,drop+"=")) || !line.compare(0,5,"time=")) continue;
+        ini+=line+"\r\n";
+    }
+    ini+="time="+std::to_string(now)+"\r\n"+extra;
+    files["save.ini"]=ini;
+    std::vector<Backup> before=List(folder);
+    for(time_t t=time_t(now);;++t) {
+        char stamp[32]; struct tm local;
+#ifdef _WIN32
+        localtime_s(&local,&t);
+#else
+        localtime_r(&t,&local);
+#endif
+        strftime(stamp,sizeof(stamp),"%Y-%m-%d_%H-%M-%S",&local);
+        made=name.substr(0,8)+"_"+stamp+".zip";
+        bool taken=false;
+        for(size_t i=0;i<before.size() && !taken;++i) taken=before[i].name==made;
+        if(!taken) break;
+    }
+    if(!config::WriteFile(Path(folder,made),backup::Zip(files,now),false)) { error="Can't write "+Path(folder,made)+"."; return false; }
     return true;
 }
 }
