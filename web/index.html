@@ -2076,16 +2076,21 @@ function tuBox(g) {
     catch (e) { failed = e.message; }
     loading = false; draw();
   }
+  // Both say whether the server took it, so a dropdown keeps its choice when it didn't.
   async function put(button, body) {
     button.disabled = true;
-    try { const r = await api('titleupdates/install', Object.assign({ game: g.name }, body)); toast(r.queued > 1 ? r.queued + ' consoles get it' : 'It’s on its way'); await refresh(); }
+    let ok = false;
+    try { const r = await api('titleupdates/install', Object.assign({ game: g.name }, body)); ok = true; toast(r.queued > 1 ? r.queued + ' consoles get it' : 'It’s on its way'); await refresh(); }
     catch (e) { toast(e.message, true); }
     button.disabled = false;
+    return ok;
   }
   async function switchTo(button, address, path) {
     button.disabled = true;
-    try { await api(path ? 'titleupdates/use' : 'titleupdates/off', { game: g.name, address, path: path || undefined }); toast(path ? 'Switching it' : 'Turning them off'); await refresh(); }
-    catch (e) { toast(e.message, true); button.disabled = false; }
+    try { await api(path ? 'titleupdates/use' : 'titleupdates/off', { game: g.name, address, path: path || undefined }); }
+    catch (e) { toast(e.message, true); button.disabled = false; return false; }
+    toast(path ? 'Switching it' : 'Turning them off'); await refresh();
+    return true;
   }
   // Like Aurora's title update manager, for one console: every version of
   // the game's updates, XboxUnity's and those on the console (on, moved
@@ -2108,12 +2113,12 @@ function tuBox(g) {
       about: l.file ? where[l.file.where] + (l.offer ? '' : ', not on XboxUnity for this disc') : 'on XboxUnity' + (l.offer.onPc ? ', kept on this computer' : ''),
       size: (l.file && l.file.size) || (l.offer && l.offer.size) })).sort((a, b) => b.number - a.number);
   }
-  const picked = new Map();  // By console: the dropdown's choice, until it's applied.
-  function apply(button, c, l) {
-    picked.delete(c.address);
-    if (!l) switchTo(button, c.address, '');
-    else if (l.file) switchTo(button, c.address, l.file.path);
-    else put(button, { address: c.address, id: l.offer.id });
+  const picked = new Map();  // By console: the dropdown's choice, until the server takes it.
+  async function apply(button, c, l) {
+    const ok = !l ? await switchTo(button, c.address, '')
+      : l.file ? await switchTo(button, c.address, l.file.path)
+      : await put(button, { address: c.address, id: l.offer.id });
+    if (ok) { picked.delete(c.address); draw(); }
   }
   function managed(c, offers, busy) {
     const list = versions(c, offers);
@@ -2122,13 +2127,15 @@ function tuBox(g) {
     let choice = picked.has(c.address) ? picked.get(c.address) : activeKey || offers[0].id;
     if (choice !== 'none' && !list.some(l => l.key === choice)) choice = activeKey || offers[0].id;
     const chosen = list.find(l => l.key === choice) || null;
-    const select = h('select.input.tu-pick', { disabled: busy, 'aria-label': 'Title update ' + c.address + ' uses',
+    const select = h('select.input.tu-pick', { disabled: busy, 'aria-label': 'Title update ' + c.address + ' uses', 'data-focus': 'tu-' + c.address,
       onchange: e => { picked.set(c.address, e.target.value); draw(); } },
       list.map(l => h('option', { value: l.key, selected: l.key === choice },
         (l.file && l.file.on ? '\u2713 ' : '') + l.name + (l.offer && l.offer === offers[0] ? ' (newest)' : '') + ' \u00b7 ' + l.about)),
       h('option', { value: 'none', selected: choice === 'none' }, (activeKey === 'none' ? '\u2713 ' : '') + 'None \u00b7 the game as it is on the disc'));
-    const same = choice === activeKey;
-    const verb = choice === 'none' ? 'Turn off' : chosen && chosen.file ? 'Use it' : 'Install';
+    // A second update can be on too (copied there by hand, or one that couldn't
+    // be moved aside): it's in use as well, and the server can't switch to it.
+    const same = choice === activeKey || !!(chosen && chosen.file && chosen.file.on);
+    const verb =choice === 'none' ? 'Turn off' : chosen && chosen.file ? 'Use it' : 'Install';
     const title = choice === 'none' ? 'Moves its updates aside and switches them off in Aurora too; nothing is deleted'
       : chosen && chosen.file ? (chosen.file.where === 'aurora' ? 'Copies it from Aurora’s store to where the game loads it; Aurora’s copy stays' : 'Moves it back to where the game loads it')
       : chosen ? (chosen.offer.onPc ? 'Sends it' : 'Downloads it here from XboxUnity, checks it, and sends it') + ' over Aurora’s FTP; the update on now moves aside' : '';
@@ -2173,12 +2180,17 @@ function tuBox(g) {
         managed(c, offers, busy)];
     });
     const withGame = data.consoles.filter(c => c.hasGame).length;
+    // A redraw puts focus back on the dropdown it was on, so the arrow keys
+    // keep stepping through the versions (as livePart does).
+    const at = document.activeElement, focus = at && box.contains(at) ? at.getAttribute('data-focus') : null;
     fill(box, head,
       h('p', ['Newest for this disc on XboxUnity: ', h('b', offers[0].name), offers[0].size ? ' (' + bytes(offers[0].size, 1) + ')' : '', offers[0].onPc ? ', kept on this computer.' : '.',
         ' Pick the one each console uses from its list. The others move aside (to Hdd1:\\Apps\\NetDisc360\\Title updates), never deleted, so you can switch back.']),
       rows.length ? rows : h('p.muted', 'No console yet.'),
       h('div.install-actions', h('span.muted', 'This computer downloads each update once from XboxUnity, checks it, and sends it over Aurora’s FTP: the consoles never go online for it.'),
         withGame > 1 ? h('button.btn.small', { onclick: e => put(e.target, { all: true, id: offers[0].id }) }, ic('download', 'sm'), 'Newest on all ' + withGame + ' consoles') : null));
+    const again = focus && [...box.querySelectorAll('[data-focus]')].find(x => x.getAttribute('data-focus') === focus);
+    if (again) again.focus();
   }
   // Loads again when one of its jobs, or a check, has ended.
   function follow() {
