@@ -5541,7 +5541,6 @@ void State(web::Reply& out) {
     { std::lock_guard<std::mutex> hold(GamesListLock); version=GamesVersion; }
     j.Key("library").Open('{').Set("games",int(games.size())).Set("duplicates",duplicates).Set("conflicts",conflicts);
     j.Set("version",version).Set("scanned",scanned).Close('}');
-    j.Key("titleUpdates").Open('{').Set("version",TuVersion.load()).Close('}');
     j.Key("folders").Open('[');
     for(size_t i=0;i<o.folders.size();++i) {
         int count=0;
@@ -5632,7 +5631,8 @@ void State(web::Reply& out) {
     std::vector<ConsoleUpdates> updates=UpdatesOf(party.active ? party.consoles : std::vector<std::string>());
     std::set<DWORD> mismatched;
     for(size_t i=0;i<games.size();++i) if(!mismatched.count(games[i].titleId) && JudgeUpdates(games[i].titleId,games[i].mediaId,updates).mismatch) mismatched.insert(games[i].titleId);
-    j.Key("titleUpdates").Open('{').Set("mismatches",int(mismatched.size())).Close('}');
+    // One titleUpdates for both: TuVersion for the TU badges, mismatches for the party.
+    j.Key("titleUpdates").Open('{').Set("version",TuVersion.load()).Set("mismatches",int(mismatched.size())).Close('}');
 
     j.Key("events").Open('[');
     {
