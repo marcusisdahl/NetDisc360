@@ -802,11 +802,17 @@ void ScanArchives(const std::string& folder, int depth, std::vector<ArchiveFile>
     if(depth>MaxDepth) return;
     std::vector<Item> items;
     if(!ListFolder(folder,items)) return;
+    // An extracted game's own files hold no archives to play, even ones named
+    // .zip (Left 4 Dead 2's and Portal 2's zip0.360.zip): a folder below the
+    // top with a default.xex or default.xbe is a game, as discs.cpp's Scan has it.
+    if(depth>0)
+        for(size_t i=0;i<items.size();++i)
+            if(!items[i].folder && (!_stricmp(items[i].name.c_str(),"default.xex") || !_stricmp(items[i].name.c_str(),"default.xbe"))) return;
     for(size_t i=0;i<items.size();++i) {
         const Item& e=items[i];
         std::string path=folder+Slash+e.name;
         if(e.folder) {
-            // A GOD package's data and an extracted game's files hold no archives to play.
+            // A GOD package's data holds no archives either.
             if(!EndsWith(e.name,".data")) ScanArchives(path,depth+1,out);
             continue;
         }

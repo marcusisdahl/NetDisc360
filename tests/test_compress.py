@@ -416,6 +416,22 @@ class Compress(ServerTest):
         self.assertTrue(os.path.exists(made))
         self.assertFalse(os.path.exists(stopped))
 
+    def test_an_extracted_games_own_zips_are_not_archives(self):
+        # Source games keep their files in zip0.360.zip; inside an extracted
+        # game (Xbox 360 or original Xbox) nothing is offered to compress.
+        archive = os.path.join(self.isos, "Halo 3.zip")
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("Halo 3.iso", b"\0" * 4096)
+        for game, exe in (("Portal 2", "default.xex"), ("Halo", "default.xbe")):
+            os.makedirs(os.path.join(self.isos, game, "data"))
+            with open(os.path.join(self.isos, game, exe), "wb") as f:
+                f.write(b"x")
+            with open(os.path.join(self.isos, game, "data", "zip0.360.zip"), "wb") as f:
+                f.write(b"not a zip archive")
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        self.assertEqual([a["path"] for a in self.json("GET", "/api/compress?fresh=1")["archives"]], [archive])
+
     def test_the_dashboard_compresses_an_archive(self):
         iso, files = self.game("Halo 3.iso")
         archive = os.path.join(self.isos, "Halo 3.zip")
