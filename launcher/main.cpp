@@ -42,6 +42,7 @@
 #include "../third_party/imgui/imgui.h"
 #include "imgui_impl_xbox360.h"
 #include "ui.h"
+#include "profiles.h"
 
 struct KernelString { USHORT length,capacity; char* text; };
 extern "C" LONG __stdcall ObCreateSymbolicLink(KernelString* link,KernelString* device);
@@ -293,6 +294,16 @@ static bool ReadText(const char* path,char* text,DWORD capacity) {
     CloseHandle(file);
     text[ok ? done : 0]=0;
     return ok!=FALSE;
+}
+
+// Whole small file; its size, or -1.
+static int ReadBytes(const char* path,void* data,DWORD capacity) {
+    HANDLE file=CreateFile(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return -1;
+    DWORD size=GetFileSize(file,NULL), done=0;
+    BOOL ok=size!=INVALID_FILE_SIZE && size<=capacity && ReadFile(file,data,size,&done,NULL) && done==size;
+    CloseHandle(file);
+    return ok ? int(done) : -1;
 }
 
 // ---- Game launcher ----
@@ -1427,6 +1438,189 @@ static bool UseTileFolder(const char* folder) {
     return true;
 }
 
+// ---- Guest profiles ----
+
+// The account fields of the console's profiles, in the log: how the
+// dashboard made them, for the helper to make its own the same way.
+static void NoteProfiles(const nia::ProfileInfo* profiles,int count) {
+    Note("The console has %d profiles:",count);
+    for(int i=0;i<count;++i) {
+        char tag[nia::GamertagMost+1];
+        for(int k=0;k<=nia::GamertagMost;++k) tag[k]=profiles[i].gamertag[k]<0x80 ? char(profiles[i].gamertag[k]) : '?';
+        Note("  %016I64X \"%s\": device %lu, reserved %08lX, live %08lX, cached %08lX, network %08lX, online XUID %016I64X",
+             profiles[i].xuid,tag,profiles[i].device,profiles[i].reservedFlags,profiles[i].liveFlags,profiles[i].cachedUserFlags,profiles[i].networkId,profiles[i].xuidOnline);
+    }
+}
+
+// Guest N's picture (pictureN= and picture_smallN=, PNG files beside the
+// job) on profile xuid, if the job has one; pictureN=ok or
+// picture_errorN=<why> in done. True if it's there now.
+static bool Picture(const char* job,int n,ULONGLONG xuid,const DWORD* openFlags,int openFlagCount,bool thumbnail,char* done,size_t& used,size_t capacity) {
+    char key[24],name[64],path[96];
+    sprintf_s(key,"picture%d",n);
+    if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) return false;
+    static BYTE big[64*1024],small[32*1024];
+    char why[400]="";
+    int bigSize=-1,smallSize=0;
+    if(strchr(name,'\\') || strchr(name,':') || strstr(name,"..")) sprintf_s(why,"%s isn't a file name.",name);
+    else {
+        sprintf_s(path,"game:\\%s",name);
+        bigSize=ReadBytes(path,big,sizeof(big));
+        if(bigSize<=0) sprintf_s(why,"couldn't read %s.",path);
+        sprintf_s(key,"picture_small%d",n);
+        if(bigSize>0 && nia::IniValue(job,key,name,sizeof(name)) && name[0] && !strchr(name,'\\') && !strchr(name,':') && !strstr(name,"..")) {
+            sprintf_s(path,"game:\\%s",name);
+            smallSize=ReadBytes(path,small,sizeof(small));
+            if(smallSize<=0) { smallSize=0; Note("Couldn't read %s; the big picture only.",path); }
+        }
+    }
+    bool ok=false;
+    if(bigSize>0) {
+        nia::ProfilePicture picture={big,DWORD(bigSize),smallSize ? small : NULL,DWORD(smallSize),openFlags,openFlagCount,thumbnail};
+        ok=nia::SetProfilePicture(xuid,picture,why,sizeof(why));
+        Note("%s %016I64X's picture: %s.",ok ? "Gave" : "Couldn't give",xuid,why);
+    } else Note("Couldn't give %016I64X its picture: %s",xuid,why);
+    if(ok) used+=sprintf_s(done+used,capacity-used,"picture%d=ok\r\n",n);
+    else {
+        for(char* c=why;*c;++c) if(*c=='\r' || *c=='\n') *c=' ';
+        used+=sprintf_s(done+used,capacity-used,"picture_error%d=%.240s\r\n",n,why);
+    }
+    return ok;
+}
+
+// The LAN party's guest profiles (see ProfileJob in shared/helper.h): true
+// if the helper was started for that job, which is then done. The screen is
+// the loading screen's, with the profiles as its steps.
+static bool ProfileJob() {
+    static char job[4096];
+    char path[64],donePath[64];
+    sprintf_s(path,"game:\\%s",nia::ProfileJob);
+    sprintf_s(donePath,"game:\\%s",nia::ProfileDone);
+    if(!ReadText(path,job,sizeof(job))) return false;
+    // First, so a crash or a freeze in xam doesn't start it again.
+    if(!DeleteFile(path)) Note("Couldn't delete %s (%lu).",path,GetLastError());
+    char number[32]="";
+    nia::IniValue(job,"job",number,sizeof(number));
+    static nia::ProfileInfo profiles[nia::ProfilesListed];
+    int listed=nia::ListProfiles(profiles,nia::ProfilesListed);
+    NoteProfiles(profiles,listed);
+    // As the console's own offline profiles are made, unless the job says otherwise.
+    nia::ProfileCall call=nia::DefaultProfileCall(profiles,listed);
+    char value[32];
+    if(nia::IniValue(job,"device",value,sizeof(value)) && value[0]) call.device=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"flags",value,sizeof(value)) && value[0]) call.flags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"reserved",value,sizeof(value)) && value[0]) call.reservedFlags=strtoul(value,NULL,0);
+    if(nia::IniValue(job,"cached",value,sizeof(value)) && value[0]) call.cachedUserFlags=strtoul(value,NULL,0);
+    call.zeroTokens=IniNumber(job,"zero_tokens",0)!=0;
+    // xam turns down XUID 0 as an invalid argument (seen on the console), so
+    // each is asked with an offline XUID like the console's own (xam then
+    // makes it under one of its own).
+    bool ownXuid=IniNumber(job,"own_xuid",1)!=0, probe=IniNumber(job,"probe",0)!=0;
+    call.makeFolders=IniNumber(job,"make_folders",0)!=0;
+    ULONGLONG like=0;
+    for(int i=0;i<listed && !like;++i) if((profiles[i].xuid>>60)==0xE) like=profiles[i].xuid;
+    // guestN= a profile to make; profileN= one there already (its XUID),
+    // for its picture only.
+    static char names[nia::ProfileJobMost][nia::GamertagMost+1];
+    int count=0,slot[nia::ProfileJobMost];
+    ULONGLONG existing[nia::ProfileJobMost];
+    for(int i=1;i<=nia::ProfileJobMost;++i) {
+        char key[16]; sprintf_s(key,"guest%d",i);
+        char name[64];
+        existing[count]=0;
+        if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0]) {
+            sprintf_s(key,"profile%d",i);
+            if(!nia::IniValue(job,key,name,sizeof(name)) || !name[0] || !(existing[count]=_strtoui64(name,NULL,16))) continue;
+        }
+        strncpy_s(names[count],name,_TRUNCATE);
+        slot[count++]=i;
+    }
+    // The pictures' ways in (see SetProfilePicture): open_flags= (hex, commas
+    // between), thumbnail=.
+    DWORD openFlags[8]={3,4,0};
+    int openFlagCount=3;
+    static char openList[64];
+    if(nia::IniValue(job,"open_flags",openList,sizeof(openList)) && openList[0]) {
+        openFlagCount=0;
+        for(char* at=openList;*at && openFlagCount<8;) {
+            char* end=NULL;
+            DWORD f=strtoul(at,&end,16);
+            if(end==at) break;
+            openFlags[openFlagCount++]=f;
+            at=*end==',' ? end+1 : end;
+        }
+    }
+    bool thumbnail=IniNumber(job,"thumbnail",0)!=0;
+    Note("Guest profiles, job %s: %d in it (device %lu, flags %08lX, reserved %08lX, cached %08lX%s%s%s%s).",number[0] ? number : "?",count,
+         call.device,call.flags,call.reservedFlags,call.cachedUserFlags,call.zeroTokens ? ", zeroed tokens" : "",ownXuid ? ", own XUID" : "",
+         call.makeFolders ? ", folders made first" : "",probe ? ", trying other ways too" : "");
+    Note("Pictures: XamProfileOpen flags %lX%s, %s.",openFlagCount ? openFlags[0] : 0,openFlagCount>1 ? " then others" : "",thumbnail ? "package thumbnail too" : "no package thumbnail");
+    strcpy_s(Shown.game,"Guest profiles");
+    ShowStep(nia::StepServer,0.05,"Making the LAN party's guest profiles");
+    ScreenStart();
+    ScreenDraw();
+    static char done[8192];
+    size_t used=0;
+    used+=sprintf_s(done+used,sizeof(done)-used,"job=%s\r\n",number);
+    int made=0;
+    for(int n=0;n<count;++n) {
+        if(existing[n]) {
+            ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Giving a profile its picture (%d of %d)",n+1,count);
+            if(Picture(job,slot[n],existing[n],openFlags,openFlagCount,thumbnail,done,used,sizeof(done))) ++made;
+            continue;
+        }
+        ShowStep(n==0 ? nia::StepServer : nia::StepMount,0.1+0.8*n/count,"Making %s (%d of %d)",names[n],n+1,count);
+        WCHAR gamertag[nia::GamertagMost+1];
+        size_t length=strlen(names[n]);
+        for(size_t k=0;k<=length;++k) gamertag[k]=WCHAR((unsigned char)names[n][k]);
+        // The XUID the server gave it (xuidN=), else one like the console's.
+        char key[16],given[32]="";
+        sprintf_s(key,"xuid%d",slot[n]);
+        ULONGLONG asked=nia::IniValue(job,key,given,sizeof(given)) && given[0] ? _strtoui64(given,NULL,16) : 0;
+        if(!asked && ownXuid) asked=nia::NewOfflineXuid(like,profiles,listed);
+        // With probe=, each way in turn until one works: as asked, then with
+        // zeroed tokens, then with xam picking the XUID, then each of
+        // probe_flags= (hex, commas between) as flags, as asked.
+        ULONGLONG xuid=0;
+        DWORD code=0;
+        char why[160]="";
+        bool ok=false;
+        static char flagList[256];
+        DWORD flags[24];
+        int flagCount=0;
+        if(nia::IniValue(job,"probe_flags",flagList,sizeof(flagList)))
+            for(char* at=flagList;*at && flagCount<24;) {
+                char* end=NULL;
+                DWORD f=strtoul(at,&end,16);
+                if(end==at) break;
+                flags[flagCount++]=f;
+                at=*end==',' ? end+1 : end;
+            }
+        for(int way=0;way<(probe ? 3+flagCount : 1) && !ok;++way) {
+            nia::ProfileCall tried=call;
+            tried.xuid=way==2 ? 0 : asked;
+            if(way==1) tried.zeroTokens=true;
+            if(way>=3) tried.flags=flags[way-3];
+            ok=nia::MakeProfile(gamertag,tried,xuid,code,why,sizeof(why),Wait);
+            Note("%s %s, way %d (flags %08lX, XUID asked %016I64X%s%s): %s%s",ok ? "Made" : "Couldn't make",names[n],way+1,tried.flags,tried.xuid,tried.zeroTokens ? ", zeroed tokens" : "",
+                 tried.makeFolders && tried.xuid ? ", folders made first" : "",ok ? "" : why,ok ? "" : ".");
+        }
+        if(ok) {
+            ++made;
+            Note("Made %s: %016I64X.",names[n],xuid);
+            used+=sprintf_s(done+used,sizeof(done)-used,"guest%d=%016I64X\r\n",slot[n],xuid);
+            Picture(job,slot[n],xuid,openFlags,openFlagCount,thumbnail,done,used,sizeof(done));
+        } else used+=sprintf_s(done+used,sizeof(done)-used,"error%d=%s\r\n",slot[n],why);
+    }
+    HANDLE file=CreateFile(donePath,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    DWORD wrote=0;
+    if(file==INVALID_HANDLE_VALUE || !WriteFile(file,done,DWORD(used),&wrote,NULL) || wrote!=used) Note("Couldn't write %s (%lu).",donePath,GetLastError());
+    if(file!=INVALID_HANDLE_VALUE) CloseHandle(file);
+    ShowStep(nia::StepStart,1.0,made==count ? "Made %d of %d guest profiles" : "Made %d of %d guest profiles (see netiso.log)",made,count);
+    Wait(1500);
+    return true;
+}
+
 void __cdecl main() {
     InitializeCriticalSection(&LogLock);
     InitializeCriticalSection(&ShownLock);
@@ -1442,6 +1636,13 @@ void __cdecl main() {
     if(linked) Note("Started as the helper for %s.",folder);
     else if(folder[0]) Note("Started as the helper for %s, which couldn't be linked; using this folder's files.",folder);
     else if(helper) Note("Started as the helper.");
+    // Started from Aurora by the server for the guest profiles: back to Aurora.
+    if(!helper && ProfileJob()) {
+        CloseLog();
+        ScreenStop();
+        LaunchImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+        return;
+    }
     static char ini[nia::IniMax];
     if(!ReadText(IniFile,ini,sizeof(ini))) Note("Can't open %s.",IniFile);
     static char iso[MAX_PATH];

@@ -56,6 +56,25 @@ private:
 // console off. false with why in error.
 enum { XbdmPort = 730 };
 bool Xbdm(DWORD address, int port, const std::string& command, std::string& error);
+// The same for a command that answers with lines ("modules": what runs on
+// the console, with where it's loaded): the answer after the greeting, up to
+// "bye". One connection that ends at once, never a notify listener (that
+// made COD's xbdm crash).
+bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error);
+
+// The console's name, as set on it (Settings, System, Console Settings,
+// Console Name), and its fixed id (the UDN its media sharing gives, in lower
+// case without "uuid:"; it ends in its network card's address), from the
+// description its media sharing (UPnP, port 1027) gives without being asked
+// first. False, with why in error, when that doesn't answer (media sharing
+// off) or isn't an Xbox 360's. name is plain text (entities decoded, no
+// control characters or bars), at most ConsoleNameMost bytes.
+enum { ConsoleNamePort = 1027, ConsoleNameMost = 64 };
+bool ConsoleName(DWORD address, int port, std::string& name, std::string& id, std::string& error);
+// Shows text (ASCII; anything else becomes '?') in a notification on the
+// console's screen, through the JRPC2 plugin on its debug monitor (xbdm).
+// False, with why in error, when xbdm doesn't answer or JRPC2 isn't loaded.
+bool ConsoleNotify(DWORD address, int port, const std::string& text, std::string& error);
 
 // An FTP path on the hard drive (/Hdd1/NetDisc360/Games/Halo 3) as a device path
 // (\Device\Harddisk0\Partition1\NetDisc360\Games\Halo 3); "" for another drive.
@@ -84,9 +103,11 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
 // NetDisc360 keeps that file while it runs and deletes it when it quits.
 // The first time the filter is used after a start, it writes ShownMarker
 // ("online" or "offline"), so NetDisc360 can tell when Aurora hides the
-// games while it runs (and restart Aurora).
+// games while it runs (and restart Aurora). With tidy, it also takes the
+// games whose tile is gone off Aurora's list as Aurora starts, as the cleanup
+// script does but without asking (only while at least one tile is there).
 // Its markers are in app.
-std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders);
+std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders, bool tidy);
 std::string MoveLua(const std::string& from, const std::string& tiles, const std::vector<std::string>& folders);
 // MoveMarker: NetDisc360 moved tiles to this console's tiles folder, and
 // Aurora's rows haven't followed yet; MovedMarker: what the scripts did.
@@ -113,4 +134,15 @@ struct AuroraTu {
 // screen stays. Each line of done: <Title ID> <Media ID> on|off|missing|error.
 std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::string& done);
 extern const char TitleUpdateScriptPath[];
+
+// The filter script NetDiscLinkOff.lua (LinkOffScriptPath, in Aurora's
+// folder), for the Health page's "Turn LiNK off": Nova's LiNK (Aurora's
+// Settings, Modules, Nova) passes System Link traffic through Nova, which
+// leaves streamed games deaf to the other consoles. As Aurora starts, the
+// script sets it off in Aurora's settings (settings.db SystemSettings,
+// PluginLiNK = 0) once and writes "off" (or "error") to done (an FTP path);
+// while done is there it does nothing, so LiNK switched on again in Aurora
+// stays on. Nova reads the setting as the console starts.
+std::string LinkOffScript(const std::string& done);
+extern const char LinkOffScriptPath[];
 }

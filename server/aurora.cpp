@@ -4,6 +4,7 @@
 #include "../shared/isvr.h"
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace nia {
@@ -316,6 +317,128 @@ bool Xbdm(DWORD address, int port, const std::string& command, std::string& erro
     return true;
 }
 
+namespace {
+// The text between <tag> and </tag> in an XML body (the first), with its
+// entities decoded; "" if it isn't there.
+std::string XmlText(const std::string& body, const std::string& tag) {
+    size_t from=body.find("<"+tag+">");
+    if(from==std::string::npos) return std::string();
+    from+=tag.size()+2;
+    size_t to=body.find("</"+tag+">",from);
+    if(to==std::string::npos) return std::string();
+    std::string raw=body.substr(from,to-from), out;
+    for(size_t i=0;i<raw.size();++i) {
+        if(raw[i]!='&') { out+=raw[i]; continue; }
+        size_t semi=raw.find(';',i);
+        if(semi==std::string::npos || semi-i>10) { out+='&'; continue; }
+        std::string entity=raw.substr(i+1,semi-i-1);
+        unsigned long code=0;
+        if(entity=="amp") code='&';
+        else if(entity=="lt") code='<';
+        else if(entity=="gt") code='>';
+        else if(entity=="quot") code='"';
+        else if(entity=="apos") code='\'';
+        else if(entity.size()>1 && entity[0]=='#') code=entity[1]=='x' || entity[1]=='X' ? strtoul(entity.c_str()+2,NULL,16) : strtoul(entity.c_str()+1,NULL,10);
+        if(!code || code>0x10FFFF) { out+='&'; continue; }
+        // As UTF-8.
+        if(code<0x80) out+=char(code);
+        else if(code<0x800) { out+=char(0xC0|(code>>6)); out+=char(0x80|(code&0x3F)); }
+        else if(code<0x10000) { out+=char(0xE0|(code>>12)); out+=char(0x80|((code>>6)&0x3F)); out+=char(0x80|(code&0x3F)); }
+        else { out+=char(0xF0|(code>>18)); out+=char(0x80|((code>>12)&0x3F)); out+=char(0x80|((code>>6)&0x3F)); out+=char(0x80|(code&0x3F)); }
+        i=semi;
+    }
+    return out;
+}
+// text without control characters or bars (the settings file's separator),
+// spaces at its ends trimmed, at most most bytes (not cutting a UTF-8 character).
+std::string PlainName(const std::string& text, size_t most) {
+    std::string out;
+    for(size_t i=0;i<text.size();++i) {
+        unsigned char c=(unsigned char)text[i];
+        if(c<' ' || c==127) out+=' ';
+        else if(c=='|') out+='/';
+        else out+=char(c);
+    }
+    size_t a=out.find_first_not_of(' '), b=out.find_last_not_of(' ');
+    out=a==std::string::npos ? std::string() : out.substr(a,b-a+1);
+    if(out.size()>most) {
+        size_t cut=most;
+        while(cut>0 && (((unsigned char)out[cut])&0xC0)==0x80) --cut;
+        out=out.substr(0,cut);
+    }
+    return out;
+}
+}
+
+bool ConsoleName(DWORD address, int port, std::string& name, std::string& id, std::string& error) {
+    name.clear(); id.clear();
+    char host[16]; AddressText(address,host,sizeof(host));
+    std::string request=std::string("GET / HTTP/1.1\r\nHost: ")+host+":"+std::to_string(port)+"\r\nConnection: close\r\n\r\n";
+    std::string response;
+    if(!Exchange(address,port,request,3,response,64*1024) && response.empty()) {
+        error="its media sharing (port "+std::to_string(port)+") doesn't answer";
+        return false;
+    }
+    size_t body=response.find("\r\n\r\n");
+    if(response.compare(0,5,"HTTP/") || response.find(" 200",0)!=response.find(' ') || body==std::string::npos) {
+        error="its media sharing answered something else";
+        return false;
+    }
+    std::string xml=response.substr(body+4);
+    if(XmlText(xml,"modelName")!="Xbox 360") { error="that isn't an Xbox 360's media sharing"; return false; }
+    name=PlainName(XmlText(xml,"friendlyName"),ConsoleNameMost);
+    id=Lower(PlainName(XmlText(xml,"UDN"),ConsoleNameMost));
+    if(!id.compare(0,5,"uuid:")) id.erase(0,5);
+    if(name.empty()) { error="it has no name"; return false; }
+    return true;
+}
+
+bool ConsoleNotify(DWORD address, int port, const std::string& text, std::string& error) {
+    std::string ascii;
+    for(size_t i=0;i<text.size() && ascii.size()<100;++i) {
+        unsigned char c=(unsigned char)text[i];
+        if(c>=0x80 && (c&0xC0)==0x80) continue;  // The rest of a UTF-8 character.
+        ascii+=c>=' ' && c<127 && c!='"' ? char(c) : c=='"' ? '\'' : '?';
+    }
+    std::string hex;
+    for(size_t i=0;i<ascii.size();++i) { char two[3]; _snprintf_s(two,sizeof(two),_TRUNCATE,"%02X",(unsigned char)ascii[i]); hex+=two; }
+    // JRPC2's XNotify: a string (tagged 2) and the icon (an int, 0: the Xbox logo).
+    std::string command="consolefeatures ver=2 type=12 params=\"A\\0\\A\\2\\2/"+std::to_string(ascii.size())+"\\"+hex+"\\1\\0\\\"";
+    std::string response;
+    Exchange(address,port,command+"\r\nbye\r\n",5,response);
+    if(response.compare(0,3,"201")) {
+        error="its debug monitor (xbdm, port "+std::to_string(port)+") doesn't answer; it runs only where xbdm.xex is loaded as a DashLaunch plugin";
+        return false;
+    }
+    size_t line=response.find("\r\n");
+    size_t end=line==std::string::npos ? std::string::npos : response.find("\r\n",line+2);
+    std::string answer=line==std::string::npos ? std::string() : response.substr(line+2,end==std::string::npos ? std::string::npos : end-line-2);
+    if(!answer.compare(0,9,"200- S_OK")) return true;
+    if(!answer.compare(0,11,"200- error=")) { error="JRPC2 answered \""+answer.substr(11)+"\""; return false; }
+    error="its debug monitor has no JRPC2 (load JRPC2.xex as a DashLaunch plugin; it answered \""+answer+"\")";
+    return false;
+}
+
+bool XbdmAnswer(DWORD address, int port, const std::string& command, std::string& answer, std::string& error) {
+    std::string response;
+    answer.clear();
+    bool ok=Exchange(address,port,command+"\r\nbye\r\n",5,response);
+    if(response.compare(0,3,"201")) {
+        error="its debug monitor (xbdm, port "+std::to_string(port)+") doesn't answer; it runs only where xbdm.xex is loaded as a DashLaunch plugin";
+        return false;
+    }
+    size_t line=response.find("\r\n");
+    answer=line==std::string::npos ? std::string() : response.substr(line+2);
+    size_t bye=answer.rfind("200- bye");
+    if(bye!=std::string::npos) answer.erase(bye);
+    if(answer.empty() || answer[0]!='2') {
+        error="its debug monitor answered \""+answer.substr(0,answer.find("\r\n"))+"\"";
+        return false;
+    }
+    (void)ok;
+    return true;
+}
+
 std::string DevicePath(const std::string& ftpPath) {
     std::string lower=Lower(ftpPath);
     if(lower.compare(0,5,"/hdd1") || (lower.size()>5 && lower[5]!='/')) return std::string();
@@ -476,7 +599,7 @@ std::string CleanupScript(const std::string& tiles, const std::vector<std::strin
     return Crlf(text);
 }
 
-std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders) {
+std::string OnlineScript(const std::string& tiles, const std::string& app, const std::string& from, const std::vector<std::string>& folders, bool tidy) {
     std::string helper=app+"/";
     std::string inList=TilesInList(tiles);
     if(inList.empty()) return std::string();
@@ -495,6 +618,40 @@ std::string OnlineScript(const std::string& tiles, const std::string& app, const
         "NetDiscOnline = (not NetDiscRead) or NetDiscThere == true\n"
         "pcall(FileSystem.DeleteFile, NetDiscShown)\n"
         "local NetDiscTold = false\n";
+    if(tidy) text+=
+        "\n"
+        "-- Games whose tile is gone come off Aurora's list as it starts (it keeps\n"
+        "-- them otherwise, starting nothing), as NetDisc360 Cleanup does but without\n"
+        "-- asking: only while at least one tile is still there, so a drive that\n"
+        "-- can't be read changes nothing. It deletes no file.\n"
+        "local NetDiscRoot = "+LuaQuote(ScriptPath(tiles)+"\\")+"\n"
+        "local function NetDiscTidy()\n"
+        "   local read, rows = pcall(Sql.ExecuteFetchRows, \"SELECT Id, Directory FROM ContentItems\")\n"
+        "   if not read or rows == nil then return end\n"
+        "   local gone, kept, looked = {}, 0, {}\n"
+        "   for _, row in pairs(rows) do\n"
+        "      local folder = string.gsub(string.lower(row.Directory or \"\"), \"^[^\\\\]*:\", \"\")\n"
+        "      if string.sub(folder, 1, 1) ~= \"\\\\\" then folder = \"\\\\\" .. folder end\n"
+        "      local id = tonumber(row.Id)\n"
+        "      if id ~= nil and string.sub(folder, 1, string.len(NetDiscTiles)) == NetDiscTiles then\n"
+        "         local tile = string.match(string.sub(folder, string.len(NetDiscTiles) + 1), \"^[^\\\\]+\")\n"
+        "         if tile ~= nil and tile ~= \"netdisc360\" then\n"
+        "            if looked[tile] == nil then\n"
+        "               local asked, here = pcall(FileSystem.FileExists, NetDiscRoot .. tile .. \"\\\\default.xex\")\n"
+        "               looked[tile] = (not asked) or here == true\n"
+        "            end\n"
+        "            if looked[tile] then kept = kept + 1 else table.insert(gone, id) end\n"
+        "         end\n"
+        "      end\n"
+        "   end\n"
+        "   if #gone == 0 or kept == 0 then return end\n"
+        "   local ids = table.concat(gone, \",\")\n"
+        "   for _, name in ipairs({ \"UserRecentGames\", \"UserFavorites\", \"UserHidden\", \"TitleSettings\" }) do\n"
+        "      pcall(Sql.Execute, \"DELETE FROM Config.\" .. name .. \" WHERE ContentId IN (\" .. ids .. \")\")\n"
+        "   end\n"
+        "   pcall(Sql.Execute, \"DELETE FROM ContentItems WHERE Id IN (\" .. ids .. \")\")\n"
+        "end\n"
+        "pcall(NetDiscTidy)\n";
     std::string appInList=TilesInList(app);
     if(appInList.size()>1) text+=
         "\n"
@@ -549,6 +706,26 @@ pcall(NetDiscHideHelper)
         "   end\n"
         "   if NetDiscOnline then return true end\n"
         "   return string.find(\"\\\\\" .. string.lower(Content.Directory or \"\"), NetDiscTiles, 1, true) == nil\n"
+        "end\n";
+    return Crlf(text);
+}
+
+const char LinkOffScriptPath[] = "/User/Scripts/Content/Filters/NetDiscLinkOff.lua";
+
+std::string LinkOffScript(const std::string& done) {
+    std::string text=
+        "-- Written by NetDisc360 when \"Turn LiNK off\" was chosen on its Health page.\n"
+        "-- With LiNK on, Nova takes the System Link traffic of games streamed from\n"
+        "-- NetDisc360, so they don't find the other consoles. As Aurora starts, this\n"
+        "-- turns LiNK off in Aurora's settings once and writes what it did to\n"
+        "-- NetDiscLinkDone; while that file is there it does nothing, so LiNK\n"
+        "-- switched on again in Aurora stays on. Restart the console afterwards.\n"
+        "local NetDiscLinkDone = "+LuaQuote(ScriptPath(done))+"\n"
+        "\n"
+        "local NetDiscLinkRead, NetDiscLinkThere = pcall(FileSystem.FileExists, NetDiscLinkDone)\n"
+        "if Sql ~= nil and NetDiscLinkRead and NetDiscLinkThere ~= true then\n"
+        "   local ok, result = pcall(Sql.Execute, \"UPDATE Config.SystemSettings SET Value = '0' WHERE Name = 'PluginLiNK'\")\n"
+        "   pcall(FileSystem.WriteFile, NetDiscLinkDone, (ok and result ~= false) and \"off\\r\\n\" or \"error\\r\\n\")\n"
         "end\n";
     return Crlf(text);
 }

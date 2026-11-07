@@ -148,6 +148,7 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
     }
     return true;
 }
+bool UnzipPaths(const std::string& data, std::map<std::string,std::string>& files, std::string& error) { return Unpack(data,files,error,size_t(0xFFFFFFFFu)); }
 
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,
           std::string& name, std::string& error) {
