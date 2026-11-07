@@ -197,46 +197,65 @@ std::string CleanName(const std::string& raw) {
 
 bool ImageTitle(DiscImage& image, DWORD& titleId, DWORD& mediaId, int& disc, bool& xbeGame);
 
+// A disc image file read as it is.
+class RawIso : public DiscImage {
+public:
+    bool Open(const std::string& path) { return file_.Open(path) && file_.Size(size_); }
+    U64 Size() const { return size_; }
+    bool Read(U64 offset, unsigned char* data, DWORD length) { return file_.Read(offset,data,length)==(long long)length; }
+    std::string Description() const { return "ISO"; }
+private:
+    File file_;
+    U64 size_=0;
+};
+
 // An original Xbox game's image is served as just its game partition, at the
 // XGD2 offset an extracted Xbox game has, with zeros before it: a full image
 // of the disc (redump's format, the game partition at the XGD1 offset after
 // the video partition) and an xiso (extract-xiso's, the game partition at
-// 0). From a folder in that layout Halo and Burnout 3 play.
+// 0). From a folder in that layout Halo and Burnout 3 play. The same for a
+// compressed image of either (see compress.h), which keeps the layout it was made from.
 class IsoImage : public DiscImage {
 public:
     bool Open(const std::string& path, std::string& error) {
-        if(!file_.Open(path) || !file_.Size(fileSize_)) { error="it can't be opened"; return false; }
-        size_=fileSize_; from_=to_=0;
+        std::unique_ptr<RawIso> file(new RawIso);
+        if(!file->Open(path)) { error="it can't be opened"; return false; }
+        return Open(file.release());
+    }
+    // raw (taken over; false if NULL): a disc image in one of those layouts.
+    bool Open(DiscImage* raw) {
+        raw_.reset(raw);
+        if(!raw_) return false;
+        rawSize_=raw_->Size(); size_=rawSize_; from_=to_=0;
         if(HasMagic(Xgd2Partition) || HasMagic(Xgd3Partition)) return true;
         DWORD titleId,mediaId; int disc; bool xbe=false;
         if(HasMagic(0)) { if(!ImageTitle(*this,titleId,mediaId,disc,xbe) || !xbe) return true; }
         else if(!HasMagic(Xgd1Partition)) return true;
         else from_=Xgd1Partition;
         to_=Xgd2Partition;
-        size_=ImageSize(Xgd2Partition,to_+(fileSize_-from_));
+        size_=ImageSize(Xgd2Partition,to_+(rawSize_-from_));
         return true;
     }
     U64 Size() const { return size_; }
     bool Read(U64 offset, unsigned char* data, DWORD length) {
-        if(from_==to_) return file_.Read(offset,data,length)==(long long)length;
+        if(from_==to_) return raw_->Read(offset,data,length);
         memset(data,0,length);
-        U64 end=offset+length, top=to_+(fileSize_-from_);
+        U64 end=offset+length, top=to_+(rawSize_-from_);
         if(end<=to_ || offset>=top) return true;
         U64 a=offset<to_ ? to_ : offset, b=end>top ? top : end;
-        return file_.Read(a-to_+from_,data+(a-offset),DWORD(b-a))==(long long)(b-a);
+        return raw_->Read(a-to_+from_,data+(a-offset),DWORD(b-a));
     }
     std::string Description() const {
-        return from_==to_ ? "ISO" : from_ ? "ISO, original Xbox full disc image" : "ISO, original Xbox xiso";
+        return raw_->Description()+(from_==to_ ? "" : from_ ? ", original Xbox full disc image" : ", original Xbox xiso");
     }
 private:
     // The volume descriptor of a game partition starting at partition.
     bool HasMagic(U64 partition) {
         unsigned char magic[MagicSize];
-        return fileSize_>=partition+0x10000+Sector && file_.Read(partition+0x10000,magic,MagicSize)==(long long)MagicSize
-            && !memcmp(magic,Magic,MagicSize);
+        return rawSize_>=partition+0x10000+Sector && raw_->Read(partition+0x10000,magic,MagicSize) && !memcmp(magic,Magic,MagicSize);
     }
-    File file_;
-    U64 fileSize_, size_, from_, to_;
+    std::unique_ptr<DiscImage> raw_;
+    U64 rawSize_=0, size_=0, from_=0, to_=0;
 };
 
 // Games on Demand ------------------------------------------------------------
@@ -854,7 +873,7 @@ void ImagePackages(DiscImage& image, std::vector<Package>& out) {
     },out);
 }
 
-struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete, xbe; };
+struct Known { U64 size; long long modified; DWORD titleId, mediaId; int disc; std::vector<Package> packages; bool incomplete, xbe; U64 imageSize; };
 std::mutex TitlesLock;
 std::map<std::string,Known> Titles;
 
@@ -1050,7 +1069,7 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::map<std::string,Known>::const_iterator k=Titles.find(d.path);
             if(k!=Titles.end() && k->second.size==d.size && k->second.modified==d.modified) {
                 d.titleId=k->second.titleId; d.mediaId=k->second.mediaId; d.disc=k->second.disc; d.packages=k->second.packages;
-                d.incomplete=k->second.incomplete;
+                d.incomplete=k->second.incomplete; d.imageSize=k->second.imageSize;
                 d.xbe=k->second.xbe;
                 continue;
             }
@@ -1064,20 +1083,17 @@ void ReadTitles(std::vector<IsoFile>& discs) {
             std::string error;
             std::unique_ptr<DiscImage> god(OpenGodImage(d.path,error));
             if(god.get()) ImagePackages(*god,d.packages);
-        } else if(d.kind==DiscCso) {
-            std::string error;
-            std::unique_ptr<DiscImage> cso(OpenCsoImage(d.path,error));
-            if(cso.get() && ImageTitle(*cso,titleId,mediaId,disc,xbe)) ImagePackages(*cso,d.packages);
-        } else {
+        } else {  // An ISO, or a compressed one, read the same way.
             IsoImage iso; std::string error;
-            if(iso.Open(d.path,error)) {
+            if(d.kind==DiscCso ? iso.Open(OpenCsoImage(d.path,error)) : iso.Open(d.path,error)) {
                 ImageTitle(iso,titleId,mediaId,disc,xbe);
                 ImagePackages(iso,d.packages);
                 d.incomplete=ImageDataEnd(iso)>iso.Size();
+                if(d.kind==DiscCso) d.imageSize=iso.Size();
             }
         }
         d.titleId=titleId; d.mediaId=titleId ? mediaId : 0; d.disc=titleId ? disc : 0; d.xbe=titleId && xbe;
-        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages, d.incomplete, d.xbe };
+        Known known={ d.size, d.modified, d.titleId, d.mediaId, d.disc, d.packages, d.incomplete, d.xbe, d.imageSize };
         std::lock_guard<std::mutex> hold(TitlesLock);
         Titles[d.path]=known;
     }
@@ -1147,10 +1163,9 @@ bool IsoReader::Open(const IsoFile& disc) {
     DiscImage* image=NULL;
     if(disc.kind==DiscFolder) image=OpenFolderImage(disc.path,error);
     else if(disc.kind==DiscGod) image=OpenGodImage(disc.path,error);
-    else if(disc.kind==DiscCso) image=OpenCsoImage(disc.path,error);
     else {
         std::unique_ptr<IsoImage> iso(new IsoImage);
-        if(iso->Open(disc.path,error)) image=iso.release();
+        if(disc.kind==DiscCso ? iso->Open(OpenCsoImage(disc.path,error)) : iso->Open(disc.path,error)) image=iso.release();
     }
     if(!image) { note_=error; return false; }
     image_.reset(image);

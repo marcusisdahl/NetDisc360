@@ -5665,6 +5665,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     }
     j.Set("name",config::ToUtf8(WithoutIso(g.name))).Set("path",config::ToUtf8(g.path)).Set("kind",KindName(g.kind));
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
+    if(g.imageSize) j.Set("imageSize",(unsigned long long)g.imageSize);  // A CSO's disc, uncompressed.
     j.Set("disc",g.disc).Set("mediaId",g.mediaId ? Hex8(g.mediaId) : std::string()).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
     j.Set("role",g.role).Set("roleLabel",g.roleLabel).Set("incomplete",g.incomplete);
     // System Link (see systemlink.h): players on one console and in all, null where it isn't known.
@@ -5859,13 +5860,17 @@ bool StartCompress(const web::Value& body, std::string& error) {
     return true;
 }
 
-// Stops the one being made (path: its source) or takes it off the queue.
+// Stops the one being made or takes it off the queue: output, the .cso it
+// makes (one disc of an archive), or path, its source (each disc from it).
 void StopCompress(const web::Value& body) {
     const web::Value* p=body.Get("path");
+    const web::Value* o=body.Get("output");
     std::string path=p && p->type==web::Value::String ? config::FromUtf8(p->text) : std::string();
+    std::string output=o && o->type==web::Value::String ? config::FromUtf8(o->text) : std::string();
+    auto stops=[&](const CompressJob& job) { return !output.empty() ? job.output==output : path.empty() || job.source==path; };
     std::lock_guard<std::mutex> hold(CompressLock);
-    for(size_t i=CompressQueue.size();i-->0;) if(path.empty() || CompressQueue[i].source==path) CompressQueue.erase(CompressQueue.begin()+i);
-    if(Compressing && (path.empty() || CompressNow.source==path)) CompressStop=true;
+    for(size_t i=CompressQueue.size();i-->0;) if(stops(CompressQueue[i])) CompressQueue.erase(CompressQueue.begin()+i);
+    if(Compressing && stops(CompressNow)) CompressStop=true;
 }
 
 void CompressState(bool fresh, web::Reply& out) {
@@ -5890,7 +5895,7 @@ void CompressState(bool fresh, web::Reply& out) {
     }
     j.Key("queue").Open('[');
     for(size_t i=0;i<CompressQueue.size();++i)
-        j.Open('{').Set("name",config::ToUtf8(CompressQueue[i].name)).Set("source",config::ToUtf8(CompressQueue[i].source)).Close('}');
+        j.Open('{').Set("name",config::ToUtf8(CompressQueue[i].name)).Set("source",config::ToUtf8(CompressQueue[i].source)).Set("output",config::ToUtf8(CompressQueue[i].output)).Close('}');
     j.Close(']').Key("recent").Open('[');
     for(size_t i=CompressRecent.size();i-->0;) {
         const CompressDone& d=CompressRecent[i];
@@ -5978,7 +5983,7 @@ bool HasGames(const std::string& folder, int depth) {
         if(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) {
             if(!_stricmp(name.c_str(),"00007000")) games=true;
             else folders.push_back(name);
-        } else games=(name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso")) || !_stricmp(name.c_str(),"default.xex");
+        } else games=(name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso")) || IsCsoName(name) || !_stricmp(name.c_str(),"default.xex");
     } while(!games && FindNextFileA(search,&found));
     FindClose(search);
 #else
@@ -5991,7 +5996,7 @@ bool HasGames(const std::string& folder, int depth) {
         if(config::IsFolder(Child(folder,name))) {
             if(name=="00007000") games=true;
             else folders.push_back(name);
-        } else if((name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso")) || !_stricmp(name.c_str(),"default.xex")) games=true;
+        } else if((name.size()>4 && !_stricmp(name.c_str()+name.size()-4,".iso")) || IsCsoName(name) || !_stricmp(name.c_str(),"default.xex")) games=true;
         if(games) break;
     }
     closedir(dir);
@@ -13283,7 +13288,7 @@ void SetupCheck(web::Reply& out) {
     std::vector<IsoFile> games;
     bool scanned;
     { std::lock_guard<std::mutex> hold(GamesListLock); games=GamesList; scanned=GamesScanned; }
-    int kinds[3]={0,0,0}, found=0, open=0;
+    int kinds[DiscCso+1]={}, found=0, open=0;  // DiscCso is the last DiscKind.
     for(size_t i=0;i<games.size();++i) ++kinds[games[i].kind];
     for(size_t i=0;i<o.folders.size();++i) if(config::IsFolder(o.folders[i])) ++found;
     { std::lock_guard<std::mutex> hold(DuplicatesLock); for(size_t i=0;i<Conflicts.size();++i) open+=Conflicts[i].open; }
@@ -13292,7 +13297,7 @@ void SetupCheck(web::Reply& out) {
     web::Json j;
     j.Open('{').Set("version",NETDISC_VERSION).Set("runs",UpdateHow()).Set("scanned",scanned);
     j.Set("folders",int(o.folders.size())).Set("foldersFound",found).Set("games",int(games.size()));
-    j.Set("iso",kinds[DiscIso]).Set("god",kinds[DiscGod]).Set("extracted",kinds[DiscFolder]).Set("conflicts",open);
+    j.Set("iso",kinds[DiscIso]).Set("god",kinds[DiscGod]).Set("extracted",kinds[DiscFolder]).Set("cso",kinds[DiscCso]).Set("conflicts",open);
     j.Set("canPush",CanPush).Set("push",o.push).Set("category",o.filter).Set("scan",o.scan).Set("skipInstalled",o.skipInstalled);
     j.Set("auroraScripts",o.auroraScripts).Set("followAddress",o.followAddress).Set("keepAwake",o.keepAwake).Set("webLan",o.webLan);
     j.Key("networks").Open('[');
@@ -14451,11 +14456,13 @@ int CompressCommand(const std::vector<std::string>& args) {
 }
 
 int main(int argc, char** argv) {
-    if(argc>=3 && !strcmp(argv[1],"--compress")) return CompressCommand(std::vector<std::string>(argv+2,argv+argc));
 #ifdef _WIN32
+    // With options, this attaches to the command prompt it was started from
+    // (the exe has no console of its own), so --compress has somewhere to print.
     int tray=TrayMain(argc,argv);
     if(tray>=0) return tray;
 #endif
+    if(argc>=3 && !strcmp(argv[1],"--compress")) return CompressCommand(std::vector<std::string>(argv+2,argv+argc));
     std::vector<std::string> args(argv+1,argv+argc);
     int code=RunServer(args,"",false);
 #ifdef _WIN32

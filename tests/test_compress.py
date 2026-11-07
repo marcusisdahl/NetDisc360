@@ -16,8 +16,8 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from test_generator import execution_info, xex  # noqa: E402
-from test_server import SERVER, Client, ServerTest, free_port  # noqa: E402
+from test_generator import execution_info, write_iso, xex  # noqa: E402
+from test_server import SERVER, Client, ServerTest, free_port, xbe  # noqa: E402
 
 SECTOR = 2048
 MAGIC = b"MICROSOFT*XBOX*MEDIA"
@@ -160,9 +160,9 @@ class Compress(ServerTest):
                 return
         self.fail("server didn't start")
 
-    def served(self, folder, name):
+    def served(self, folder, name, *extra):
         """A client with name mounted from a server on folder."""
-        self.start_on(folder)
+        self.start_on(folder, *extra)
         c = Client(self.port)
         self.addCleanup(c.close)
         deadline = time.time() + 10
@@ -352,6 +352,66 @@ class Compress(ServerTest):
                 break
             time.sleep(0.2)
         self.assertEqual([(g["name"], g["kind"], g["titleId"]) for g in games["games"]], [("Game", "cso", "%08X" % TITLE)])
+
+    def test_an_original_xbox_disc_is_served_like_its_iso(self):
+        # A compressed original Xbox disc keeps the layout it was made from (a
+        # full image, the game partition at 0x18300000, or an xiso, from 0), and
+        # is served as its ISO is: the game partition where an extracted Xbox
+        # game's is (XGD2), so the console finds it.
+        game = xbe(0x4D530004)
+        for name, partition in (("Halo", (0x18310000, 0x18300000)), ("Halo xiso", (0x10000, 0))):
+            with self.subTest(name):
+                folder = os.path.join(self.tmp.name, name)
+                os.makedirs(folder)
+                iso = os.path.join(folder, name + ".iso")
+                write_iso(iso, {"default.xbe": game, "maps.bin": b"MAP" * 5000}, partition=partition)
+                result = compress(iso)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                os.remove(iso)
+                self.web = free_port()
+                c = self.served(folder, name + ".iso", "--web-port", str(self.web))
+                self.assertEqual(c.size()[0] * SECTOR, XGD2_IMAGE)
+                self.assertEqual(c.read(0, 4096), bytes(4096))
+                self.assertEqual(c.read(XGD2 + 0x10000, 20), MAGIC)
+                self.assertEqual(c.read(XGD2 + 40 * SECTOR, len(game)), game)
+                self.assertEqual(c.read(XGD2 + 41 * SECTOR, 15000), b"MAP" * 5000)
+                games = self.json("GET", "/api/games")["games"]
+                self.assertEqual([(g["kind"], g["titleId"], g["xbe"]) for g in games], [("cso", "4D530004", True)])
+                c.close()
+                self.server.kill()
+                self.server.wait()
+                self.server.stdout.close()
+                self.server = None
+
+    def test_stop_ends_only_its_own_disc(self):
+        # Two discs of one archive: stopping the second (by the file it makes)
+        # leaves the first, which is being made, to finish.
+        first, second = os.path.join(self.tmp.name, "first.iso"), os.path.join(self.tmp.name, "second.iso")
+        tree = game_tree()
+        tree["big.bin"] = random.Random(7).randbytes(128 << 20)  # Random data deflates slowly: the first disc takes a while.
+        write_disc(first, tree, noise=False)
+        write_disc(second, game_tree(seed=3), noise=False)
+        archive = os.path.join(self.isos, "Game.zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+            z.write(first, "Game (Disc 1).iso")
+            z.write(second, "Game (Disc 2).iso")
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        self.assertEqual(len(self.json("GET", "/api/compress?fresh=1")["archives"][0]["discs"]), 2)
+        made, stopped = os.path.join(self.isos, "Game (Disc 1).cso"), os.path.join(self.isos, "Game (Disc 2).cso")
+        self.json("POST", "/api/compress", {"path": archive, "entry": 0})
+        state = self.json("POST", "/api/compress", {"path": archive, "entry": 1})
+        self.assertIn(stopped, [q["output"] for q in state["queue"]], state)
+        self.json("POST", "/api/compress/stop", {"output": stopped})
+        deadline = time.time() + 300
+        while True:
+            state = self.json("GET", "/api/compress")
+            if (not state["busy"] and not state["queue"]) or time.time() > deadline:
+                break
+            time.sleep(0.5)
+        self.assertEqual([(r["output"], r["ok"]) for r in state["recent"]], [(made, True)], state)
+        self.assertTrue(os.path.exists(made))
+        self.assertFalse(os.path.exists(stopped))
 
     def test_the_dashboard_compresses_an_archive(self):
         iso, files = self.game("Halo 3.iso")

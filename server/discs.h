@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace nia {
-enum DiscKind { DiscIso, DiscGod, DiscFolder, DiscCso };
+enum DiscKind { DiscIso, DiscGod, DiscFolder, DiscCso };  // Keep DiscCso last: SetupCheck counts each kind.
 // A content package on an install disc: its path under Content
 // (0000000000000000\<Title ID>\<type>\<name>, as on the disc) and size.
 // source: its path under content on the disc when that isn't path (a bonus disc's
@@ -35,9 +35,10 @@ struct DiscFile { std::string path; U64 at, size; };
 // (cut off by a download or copy that stopped; see ReadTitles). xbe is set
 // for an original Xbox game (default.xbe, no default.xex); xefu is the
 // emulator version it starts in and xefuWhy why (see xefu.h; from discs.ini
-// or NetDisc360's list), empty for the console's own pick.
+// or NetDisc360's list), empty for the console's own pick. imageSize: a CSO
+// file's disc as it is served, uncompressed (0 until read; size is the file's).
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
-                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; U64 imageSize=0; };
 
 // The discs in folder and its subfolders, sorted by name, added to out;
 // false if folder itself couldn't be read (a drive or share that isn't there).

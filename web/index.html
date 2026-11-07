@@ -1835,8 +1835,9 @@ async function compress(path, entry, name, button) {
   catch (e) { toast(e.message, true); if (button) button.disabled = false; }
   if (view && view.packs) view.packs();
 }
-async function stopCompress(path) {
-  try { Packs.data = await api('compress/stop', { path }); } catch (e) { toast(e.message, true); }
+// output: the .cso being made, so only that disc of an archive stops.
+async function stopCompress(output) {
+  try { Packs.data = await api('compress/stop', { output }); } catch (e) { toast(e.message, true); }
   if (view && view.packs) view.packs();
 }
 const leaf = path => path.split(/[\\/]/).pop();
@@ -1851,11 +1852,11 @@ function packsCard() {
     rows.push(h('div.pack', ic('loader-circle', 'sm'),
       h('div.what', h('b', n.name), h('div.muted', (n.stopping ? 'Stopping' : PackSteps[n.step]) + ' \u00b7 ' + Math.floor(part * 100) + '%' +
         (speed && part < 1 ? ' \u00b7 about ' + duration((n.total - n.done) / speed) + ' left' : ''))),
-      h('button.btn.small', { onclick: e => { e.target.disabled = true; stopCompress(n.source); } }, ic('x', 'sm'), 'Stop'),
+      h('button.btn.small', { onclick: e => { e.currentTarget.disabled = true; stopCompress(n.output); } }, ic('x', 'sm'), 'Stop'),
       h('div.progress', h('i', { style: { width: (part * 100).toFixed(1) + '%' } }))));
   }
   for (const q of d.queue) rows.push(h('div.pack', ic('history', 'sm'), h('div.what', h('b', q.name), h('div.muted', 'Next')),
-    h('button.btn.small.ghost', { onclick: () => stopCompress(q.source) }, 'Cancel')));
+    h('button.btn.small.ghost', { onclick: () => stopCompress(q.output) }, 'Cancel')));
   for (const a of d.archives) {
     if (a.problem) { rows.push(h('div.pack', ic('triangle-alert', 'sm'), h('div.what', h('b', leaf(a.path)), h('div.muted', 'Can\u2019t be read: ' + a.problem + '.')))); continue; }
     a.discs.forEach((disc, i) => {
@@ -1867,10 +1868,15 @@ function packsCard() {
   }
   for (const r of d.recent.filter(r => S && S.time - r.time < 86400).slice(0, 3)) {
     const fromIso = /\.iso$/i.test(r.source);
+    // An archive with more discs: kept until each is compressed.
+    const archive = !fromIso && d.archives.find(a => a.path === r.source);
+    const left = archive && !archive.problem ? archive.discs.filter(x => !x.done).map(x => x.name) : [];
     rows.push(h('div.pack', ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
       h('div.what', h('b', r.name), h('div.muted', r.ok
         ? bytes(r.image) + ' \u2192 ' + bytes(r.bytes) + ' in ' + duration(r.seconds) + (r.whole ? ' (kept whole: its file table couldn\u2019t be read)' : '') + '. ' +
-          (fromIso ? 'The ISO still plays until you delete it; then the compressed copy plays, with the same tile.' : 'You can delete ' + leaf(r.source) + ' now.')
+          (fromIso ? 'The ISO still plays until you delete it; then the compressed copy plays, with the same tile.'
+            : left.length ? 'It plays now. Keep ' + leaf(r.source) + ' until ' + left.join(' and ') + (left.length > 1 ? ' are' : ' is') + ' compressed too.'
+            : 'It plays now, so ' + leaf(r.source) + ' can go: delete it to get its space back.')
         : 'Not compressed: ' + r.error + '.'))));
   }
   if (!rows.length) return null;
@@ -2125,7 +2131,7 @@ function copyBox(g) {
     what = h('p', ['Puts this original Xbox game on the console’s hard drive as an extracted game, ', g.sizeKnown ? h('b', bytes(g.size, 1)) : 'its full size', ', in Hdd1:\\Games. Aurora starts it in the console’s emulator, without the network.']);
     note = 'Its files are sent over Aurora’s FTP. Files already there are skipped, so a stopped copy goes on where it was.';
   } else {
-    what = h('p', ['Puts the whole game on the console’s hard drive as Games on Demand, ', g.sizeKnown ? h('b', 'up to ' + bytes(g.size, 1)) : 'its full size', ', so it plays without this server or the network. Aurora lists it by itself.',
+    what = h('p', ['Puts the whole game on the console’s hard drive as Games on Demand, ', g.sizeKnown && (g.kind !== 'cso' || g.imageSize) ? h('b', 'up to ' + bytes(g.imageSize || g.size, 1)) : 'its full size', ', so it plays without this server or the network. Aurora lists it by itself.',
       carrier ? [' Its content from ', h('b', carrier.name), ' (' + bytes(carrier.contentSize, 1) + ') comes along.'] : null]);
     note = 'Made into Games on Demand files while it’s sent over Aurora’s FTP, to Hdd1:\\Content. Nothing is written on this computer. A stopped copy goes on where it was.';
   }
@@ -3251,7 +3257,7 @@ function scrub(text) {
 }
 function serverChecks(r) {
   const out = [];
-  const kinds = [r.iso && plural(r.iso, 'ISO'), r.god && plural(r.god, 'Games on Demand package'), r.extracted && plural(r.extracted, 'extracted game')].filter(Boolean).join(', ');
+  const kinds = [r.iso && plural(r.iso, 'ISO'), r.cso && plural(r.cso, 'compressed game'), r.god && plural(r.god, 'Games on Demand package'), r.extracted && plural(r.extracted, 'extracted game')].filter(Boolean).join(', ');
   if (!r.folders) out.push(wzCheck('bad', 'No game folder yet', 'Add the folder with your games on the Game folders page.'));
   else if (r.foldersFound < r.folders) out.push(wzCheck('warn', plural(r.folders - r.foldersFound, 'game folder') + ' can\u2019t be opened', 'A drive or share that isn\u2019t connected? Until it\u2019s back, no game is removed from the consoles.'));
   else out.push(wzCheck(r.games ? 'good' : 'warn', plural(r.games, 'game') + ' in ' + plural(r.folders, 'folder'), kinds || 'Put ISOs, extracted games or Games on Demand packages there.'));
