@@ -536,6 +536,7 @@ What `NetDisc360.exe` does, all from one file:
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--installed <folders>` | `/Hdd1/Games` | Where games installed on the console are, as FTP paths with semicolons between. Those, and Games on Demand, get no tile. |
 | `--no-installed` | | Give installed games a tile too, which asks which copy to play. |
+| `--installed-every <s>` | 300 | How often each console's installed games are looked at again, so a game installed or deleted on the console (in Aurora, over FTP) gets or loses its tile. They're also looked at when Aurora starts and when a game ends; `0`: only then. |
 | `--no-aurora-scripts` | | Don't write the cleanup script and the "Hide PC games while NetDisc360 is off" filter. |
 | `--aurora-web-port <n>` | 9999 | Aurora's web server, for starting games from the dashboard, the console's status and screenshots, and restarting Aurora. |
 | `--xbdm-port <n>` | 730 | The consoles' debug monitor (`xbdm.xex`), which turns them off. |

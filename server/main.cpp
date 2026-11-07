@@ -2576,9 +2576,11 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     Options o=Current();
     bool pushDue=settled && (!s.everPushed || state!=s.pushed || (s.retryAt && Now()>=s.retryAt));
     bool scanDue=s.scanTries && Now()>=s.scanAt;
-    // Its installed games, looked at again now and then and when it's back in
-    // Aurora after a game; a change pushes its folders again.
-    bool installedDue=o.skipInstalled && !o.pushOnce && settled && s.everPushed && (console.lookInstalled || Now()>=s.installedAt+o.installedEvery);
+    // Its installed games, looked at again now and then (--installed-every;
+    // 0: never on a timer) and when Aurora starts or it's back in Aurora after
+    // a game; a change pushes its folders again.
+    bool timed=o.installedEvery>0 && Now()>=s.installedAt+o.installedEvery;
+    bool installedDue=o.skipInstalled && !o.pushOnce && settled && s.everPushed && (console.lookInstalled || timed);
     bool online=o.pushOnce || !s.downSince || console.seenAt.load()/1000.0>=s.downSince || Now()-s.upSince>=o.onlineWait;
     if(!(pushDue || scanDue || installedDue) || Now()<s.nextProbe || !(!s.reachable || online || scanDue)) return;
     // Not while it plays a game: Aurora's FTP server isn't there to write
@@ -2593,6 +2595,15 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     std::lock_guard<std::mutex> ftpHold(FtpLockFor(console.address));
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
+        // Only to look at its installed games: quietly, as the console may be
+        // off or Aurora still starting. One that's just started is tried
+        // again soon; the timed look waits its whole interval, so a console
+        // that's off isn't tried every few seconds.
+        if(installedDue && !pushDue && !scanDue) {
+            if(!console.lookInstalled) s.installedAt=Now();
+            s.nextProbe=Now()+ProbeDownSeconds;
+            return;
+        }
         if(s.reachable || !s.toldDown) {
             XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
             XboxEvent(console,EventInfo,"Waiting for Aurora");
@@ -3399,7 +3410,7 @@ void SaveList(web::Reply& out) {
     j.Open('{').Set("available",!folder.empty()).Set("on",o.saveBackup).Set("folder",folder).Key("saves").Open('[');
     for(size_t i=0;i<list.size();++i) {
         const saves::Backup& b=list[i];
-        char id[9]; snprintf(id,sizeof(id),"%08X",b.titleId);
+        char id[9]; snprintf(id,sizeof(id),"%08X",(unsigned)b.titleId);
         std::string game=names.count(b.titleId) ? config::ToUtf8(names[b.titleId]) : std::string(), data;
         std::vector<std::string> profiles;
         if(config::ReadFile(SavePath(o,b.name),data,300<<20)) {
@@ -7976,7 +7987,8 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
-        "  --installed-every <s>   how often each console's installed games are looked at again (300)\n"
+        "  --installed-every <s>   how often each console's installed games are looked at again (300);\n"
+        "                          0: only when Aurora starts or a game ends\n"
         "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
         "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
