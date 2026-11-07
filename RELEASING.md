@@ -5,7 +5,7 @@
 
 # Dev launchers for the dev Docker image
 
-The Xbox launchers can only be built on the PC with the Xbox 360 SDK, so CI can't make them. When a change on `dev` touches the launchers (`launcher/`, `shared/`), build them with `.\build.ps1` and put `build\NetISO-Sync.zip` on the GitHub pre-release with the tag **`dev-launchers`** (create it once as a pre-release; after that, delete its old `NetISO-Sync.zip` and attach the new one). The next push to `dev` (or a rerun of the "Docker image" workflow) builds the `dev` image with them. The in-app update and the dashboard ignore that release, as its tag isn't a version.
+The Xbox launchers can only be built on the PC with the Xbox 360 SDK, so CI can't make them. When a change on `dev` touches the launchers (`launcher/`, `shared/`), build them with `.\build.ps1` and put `build\NetDisc360.exe` on the GitHub pre-release with the tag **`dev-launchers`** (create it once as a pre-release; after that, delete its old `NetDisc360.exe` and attach the new one). The Docker build takes the launchers, the party app and the plugin out of it (`tools/exe_files.py`). The next push to `dev` (or a rerun of the "Docker image" workflow) builds the `dev` image with them. The in-app update and the dashboard ignore that release, as its tag isn't a version.
 
 # Making a release
 
@@ -16,10 +16,9 @@ The Xbox launchers can only be built on the PC with the Xbox 360 SDK, so CI can'
 4. On GitHub, draft a new release with a tag like `v1.0.0`, and attach these files from `build\` **before publishing**:
    - `NetDisc360.exe` (exactly this name: the in-app update looks for it)
    - `NetDisc360.xex` (the console plugin; `NetIsoTiles.xex` up to 1.0)
-   - `NetISO-Sync.zip`
    - `NetDisc360.exe.sig`, once `NETDISC_UPDATE_KEY` is set in `server/version.h`: `python tools\sign_release.py sign <your key.pem> build\NetDisc360.exe` makes it. Builds with a key install an update only when its signature matches, so a release without it can't be installed from the app. To start signing: `python tools\sign_release.py new-key <somewhere safe, outside the repo>\netdisc-update.pem`, put the printed key in `version.h`, and release; from that version on, sign every release.
    - `NetDisc360-<version>.7z` (the store package: `NetDisc360.xex`, its `readme.txt` and the license)
-5. Make the repository public (Settings, General, Danger Zone, Change visibility), if it isn't yet. Do this before publishing: the Docker workflow downloads `NetISO-Sync.zip` from the release, which only works once the repository is public.
+5. Make the repository public (Settings, General, Danger Zone, Change visibility), if it isn't yet. Do this before publishing: the Docker workflow downloads `NetDisc360.exe` from the release, which only works once the repository is public.
 6. Publish the release. The "Docker image" workflow then builds `ghcr.io/marcusisdahl/netdisc360` for x86-64 and ARM64 with that release's launchers, tagged with the version and `latest`.
 7. The first time only: on GitHub, open the package (your profile, Packages, `netdisc360`), Package settings, and set its visibility to **Public**, so `docker compose pull` works without a login.
 

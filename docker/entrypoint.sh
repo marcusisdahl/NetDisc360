@@ -54,5 +54,8 @@ fi
 launchers=/usr/local/share/netdisc
 [ -f "$launchers/default.xex" ] && options+=(--launcher "$launchers/default.xex")
 [ -f "$launchers/boot.xex" ] && options+=(--boot "$launchers/boot.xex")
+# The plugin the Health page can put on a console (the LAN party app,
+# party/default.xex, the server finds by itself).
+[ -f "$launchers/NetDisc360.xex" ] && options+=(--plugin "$launchers/NetDisc360.xex")
 
 exec /usr/local/bin/netdisc "${options[@]}" "$@"

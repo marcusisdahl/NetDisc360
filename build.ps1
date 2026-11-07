@@ -36,12 +36,8 @@ try {
     if (!$imagexex) { throw 'imagexex.exe not found; set XEDK or RXDK.' }
     & $imagexex.FullName /IN:build\xbox\NetIsoLauncher.exe "/OUT:$sync\boot.xex" /CONFIG:launcher\xex.xml
     if ($LASTEXITCODE) { throw 'imagexex failed for boot.xex.' }
-    # The same folder zipped, for the release: NetISO Sync for other servers,
-    # and the launchers the Docker image downloads (Dockerfile).
-    # Python's zipfile, not Compress-Archive: Windows PowerShell 5.1 writes
-    # backslashes in the paths, which unzip on Linux warns about.
-    & python -c "import shutil; shutil.make_archive('build/NetISO-Sync', 'zip', 'build', 'NetISO Sync')"
-    if ($LASTEXITCODE) { throw 'Zipping NetISO Sync failed.' }
+    # NetDisc360.exe carries both launchers (server.rc); the Docker image takes
+    # them out of the release's exe (tools/exe_files.py), so they aren't zipped.
     # NetDisc360.xex: the DashLaunch plugin, the console's disc drive for games
     # from the server (plugin/disc.cpp, in NetISO.xex's place) that also
     # handles tiles and disc swaps (plugin/main.cpp). NetIsoTiles.xex before.
