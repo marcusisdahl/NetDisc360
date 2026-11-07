@@ -536,6 +536,7 @@ What `NetDisc360.exe` does, all from one file:
 | `--no-scan` | | Don't ask Aurora to scan after adding or removing games. |
 | `--installed <folders>` | `/Hdd1/Games` | Where games installed on the console are, as FTP paths with semicolons between. Those, and Games on Demand, get no tile. |
 | `--no-installed` | | Give installed games a tile too, which asks which copy to play. |
+| `--installed-every <s>` | 300 | How often each console's installed games are looked at again, so a game installed or deleted on the console (in Aurora, over FTP) gets or loses its tile. They're also looked at when Aurora starts and when a game ends; `0`: only then. |
 | `--no-aurora-scripts` | | Don't write the cleanup script and the "Hide PC games while NetDisc360 is off" filter. |
 | `--aurora-web-port <n>` | 9999 | Aurora's web server, for starting games from the dashboard, the console's status and screenshots, and restarting Aurora. |
 | `--xbdm-port <n>` | 730 | The consoles' debug monitor (`xbdm.xex`), which turns them off. |
@@ -644,6 +645,8 @@ You need Visual Studio 2022 with the "Desktop development with C++" workload, an
 ```
 
 This makes `build\NetDisc360.exe` (with the launcher built in), `build\NetDisc360.xex`, `build\NetISO Sync\` and `build\NetISO-Sync.zip` (the launchers, as the release and the Docker image use them). The Docker image builds the server for Linux from the same source; see the [`Dockerfile`](Dockerfile).
+
+After a build, `.\store\package.ps1` (needs [7-Zip](https://www.7-zip.org/)) makes `build\NetDisc360-<version>.7z` for the Xbox 360 Homebrew Store, with `NetDisc360.xex`, [`store\readme.txt`](store/readme.txt) and the license, which the store unpacks into `Apps\NetDisc360\`, and `build\NetDisc360-<version>.ini`, the store entry made from [`store\consolemods.ini`](store/consolemods.ini).
 
 Pull requests go to the [`dev` branch](https://github.com/marcusisdahl/NetDisc360/tree/dev), not `main`: each change there is published as the `dev` Docker image for testing, and `main` only gets `dev` merged into it for a release. To make a release, see [RELEASING.md](RELEASING.md).
 

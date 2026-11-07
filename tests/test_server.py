@@ -2222,6 +2222,22 @@ class Push(ServerTest):
         self.assertIn("1 game is installed on it", out)
         self.assertIn("0 games are installed on it", out)
 
+    def test_a_console_that_is_off_is_not_tried_for_its_installed_games(self):
+        # The look now and then at installed games, on a console that's been
+        # turned off since: quietly, a whole interval later, and no "Waiting
+        # for Aurora" though nothing was to be written.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        server, _ = self.run_server("--installed", "/Hdd1/Games", "--installed-every", "2")
+        try:
+            self.assertTrue(self.wait_for(lambda: self.ftp.scans, 15))
+            self.ftp.shutdown()
+            self.ftp.server_close()
+            time.sleep(7)
+        finally:
+            server.kill()
+            out = server.stdout.read()
+        self.assertNotIn("waiting for its FTP server", out)
+
     def test_installed_games_are_looked_at_when_aurora_starts(self):
         # Aurora's NetISO plugin connecting (Aurora started again) is when
         # they're looked at, long before the slow look now and then.
@@ -4061,6 +4077,22 @@ class Dashboard(DashboardTest):
                           ("Halo 3", "", "", "")])
         with open(os.path.join(self.tmp.name, "discs.ini")) as f:
             self.assertIn("[4D530910]\n", f.read())
+
+    def test_a_disc_map_edit_is_read_while_running(self):
+        for n in (1, 2):
+            write_iso(os.path.join(self.isos, "Saga - Disc %d.iso" % n), {"default.xex": xex(execution_info(0x100 + n, 0x12340001, n, 2))})
+        self.start()
+        self.state_when(lambda s: s["library"]["games"] == 2)
+        path = os.path.join(self.tmp.name, "discs.ini")
+        roles = lambda: [(g["name"], g["role"], g["roleLabel"]) for g in self.json("GET", "/api/games")["games"]]
+        self.state_when(lambda s: os.path.exists(path))
+        self.assertEqual(roles(), [("Saga - Disc 1", "next", ""), ("Saga - Disc 2", "next", "")])
+        with open(path, newline="") as f:
+            text = f.read()
+        with open(path, "w", newline="") as f:
+            f.write(text.replace("disc2=next", "disc2=own Bonus disc"))
+        self.state_when(lambda s: roles()[1] == ("Saga - Disc 2", "own", "Bonus disc"))
+        self.assertEqual(roles()[1], ("Saga - Disc 2", "own", "Bonus disc"))
 
     def test_an_original_xbox_game_names_its_emulator(self):
         folder = os.path.join(self.isos, "Crazy Taxi 3")

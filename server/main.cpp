@@ -647,7 +647,9 @@ std::string Fingerprint(const std::vector<IsoFile>& isos) {
     std::string text;
     for(size_t i=0;i<isos.size();++i) {
         char line[64]; _snprintf_s(line,sizeof(line),_TRUNCATE,"|%llu|%lld\n",(unsigned long long)isos[i].size,isos[i].modified);
-        text+=isos[i].path+line;
+        // And what the disc map says, so an edit to discs.ini reaches the
+        // dashboard and the tiles without a restart.
+        text+=isos[i].path+"|"+isos[i].role+"|"+isos[i].roleLabel+"|"+isos[i].installDisc+line;
     }
     return text;
 }
@@ -1911,7 +1913,8 @@ class Connection {
 public:
     Connection(SOCKET socket, DWORD address) : socket_(socket), address_(address), console_(NULL), pastEnd_(false) {
         AddressText(address,peer_,sizeof(peer_));
-        quiet_=Loopback(address) && !Settings.verbose;  // The push's own connection.
+        verbose_=Current().verbose;
+        quiet_=Loopback(address) && !verbose_;  // The push's own connection.
     }
     ~Connection() {
         if(console_) {
@@ -1930,7 +1933,7 @@ public:
             DWORD index=DWORD((request[6]<<8)|request[7]);
             U64 offset=(U64(Read32(request+8))<<32)|Read32(request+12);
             DWORD length=Read32(request+16);
-            if(Settings.verbose) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
+            if(verbose_) Log("%s: command %d, index %u, offset %llu, length %u",peer_,command,index,(unsigned long long)offset,length);
             // NetDiscParty.xex's own: it isn't the console's disc drive, so
             // its connection doesn't count as one (Attach).
             if(command==PartyWait || command==PartySpinAsk || command==PartySignIn || command==PartyEditAsk || command==PartyJobAsk) {
@@ -2201,7 +2204,7 @@ private:
     DWORD address_;
     Console* console_;
     char peer_[16];
-    bool quiet_;
+    bool quiet_, verbose_;  // verbose_: -v, copied once (Settings changes under its lock).
     std::vector<IsoFile> listing_;
     IsoReader iso_;
     std::string mounted_;
@@ -3632,7 +3635,13 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
         // Only to look again: quietly, as Aurora may still be starting.
-        if(recheck && !scanDue) { s.nextProbe=Now()+ProbeDownSeconds; return; }
+        // The timed look waits its whole interval, so a console that's off
+        // isn't tried every few seconds; one that just started is tried again soon.
+        if(recheck && !scanDue) {
+            if(!console.recheck) s.installedAt=Now();
+            s.nextProbe=Now()+ProbeDownSeconds;
+            return;
+        }
         if(s.reachable || !s.toldDown) {
             XboxLog(console,"waiting for its FTP server (Aurora): %s",ftp.Error());
             XboxEvent(console,EventInfo,"Waiting for Aurora");
@@ -4521,7 +4530,7 @@ void SaveList(web::Reply& out) {
     j.Open('{').Set("available",!folder.empty()).Set("on",o.saveBackup).Set("folder",folder).Key("saves").Open('[');
     for(size_t i=0;i<list.size();++i) {
         const saves::Backup& b=list[i];
-        char id[9]; snprintf(id,sizeof(id),"%08X",b.titleId);
+        char id[9]; snprintf(id,sizeof(id),"%08X",(unsigned)b.titleId);
         std::string game=names.count(b.titleId) ? config::ToUtf8(names[b.titleId]) : std::string(), data;
         std::vector<std::string> profiles;
         if(config::ReadFile(SavePath(o,b.name),data,300<<20)) {
@@ -13313,7 +13322,8 @@ void Usage() {
         "                          to come online before writing game folders (120)\n"
         "  --remove-wait <s>       how long after the start (or a change of game folders) game\n"
         "                          folders whose game is gone are kept on the Xbox (60)\n"
-        "  --installed-every <s>   how often each console's installed games are looked at again (300)\n"
+        "  --installed-every <s>   how often each console's installed games are looked at again (300);\n"
+        "                          0: only when Aurora starts or a game ends\n"
         "  --ping <s>              how often each console is pinged to see it's still on (30);\n"
         "                          0: never\n"
         "  --port <n>              NetISO port (4323)   --ftp-port <n>  (21)\n"
