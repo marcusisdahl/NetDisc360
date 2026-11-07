@@ -10,3 +10,5 @@
 !web/
 !tools/make_web.py
 !tools/make_version.py
+!third_party/miniz/
+!third_party/lzma/

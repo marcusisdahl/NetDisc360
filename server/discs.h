@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// What the server lists as discs: ISO files, Xbox 360 games extracted to a
-// folder (default.xex at the top), and Games on Demand packages. The NetISO
+// What the server lists as discs: ISO files, compressed ones (CSO, see
+// compress.h), Xbox 360 games extracted to a folder (default.xex at the top),
+// and Games on Demand packages. The NetISO
 // plugin reads a disc only as sectors, so an extracted folder or a GOD
 // package is shown as the disc image it came from, put together while it is
 // read. Nothing is written next to the games.
@@ -13,7 +14,7 @@
 #include <vector>
 
 namespace nia {
-enum DiscKind { DiscIso, DiscGod, DiscFolder };
+enum DiscKind { DiscIso, DiscGod, DiscFolder, DiscCso };  // Keep DiscCso last: SetupCheck counts each kind.
 // A content package on an install disc: its path under Content
 // (0000000000000000\<Title ID>\<type>\<name>, as on the disc) and size.
 // source: its path under content on the disc when that isn't path (a bonus disc's
@@ -34,9 +35,10 @@ struct DiscFile { std::string path; U64 at, size; };
 // (cut off by a download or copy that stopped; see ReadTitles). xbe is set
 // for an original Xbox game (default.xbe, no default.xex); xefu is the
 // emulator version it starts in and xefuWhy why (see xefu.h; from discs.ini
-// or NetDisc360's list), empty for the console's own pick.
+// or NetDisc360's list), empty for the console's own pick. imageSize: a CSO
+// file's disc as it is served, uncompressed (0 until read; size is the file's).
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
-                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; U64 imageSize=0; };
 
 // The discs in folder and its subfolders, sorted by name, added to out;
 // false if folder itself couldn't be read (a drive or share that isn't there).
@@ -52,7 +54,8 @@ void ReadTitles(std::vector<IsoFile>& discs);
 // another disc of it does: GTA V's play disc, Forza 4's first disc.
 void LinkInstallDiscs(std::vector<IsoFile>& discs);
 // The same game (Title ID and disc number) more than once: keeps the copy
-// whose path is in chosen, else an ISO over a GOD package over a folder, and
+// whose path is in chosen, else an ISO over a CSO file over a GOD package
+// over a folder, and
 // moves the others to dropped, with kept naming the one kept for each.
 void DropDuplicates(std::vector<IsoFile>& discs, std::vector<IsoFile>& dropped, std::vector<IsoFile>& kept,
                     const std::set<std::string>& chosen);

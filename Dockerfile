@@ -17,6 +17,8 @@ WORKDIR /src
 COPY server/ server/
 COPY shared/ shared/
 COPY third_party/iso2god/ third_party/iso2god/
+COPY third_party/miniz/ third_party/miniz/
+COPY third_party/lzma/ third_party/lzma/
 COPY tests/posix_compat.h tests/
 # The guests' gamer pictures (server/picture.cpp) draw letters with these.
 COPY third_party/imgui/imstb_truetype.h third_party/imgui/
@@ -29,6 +31,7 @@ RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc 
         server/main.cpp server/discs.cpp server/discmap.cpp server/xefu.cpp server/ftp.cpp server/web.cpp server/config.cpp \
         server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/titleupdates.cpp server/system.cpp server/saves.cpp server/wake.cpp \
         server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp server/users.cpp server/http.cpp server/sync.cpp server/health.cpp \
+        server/compress.cpp server/codecs.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetISO-Sync.zip
