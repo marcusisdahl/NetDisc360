@@ -68,7 +68,7 @@ jobs:
             type=raw,value=latest,enable=${{ env.DEV != 'true' && !contains(env.TAG, '-') }}
             type=raw,value=dev,enable=${{ env.DEV == 'true' }}
             type=sha,prefix=dev-,enable=${{ env.DEV == 'true' }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
