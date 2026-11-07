@@ -376,6 +376,9 @@ button.pill.tu:disabled { opacity: .6; cursor: default; }
 .tu-files { display: grid; gap: 4px; margin: 2px 0 6px 14px; padding-left: 10px; border-left: 2px solid var(--line); }
 .tu-files .install-line { font-size: 13px; }
 .tu-on { color: var(--good); font-weight: 600; } .tu-off { color: var(--muted); }
+.tu-pick-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 2px 0 8px; }
+.tu-pick-row .tu-pick { flex: 1 1 260px; min-width: 0; max-width: 520px; height: 32px; padding: 0 8px; }
+.tu-using { color: var(--text); }
 .install-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 .install-actions .muted { margin-right: auto; font-size: 12.5px; }
 
@@ -1435,47 +1438,65 @@ function tuBox(g) {
   }
   // Like Aurora's title update manager, for one console: every version of
   // the game's updates, XboxUnity's and those on the console (on, moved
-  // aside or in Aurora's store), one line each, newest first, and the one it
-  // should use picked from them. A copy on the console is switched to (moved
-  // or copied back); one it hasn't got is downloaded here and put on it.
-  function managed(c, offers, busy) {
-    const where = { live: 'on the console', aside: 'moved aside', aurora: 'in Aurora’s store' };
+  // aside or in Aurora's store), newest first, for its dropdown. A copy on the
+  // console is switched to (moved or copied back); one it hasn't got is
+  // downloaded here and put on it.
+  const where = { live: 'on now', aside: 'on the console, moved aside', aurora: 'in Aurora’s store' };
+  function versions(c, offers) {
     const rank = f => f.on ? 3 : f.where === 'aside' ? 2 : 1;  // A copy moved aside is used before Aurora's.
     const lines = new Map();
     for (const f of c.files || []) {
       const key = f.offer || f.contentId || f.path;
       const had = lines.get(key);
-      if (!had || rank(f) > rank(had.file)) lines.set(key, { file: f, offer: offers.find(o => o.id === f.offer) });
+      if (!had || rank(f) > rank(had.file)) lines.set(key, { key, file: f, offer: offers.find(o => o.id === f.offer) });
     }
-    for (const o of offers) if (!lines.has(o.id)) lines.set(o.id, { offer: o });
+    for (const o of offers) if (!lines.has(o.id)) lines.set(o.id, { key: o.id, offer: o });
     const number = l => l.file && l.file.version ? l.file.version : l.offer ? l.offer.version : 0;
-    const list = [...lines.values()].sort((a, b) => number(b) - number(a));
-    const anyOn = list.some(l => l.file && l.file.on);
-    return h('div.tu-files',
-      list.map(l => {
-        const f = l.file, o = l.offer, on = f && f.on;
-        const name = number(l) ? 'Title update ' + number(l) : o ? o.name : f.title || f.name;
-        const size = (f && f.size) || (o && o.size);
-        const about = f ? where[f.where] + (o ? '' : ', not on XboxUnity for this disc') : 'on XboxUnity' + (o.onPc ? ', kept on this computer' : '');
-        let action = null;
-        if (!on && f) action = h('button.btn.small', { disabled: busy, title: f.where === 'aurora' ? 'Copies it from Aurora’s store to where the game loads it; Aurora’s copy stays' : 'Moves it back to where the game loads it',
-          onclick: e => switchTo(e.target, c.address, f.path) }, ic('check', 'sm'), 'Use this one');
-        else if (!on) action = h('button.btn.small', { disabled: busy, title: (o.onPc ? 'Sends it' : 'Downloads it here from XboxUnity, checks it, and sends it') + ' over Aurora’s FTP; the update on now moves aside',
-          onclick: e => put(e.target, { address: c.address, id: o.id }) }, ic('download', 'sm'), 'Install this one');
-        return h('div.install-line',
-          h('span', h(on ? 'span.tu-on' : 'span.tu-off', on ? 'On' : f ? 'Off' : 'Not on it'), ' ', h('b', name), o && o === offers[0] ? h('span.muted', ' (newest)') : null,
-            h('span.muted', ' · ' + about + (size ? ', ' + bytes(size, 1) : ''))),
-          action);
-      }),
-      h('div.install-line', h('span', h(anyOn ? 'span.tu-off' : 'span.tu-on', anyOn ? 'Off' : 'On'), ' ', h('b', 'None'), h('span.muted', ' · the game as it is on the disc')),
-        anyOn ? h('button.btn.small', { disabled: busy, title: 'Moves its updates aside and switches them off in Aurora too; nothing is deleted', onclick: e => switchTo(e.target, c.address, '') }, ic('power', 'sm'), 'Use none') : null));
+    return [...lines.values()].map(l => Object.assign(l, {
+      name: number(l) ? 'Title update ' + number(l) : l.offer ? l.offer.name : l.file.title || l.file.name, number: number(l),
+      about: l.file ? where[l.file.where] + (l.offer ? '' : ', not on XboxUnity for this disc') : 'on XboxUnity' + (l.offer.onPc ? ', kept on this computer' : ''),
+      size: (l.file && l.file.size) || (l.offer && l.offer.size) })).sort((a, b) => b.number - a.number);
+  }
+  const picked = new Map();  // By console: the dropdown's choice, until it's applied.
+  function apply(button, c, l) {
+    picked.delete(c.address);
+    if (!l) switchTo(button, c.address, '');
+    else if (l.file) switchTo(button, c.address, l.file.path);
+    else put(button, { address: c.address, id: l.offer.id });
+  }
+  function managed(c, offers, busy) {
+    const list = versions(c, offers);
+    const active = list.find(l => l.file && l.file.on);
+    const activeKey = !c.checked ? '' : active ? active.key : 'none';
+    let choice = picked.has(c.address) ? picked.get(c.address) : activeKey || offers[0].id;
+    if (choice !== 'none' && !list.some(l => l.key === choice)) choice = activeKey || offers[0].id;
+    const chosen = list.find(l => l.key === choice) || null;
+    const select = h('select.input.tu-pick', { disabled: busy, 'aria-label': 'Title update ' + c.address + ' uses',
+      onchange: e => { picked.set(c.address, e.target.value); draw(); } },
+      list.map(l => h('option', { value: l.key, selected: l.key === choice },
+        (l.file && l.file.on ? '\u2713 ' : '') + l.name + (l.offer && l.offer === offers[0] ? ' (newest)' : '') + ' \u00b7 ' + l.about)),
+      h('option', { value: 'none', selected: choice === 'none' }, (activeKey === 'none' ? '\u2713 ' : '') + 'None \u00b7 the game as it is on the disc'));
+    const same = choice === activeKey;
+    const verb = choice === 'none' ? 'Turn off' : chosen && chosen.file ? 'Use it' : 'Install';
+    const title = choice === 'none' ? 'Moves its updates aside and switches them off in Aurora too; nothing is deleted'
+      : chosen && chosen.file ? (chosen.file.where === 'aurora' ? 'Copies it from Aurora’s store to where the game loads it; Aurora’s copy stays' : 'Moves it back to where the game loads it')
+      : chosen ? (chosen.offer.onPc ? 'Sends it' : 'Downloads it here from XboxUnity, checks it, and sends it') + ' over Aurora’s FTP; the update on now moves aside' : '';
+    return h('div.tu-pick-row', select,
+      h('button.btn.small' + (same ? '' : '.primary'), { disabled: busy || same, title, onclick: e => apply(e.currentTarget, c, chosen) },
+        ic(choice === 'none' ? 'power' : chosen && chosen.file ? 'check' : 'download', 'sm'), same ? 'In use' : verb),
+      chosen && chosen.size && !same ? h('span.muted', bytes(chosen.size, 1)) : null);
   }
   async function check(button, address) {
     button.disabled = true;
     try { await api('titleupdates/check', { address }); await refresh(); }
     catch (e) { toast(e.message, true); button.disabled = false; }
   }
+  let drawn = '';
   function draw() {
+    const queueKey = (S.installs || []).filter(j => j.state === 'queued' || j.state === 'copying').map(j => [j.id, j.address, j.kind, j.game]);
+    const key = JSON.stringify([data, failed, loading, queueKey, [...picked]]);
+    if (key === drawn) return;
+    drawn = key;
     const head = h('div.install-head', ic('refresh-cw', 'sm'), h('b', 'Title updates'));
     if (!data) { fill(box, head, h('p.muted', loading ? 'Asking XboxUnity…' : failed || '')); return; }
     const offers = data.offers || [];
@@ -1491,7 +1512,11 @@ function tuBox(g) {
     const rows = data.consoles.map(c => {
       const busy = queue.some(j => j.address === c.address && (j.state === 'queued' || j.state === 'copying') && (((j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name) || j.kind === 'check'));
       const [text, tone] = busy ? ['Working on it…', 'muted'] : tuState(c, offers);
-      return [h('div.install-line', h('span', h('b', c.address), ' ', h('span', { style: { color: tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : 'var(--muted)' } }, text), c.hasGame ? null : h('span.muted', ' (no tile of it there)')),
+      const active = versions(c, offers).find(l => l.file && l.file.on);
+      const using = !c.checked ? null : h('span.tu-using', 'Active: ', h('b', active ? active.name : 'none'));
+      // Beside the active one, only what it adds: the newest, or what's newer.
+      const hint = !c.checked || busy ? text : text.replace(/^Has [^;,]*, /, '').replace(/^Has [^;]*; /, '').replace(/^Has no title update for it$/, '').replace(/^Has no update on; /, '');
+      return [h('div.install-line', h('span', h('b', c.address), ' ', using, using && hint ? ' \u00b7 ' : ' ', h('span', { style: { color: tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : 'var(--muted)' } }, hint), c.hasGame ? null : h('span.muted', ' (no tile of it there)')),
         h('span', { style: { display: 'flex', gap: '6px' } },
           h('button.btn.small', { disabled: busy, title: 'Reads which updates it has, over Aurora’s FTP', onclick: e => check(e.target, c.address) }, ic('scan', 'sm'), 'Check'))),
         managed(c, offers, busy)];
@@ -1499,7 +1524,7 @@ function tuBox(g) {
     const withGame = data.consoles.filter(c => c.hasGame).length;
     fill(box, head,
       h('p', ['Newest for this disc on XboxUnity: ', h('b', offers[0].name), offers[0].size ? ' (' + bytes(offers[0].size, 1) + ')' : '', offers[0].onPc ? ', kept on this computer.' : '.',
-        ' Pick the one each console uses below. The others move aside (to Hdd1:\\Apps\\NetDisc360\\Title updates), never deleted, so you can switch back.']),
+        ' Pick the one each console uses from its list. The others move aside (to Hdd1:\\Apps\\NetDisc360\\Title updates), never deleted, so you can switch back.']),
       rows.length ? rows : h('p.muted', 'No console yet.'),
       h('div.install-actions', h('span.muted', 'This computer downloads each update once from XboxUnity, checks it, and sends it over Aurora’s FTP: the consoles never go online for it.'),
         withGame > 1 ? h('button.btn.small', { onclick: e => put(e.target, { all: true, id: offers[0].id }) }, ic('download', 'sm'), 'Newest on all ' + withGame + ' consoles') : null));
