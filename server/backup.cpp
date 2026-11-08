@@ -150,6 +150,51 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
 }
 bool UnzipPaths(const std::string& data, std::map<std::string,std::string>& files, std::string& error) { return Unpack(data,files,error,size_t(0xFFFFFFFFu)); }
 
+bool Peek(const std::string& path, std::vector<std::string>& names, const std::string& wanted, std::string& content, size_t maxFile) {
+    names.clear(); content.clear();
+    FILE* f=config::Open(path,"rb");
+    if(!f) return false;
+    struct Closer { FILE* f; ~Closer() { fclose(f); } } closer={f};
+    if(fseek(f,0,SEEK_END)) return false;
+    long size=ftell(f);
+    if(size<22) return false;
+    // The end record is the last 22 bytes, unless the zip has a comment (up to 64 KB).
+    long tailAt=size>65557 ? size-65557 : 0;
+    std::string tail(size_t(size-tailAt),'\0');
+    if(fseek(f,tailAt,SEEK_SET) || fread(&tail[0],1,tail.size(),f)!=tail.size()) return false;
+    size_t end=std::string::npos;
+    for(size_t at=tail.size()-22;;--at) {
+        if(Get32(tail,at)==0x06054B50) { end=at; break; }
+        if(!at) break;
+    }
+    if(end==std::string::npos) return false;
+    unsigned count=Get16(tail,end+10), dirSize=Get32(tail,end+12), dirAt=Get32(tail,end+16);
+    if(dirSize>(16u<<20) || (long long)dirAt+dirSize>(long long)size) return false;
+    std::string dir(dirSize,'\0');
+    if(dirSize && (fseek(f,long(dirAt),SEEK_SET) || fread(&dir[0],1,dirSize,f)!=dirSize)) return false;
+    bool found=false;
+    for(unsigned i=0, at=0;i<count;++i) {
+        if(size_t(at)+46>dir.size() || Get32(dir,at)!=0x02014B50) return false;
+        unsigned method=Get16(dir,at+10), crc=Get32(dir,at+16), packed=Get32(dir,at+20), unpacked=Get32(dir,at+24);
+        unsigned nameLength=Get16(dir,at+28), extra=Get16(dir,at+30), comment=Get16(dir,at+32), local=Get32(dir,at+42);
+        if(size_t(at)+46+nameLength>dir.size()) return false;
+        std::string name=dir.substr(at+46,nameLength);
+        at+=46+nameLength+extra+comment;
+        if(!name.empty() && name[name.size()-1]=='/') continue;  // A folder.
+        names.push_back(name);
+        if(found || wanted.empty() || name!=wanted) continue;
+        if(method!=0 || packed!=unpacked || unpacked>maxFile) return false;
+        unsigned char head[30];
+        if(fseek(f,long(local),SEEK_SET) || fread(head,1,30,f)!=30 || head[0]!=0x50 || head[1]!=0x4B || head[2]!=0x03 || head[3]!=0x04) return false;
+        long start=long(local)+30+long(head[26]|(head[27]<<8))+long(head[28]|(head[29]<<8));
+        content.assign(unpacked,'\0');
+        if(unpacked && (fseek(f,start,SEEK_SET) || fread(&content[0],1,unpacked,f)!=unpacked)) return false;
+        if(Crc32(content)!=crc) return false;
+        found=true;
+    }
+    return wanted.empty() || found;
+}
+
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,
           std::string& name, std::string& error) {
     if(!config::MakeFolder(folder)) { error="Can't make the folder "+folder+"."; return false; }

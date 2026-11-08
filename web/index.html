@@ -5921,7 +5921,7 @@ Pages.settings = root => {
     async function restore(b) {
       const name = b.game || 'Title ' + b.titleId;
       if (!(await confirmBox('Restore these saves?', ['The saves of ', h('b', name), ' from ', h('b', fullDate(b.time)), ' go back on ', h('b', which.value),
-        ', in place of the ones there now. Those are backed up first, so you can go back. Stay in Aurora while it runs.'], 'Restore'))) return;
+        ', in place of the ones there now, so each profile in the backup has just those (its other save files of the game there go). The saves there now are backed up first, so you can go back. Stay in Aurora while it runs.'], 'Restore'))) return;
       try { await api('saves/restore', { name: b.name, address: which.value }); toast('Saves of ' + name + ' restored'); } catch (e) { toast(e.message, true); }
       load();
     }
@@ -5932,11 +5932,11 @@ Pages.settings = root => {
     load();
     return h('div.card', h('div.card-head', ic('gamepad-2'), h('h2', 'Game saves'), h('span.sub', 'from the console\u2019s hard drive')),
       h('div.card-body',
-        row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it.',
+        row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it, also for games installed on it or started in Aurora.',
           toggle(st.saveBackup, (v, i) => flip('saveBackup', v, i, v ? 'Saves backed up after each game' : 'Saves not backed up'))),
         row('Saves follow the profile', 'When a console is in Aurora, a profile on it gets that game\u2019s newest saves from your other consoles and computers. What was on the console is backed up first; when both played since, you choose here.',
           toggle(st.saveFollow, (v, i) => flip('saveFollow', v, i, v ? 'Saves follow the profile' : 'Saves stay on their console'))),
-        row('Keep the newest', 'Of each game. A backup the same as the one before isn\u2019t kept twice.', keep),
+        row('Keep the newest', 'Of each game from each console, so one console\u2019s backups never push out another\u2019s. A backup the same as that console\u2019s one before isn\u2019t kept twice, and one a question above still needs stays.', keep),
         row('Back up every game\u2019s saves now', consoles.length ? 'From the console you choose, while it\u2019s in Aurora. Restore puts saves back on that console too.' : 'Once a console has used NetDisc360.',
           h('div', { style: { display: 'flex', gap: '8px' } }, consoles.length > 1 ? which : null, now))),
       conflictsBox(), list, foot);
