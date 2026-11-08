@@ -2238,6 +2238,18 @@ function tuBox(g) {
     try { await api('titleupdates/check', { address }); await refresh(); }
     catch (e) { toast(e.message, true); button.disabled = false; }
   }
+  // XboxUnity has its outages: while it's down the server goes by the list
+  // it got before, and its updates still install. Said when that list is
+  // over a day old or asking again just failed, with a way to ask again.
+  function listNote() {
+    if (!data.listChecked) return null;
+    const age = (S ? S.time : Date.now() / 1000) - data.listChecked;
+    if (!data.listError && age < 86400) return null;
+    const days = Math.floor(age / 86400);
+    const when = days >= 2 ? days + ' days ago' : age < 45 ? 'a moment ago' : ago(data.listChecked);
+    return h('p.muted', 'XboxUnity’s list from ' + when + '. ' + (data.listError || ''), ' ',
+      h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Ask again'));
+  }
   let drawn = '';
   function draw() {
     const queueKey = (S.installs || []).filter(j => j.state === 'queued' || j.state === 'copying').map(j => [j.id, j.address, j.kind, j.game]);
@@ -2248,11 +2260,11 @@ function tuBox(g) {
     if (!data) { fill(box, head, h('p.muted', loading ? 'Asking XboxUnity…' : failed || '')); return; }
     const offers = data.offers || [];
     if (failed && !offers.length) {
-      fill(box, head, h('p', { style: { color: 'var(--bad)' } }, 'Couldn’t ask XboxUnity: ' + failed), h('div.install-actions', h('span.muted', 'XboxUnity is the site Aurora gets title updates from.'), h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Try again')));
+      fill(box, head, h('p', { style: { color: 'var(--bad)' } }, failed), h('div.install-actions', h('span.muted', 'XboxUnity is the site Aurora gets title updates from.'), h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Try again')));
       return;
     }
     if (!offers.length) {
-      fill(box, head, h('p', 'XboxUnity has no title update for this disc (Media ID ' + data.mediaId + ')' + (data.otherDiscs ? ', only for other versions of the game.' : '.')));
+      fill(box, head, h('p', 'XboxUnity has no title update for this disc (Media ID ' + data.mediaId + ')' + (data.otherDiscs ? ', only for other versions of the game.' : '.')), listNote());
       return;
     }
     const queue = S.installs || [];
@@ -2275,6 +2287,7 @@ function tuBox(g) {
     fill(box, head,
       h('p', ['Newest for this disc on XboxUnity: ', h('b', offers[0].name), offers[0].size ? ' (' + bytes(offers[0].size, 1) + ')' : '', offers[0].onPc ? ', kept on this computer.' : '.',
         ' Pick the one each console uses from its list. The others move aside (to Hdd1:\\Apps\\NetDisc360\\Title updates), never deleted, so you can switch back.']),
+      listNote(),
       rows.length ? rows : h('p.muted', 'No console yet.'),
       h('div.install-actions', h('span.muted', 'This computer downloads each update once from XboxUnity, checks it, and sends it over Aurora’s FTP: the consoles never go online for it.'),
         withGame > 1 ? h('button.btn.small', { onclick: e => put(e.target, { all: true, id: offers[0].id }) }, ic('download', 'sm'), 'Newest on all ' + withGame + ' consoles') : null));

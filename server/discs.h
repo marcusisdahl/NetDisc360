@@ -146,6 +146,24 @@ private:
 // package's header file (0x368 bytes); false if it isn't one.
 bool XexIds(const unsigned char* xex, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
 bool GodIds(const unsigned char* header, DWORD size, DWORD& titleId, DWORD& mediaId, int& disc);
+// What the Xbox home shows of a Games on Demand package: the display name in
+// its header (UTF-8) and its icon (a PNG of at most 0x4000 bytes: the
+// thumbnail, else the title thumbnail; empty if it has none). From the header
+// file at path (a game's own, in the library), or from the first size bytes
+// of one (GodArtBytes of them hold both thumbnails). False if it isn't one.
+enum { GodArtBytes = 0x971A };
+bool GodHeaderArt(const std::string& path, std::string& name, std::vector<unsigned char>& icon);
+bool GodHeaderArt(const unsigned char* header, size_t size, std::string& name, std::vector<unsigned char>& icon);
+// A whole Games on Demand header (0xB000 bytes) that iso2god or NetDisc360
+// made, unsigned (as iso2god's empty LIVE package: nothing where a signed one
+// has its signature), with no picture in its thumbnails: the Xbox home shows
+// it without an icon. GodHeaderPutIcon puts icon (a PNG of at most 0x4000
+// bytes) in such a header and works out its digest at 0x32C again, which
+// covers the thumbnails (the Data files' hashes don't change); false, the
+// header as it was, for any other (a signed package is never touched: its
+// signature covers that digest) or an icon that doesn't fit.
+bool GodHeaderIconBlank(const std::vector<unsigned char>& header);
+bool GodHeaderPutIcon(std::vector<unsigned char>& header, const std::vector<unsigned char>& icon);
 // The Title ID in an original Xbox default.xbe's certificate, from the start
 // of the file (its headers, which hold the certificate); false if it isn't
 // one, or the certificate lies past size. *headers, if given, gets the size
