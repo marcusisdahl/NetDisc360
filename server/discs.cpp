@@ -1475,18 +1475,24 @@ bool GodHeaderArt(const unsigned char* header, size_t size, std::string& name, s
 }
 
 // Unsigned (nothing from 0x4 to 0x22C, where a signed package has its
-// signature, as in iso2god's empty LIVE package), whole (the digest at 0x32C
-// covers 0x344 to its end), version 1 metadata, and both thumbnails empty:
-// zeros, whatever size the header gives them (iso2god's empty package says
-// 0x3841, NetDisc360's said 0 when it had no icon).
+// signature, as in iso2god's empty LIVE package), whole with the digest
+// iso2god gives it (its header size at 0x340 rounds up to these 0xB000
+// bytes, and the digest at 0x32C is right for 0x344 to their end, the range
+// GodHeaderPutIcon works it out for again: a header another tool made
+// otherwise is never left with a digest that doesn't fit it), version 1
+// metadata, and both thumbnails empty: zeros, whatever size the header gives
+// them (iso2god's empty package says 0x3841, NetDisc360's said 0 when it had
+// no icon).
 bool GodHeaderIconBlank(const std::vector<unsigned char>& header) {
     DWORD titleId, mediaId; int disc;
     if(header.size()!=sizeof(EmptyLive) || !GodIds(header.data(),DWORD(header.size()),titleId,mediaId,disc)) return false;
     const unsigned char* h=header.data();
-    if(Big32(h+0x3A9)!=1) return false;
+    if(Big32(h+0x3A9)!=1 || ((Big32(h+0x340)+0xFFF)&~DWORD(0xFFF))!=sizeof(EmptyLive)) return false;
     for(size_t i=0x4;i<0x22C;++i) if(h[i]) return false;
     for(size_t i=0x171A;i<0x971A;++i) if(h[i]) return false;
-    return true;
+    unsigned char digest[20];
+    Sha1Block(h+0x344,sizeof(EmptyLive)-0x344,digest);
+    return !memcmp(digest,h+0x32C,sizeof(digest));
 }
 
 bool GodHeaderPutIcon(std::vector<unsigned char>& header, const std::vector<unsigned char>& icon) {

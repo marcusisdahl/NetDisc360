@@ -156,7 +156,8 @@ bool GodHeaderArt(const std::string& path, std::string& name, std::vector<unsign
 bool GodHeaderArt(const unsigned char* header, size_t size, std::string& name, std::vector<unsigned char>& icon);
 // A whole Games on Demand header (0xB000 bytes) that iso2god or NetDisc360
 // made, unsigned (as iso2god's empty LIVE package: nothing where a signed one
-// has its signature), with no picture in its thumbnails: the Xbox home shows
+// has its signature), its digest at 0x32C right for the 0xB000 bytes its
+// header size gives, with no picture in its thumbnails: the Xbox home shows
 // it without an icon. GodHeaderPutIcon puts icon (a PNG of at most 0x4000
 // bytes) in such a header and works out its digest at 0x32C again, which
 // covers the thumbnails (the Data files' hashes don't change); false, the

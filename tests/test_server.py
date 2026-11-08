@@ -417,7 +417,8 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
     TitleList.php and Icon.php, from self.server.names and .icons ({Title ID: ...}).
     Its outages: self.server.down is an HTTP status every answer is, or
     "hang" for none at all (the connection closed after self.server.hang
-    seconds). Also Microsoft's icons, as --xbox-images asks for them: the
+    seconds), or a dict of those by path (only Icon.php's: {"/Resources/Lib/
+    Icon.php": 500}). Also Microsoft's icons, as --xbox-images asks for them: the
     tile.png on download.xbox.com (only for a Title ID in lower case, as there)
     from self.server.tiles, and the icon on image.xboxlive.com from
     self.server.xbox_icons ({Title ID: PNG})."""
@@ -429,6 +430,8 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(url.query)
         self.server.asked.append(self.path)
         down = getattr(self.server, "down", None)
+        if isinstance(down, dict):
+            down = down.get(url.path)
         if down == "hang":
             time.sleep(getattr(self.server, "hang", 5))
             self.close_connection = True
@@ -522,6 +525,7 @@ def god_package_header(title_id, media_id, name, icon=None, signed=False):
     h[0:4] = b"LIVE"
     if signed:
         h[4:0x22C] = os.urandom(0x228)
+    struct.pack_into(">I", h, 0x340, 0xAD0E)  # Its header size: its digest covers 0x344 up to 0xB000.
     struct.pack_into(">I", h, 0x344, 0x7000)
     struct.pack_into(">I", h, 0x354, media_id)
     struct.pack_into(">I", h, 0x360, title_id)
@@ -1030,7 +1034,7 @@ class Push(ServerTest):
         # Nothing new: nothing written. The tile is no installed copy, so Halo 3 keeps its game folder.
         self.ftp.stored.clear()
         out = self.push(extra=("--config", config))
-        self.assertEqual([p for p in self.ftp.stored if "Content" in p or "NetDisc360/GOD" in p], [])
+        self.assertEqual([p for p in self.ftp.stored if p.startswith(("4E4433", "Data"))], [])  # The FTP server hears names only.
         self.assertTrue(os.path.isdir(os.path.join(home, "Halo 3")))
         # Back to folders: the package and the game folder in GOD go; the other game's copy stays.
         with open(config, "w") as f:
@@ -1112,7 +1116,7 @@ class Push(ServerTest):
             asked = len(unity.asked)
             self.ftp.stored.clear()
             self.push(extra=address)
-            self.assertEqual([p for p in self.ftp.stored if "Content" in p], [])
+            self.assertEqual([p for p in self.ftp.stored if p.startswith(("4E4433", "Data"))], [])  # The FTP server hears names only.
             self.assertEqual(unity.asked[asked:], [])
         finally:
             unity.shutdown()
@@ -1139,26 +1143,72 @@ class Push(ServerTest):
             before = f.read()
         self.assertEqual(before[0x171A:0x171A + len(icon)], icon)
         art = os.path.join(self.tmp.name, "Art")
+        kept = os.path.join(art, "454108E6")
         package = lambda: [p for p in self.ftp.stored if p.startswith(("4E4433", "Data"))]  # The FTP server hears names only.
-        for down, said in ((500, "XboxUnity isn't working right now (it answered with error 500)"), ("hang", "XboxUnity didn't answer in time; it may be down")):
-            # As after a restart of an older version: nothing kept on this computer.
-            shutil.rmtree(art, ignore_errors=True)
-            unity.down, unity.hang = down, 4
+
+        def push_in_outage(forget=True):
+            """A push (its own server run), with nothing kept on this computer
+            (as after a restart of an older version) unless not forget: the
+            tile stays as it is, and what the outage gave isn't kept as "no
+            icon", so XboxUnity is asked again once it's back. Its log, and
+            what it asked."""
+            if forget:
+                shutil.rmtree(art, ignore_errors=True)
             asked = len(unity.asked)
             self.ftp.stored.clear()
             out = self.push(extra=address)
-            self.assertIn(said, out)
-            self.assertTrue([a for a in unity.asked[asked:] if "Icon.php" in a])
             self.assertEqual(package(), [], out)
             with open(header, "rb") as f:
                 self.assertEqual(f.read(), before)
-            # What an outage gave isn't kept: XboxUnity is asked again once it's back.
-            self.assertFalse(os.path.exists(os.path.join(art, "454108E6", "icon.png")))
-        # Back: the same icon and name, so nothing is written.
-        unity.down = None
-        self.ftp.stored.clear()
-        self.push(extra=address)
-        self.assertEqual(package(), [])
+            self.assertFalse(os.path.exists(os.path.join(kept, "icon.png")))
+            if os.path.exists(os.path.join(kept, "art.ini")):
+                with open(os.path.join(kept, "art.ini"), encoding="utf-8") as f:
+                    self.assertNotIn("noicon", f.read())
+            return out, unity.asked[asked:]
+
+        def back():
+            """XboxUnity is back: the same icon and name, so nothing is
+            written, and they're kept again."""
+            unity.down, unity.icons = None, {"454108E6": icon}
+            self.ftp.stored.clear()
+            self.push(extra=address)
+            self.assertEqual(package(), [])
+            with open(os.path.join(kept, "icon.png"), "rb") as f:
+                self.assertEqual(f.read(), icon)
+        for down, said in ((500, "XboxUnity isn't working right now (it answered with error 500)"), ("hang", "XboxUnity didn't answer in time; it may be down")):
+            unity.down, unity.hang = down, 4
+            out, asked = push_in_outage()
+            self.assertIn(said, out)
+            self.assertTrue([a for a in asked if "Icon.php" in a])
+        back()
+        # The kept icon gone (deleted, or its file couldn't be read) is no
+        # answer, never "no icon": asked for again, and meanwhile kept.
+        os.remove(os.path.join(kept, "icon.png"))
+        unity.down = 500
+        _, asked = push_in_outage(forget=False)
+        self.assertTrue([a for a in asked if "Icon.php" in a])
+        back()
+        # Only XboxUnity's icons failing (its names answer).
+        unity.down = {"/Resources/Lib/Icon.php": 500}
+        push_in_outage()
+        # A page about an error in place of the icon (200, not a PNG), as a
+        # site in trouble may give: no answer either, but the site is there,
+        # so it's still asked for the name.
+        unity.down, unity.icons = None, {"454108E6": b"<html><body>Database error</body></html>"}
+        out, asked = push_in_outage()
+        self.assertIn("XboxUnity answered with what isn't an icon", out)
+        self.assertTrue([a for a in asked if "TitleList.php" in a])
+        with open(os.path.join(kept, "art.ini"), encoding="utf-8") as f:
+            self.assertIn("name=skate. 3", f.read())
+        # The tile's header can't be read meanwhile (the console has it
+        # open): left as it is too, not written without its icon, and looked
+        # at again on the next push.
+        unity.down, unity.icons = 500, {"454108E6": icon}
+        self.ftp.locked.add(os.path.normcase(os.path.abspath(header)))
+        out, _ = push_in_outage()
+        self.ftp.locked.clear()
+        self.assertIn("left the Games on Demand tile of Skate 3 (USA) as it is", out)
+        back()
         # Kept on this computer: a restart, with XboxUnity down again, makes
         # a tile that has to be written again with them, without asking it.
         unity.down = 500
@@ -1226,16 +1276,27 @@ class Push(ServerTest):
     def test_puts_the_icon_back_in_games_copied_without_one(self):
         # Games copied to the console from here while no icon could be found
         # get it in their header on the next push; the Data files stay. Never
-        # a signed package (Microsoft's), one with an icon, or a game not here.
+        # a signed package (Microsoft's), one with an icon, a game not here,
+        # or one whose digest doesn't cover the header as iso2god's does
+        # (another tool's: worked out again, it wouldn't fit it).
         self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
+        self.add_iso("Gears of War.iso", 0x44445555, 0x4D5307D5)
         content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
         own = png()
+        shorter = bytearray(god_package_header(0x4D5307F1, 0x22223333, "Fable II"))
+        struct.pack_into(">I", shorter, 0x340, 0x971A)  # A header of 0xA000 bytes, its digest for those.
+        shorter[0x32C:0x340] = hashlib.sha1(bytes(shorter[0x344:0xA000])).digest()
+        stale = bytearray(god_package_header(0x4D5307D5, 0x44445555, "Gears of War"))
+        stale[0x32C:0x340] = bytes(20)  # A digest that's wrong already.
         headers = {"4541096D/00007000/55ABAB6C": god_package_header(0x4541096D, 0x55ABAB6C, "SSX"),
                    "4D5307E6/00007000/1A2B3C4D": god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3", signed=True),
                    "454108E6/00007000/5C087C2C": god_package_header(0x454108E6, 0x5C087C2C, "skate. 3", icon=own),
-                   "41560817/00007000/AABBCCDD": god_package_header(0x41560817, 0xAABBCCDD, "Not here")}
+                   "41560817/00007000/AABBCCDD": god_package_header(0x41560817, 0xAABBCCDD, "Not here"),
+                   "4D5307F1/00007000/22223333": bytes(shorter),
+                   "4D5307D5/00007000/44445555": bytes(stale)}
         for path, data in headers.items():
             os.makedirs(os.path.join(content, *path.split("/")) + ".data")
             with open(os.path.join(content, *path.split("/")), "wb") as f:
@@ -1243,10 +1304,22 @@ class Push(ServerTest):
             with open(os.path.join(content, *path.split("/")) + ".data/Data0000", "wb") as f:
                 f.write(b"DATA")
         icon = png()
-        unity = fake_unity(self, tiles={t: icon for t in ("4541096D", "4D5307E6", "454108E6", "41560817")})
-        out = self.push(extra=("--xbox-images", unity.base))
+        unity = fake_unity(self, tiles={t: icon for t in ("4541096D", "4D5307E6", "454108E6", "41560817", "4D5307F1", "4D5307D5")},
+                           names={"4541096D": "SSX"})
+        sources = ("--xbox-images", unity.base, "--xboxunity", unity.base + "/Resources/Lib")
+        ssx = os.path.join(content, "4541096D", "00007000", "55ABAB6C")
+        package = lambda: [p for p in self.ftp.stored if p in ("55ABAB6C", "1A2B3C4D", "5C087C2C", "AABBCCDD", "22223333", "44445555") or p.startswith("Data")]  # Names only.
+        # Its header cut short on the way (the network, the console switched
+        # off) would take the game off the Xbox home: it's put back as it was.
+        self.ftp.cut["55ABAB6C"] = 1
+        out = self.push(extra=sources)
+        self.assertIn("couldn't put SSX's icon in its Games on Demand header", out)
+        self.assertIn("(it's as it was)", out)
+        with open(ssx, "rb") as f:
+            self.assertEqual(f.read(), headers["4541096D/00007000/55ABAB6C"])
+        self.ftp.stored.clear()
+        out = self.push(extra=sources)
         self.assertIn("put SSX's icon in its Games on Demand header", out)
-        package = lambda: [p for p in self.ftp.stored if p in ("55ABAB6C", "1A2B3C4D", "5C087C2C", "AABBCCDD") or p.startswith("Data")]  # Names only.
         self.assertEqual(package(), ["55ABAB6C"])
         expected = bytearray(headers["4541096D/00007000/55ABAB6C"])
         struct.pack_into(">II", expected, 0x1712, len(icon), len(icon))
@@ -1256,10 +1329,19 @@ class Push(ServerTest):
         for path, data in headers.items():
             with open(os.path.join(content, *path.split("/")), "rb") as f:
                 self.assertEqual(f.read(), bytes(expected) if path.startswith("4541096D") else data, path)
+        # Only its icon was looked for: XboxUnity wasn't asked for a name.
+        self.assertFalse([a for a in unity.asked if "TitleList.php" in a or "Icon.php" in a])
         # It has its icon now: nothing to do.
         self.ftp.stored.clear()
-        self.push(extra=("--xbox-images", unity.base))
+        self.push(extra=sources)
         self.assertEqual(package(), [])
+        # Cut short, and not put back either: the user is told how to get the game back.
+        with open(ssx, "wb") as f:
+            f.write(headers["4541096D/00007000/55ABAB6C"])
+        self.ftp.cut["55ABAB6C"] = 2
+        out = self.push(extra=sources)
+        self.assertIn("nor could the header be put back as it was", out)
+        self.assertLess(os.path.getsize(ssx), 0xB000)
 
     def test_takes_the_ftp_password_from_the_environment(self):
         # The Docker image passes the password this way.
@@ -6316,13 +6398,18 @@ class Dashboard(DashboardTest):
     def test_installs_title_updates_from_the_saved_list_while_xboxunity_is_down(self):
         # XboxUnity has its outages: meanwhile its list got before (kept on
         # this PC, however old) is used, and an update downloaded before goes
-        # on the console without XboxUnity.
+        # on the console without XboxUnity. A list is good for a week: until
+        # then XboxUnity isn't asked again.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
         newest = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2")
+        fable = tu_package(0x4D5307F1, 0x22223333, "Title Update 1")
         unity = fake_unity(self, titles={"4D5307E6": {"Type": 1, "MediaIDS": [{"MediaID": "1A2B3C4D", "Updates": [
-            {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str((len(newest) + 1023) // 1024), "hash": content_id(newest)}]}]}},
-            files={"111": ("tu00000002_00000000", newest)})
+            {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str((len(newest) + 1023) // 1024), "hash": content_id(newest)}]}]},
+                                         "4D5307F1": {"Type": 1, "MediaIDS": [{"MediaID": "22223333", "Updates": [
+            {"TitleUpdateID": "222", "Version": "1", "Name": "Title Update 1", "Size": str((len(fable) + 1023) // 1024), "hash": content_id(fable)}]}]}},
+            files={"111": ("tu00000002_00000000", newest), "222": ("tu00000001_00000000", fable)})
         xbox = os.path.join(self.tmp.name, "xbox")
         updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000")
         os.makedirs(updates)
@@ -6332,7 +6419,7 @@ class Dashboard(DashboardTest):
         self.addCleanup(ftp.shutdown)
         args = ("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--xboxunity", unity.base + "/Resources/Lib")
         self.start(*args)
-        self.state_when(lambda s: s["library"]["games"] == 2 and s["consoles"])
+        self.state_when(lambda s: s["library"]["games"] == 3 and s["consoles"])
 
         def install(game):
             status, _, data = self.call("POST", "/api/titleupdates/install", {"game": game, "address": "127.0.0.2"})
@@ -6342,15 +6429,30 @@ class Dashboard(DashboardTest):
         job = install("Halo 3")
         self.assertEqual(job["state"], "done", job["error"])
         os.remove(os.path.join(updates, "tu00000002_00000000"))
-        # Eight days on, XboxUnity answers with errors, and the server was restarted.
+        self.assertEqual([o["id"] for o in self.json("GET", "/api/titleupdates?game=Fable%20II")["offers"]], ["222"])  # Its list, not its file.
         saved = os.path.join(os.path.dirname(self.config), "TitleUpdates", "4D5307E6", "xboxunity.json")
         with open(saved, encoding="utf-8", newline="") as f:
             when, rest = f.read().split("\n", 1)
-        with open(saved, "w", encoding="utf-8", newline="") as f:
-            f.write("%d\n%s" % (int(when) - 8 * 86400, rest))
+
+        def days_on(days):
+            """Halo 3's list as got days ago, and the server restarted."""
+            with open(saved, "w", encoding="utf-8", newline="") as f:
+                f.write("%d\n%s" % (int(when) - days * 86400, rest))
+            self.restart(*args)
+            self.state_when(lambda s: s["library"]["games"] == 3 and s["consoles"])
+        # Three days on: the list is used as it is, for the page and to install.
+        days_on(3)
+        asked = len(unity.asked)
+        found = self.json("GET", "/api/titleupdates?game=Halo%203")
+        self.assertEqual(([o["id"] for o in found["offers"]], found["listError"]), (["111"], ""))
+        self.assertAlmostEqual(time.time() - found["listChecked"], 3 * 86400, delta=600)
+        job = install("Halo 3")
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertEqual(unity.asked[asked:], [])  # Not even for the file: the copy on this PC.
+        os.remove(os.path.join(updates, "tu00000002_00000000"))
+        # Eight days on, XboxUnity answers with errors, and the server was restarted.
         unity.down = 500
-        self.restart(*args)
-        self.state_when(lambda s: s["library"]["games"] == 2 and s["consoles"])
+        days_on(8)
         asked = len(unity.asked)
         job = install("Halo 3")
         self.assertEqual((job["state"], job["label"]), ("done", "Title update 2"), job["error"])
@@ -6365,6 +6467,9 @@ class Dashboard(DashboardTest):
         self.assertAlmostEqual(time.time() - found["listChecked"], 8 * 86400, delta=600)
         # A game with no list yet says why, and what still works.
         self.assertEqual(install("Forza 4"), "XboxUnity isn't working right now (it answered with error 500). Updates already on this PC still install; try again later.")
+        # An update in the list but not on this PC can't be downloaded meanwhile: try again later.
+        job = install("Fable II")
+        self.assertEqual((job["state"], job["error"]), ("failed", "Couldn't download Title Update 1: XboxUnity isn't working right now (it answered with error 500). Try again later."))
 
     def test_says_why_xboxunity_couldn_t_be_asked(self):
         # Only a computer that reaches nothing is asked whether it's online: a
@@ -6421,6 +6526,12 @@ class Dashboard(DashboardTest):
         images.down, images.tiles = None, {"4D5307E6": icon}
         self.restart(*args)
         self.state_when(lambda s: s["library"]["games"] == 1)
+        # Its header cut short on the way would take the game off the Xbox
+        # home: it's put back as it was (the game is there, so the copy is done).
+        ftp.cut["1A2B3C4D"] = 1
+        self.assertEqual(copy()["state"], "done")
+        with open(header, "rb") as f:
+            self.assertEqual(f.read(), before)
         ftp.stored.clear()
         job = copy()
         self.assertEqual((job["state"], job["skipped"]), ("done", job["files"]), job.get("error"))
@@ -6432,6 +6543,20 @@ class Dashboard(DashboardTest):
         self.assertEqual(after[0x32C:0x340], hashlib.sha1(after[0x344:0x344 + 0xACBC]).digest())
         self.assertEqual(after[0x340:0x1712], before[0x340:0x1712])  # The rest as it was, the Data files' hashes too.
         self.assertIn("Halo 3 (USA)'s icon is back on the Xbox home", json.dumps(self.json("GET", "/api/state")["events"]))
+        # Cut short and not put back either: the copy says how to get the
+        # game back, and copying it again does (sending only its header).
+        with open(header, "wb") as f:
+            f.write(before)
+        ftp.cut["1A2B3C4D"] = 2
+        job = copy()
+        self.assertEqual(job["state"], "failed")
+        self.assertTrue(job["error"].startswith("If Halo 3 (USA) is gone from the Xbox home, Copy to Xbox puts it back: it sends only what's missing"), job["error"])
+        ftp.stored.clear()
+        job = copy()
+        self.assertEqual((job["state"], job["skipped"]), ("done", job["files"] - 1), job.get("error"))
+        self.assertEqual(ftp.stored, ["1A2B3C4D"])
+        with open(header, "rb") as f:
+            self.assertEqual(f.read(), after)
 
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash

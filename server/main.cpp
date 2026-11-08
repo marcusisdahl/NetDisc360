@@ -2879,6 +2879,10 @@ bool FitsGodHeader(const std::string& png) { return png.size()>8 && png.size()<=
 std::string ArtFolder(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"Art"; }
 
 // ArtAnswers' entry for titleId, read from disk the first time; under GodArtLock.
+// art.ini says when an icon was found (icon=, in icon.png) or when every site
+// said there's none (noicon=). An icon.png that's gone or can't be read is
+// no answer at all, never "none": the sites are asked again, and while
+// they're down a tile keeps the icon it has (see KeepTileArt).
 ArtAnswer& KnownArt(const Options& o, DWORD titleId) {
     std::map<DWORD,ArtAnswer>::iterator known=ArtAnswers.find(titleId);
     if(known!=ArtAnswers.end()) return known->second;
@@ -2887,8 +2891,9 @@ ArtAnswer& KnownArt(const Options& o, DWORD titleId) {
     config::File kept;
     if(ArtFolder(o).empty() || !kept.Load(folder+"/art.ini")) return a;
     a.name=kept.Get("name"); a.namedAt=kept.Number("named",0);
-    a.iconAt=kept.Number("icon",0);
-    if(a.iconAt && config::ReadFile(folder+"/icon.png",png,0x4000) && FitsGodHeader(png)) a.icon.assign(png.begin(),png.end());
+    long long found=kept.Number("icon",0), none=kept.Number("noicon",0);
+    if(found && config::ReadFile(folder+"/icon.png",png,0x4000) && FitsGodHeader(png)) { a.icon.assign(png.begin(),png.end()); a.iconAt=found; }
+    else if(!found) a.iconAt=none;
     return a;
 }
 
@@ -2897,10 +2902,12 @@ void KeepArt(const Options& o, DWORD titleId, const ArtAnswer& a) {
     std::string root=ArtFolder(o), folder=root+"/"+Hex8(titleId);
     if(root.empty()) return;
     config::MakeFolder(root); config::MakeFolder(folder);
-    bool kept=a.icon.empty() || config::WriteFile(folder+"/icon.png",std::string(a.icon.begin(),a.icon.end()),false);
+    bool kept=true;
+    if(!a.icon.empty()) kept=config::WriteFile(folder+"/icon.png",std::string(a.icon.begin(),a.icon.end()),false);
+    else if(a.iconAt) config::RemoveFile(folder+"/icon.png");  // None now: not one an older answer left.
     config::File file;
     if(a.namedAt) { file.Set("name",a.name); file.Set("named",std::to_string(a.namedAt)); }
-    if(a.iconAt && kept) file.Set("icon",std::to_string(a.iconAt));
+    if(a.iconAt && kept) file.Set(a.icon.empty() ? "noicon" : "icon",std::to_string(a.iconAt));
     if(!file.Save(folder+"/art.ini") || !kept) Log("Couldn't keep the name and icon of %s in %s.",Hex8(titleId).c_str(),folder.c_str());
 }
 
@@ -2931,21 +2938,24 @@ std::vector<std::pair<std::string,std::string> > IconSources(const Options& o, D
     return out;
 }
 
-// A title's icon from a site: Fine with it; NotThere when the site has
-// none that fits (it said 404, gave nothing, or a PNG too big for a
-// header); else it couldn't be asked, or gave what isn't an icon at all (a
-// page about an error), which says nothing.
-tu::Failure AskIcon(const std::string& site, const std::string& url, std::vector<unsigned char>& icon) {
+// What a site said of a title's icon: IconFound (in icon); IconNone, as it
+// has none that fits (it said 404, gave nothing, or a PNG too big for a
+// header); IconUnclear, as it gave what isn't an icon at all (a page about
+// an error), which says nothing of the title but that the site is there;
+// IconDown, as it couldn't be asked.
+enum IconAnswer { IconFound, IconNone, IconUnclear, IconDown };
+IconAnswer AskIcon(const std::string& site, const std::string& url, std::vector<unsigned char>& icon) {
     std::string body, file, error;
     tu::Failure failure=tu::Fine;
     if(!tu::Get(url,body,1<<20,file,error,0,site,&failure)) {
-        if(failure!=tu::NotThere) Log("%s didn't answer for an icon (%s): %s",site.c_str(),url.c_str(),error.c_str());
-        return failure;
+        if(failure==tu::NotThere) return IconNone;
+        Log("%s didn't answer for an icon (%s): %s",site.c_str(),url.c_str(),error.c_str());
+        return IconDown;
     }
-    if(FitsGodHeader(body)) { icon.assign(body.begin(),body.end()); return tu::Fine; }
-    if(body.empty() || (body.size()>8 && !memcmp(body.data(),"\x89PNG\r\n\x1a\n",8))) return tu::NotThere;
+    if(FitsGodHeader(body)) { icon.assign(body.begin(),body.end()); return IconFound; }
+    if(body.empty() || (body.size()>8 && !memcmp(body.data(),"\x89PNG\r\n\x1a\n",8))) return IconNone;
     Log("%s answered with what isn't an icon (%s).",site.c_str(),url.c_str());
-    return tu::Broken;
+    return IconUnclear;
 }
 
 // XboxUnity's name of a title (empty if it lists none); false if it couldn't be asked.
@@ -2987,8 +2997,9 @@ void LibraryGodArt(DWORD titleId, const std::string& listed, std::string& name, 
     name=ownName;
 }
 
-// The name and icon a package of titleId gets; listed is the game's listed name.
-GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed) {
+// The name and icon a package of titleId gets; listed is the game's listed
+// name. Without named, the icon alone (no site is asked for a name).
+GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed, bool named = true) {
     GodArt art;
     std::string own, aurora;
     LibraryGodArt(titleId,listed,own,art.icon);
@@ -3007,17 +3018,19 @@ GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed) {
         bool asked=false;
         for(size_t i=0;i<sources.size() && art.icon.empty();++i) {
             if(!ArtSiteUp(sources[i].first)) { art.iconSure=false; continue; }
-            tu::Failure failure=AskIcon(sources[i].first,sources[i].second,art.icon);
-            bool answered=failure==tu::Fine || failure==tu::NotThere;
-            ArtSiteAnswered(sources[i].first,answered);
-            if(answered) asked=true;
+            IconAnswer answer=AskIcon(sources[i].first,sources[i].second,art.icon);
+            // A site that gave a page that isn't an icon is there: it isn't
+            // left alone (XboxUnity's names come from it too).
+            ArtSiteAnswered(sources[i].first,answer!=IconDown);
+            if(answer==IconFound || answer==IconNone) asked=true;
             else art.iconSure=false;
         }
         // Kept once found, or once every site said it has none.
         if(!art.icon.empty()) art.iconSure=true;
         if(!art.icon.empty() || (asked && art.iconSure)) { known.icon=art.icon; known.iconAt=now; newIcon=true; }
     }
-    if(!own.empty()) art.name=own;
+    if(!named) {}  // The icon alone.
+    else if(!own.empty()) art.name=own;
     else if(!aurora.empty()) art.name=aurora;
     else if(o.xboxUnity.empty() || (known.namedAt && (!known.name.empty() || now-known.namedAt<(long long)ArtNoneSeconds))) art.name=known.name;
     else {
@@ -3035,20 +3048,23 @@ GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed) {
         if(newName) { kept.name=known.name; kept.namedAt=known.namedAt; }
         KeepArt(o,titleId,kept);
     }
-    if(art.name.empty()) { char friendly[512]; FriendlyGameName(listed.c_str(),friendly,sizeof(friendly)); art.name=config::ToUtf8(friendly); }
+    if(named && art.name.empty()) { char friendly[512]; FriendlyGameName(listed.c_str(),friendly,sizeof(friendly)); art.name=config::ToUtf8(friendly); }
     return art;
 }
 
 // For the icon and name no source answered for (see GodArt), those of the
 // tile's header on the console (at header; there: the packages it has), so
-// a site that's down never takes them off the Xbox home.
-void KeepTileArt(FtpClient& ftp, const std::string& header, const std::set<std::string>& there, GodArt& art) {
+// a site that's down never takes them off the Xbox home. False if that
+// header couldn't be read: the tile is then left as it is for now.
+bool KeepTileArt(FtpClient& ftp, const std::string& header, const std::set<std::string>& there, GodArt& art) {
     std::vector<unsigned char> head, icon;
     std::string name;
-    if((art.iconSure && art.nameSure) || !there.count(Lower(header))) return;
-    if(!ftp.RetrieveHead(header.c_str(),head,GodArtBytes) || !GodHeaderArt(head.data(),head.size(),name,icon)) return;
+    if((art.iconSure && art.nameSure) || !there.count(Lower(header))) return true;
+    if(!ftp.RetrieveHead(header.c_str(),head,GodArtBytes)) return false;
+    if(!GodHeaderArt(head.data(),head.size(),name,icon)) return true;  // Not a package's header: nothing to keep.
     if(!art.iconSure && art.icon.empty()) art.icon=icon;
     if(!art.nameSure && !name.empty()) art.name=name;
+    return true;
 }
 
 // Reads Aurora's names of the titles on the console from its content.db, for
@@ -3121,7 +3137,14 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
             std::string number="disc "+std::to_string(disc);
             if(info && info+ExecutionInfoSize<=xex.size() && xex[info+19]>1 && disc>0 && Lower(art.name).find(number)==std::string::npos)
                 art.name+=" (Disc "+std::to_string(disc)+")";
-            KeepTileArt(ftp,content+"/"+Hex8(titleId)+"/00007000/"+GodTileName(mediaId,disc),there,art);
+            std::string tile=content+"/"+Hex8(titleId)+"/00007000/"+GodTileName(mediaId,disc);
+            if(!KeepTileArt(ftp,tile,there,art)) {
+                // Written now, it would lose the icon or name it has: kept as it is, and looked at again soon.
+                XboxLog(console,"left the Games on Demand tile of %s as it is: its header %s couldn't be read for its icon and name: %s",
+                        WithoutIso(tiles[i].first).c_str(),tile.c_str(),ftp.Error());
+                keep.insert(Lower(tile));
+                ok=false; continue;
+            }
         }
         IsoReader reader; GodPackage god; std::string error;
         if(!MakeGodTile(xex,folder,art.name,art.icon,reader,god,error)) {
@@ -3179,6 +3202,25 @@ void ForgetGodIcon(const std::string& address, const std::string& header) {
     std::lock_guard<std::mutex> hold(GodIconLock);
     GodIconsRead.erase(address+"|"+Lower(header));
 }
+
+// Writes header (with the icon put in) at path on the console over original,
+// the header there. One cut short (the connection dropped, the console was
+// switched off) takes the game off the Xbox home, so original is put back
+// then. False, with why in error, if header couldn't be written; lost too
+// when original couldn't be put back either (see GodHeaderLost).
+bool StoreGodHeader(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& header,
+                    const std::vector<unsigned char>& original, std::string& error, bool& lost) {
+    lost=false;
+    if(ftp.Store(path.c_str(),header.data(),header.size())) return true;
+    error=ftp.Error();
+    lost=!ftp.Store(path.c_str(),original.data(),original.size());
+    return false;
+}
+// What the user is told then: Copy to Xbox sends what isn't there whole, so the header alone.
+std::string GodHeaderLost(const std::string& game) {
+    return "If "+game+" is gone from the Xbox home, Copy to Xbox puts it back: it sends only what's missing";
+}
+
 int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, const std::vector<InstalledGame>& installed) {
     int repaired=0;
     for(size_t i=0;i<installed.size();++i) {
@@ -3196,16 +3238,23 @@ int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, con
             }
         }
         if(listed.empty()) continue;  // Not a game here: not this server's to change.
-        std::vector<unsigned char> header;
-        if(!ftp.Retrieve(g.path.c_str(),header,0xB000)) continue;
+        // A byte more than a header has, so a larger file is read in part
+        // (and left alone) instead of failing the read every push.
+        std::vector<unsigned char> header, original;
+        if(!ftp.RetrieveHead(g.path.c_str(),header,0xB001)) continue;
         GodArt art;
         bool blank=GodHeaderIconBlank(header);
-        if(blank) art=GodArtFor(o,g.titleId,listed);
+        if(blank) art=GodArtFor(o,g.titleId,listed,false);
         if(!blank || !art.icon.empty() || art.iconSure) { std::lock_guard<std::mutex> hold(GodIconLock); GodIconsRead.insert(key); }
-        if(!blank || art.icon.empty() || !GodHeaderPutIcon(header,art.icon)) continue;
-        std::string game=config::ToUtf8(WithoutIso(listed));
-        if(!ftp.Store(g.path.c_str(),header.data(),header.size())) {
-            XboxLog(console,"couldn't put %s's icon in its Games on Demand header %s: %s",game.c_str(),g.path.c_str(),ftp.Error());
+        if(!blank || art.icon.empty()) continue;
+        original=header;
+        if(!GodHeaderPutIcon(header,art.icon)) continue;
+        std::string game=WithoutIso(listed), error;
+        bool lost=false;
+        if(!StoreGodHeader(ftp,g.path,header,original,error,lost)) {
+            XboxLog(console,"couldn't put %s's icon in its Games on Demand header %s: %s%s",game.c_str(),g.path.c_str(),error.c_str(),
+                    lost ? "; nor could the header be put back as it was" : " (it's as it was)");
+            if(lost) XboxEvent(console,EventWarning,GodHeaderLost(game));
             std::lock_guard<std::mutex> hold(GodIconLock);
             GodIconsRead.erase(key);
             continue;
@@ -8040,12 +8089,19 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     // icon could be found gets it now, in its header alone (see RepairGodIcons).
     if(RemoteSize(ftp,header)==(long long)god.Header().size()) {
         Log("Xbox %s: %s is there already.",c.console.c_str(),header.c_str());
-        std::vector<unsigned char> there;
-        if(!icon.empty() && ftp.Retrieve(header.c_str(),there,god.Header().size()) && GodHeaderPutIcon(there,icon)) {
-            if(!ftp.Store(header.c_str(),there.data(),there.size())) Log("Xbox %s: couldn't put %s's icon in %s: %s",c.console.c_str(),c.game.c_str(),header.c_str(),ftp.Error());
-            else {
+        std::vector<unsigned char> there, original;
+        if(!icon.empty() && ftp.Retrieve(header.c_str(),original,god.Header().size())) there=original;
+        if(!there.empty() && GodHeaderPutIcon(there,icon)) {
+            std::string why;
+            bool lost=false;
+            if(StoreGodHeader(ftp,header,there,original,why,lost)) {
                 Log("Xbox %s: put %s's icon in %s, which had none, so the Xbox home shows it.",c.console.c_str(),c.game.c_str(),header.c_str());
                 if(console) XboxEvent(*console,EventGood,c.game+"'s icon is back on the Xbox home");
+            } else {
+                Log("Xbox %s: couldn't put %s's icon in %s: %s%s",c.console.c_str(),c.game.c_str(),header.c_str(),why.c_str(),
+                    lost ? "; nor could the header be put back as it was" : " (it's as it was)");
+                // Cut short: the copy isn't done, and doing it again sends the header.
+                if(lost) { ftp.Close(); EndCopy(c,console,"failed",GodHeaderLost(c.game)+" (sending its icon stopped: "+why+")."); return; }
             }
         }
         { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; c.skipped=c.files; c.file=c.files; }
@@ -8663,7 +8719,12 @@ bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::strin
     if(TuCached(o,titleId,offer.id,path,name)) return true;
     std::string data;
     tu::Failure failure=tu::Fine;
-    if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error,tu::DownloadSeconds,"XboxUnity",&failure)) { error=TuTrouble(error,failure); return false; }
+    // This update isn't on this PC (else it was found above): unlike a list's
+    // failure (TuTrouble), there's nothing to say of updates that are.
+    if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error,tu::DownloadSeconds,"XboxUnity",&failure)) {
+        if(failure!=tu::Offline) error+=" Try again later.";
+        return false;
+    }
     if(got) got(data.size());
     if(offer.size && !tu::SameSize(data.size(),offer.size)) { error="XboxUnity's file isn't the size it lists ("+std::to_string(data.size())+" bytes, not "+std::to_string(offer.size)+"); try again later."; return false; }
     tu::PackageHeader header;
@@ -9049,7 +9110,7 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
     std::string path, name, error;
     { std::lock_guard<std::mutex> hold(CopyLock); c.phase="download"; c.total=offer.size; }
     if(!FetchTu(o,titleId,offer,path,name,error,[&](U64 n) { std::lock_guard<std::mutex> hold(CopyLock); c.total=n; c.done=n; })) {
-        EndCopy(c,console,"failed","Couldn't get "+offer.name+" from XboxUnity: "+error); return;
+        EndCopy(c,console,"failed","Couldn't download "+offer.name+": "+error); return;
     }
     if(c.stop) { EndCopy(c,console,"stopped",""); return; }
     std::string data;
