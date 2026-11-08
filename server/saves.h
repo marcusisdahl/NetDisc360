@@ -11,7 +11,8 @@
 //     E0000123456789AB/<save file>      each file of /Hdd1/Content/<XUID>/<Title ID>/00000001
 //
 // A backup the same as the newest one of that game from the same console
-// isn't kept twice, and each console keeps its own newest few of each game.
+// isn't kept twice, and each console (on each computer) keeps its own newest
+// few of each game.
 // Saves go by the folders they're in (the Title ID and the XUID), never by a
 // save file's own header: SSX's says Title ID 0.
 #include "ftp.h"
@@ -27,13 +28,15 @@ struct Backup { std::string name; DWORD titleId; long long time, size; };
 struct Result { std::string name, listing; int profiles, files; long long bytes; bool same; };
 
 // Backs up the saves of titleId (game names it in save.ini) into folder, made
-// if need be, then deletes the oldest of that game's backups from the same
-// console beyond keep, but none that spare names. With no saves, nothing is
-// made and result.files is 0. known: gamertags by profile (XUID, 16
-// upper-case hex digits) known already, such as the signed-in ones, whose
-// packages the console won't hand out over FTP. extra: more save.ini lines
-// ("key=value\r\n" each), such as where the saves came from (console= and
-// computer=, which tell one console's backups from another's).
+// if need be, then deletes the oldest of that game's backups beyond keep,
+// counted for each console apart, but none that spare names. Saves over 256
+// MB together are refused by their listed sizes, before any download. With
+// no saves, nothing is made and result.files is 0. known: gamertags by
+// profile (XUID, 16 upper-case hex digits) known already, such as the
+// signed-in ones, whose packages the console won't hand out over FTP.
+// extra: more save.ini lines ("key=value\r\n" each), such as where the saves
+// came from (console= and computer=, which tell one console's backups from
+// another's).
 bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const std::string& game, int keep,
           Result& result, std::string& error,
           const std::map<std::string,std::string>& known=std::map<std::string,std::string>(),
@@ -66,8 +69,8 @@ bool IniOf(const std::string& folder, const std::string& name, std::string& ini)
 // A save.ini value.
 std::string IniValue(const std::string& ini, const std::string& key);
 // A copy of backup name made now (its save.ini without the line of key drop,
-// plus extra lines): made is its name. With only (an XUID), just that
-// profile's saves are in the copy.
+// plus extra lines, which replace those of the same keys): made is its name.
+// With only (an XUID), just that profile's saves are in the copy.
 bool Copy(const std::string& folder, const std::string& name, const std::string& drop, const std::string& extra, const std::string& only,
           std::string& made, std::string& error);
 // The backups in folder, newest first.

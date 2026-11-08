@@ -119,6 +119,59 @@ bool FromHere(const std::string& folder, const std::string& name, const std::str
     std::string ini;
     return IniOf(folder,name,ini) && Value(ini,"console")==console && Value(ini,"computer")==computer;
 }
+// A game's save folder in one profile, with its files as listed.
+struct SaveFolder { std::string profile, path; std::vector<nia::FtpEntry> files; };
+// The save folders of titleId on the console that have files. Saves over
+// MaxTotal together are refused here, by their listed sizes, so a game whose
+// saves are too big costs no download.
+bool SaveFolders(nia::FtpClient& ftp, DWORD titleId, std::vector<SaveFolder>& out, std::string& error) {
+    out.clear();
+    std::vector<std::string> profiles;
+    if(!Profiles(ftp,profiles,error)) return false;
+    U64 total=0;
+    for(size_t p=0;p<profiles.size();++p) {
+        std::string profileFolder=std::string(ContentFolder)+"/"+profiles[p], titleName, typeName;
+        std::vector<nia::FtpEntry> entries;
+        if(!ftp.List(profileFolder.c_str(),entries)) { error=ftp.Error(); return false; }
+        if(!Has(entries,Hex(titleId),titleName)) continue;
+        if(!ftp.List((profileFolder+"/"+titleName).c_str(),entries)) { error=ftp.Error(); return false; }
+        if(!Has(entries,SaveType,typeName)) continue;
+        SaveFolder folder;
+        folder.profile=profiles[p];
+        folder.path=profileFolder+"/"+titleName+"/"+typeName;
+        if(!ftp.List(folder.path.c_str(),entries)) { error=ftp.Error(); return false; }
+        for(size_t i=0;i<entries.size();++i) {
+            if(entries[i].folder) continue;
+            folder.files.push_back(entries[i]);
+            total+=entries[i].size;
+        }
+        if(total>U64(MaxTotal)) { error=TooBig; return false; }
+        if(!folder.files.empty()) out.push_back(folder);
+    }
+    return true;
+}
+// A new backup's name for titleId, by the time now: a second after the
+// newest of that game named for now or just after (several in one second),
+// so a backup never sorts before one made earlier, even after that second's
+// first one was pruned and its name is free again. before: List's.
+std::string NewName(const std::vector<Backup>& before, DWORD titleId, long long now) {
+    time_t t=time_t(now);
+    for(size_t i=0;i<before.size();++i)
+        if(before[i].titleId==titleId && before[i].time>=(long long)t && before[i].time<now+60) t=time_t(before[i].time+1);
+    for(;;++t) {
+        char stamp[32]; struct tm local;
+#ifdef _WIN32
+        localtime_s(&local,&t);
+#else
+        localtime_r(&t,&local);
+#endif
+        strftime(stamp,sizeof(stamp),"%Y-%m-%d_%H-%M-%S",&local);
+        std::string name=Hex(titleId)+"_"+stamp+".zip";
+        bool taken=false;
+        for(size_t i=0;i<before.size() && !taken;++i) taken=before[i].name==name;
+        if(!taken) return name;
+    }
+}
 }
 
 std::string Gamertag(const std::vector<unsigned char>& package) {
@@ -181,39 +234,29 @@ bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const s
           Result& result, std::string& error, const std::map<std::string,std::string>& known, const std::string& extra,
           const std::set<std::string>& spare) {
     result=Result(); result.profiles=0; result.files=0; result.bytes=0; result.same=false;
-    std::vector<std::string> profiles;
-    if(!Profiles(ftp,profiles,error)) return false;
+    std::vector<SaveFolder> folders;
+    if(!SaveFolders(ftp,titleId,folders,error)) return false;
     std::map<std::string,std::string> files, listed;
     std::string ini="[Save]\r\ntitle_id="+Hex(titleId)+"\r\ngame="+game+"\r\n";
     long long now=(long long)time(NULL);
     ini+="time="+std::to_string(now)+"\r\n"+extra;
     size_t total=0;
-    for(size_t p=0;p<profiles.size();++p) {
-        std::string profileFolder=std::string(ContentFolder)+"/"+profiles[p], titleName, typeName;
-        std::vector<nia::FtpEntry> entries;
-        if(!ftp.List(profileFolder.c_str(),entries)) { error=ftp.Error(); return false; }
-        if(!Has(entries,Hex(titleId),titleName)) continue;
-        if(!ftp.List((profileFolder+"/"+titleName).c_str(),entries)) { error=ftp.Error(); return false; }
-        if(!Has(entries,SaveType,typeName)) continue;
-        std::string saveFolder=profileFolder+"/"+titleName+"/"+typeName;
-        if(!ftp.List(saveFolder.c_str(),entries)) { error=ftp.Error(); return false; }
-        int before=result.files;
-        for(size_t i=0;i<entries.size();++i) {
-            if(entries[i].folder) continue;
-            // Too much by the listing's size: told before downloading it.
-            if(entries[i].size>U64(MaxTotal-total)) { error=TooBig; return false; }
+    for(size_t p=0;p<folders.size();++p) {
+        const SaveFolder& folder=folders[p];
+        for(size_t i=0;i<folder.files.size();++i) {
+            const nia::FtpEntry& entry=folder.files[i];
+            // A file grown since it was listed still gets no more than what's left.
             std::vector<unsigned char> data;
-            if(!ftp.Retrieve((saveFolder+"/"+entries[i].name).c_str(),data,MaxTotal-total)) { error=ftp.Error(); return false; }
+            if(!ftp.Retrieve((folder.path+"/"+entry.name).c_str(),data,MaxTotal-total)) { error=ftp.Error(); return false; }
             total+=data.size();
-            const std::string key=Upper(profiles[p])+"/"+entries[i].name;
+            const std::string key=Upper(folder.profile)+"/"+entry.name;
             files[key].assign(data.begin(),data.end());
-            listed[key]=Seen(entries[i]);
+            listed[key]=Seen(entry);
             ++result.files;
         }
-        if(result.files==before) continue;
         ++result.profiles;
-        std::string tag=TagOf(ftp,profiles[p],known);
-        ini+="profile_"+Upper(profiles[p])+"="+tag+"\r\n";
+        std::string tag=TagOf(ftp,folder.profile,known);
+        ini+="profile_"+Upper(folder.profile)+"="+tag+"\r\n";
     }
     result.bytes=(long long)total;
     result.listing=Digest(listed);
@@ -238,30 +281,22 @@ bool Take(nia::FtpClient& ftp, const std::string& folder, DWORD titleId, const s
         break;
     }
     if(!config::MakeFolder(folder)) { error="Can't make the folder "+folder+"."; return false; }
-    // Named by the time, a second later if one was made this second already.
-    for(time_t t=time_t(now);;++t) {
-        char stamp[32]; struct tm local;
-#ifdef _WIN32
-        localtime_s(&local,&t);
-#else
-        localtime_r(&t,&local);
-#endif
-        strftime(stamp,sizeof(stamp),"%Y-%m-%d_%H-%M-%S",&local);
-        result.name=Hex(titleId)+"_"+stamp+".zip";
-        bool taken=false;
-        for(size_t i=0;i<before.size() && !taken;++i) taken=before[i].name==result.name;
-        if(!taken) break;
-    }
+    result.name=NewName(before,titleId,now);
     if(!config::WriteFile(Path(folder,result.name),backup::Zip(files,now),false)) { error="Can't write "+Path(folder,result.name)+"."; return false; }
-    // The oldest of this game's backups from this console beyond keep go:
-    // each console keeps its own newest few, so two consoles playing the same
-    // game don't push out each other's. One a choice still waiting on the
-    // dashboard needs (spare) always stays, and counts for nothing.
+    // The oldest of this game's backups beyond keep go, counted for each
+    // console (on each computer) on its own: two consoles playing the same
+    // game don't push out each other's newest, and the ones synced from other
+    // computers are kept to keep too. Backups that name no console (made
+    // before backups said) count as one more. One a choice still waiting on
+    // the dashboard needs (spare) always stays, and counts for nothing.
     std::vector<Backup> all=List(folder);
-    int kept=0;
-    for(size_t i=0;i<all.size();++i)
-        if(all[i].titleId==titleId && !spare.count(all[i].name) && FromHere(folder,all[i].name,console,computer) && ++kept>keep)
-            config::RemoveFile(Path(folder,all[i].name));
+    std::map<std::string,int> kept;
+    for(size_t i=0;i<all.size();++i) {
+        if(all[i].titleId!=titleId || spare.count(all[i].name)) continue;
+        std::string from;
+        IniOf(folder,all[i].name,from);
+        if(++kept[Value(from,"console")+"@"+Value(from,"computer")]>keep) config::RemoveFile(Path(folder,all[i].name));
+    }
     return true;
 }
 
@@ -364,25 +399,16 @@ bool ProfilesOn(nia::FtpClient& ftp, std::vector<std::string>& xuids, std::strin
 
 bool Collect(nia::FtpClient& ftp, DWORD titleId, std::map<std::string,std::string>& files, std::string& error) {
     files.clear();
-    std::vector<std::string> profiles;
-    if(!Profiles(ftp,profiles,error)) return false;
+    std::vector<SaveFolder> folders;
+    if(!SaveFolders(ftp,titleId,folders,error)) return false;
     size_t total=0;
-    for(size_t p=0;p<profiles.size();++p) {
-        std::string profileFolder=std::string(ContentFolder)+"/"+profiles[p], titleName, typeName;
-        std::vector<nia::FtpEntry> entries;
-        if(!ftp.List(profileFolder.c_str(),entries)) { error=ftp.Error(); return false; }
-        if(!Has(entries,Hex(titleId),titleName)) continue;
-        if(!ftp.List((profileFolder+"/"+titleName).c_str(),entries)) { error=ftp.Error(); return false; }
-        if(!Has(entries,SaveType,typeName)) continue;
-        std::string saveFolder=profileFolder+"/"+titleName+"/"+typeName;
-        if(!ftp.List(saveFolder.c_str(),entries)) { error=ftp.Error(); return false; }
-        for(size_t i=0;i<entries.size();++i) {
-            if(entries[i].folder) continue;
-            if(entries[i].size>U64(MaxTotal-total)) { error=TooBig; return false; }
+    for(size_t p=0;p<folders.size();++p) {
+        for(size_t i=0;i<folders[p].files.size();++i) {
+            const nia::FtpEntry& entry=folders[p].files[i];
             std::vector<unsigned char> data;
-            if(!ftp.Retrieve((saveFolder+"/"+entries[i].name).c_str(),data,MaxTotal-total)) { error=ftp.Error(); return false; }
+            if(!ftp.Retrieve((folders[p].path+"/"+entry.name).c_str(),data,MaxTotal-total)) { error=ftp.Error(); return false; }
             total+=data.size();
-            files[Upper(profiles[p])+"/"+entries[i].name].assign(data.begin(),data.end());
+            files[Upper(folders[p].profile)+"/"+entry.name].assign(data.begin(),data.end());
         }
     }
     return true;
@@ -426,7 +452,8 @@ bool Copy(const std::string& folder, const std::string& name, const std::string&
         if(files.size()<2) { error=name+" has none of that profile's saves."; return false; }
     }
     // save.ini without the drop key's line (and with only, the other
-    // profiles' gamertags), with time and extra anew.
+    // profiles' gamertags), with time and extra's lines anew: an older
+    // restored_from= of a backup a restore made gives way to the copy's own.
     std::string ini, old=files["save.ini"];
     long long now=(long long)time(NULL);
     for(size_t at=0;at<old.size();) {
@@ -434,25 +461,15 @@ bool Copy(const std::string& folder, const std::string& name, const std::string&
         std::string line=old.substr(at,end-at); at=end+1;
         if(!line.empty() && line[line.size()-1]=='\r') line.erase(line.size()-1);
         if(line.empty() || (!drop.empty() && !line.compare(0,drop.size()+1,drop+"=")) || !line.compare(0,5,"time=")) continue;
+        size_t equals=line.find('=');
+        if(equals!=std::string::npos && !Value(extra,line.substr(0,equals)).empty()) continue;
         if(!only.empty() && !line.compare(0,8,"profile_") && Upper(line.substr(8,16))!=Upper(only)) continue;
         ini+=line+"\r\n";
     }
     ini+="time="+std::to_string(now)+"\r\n"+extra;
     files["save.ini"]=ini;
     std::vector<Backup> before=List(folder);
-    for(time_t t=time_t(now);;++t) {
-        char stamp[32]; struct tm local;
-#ifdef _WIN32
-        localtime_s(&local,&t);
-#else
-        localtime_r(&t,&local);
-#endif
-        strftime(stamp,sizeof(stamp),"%Y-%m-%d_%H-%M-%S",&local);
-        made=name.substr(0,8)+"_"+stamp+".zip";
-        bool taken=false;
-        for(size_t i=0;i<before.size() && !taken;++i) taken=before[i].name==made;
-        if(!taken) break;
-    }
+    made=NewName(before,DWORD(strtoul(name.substr(0,8).c_str(),NULL,16)),now);
     if(!config::WriteFile(Path(folder,made),backup::Zip(files,now),false)) { error="Can't write "+Path(folder,made)+"."; return false; }
     return true;
 }

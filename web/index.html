@@ -5891,7 +5891,7 @@ Pages.settings = root => {
     const list = h('div'), foot = h('div.card-foot.muted');
     const consoles = S.consoles.map(c => c.address);
     const which = h('select.input', { style: { width: 'auto' } }, consoles.map(a => h('option', { value: a }, a)));
-    const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ saveKeep: +e.target.value }, 'Keeping ' + e.target.value + ' of each game') },
+    const keep = h('select.input', { style: { width: 'auto' }, onchange: e => save({ saveKeep: +e.target.value }, 'Keeping ' + e.target.value + ' of each game from each console') },
       [...new Set([3, 5, 10, 20, 50, st.saveKeep])].sort((a, b) => a - b).map(n => h('option', { value: String(n), selected: n === st.saveKeep }, String(n))));
     const now = h('button.btn', { disabled: !consoles.length, onclick: backupNow }, ic('archive', 'sm'), 'Back up now');
     async function load() {
@@ -5932,7 +5932,7 @@ Pages.settings = root => {
     load();
     return h('div.card', h('div.card-head', ic('gamepad-2'), h('h2', 'Game saves'), h('span.sub', 'from the console\u2019s hard drive')),
       h('div.card-body',
-        row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it, also for games installed on it or started in Aurora.',
+        row('Back up saves after each game', 'When a console is back in Aurora, the saves of the game it played are copied here from every profile on it, also for games of your game folders installed on it or started in Aurora.',
           toggle(st.saveBackup, (v, i) => flip('saveBackup', v, i, v ? 'Saves backed up after each game' : 'Saves not backed up'))),
         row('Saves follow the profile', 'When a console is in Aurora, a profile on it gets that game\u2019s newest saves from your other consoles and computers. What was on the console is backed up first; when both played since, you choose here.',
           toggle(st.saveFollow, (v, i) => flip('saveFollow', v, i, v ? 'Saves follow the profile' : 'Saves stay on their console'))),

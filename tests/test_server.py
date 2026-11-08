@@ -195,12 +195,14 @@ def free_port():
 
 def save_backup(folder, name, files, console="10.10.1.43", computer="Laptop", title="4D5307E6", game="Halo 3"):
     """A save backup as the server makes them, here another console's (synced
-    from another computer): files by "<XUID>/<file>"."""
+    from another computer): files by "<XUID>/<file>". With console None, one
+    made before backups said where they came from."""
     os.makedirs(folder, exist_ok=True)
     profiles = sorted({path.split("/")[0] for path in files})
+    where = "" if console is None else "console=%s\r\ncomputer=%s\r\n" % (console, computer)
     with zipfile.ZipFile(os.path.join(folder, name), "w") as z:
-        z.writestr("save.ini", "title_id=%s\r\ngame=%s\r\n%stime=0\r\nconsole=%s\r\ncomputer=%s\r\n"
-                   % (title, game, "".join("profile_%s=\r\n" % p for p in profiles), console, computer))
+        z.writestr("save.ini", "title_id=%s\r\ngame=%s\r\n%stime=0\r\n%s"
+                   % (title, game, "".join("profile_%s=\r\n" % p for p in profiles), where))
         for path, data in files.items():
             z.writestr(path, data)
 
@@ -3988,7 +3990,9 @@ print('lua ok')
 
     def test_backs_up_the_saves_of_an_installed_game_started_from_the_dashboard(self):
         # Its end shows by Aurora's FTP server answering again (FollowLaunch):
-        # then its saves are backed up, as after a game NetISO served.
+        # then its saves are backed up, as after a game NetISO served,
+        # save_delay seconds later (3 s here). The look at whether saves
+        # follow waits for that, so they aren't backed up twice.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Skate 3.iso", 0x5C087C2C, 0x454108E6)
         self.install("Games/Halo 3", 0x1A2B3C4D, 0x4D5307E6)
@@ -3998,7 +4002,7 @@ print('lua ok')
             f.write(b"halo save 1")
         config = os.path.join(self.tmp.name, "netdisc.ini")
         with open(config, "w") as f:
-            f.write("[Server]\nsave_delay=0\n")
+            f.write("[Server]\nsave_delay=3\n")
         saves = os.path.join(self.tmp.name, "Saves")
         aurora = AuroraWeb()
         self.web = free_port()
@@ -4441,7 +4445,7 @@ class Dashboard(DashboardTest):
         self.assertIn(held, [b["name"] for b in self.json("GET", "/api/saves")["saves"]])
         with zipfile.ZipFile(os.path.join(saves, held)) as z:
             self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
-            self.assertIn(b"held=1\r\n", z.read("save.ini"))
+            self.assertIn(b"held=E0000123456789AB\r\n", z.read("save.ini"))  # Held for the profile asked about.
         # Kept after a restart, and asked once.
         self.restart("--xbox", "127.0.0.2", "--ping", "1", "--ftp-port", str(ftp_port))
         state = self.state_when(lambda s: s["consoles"] and s["consoles"][0].get("answers"), 20)
@@ -4495,7 +4499,7 @@ class Dashboard(DashboardTest):
             ini = z.read("save.ini")
             self.assertEqual(z.read("E0000123456789AB/Campaign"), b"halo save 1")
         self.assertIn(("restored_from=%s\r\n" % held).encode(), ini)
-        self.assertNotIn(b"held=1", ini)
+        self.assertNotIn(b"held=", ini)
         time.sleep(3)
         with open(save, "rb") as f:
             self.assertEqual(f.read(), b"halo save 1")
@@ -4587,10 +4591,11 @@ class Dashboard(DashboardTest):
         # A game with a file per slot: restoring takes away the slot saved
         # since, once the saves there now are backed up, and never if they
         # couldn't be. Ola, whom the backup doesn't have, keeps hers, and her
-        # saves there aren't taken for restored ones.
+        # saves there aren't taken for restored ones. The backup holding the
+        # slot stays, even with one backup kept of each console.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         with open(self.config, "w") as f:
-            f.write("[Server]\nsave_follow=0\n")
+            f.write("[Server]\nsave_follow=0\nsave_keep=1\n")
         xbox = os.path.join(self.tmp.name, "xbox")
         save = self.save_console(xbox)
         slot = os.path.join(os.path.dirname(save), "Slot2")
@@ -4671,7 +4676,8 @@ class Dashboard(DashboardTest):
 
     def test_tries_a_failed_save_backup_again_a_little_later(self):
         # The one more try after a backup that failed comes save_retry seconds
-        # later (a minute; 6 s here), not at once.
+        # later (a minute; 6 s here), not at once; the look at whether saves
+        # follow waits for it.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         with open(self.config, "w") as f:
             f.write("[Server]\nsave_delay=0\nsave_retry=6\n")
@@ -4696,11 +4702,11 @@ class Dashboard(DashboardTest):
             ftp.locked.add(locked)  # Its save can't be read for now.
             threading.Thread(target=ftp.serve_forever, daemon=True).start()
             try:
-                # Back in Aurora: the backup fails, and so does the look at its saves.
-                self.assertTrue(self.wait(lambda: log().count("couldn't back up the saves of Halo 3") >= 2, 30))
+                # Back in Aurora: the backup fails.
+                self.assertTrue(self.wait(lambda: "tries backing up the saves of Halo 3 again in 6 seconds" in log(), 30))
                 ftp.locked.discard(locked)
-                self.assertIn("tries backing up the saves of Halo 3 again in 6 seconds", log())
                 time.sleep(3)
+                self.assertEqual(log().count("couldn't back up the saves of Halo 3"), 1)
                 self.assertEqual(read_backups(saves), [])
                 self.assertTrue(self.wait(lambda: len(read_backups(saves)) == 1, 15))
                 self.assertEqual(read_backups(saves)[0][2], {"E0000123456789AB/Campaign": b"halo save 1"})
@@ -4742,6 +4748,8 @@ class Dashboard(DashboardTest):
     def test_each_console_keeps_its_own_save_backups(self):
         # Two consoles play the same game: each one's backups are compared
         # with and pruned among its own, so neither pushes out the other's.
+        # Those synced from another computer, and old ones that say no
+        # console, are kept to the same number, so they don't pile up.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         with open(self.config, "w") as f:
             f.write("[Server]\nsave_backup=0\nsave_keep=2\n")  # Only what the dashboard asks.
@@ -4752,6 +4760,9 @@ class Dashboard(DashboardTest):
         others = ["4D5307E6_2026-11-0%d_10-00-00.zip" % day for day in (1, 2, 3)]
         for name, data in zip(others, (b"other 1", b"other 2", b"halo save 1")):
             save_backup(saves, name, {"E0000123456789AB/Campaign": data})
+        old = ["4D5307E6_2026-10-0%d_10-00-00.zip" % day for day in (1, 2, 3)]
+        for day, name in enumerate(old):
+            save_backup(saves, name, {"E0000123456789AB/Campaign": b"old %d" % day}, console=None)
         _, options = self.save_ftp(xbox)
         self.start(*options)
         back_up = lambda: self.json("POST", "/api/saves/backup", {"address": "127.0.0.2"})  # noqa: E731
@@ -4764,9 +4775,14 @@ class Dashboard(DashboardTest):
         backups = read_backups(saves)
         self.assertEqual([files["E0000123456789AB/Campaign"] for _, ini, files in backups if "console=127.0.0.2\r\n" in ini],
                          [b"halo save 22", b"halo save 333"])
-        self.assertEqual([name for name, ini, _ in backups if "console=10.10.1.43\r\n" in ini], others)
+        self.assertEqual([name for name, ini, _ in backups if "console=10.10.1.43\r\n" in ini], others[1:])
+        self.assertEqual([name for name, ini, _ in backups if "console=" not in ini], old[1:])
 
     def test_a_waiting_question_keeps_its_save_backups(self):
+        # The backups a question waiting on the dashboard offers stay, however
+        # few are kept, and can't be deleted until it's answered. Here the
+        # other console's newer backup has only Ola's saves, so with one kept
+        # of each console, Marcus's from there would go.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         with open(self.config, "w") as f:
             f.write("[Server]\nsave_keep=1\n")
@@ -4775,26 +4791,202 @@ class Dashboard(DashboardTest):
         saves = os.path.join(os.path.dirname(self.config), "Saves")
         other = "4D5307E6_2026-11-01_10-00-00.zip"
         save_backup(saves, other, {"E0000123456789AB/Campaign": b"halo save 2"})
+        save_backup(saves, "4D5307E6_2026-11-02_10-00-00.zip", {"E00000000000A001/Slot": b"ola's"})
         _, options = self.save_ftp(xbox)
         self.start("--ping", "1", *options)
-        held = self.state_when(lambda s: s["saveConflicts"], 30)["saveConflicts"][0]["held"]
-        # Backed up twice more here: the backups the question needs stay.
+        question = self.state_when(lambda s: s["saveConflicts"], 30)["saveConflicts"][0]
+        self.assertEqual(question["newest"], other)
+        first = question["held"]
+        self.assertTrue(os.path.exists(os.path.join(saves, other)))
+        # Backed up twice more here: the question offers the latest of them.
         for data in (b"halo save 22", b"halo save 333"):
             with open(save, "wb") as f:
                 f.write(data)
             self.json("POST", "/api/saves/backup", {"address": "127.0.0.2"})
-        time.sleep(2)
-        names = [name for name, _, _ in read_backups(saves)]
-        self.assertIn(held, names)
-        self.assertIn(other, names)
-        self.assertEqual(len(names), 3)  # And this console's newest.
-        status, _, data = self.call("POST", "/api/saves/delete", {"name": held})
-        self.assertEqual(status, 400)
-        self.assertIn(b"Choose which of E0000123456789AB's saves of Halo 3 to keep first", data)
-        self.assertTrue(os.path.exists(os.path.join(saves, held)))
-        # Settled: it can go.
+        held = self.json("GET", "/api/state")["saveConflicts"][0]["held"]
+        backups = {name: files for name, _, files in read_backups(saves)}
+        self.assertEqual(backups[held], {"E0000123456789AB/Campaign": b"halo save 333"})
+        self.assertIn(other, backups)
+        self.assertNotIn(first, backups)  # No longer offered, so kept as any other.
+        for name in (held, other):
+            status, _, data = self.call("POST", "/api/saves/delete", {"name": name})
+            self.assertEqual(status, 400)
+            self.assertIn(b"Choose which of E0000123456789AB's saves of Halo 3 to keep first", data)
+            self.assertTrue(os.path.exists(os.path.join(saves, name)))
+        # Settled: they can go.
         self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "other"})
-        self.assertEqual(self.json("POST", "/api/saves/delete", {"name": held}), {"ok": True})
+        self.assertEqual(self.json("POST", "/api/saves/delete", {"name": other}), {"ok": True})
+
+    def asked_then_played_in_aurora(self):
+        """Marcus played Halo 3 here and on another console, so which to keep is
+        asked; then Marcus and Ola play on here in Aurora before the answer.
+        Their save files here, the Saves folder and the backup made of them."""
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        ola = os.path.join(xbox, "Hdd1", "Content", "E00000000000A001", "4D5307E6", "00000001", "Slot")
+        os.makedirs(os.path.dirname(ola))
+        with open(ola, "wb") as f:
+            f.write(b"ola 1")
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        save_backup(saves, "4D5307E6_2026-11-01_10-00-00.zip", {"E0000123456789AB/Campaign": b"halo save 2", "E00000000000A001/Slot": b"ola 1"})
+        _, options = self.save_ftp(xbox)
+        self.start("--ping", "1", *options)
+        self.state_when(lambda s: s["saveConflicts"], 30)
+        with open(save, "wb") as f:
+            f.write(b"halo save 1, then more")
+        with open(ola, "wb") as f:
+            f.write(b"ola 2, further")
+        # Looked at again (as every 10 minutes): the saves changed, so they're backed up.
+        self.json("POST", "/api/settings", {"saveBackup": False})
+        self.json("POST", "/api/settings", {"saveBackup": True})
+
+        def latest():
+            return [(name, ini) for name, ini, files in read_backups(saves) if files.get("E0000123456789AB/Campaign") == b"halo save 1, then more"]
+        self.assertTrue(self.wait(latest, 30))
+        name, ini = latest()[0]
+        # Held for Marcus alone, and the question offers them now.
+        self.assertIn("held=E0000123456789AB\r\n", ini)
+        state = self.state_when(lambda s: s["saveConflicts"] and s["saveConflicts"][0]["held"] == name, 10)
+        self.assertEqual([c["held"] for c in state["saveConflicts"]], [name])
+        # Nothing goes back meanwhile: Ola's are her newest, Marcus's wait for the answer.
+        time.sleep(3)
+
+        def read(path):
+            with open(path, "rb") as f:
+                return f.read()
+        self.assertEqual((read(save), read(ola)), (b"halo save 1, then more", b"ola 2, further"))
+        return save, ola, saves, name
+
+    def test_keeping_this_console_s_saves_keeps_what_it_played_since(self):
+        save, ola, saves, latest = self.asked_then_played_in_aurora()
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "console"})
+        copies = [ini for _, ini, _ in read_backups(saves) if "restored_from=" in ini]
+        self.assertEqual(len(copies), 1)
+        self.assertIn("restored_from=%s\r\n" % latest, copies[0])
+        time.sleep(4)  # The follow has looked again since.
+        for path, data in ((save, b"halo save 1, then more"), (ola, b"ola 2, further")):
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), data)
+
+    def test_taking_the_other_console_s_saves_sticks(self):
+        save, ola, saves, latest = self.asked_then_played_in_aurora()
+        self.json("POST", "/api/saves/conflict", {"address": "127.0.0.2", "title": "4D5307E6", "xuid": "E0000123456789AB", "keep": "other"})
+        time.sleep(4)  # The follow has looked again since.
+        for path, data in ((save, b"halo save 2"), (ola, b"ola 2, further")):
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), data)
+        # What it played since is kept, in the backup the log names.
+        log = json.dumps(self.json("GET", "/api/log?after=0"))
+        self.assertIn("put the saves of Halo 3 from 10.10.1.43@Laptop on it, as chosen (its own are kept in %s)." % latest, log)
+        self.assertTrue(os.path.exists(os.path.join(saves, latest)))
+        self.assertEqual(self.json("GET", "/api/state")["saveConflicts"], [])
+
+    def test_a_game_whose_saves_can_t_be_backed_up_holds_up_no_other(self):
+        # A save file the console won't hand out: that game's backup fails,
+        # and is tried again only once its saves change (or an hour later),
+        # not at each look; the other games' saves are still backed up.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Skate 3.iso", 0x5C087C2C, 0x5841F00D)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        save = self.save_console(xbox)
+        skate = os.path.join(xbox, "Hdd1", "Content", "E0000123456789AB", "5841F00D", "00000001", "Career")
+        os.makedirs(os.path.dirname(skate))
+        with open(skate, "wb") as f:
+            f.write(b"skate career")
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        ftp, options = self.save_ftp(xbox)
+        locked = os.path.normcase(os.path.abspath(save))
+        ftp.locked.add(locked)
+        self.start("--ping", "1", *options)
+
+        def backed_up(title):
+            return [files for name, _, files in read_backups(saves) if name.startswith(title)]
+
+        def log():
+            return json.dumps(self.json("GET", "/api/log?after=0"))
+        # Halo 3 comes first, and fails; Skate 3 is backed up all the same.
+        self.assertTrue(self.wait(lambda: backed_up("5841F00D"), 30))
+        self.assertEqual(log().count("couldn't back up the saves of Halo 3"), 1)
+        # Looked at again with its saves as they were: not tried again.
+        looked, tried = len(ftp.log), ftp.log.count("RETR Campaign")
+        self.json("POST", "/api/settings", {"saveBackup": False})
+        self.json("POST", "/api/settings", {"saveBackup": True})
+        self.assertTrue(self.wait(lambda: "CWD /Hdd1/Content/E0000123456789AB/4D5307E6/00000001" in ftp.log[looked:], 30))
+        time.sleep(2)
+        self.assertEqual(ftp.log.count("RETR Campaign"), tried)
+        self.assertEqual(log().count("couldn't back up the saves of Halo 3"), 1)
+        self.assertEqual(backed_up("4D5307E6"), [])
+        # Its saves changed (and can be read now): backed up at the next look.
+        ftp.locked.discard(locked)
+        with open(save, "wb") as f:
+            f.write(b"halo save 2, level 9")
+        self.json("POST", "/api/settings", {"saveBackup": False})
+        self.json("POST", "/api/settings", {"saveBackup": True})
+        self.assertTrue(self.wait(lambda: backed_up("4D5307E6") == [{"E0000123456789AB/Campaign": b"halo save 2, level 9"}], 30))
+
+    def test_backs_up_a_game_s_saves_once_after_it_ends(self):
+        # Back in Aurora after a game, its saves are backed up save_delay
+        # seconds later (3 s here). The look at whether saves follow waits for
+        # that backup, so it doesn't back them up at once as well.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        with open(self.config, "w") as f:
+            f.write("[Server]\nsave_delay=3\n")
+        ftp_port = free_port()
+        aurora = AuroraWeb(host="127.0.0.2")
+        self.addCleanup(aurora.close)
+        self.start("--xbox", "127.0.0.2", "-v", "--ftp-port", str(ftp_port), "--aurora-web-port", str(aurora.port))
+        xbox = os.path.join(self.tmp.name, "xbox")
+        self.save_console(xbox)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        console = lambda s: [x for x in s["consoles"] if x["address"] == "127.0.0.2"][0]  # noqa: E731
+        with connect_from("127.0.0.2", self.port) as plugin:
+            c = Client.__new__(Client)
+            c.conn = plugin
+            self.assertEqual(c.mount("Halo 3.iso"), 1)
+            self.state_when(lambda s: console(s)["playing"])
+            ftp = aurora_ftp.Server(xbox, ftp_port, host="127.0.0.2")
+            threading.Thread(target=ftp.serve_forever, daemon=True).start()
+            try:
+                self.assertTrue(self.wait(lambda: len(read_backups(saves)) == 1, 30))
+                time.sleep(4)  # The look at the saves since.
+                lines = [line["text"] for line in self.json("GET", "/api/log?after=0")["lines"]]
+            finally:
+                ftp.shutdown()
+                ftp.server_close()
+        self.assertEqual(sum("backed up the saves of Halo 3" in line for line in lines), 1, lines)
+        self.assertEqual([line for line in lines if "have no backup yet" in line or "changed since their last backup" in line], [])
+        self.assertEqual(len(read_backups(saves)), 1)
+        # Downloaded for the backup, and once more by the look that compares them.
+        self.assertLessEqual(ftp.log.count("RETR Campaign"), 2)
+
+    def test_leaves_the_saves_alone_while_the_party_wheel_shows(self):
+        # The party wheel's own FTP server shows only the offline profiles:
+        # saves aren't looked at (nor backed up without the others) through it.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        with open(self.config, "w") as f:
+            f.write("[Server]\nsave_backup=0\n")
+        xbox = os.path.join(self.tmp.name, "xbox")
+        self.save_console(xbox)
+        saves = os.path.join(os.path.dirname(self.config), "Saves")
+        ftp, options = self.save_ftp(xbox)
+        self.start("--ping", "1", *options)
+        self.party_text("127.0.0.2")  # Its wheel app waits on the server: it shows the wheel.
+        stop = threading.Event()
+
+        def wheel():
+            while not stop.wait(1):
+                try:
+                    self.party_text("127.0.0.2")
+                except OSError:
+                    pass
+        threading.Thread(target=wheel, daemon=True).start()
+        self.addCleanup(stop.set)
+        looked = len(ftp.log)
+        self.json("POST", "/api/settings", {"saveBackup": True})
+        time.sleep(5)
+        self.assertNotIn("CWD /Hdd1/Content/E0000123456789AB/4D5307E6/00000001", ftp.log[looked:])
+        self.assertEqual(read_backups(saves), [])
 
     def test_pings_each_console(self):
         # A ping now and then (a connect to its FTP port, refused here) shows
@@ -6945,6 +7137,28 @@ class Sync(DashboardTest):
         self.assertEqual(self.call("POST", "/api/sync/now", {})[0], 400)
         halo = [g for g in self.json("GET", "/api/games")["games"] if g["name"] == "Halo 3"][0]
         self.assertEqual(halo["plays"], 1)
+
+    def test_a_save_backup_too_large_to_sync_stays_here(self):
+        # SSX's saves make a backup of about 100 MB, more than the sync takes:
+        # it stays on this computer, told once, and the sync doesn't fail for it.
+        saves = os.path.join(self.folder, "Saves")
+        os.makedirs(saves)
+        big = "45410950_2026-11-02_20-00-00.zip"
+        with open(os.path.join(saves, big), "wb") as f:
+            f.truncate(100 << 20)
+        with open(os.path.join(saves, "4D5307E6_2026-11-02_20-00-00.zip"), "wb") as f:
+            f.write(self.save_zip("Halo 3"))
+        self.start()
+        self.json("POST", "/api/sync/connect", {"url": self.url, "key": SYNC_OWNER, "name": "Home PC"})
+        state = self.synced()
+        self.assertEqual((state["sync"]["failed"], state["sync"]["sent"]), (0, 1), state["sync"])
+        last = state["sync"]["last"]
+        time.sleep(1.1)  # A pass in a later second.
+        self.json("POST", "/api/sync/now", {})
+        state = self.synced(last)
+        self.assertEqual((state["sync"]["failed"], state["sync"]["sent"]), (0, 0), state["sync"])
+        told = [line["text"].split(" ", 1)[1] for line in self.json("GET", "/api/log?after=0")["lines"] if big in line["text"]]
+        self.assertEqual(told, ["Sync: saves/%s is kept on this computer only: at 100 MB it's more than the 95 MB a file can be in the sync." % big])
 
     def test_a_computer_can_be_taken_away(self):
         self.start()

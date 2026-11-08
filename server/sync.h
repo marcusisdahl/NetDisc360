@@ -10,7 +10,9 @@
 //                           which the others read
 //
 // A backup this computer deleted (an old one it no longer keeps) isn't
-// fetched again: Sync\<kind>.seen lists every file already synced here.
+// fetched again: Sync\<kind>.seen lists every file already synced here. A
+// backup larger than the Worker takes (95 MB) stays on this computer only,
+// told once (it's in that list too).
 // Nothing here deletes anything in the cloud or on this computer.
 #include <string>
 #include <vector>
@@ -28,6 +30,7 @@ struct Report {
     int sent, got, failed;
     long long stored;                // Bytes in the cloud, of what was listed.
     std::vector<std::string> notes;  // What went wrong, for the log.
+    std::vector<std::string> left;   // Files newly left out as too large (no failure), for the log.
     Report() : sent(0), got(0), failed(0), stored(0) {}
 };
 
