@@ -3658,9 +3658,12 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     if(ShowsWheel(console.text) && !o.pushOnce) return;
     bool idle=o.xboxes.empty() && Now()-console.seenAt.load()/1000.0>=IdleSeconds;
     if(!s.reachable && idle && Now()<s.probedAt+IdleProbeSeconds) return;
+    // Nor waiting while a save session has its FTP server: again a second
+    // later, so this mark never makes a copy wait for a push that only waits.
+    std::unique_lock<std::mutex> ftpHold(FtpLockFor(console.address),std::try_to_lock);
+    if(!ftpHold.owns_lock()) return;
     s.probedAt=Now();
     Busy busy(&console);
-    std::lock_guard<std::mutex> ftpHold(FtpLockFor(console.address));
     FtpClient ftp(console.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) {
         // Only to look again: quietly, as Aurora may still be starting.
@@ -4582,30 +4585,36 @@ void SaveLoop() {
         std::vector<IsoFile> games=LatestGames();
         for(size_t i=0;i<games.size() && !titleId;++i) if(games[i].name==job.game) titleId=games[i].titleId;
         if(!titleId) continue;
-        // Again a little later (no try counted), unless the console played
-        // another game since.
-        auto later=[&]() {
-            job.at=Now()+5;
-            std::lock_guard<std::mutex> hold(SaveJobLock);
-            if(!std::any_of(SaveJobs.begin(),SaveJobs.end(),[&](const SaveJob& j) { return j.address==job.address; })) SaveJobs.push_back(job);
-        };
         // The party wheel's FTP server shows only offline profiles: its
-        // backup would miss the others. A copy to the console goes first
-        // too, as it writes there.
-        if(ShowsWheel(console->text) || CopyingTo(job.address)) { later(); continue; }
-        bool ok;
-        {
+        // backup would miss the others. (A copy to the console goes on
+        // meanwhile: a backup only downloads.)
+        bool ok=false, wait=ShowsWheel(console->text);
+        if(!wait) {
             // Nor waiting while another session has its FTP server (a push,
             // a restore): every other console's backup would wait as well.
             std::unique_lock<std::mutex> ftpHold(FtpLockFor(job.address),std::try_to_lock);
-            if(!ftpHold.owns_lock()) { later(); continue; }
-            // Leaving Aurora meanwhile (a game or the wheel started): once it's back.
-            if(console->launchedAt!=0 || ShowsWheel(console->text) || LeftAurora(*console)) { later(); continue; }
-            Busy busy(console);
-            FtpClient ftp(job.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
-            saves::Result r; std::string error;
-            ok=SaveGame(*console,ftp,titleId,WithoutIso(job.game),o,r,error);
-            ftp.Close();
+            // Leaving Aurora meanwhile (a game or the wheel started), or off: once it's back.
+            wait=!ftpHold.owns_lock() || console->launchedAt!=0 || ShowsWheel(console->text) || LeftAurora(*console);
+            if(!wait) {
+                Busy busy(console);
+                FtpClient ftp(job.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
+                saves::Result r; std::string error;
+                ok=SaveGame(*console,ftp,titleId,WithoutIso(job.game),o,r,error);
+                ftp.Close();
+            }
+        }
+        if(wait) {
+            // Again a little later (no try counted), unless the console played
+            // another game since. The saves following their profile go on
+            // meanwhile, so backups that wait (a console that's off) never
+            // hold that up.
+            job.at=Now()+5;
+            {
+                std::lock_guard<std::mutex> hold(SaveJobLock);
+                if(!std::any_of(SaveJobs.begin(),SaveJobs.end(),[&](const SaveJob& j) { return j.address==job.address; })) SaveJobs.push_back(job);
+            }
+            FollowStep();
+            continue;
         }
         if(!ok && !job.retried) {
             job.retried=true;
@@ -4705,11 +4714,12 @@ bool RestoreSaves(const web::Value& v, std::string& error) {
     DWORD titleId=DWORD(strtoul(name.substr(0,8).c_str(),NULL,16));
     std::string game=GameOf(titleId);
     if(game.empty()) game=name.substr(0,8);
-    // Written alone: a copy started meanwhile waits for this.
-    PushMark mark(console->address);
-    if(!mark.marked) { error=CopyingNow; return false; }
     Busy busy(console);
     std::lock_guard<std::mutex> ftpHold(FtpLockFor(console->address));
+    // Written alone: a copy started meanwhile waits for this. Marked once its
+    // FTP server is this one's, so no copy waits while this only waits.
+    PushMark mark(console->address);
+    if(!mark.marked) { error=CopyingNow; return false; }
     FtpClient ftp(console->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
     if(!ftp.Open()) { error=std::string("Can't reach Aurora's FTP server on ")+console->text+": "+ftp.Error(); return false; }
     // The backup put back and the one of the saves there now stay, however
@@ -4885,9 +4895,15 @@ std::string ListedNow(const Console& console, FtpClient& ftp, const Options& o, 
 
 std::string ConflictsPath(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"save-conflicts.ini"; }
 
+// Held while save-conflicts.ini or save-followed.ini is made and written, so
+// two threads writing one at once (through the same .new file) leave the
+// latest in it.
+std::mutex SaveFilesLock;
+
 void SaveConflicts(const Options& o) {
     std::string text, path=ConflictsPath(o);
     if(path.empty()) return;
+    std::lock_guard<std::mutex> writing(SaveFilesLock);
     {
         std::lock_guard<std::mutex> hold(FollowLock);
         for(size_t i=0;i<Conflicts2.size();++i) {
@@ -4949,11 +4965,15 @@ void LoadConflicts(const Options& o) {
 }
 
 std::string FollowedPath(const Options& o) { return o.configPath.empty() ? std::string() : config::FolderOf(o.configPath)+"save-followed.ini"; }
+// save-followed.ini's first line: one checked by other rules (an older
+// server's) is checked anew.
+const char FollowedRules[] = "rules=2";
 
 // FollowKept into save-followed.ini: "<console>|<title>|<what was checked>" a line.
 void SaveFollowed(const Options& o) {
-    std::string text, path=FollowedPath(o);
+    std::string text=std::string(FollowedRules)+"\n", path=FollowedPath(o);
     if(path.empty()) return;
+    std::lock_guard<std::mutex> writing(SaveFilesLock);
     {
         std::lock_guard<std::mutex> hold(FollowLock);
         for(std::map<DWORD,std::map<std::string,std::string> >::const_iterator c=FollowKept.begin();c!=FollowKept.end();++c) {
@@ -4971,7 +4991,10 @@ void LoadFollowed(const Options& o) {
     std::map<DWORD,std::map<std::string,std::string> > kept;
     for(size_t at=0;at<text.size();) {
         size_t end=text.find('\n',at); if(end==std::string::npos) end=text.size();
-        std::string line=text.substr(at,end-at); at=end+1;
+        std::string line=text.substr(at,end-at);
+        if(!line.empty() && line[line.size()-1]=='\r') line.erase(line.size()-1);
+        if(!at && line!=FollowedRules) return;
+        at=end+1;
         size_t bar=line.find('|'), next=bar==std::string::npos ? bar : line.find('|',bar+1);
         if(next==std::string::npos) continue;
         DWORD address=inet_addr(line.substr(0,bar).c_str());
@@ -4986,8 +5009,9 @@ void LoadFollowed(const Options& o) {
 
 // A game looked at on a console (see FollowConsole): not again until what
 // was checked changes. whole: checked tells all about its saves there (the
-// newest backup, the profiles and the listing of a game of this server's),
-// so it's kept for the next start too.
+// backups, the profiles and the listing of a game of this server's), and
+// all of them as listed so are in backups, so it's kept for the next start
+// too (see KeptAsListed).
 void Followed(DWORD address, const std::string& title, const std::string& checked, bool whole, const Options& o) {
     bool changed;
     {
@@ -5003,6 +5027,19 @@ void Followed(DWORD address, const std::string& title, const std::string& checke
         }
     }
     if(changed) SaveFollowed(o);
+}
+
+// Whether the follow found all of a console's saves of a game in backups as
+// they're listed now (see Followed), such as saves it put there: kept over a
+// start, unlike SaveListed.
+bool KeptAsListed(DWORD address, DWORD titleId, const std::string& listing) {
+    char title[9]; snprintf(title,sizeof(title),"%08X",(unsigned)titleId);
+    const std::string end="|"+listing;
+    std::lock_guard<std::mutex> hold(FollowLock);
+    std::map<DWORD,std::map<std::string,std::string> >::const_iterator c=FollowKept.find(address);
+    if(c==FollowKept.end()) return false;
+    std::map<std::string,std::string>::const_iterator t=c->second.find(title);
+    return t!=c->second.end() && t->second.size()>=end.size() && !t->second.compare(t->second.size()-end.size(),end.size(),end);
 }
 
 // Every console's saves are looked at anew, also after a restart.
@@ -5072,6 +5109,20 @@ bool FactsOf(const std::string& folder, const std::string& name, BackupFacts& ou
     out=facts;
     return true;
 }
+bool FactsKnown(const std::string& folder, const std::string& name) {
+    std::lock_guard<std::mutex> hold(FactsLock);
+    return FactsCache.count(folder+"|"+name)>0;
+}
+
+// A game's backups (names, oldest first) as what was checked of a console
+// says them (see FollowDone): the newest, and a digest of all their names,
+// so one that comes in with an older name (synced from another computer)
+// or one that goes gets the game looked at again too.
+std::string BackupsKey(const std::vector<std::string>& names) {
+    std::string all;
+    for(size_t i=0;i<names.size();++i) all+=names[i]+"\n";
+    return (names.empty() ? std::string() : names.back())+"+"+web::Sha256Hex(all).substr(0,16);
+}
 
 // The backup of a game (names: its backups, oldest first) that Take made of
 // console from this computer when its saves were listed as listed: its saves
@@ -5106,9 +5157,10 @@ FollowResult FollowConsole(Console& console) {
     }
     if(library.empty() && (!o.saveFollow || saves::List(folder).empty())) return FollowChecked;
     const std::string here=std::string(console.text)+"@"+HereName(o);
+    std::set<std::string> prefilled;  // Backups read (or tried) before its FTP server was taken.
     if(o.saveFollow) {
         // What the backups say is read before its FTP server is taken (once
-        // each, see FactsOf), for each game not checked with its newest backup.
+        // each, see FactsOf), for each game not checked with these backups.
         std::vector<saves::Backup> all=saves::List(folder);
         std::map<std::string,std::string> done;
         {
@@ -5116,10 +5168,10 @@ FollowResult FollowConsole(Console& console) {
             std::map<DWORD,std::map<std::string,std::string> >::const_iterator d=FollowDone.find(console.address);
             if(d!=FollowDone.end()) done=d->second;
         }
-        std::map<DWORD,std::string> newestOf;  // all is newest first.
+        std::map<DWORD,std::vector<std::string> > names;  // Oldest first (all is newest first).
         std::set<std::string> there;
-        for(size_t i=0;i<all.size();++i) {
-            if(!newestOf.count(all[i].titleId)) newestOf[all[i].titleId]=all[i].name;
+        for(size_t i=all.size();i-->0;) {
+            names[all[i].titleId].push_back(all[i].name);
             there.insert(folder+"|"+all[i].name);
         }
         {
@@ -5129,13 +5181,16 @@ FollowResult FollowConsole(Console& console) {
                 if(!there.count(f->first)) FactsCache.erase(f++);
                 else ++f;
         }
-        for(size_t i=0;i<all.size();++i) {
-            char title[9]; snprintf(title,sizeof(title),"%08X",(unsigned)all[i].titleId);
+        for(std::map<DWORD,std::vector<std::string> >::const_iterator t=names.begin();t!=names.end();++t) {
+            char title[9]; snprintf(title,sizeof(title),"%08X",(unsigned)t->first);
             std::map<std::string,std::string>::const_iterator d=done.find(title);
-            const std::string& newest=newestOf[all[i].titleId];
-            if(d!=done.end() && !d->second.compare(0,newest.size()+1,newest+"|")) continue;
-            BackupFacts f;
-            FactsOf(folder,all[i].name,f);
+            const std::string key=BackupsKey(t->second)+"|";
+            if(d!=done.end() && !d->second.compare(0,key.size(),key)) continue;
+            for(size_t b=0;b<t->second.size();++b) {
+                BackupFacts f;
+                FactsOf(folder,t->second[b],f);
+                prefilled.insert(t->second[b]);
+            }
         }
     }
     // Not waiting while another session has its FTP server (a push, a
@@ -5162,6 +5217,9 @@ FollowResult FollowConsole(Console& console) {
         SavesLook was;
         bool known=ListedBefore(console,o,l->first,was);
         if(known && was.listing==l->second) continue;
+        // Nor saves the follow found all in backups as they're listed now,
+        // such as the newest it put there before a restart.
+        if(o.saveFollow && KeptAsListed(console.address,l->first,l->second)) continue;
         // Played on from the newest saves (no newer backup came since these
         // were last backed up or put here), or no backup of the game yet:
         // backed up as after a game here. Else another console may have
@@ -5181,14 +5239,15 @@ FollowResult FollowConsole(Console& console) {
     if(list.empty()) { ftp.Close(); return FollowChecked; }
     std::map<DWORD,std::vector<std::string> > byTitle;  // Oldest first.
     for(size_t i=list.size();i-->0;) byTitle[list[i].titleId].push_back(list[i].name);
-    bool changed=false;
+    bool changed=false, lookAgain=false;
     for(std::map<DWORD,std::vector<std::string> >::const_iterator t=byTitle.begin();t!=byTitle.end();++t) {
         char title[9]; snprintf(title,sizeof(title),"%08X",(unsigned)t->first);
         // A game of this server is looked at again when its saves here changed.
         const bool ours=library.count(t->first)>0;
         std::map<DWORD,std::string>::const_iterator l=listings.find(t->first);
         std::string listed=l==listings.end() ? std::string() : l->second;
-        std::string checked=t->second.back()+"|"+profiles+"|"+listed;
+        const std::string key=BackupsKey(t->second);
+        std::string checked=key+"|"+profiles+"|"+listed;
         {
             std::lock_guard<std::mutex> hold(FollowLock);
             std::map<DWORD,std::map<std::string,std::string> >::const_iterator d=FollowDone.find(console.address);
@@ -5199,6 +5258,16 @@ FollowResult FollowConsole(Console& console) {
         // put on it or ask about, nor to download again to compare.
         std::map<DWORD,std::string>::const_iterator made=first.find(t->first);
         if(made!=first.end() && t->second.size()==1 && t->second[0]==made->second) { Followed(console.address,title,checked,ours && !listed.empty(),o); continue; }
+        // Backups not read before its FTP server was taken (a start forgot
+        // them, or one was just made above): read before its next look,
+        // which comes right after this one, not while the console waits.
+        bool unread=false;
+        for(size_t b=0;b<t->second.size() && !unread;++b) unread=!prefilled.count(t->second[b]) && !FactsKnown(folder,t->second[b]);
+        if(unread) {
+            { std::lock_guard<std::mutex> hold(FollowLock); FollowDone[console.address].erase(title); }
+            lookAgain=true;
+            continue;
+        }
         // Each profile's newest saves of this game, and every saves it had.
         struct Newest { std::string name, digest, from, ini; std::set<std::string> seen; };
         std::map<std::string,Newest> newest;
@@ -5223,14 +5292,56 @@ FollowResult FollowConsole(Console& console) {
             }
         }
         if(newest.empty() && (!ours || listed.empty())) { Followed(console.address,title,checked,false,o); continue; }
-        // Each profile's saves there, by digest: as in the backup made of
-        // them as they're listed now, else downloaded.
-        std::map<std::string,std::string> there;
+        std::string game=GameOf(t->first);
+        if(game.empty()) game=title;
+        std::vector<std::string> push;
+        std::vector<SaveConflict> found;
+        bool backUp=false, asked=false;
+        // What's to do, by each profile's saves there (by digest): the
+        // newest put on it (push), its saves backed up (backUp), the
+        // dashboard asking which to keep (found), or nothing while a
+        // question waits (asked).
+        auto decide=[&](const std::map<std::string,std::string>& there) {
+            push.clear(); found.clear(); backUp=false; asked=false;
+            // A profile's saves here that no backup has any of: backed up, there's nothing to ask.
+            for(size_t p=0;p<on.size();++p) if(!newest.count(on[p]) && there.count(on[p])) backUp=true;
+            for(std::map<std::string,Newest>::iterator n=newest.begin();n!=newest.end();++n) {
+                if(n->second.name.empty()) continue;  // Only held backups of it.
+                std::map<std::string,std::string>::const_iterator mine=there.find(n->first);
+                std::string digest=mine==there.end() ? std::string() : mine->second;
+                if(digest==n->second.digest) continue;
+                {
+                    // Asked already: wait for the answer.
+                    std::lock_guard<std::mutex> hold(FollowLock);
+                    bool open=false;
+                    for(size_t i=0;i<Conflicts2.size() && !open;++i)
+                        open=Conflicts2[i].address==console.text && Conflicts2[i].title==title && Conflicts2[i].xuid==n->first;
+                    if(open) { asked=true; continue; }
+                }
+                if(digest.empty() || n->second.seen.count(digest)) { push.push_back(n->first); continue; }
+                backUp=true;
+                // The newest came from somewhere else, or from a backup that
+                // doesn't say where (made before backups said): both played
+                // since, maybe, so the dashboard asks.
+                if(n->second.from!=here) {
+                    SaveConflict c;
+                    c.address=console.text; c.title=title; c.xuid=n->first; c.game=config::ToUtf8(game);
+                    c.gamertag=saves::IniValue(n->second.ini,"profile_"+n->first); c.newest=n->second.name; c.from=n->second.from; c.digest=digest;
+                    found.push_back(c);
+                }
+            }
+        };
+        // Saves listed as they were when a backup was made of them here are
+        // taken for that backup's, with no download, but only to tell that
+        // there's nothing to do: a listing is sizes and times to the minute,
+        // so before anything is put over them or backed up, the saves
+        // themselves are downloaded and compared.
         std::string same=ours && !listed.empty() ? BackupListed(console,o,folder,t->second,listed) : std::string();
         BackupFacts sameFacts;
-        if(!same.empty() && FactsOf(folder,same,sameFacts)) there=sameFacts.digests;
-        else {
-            std::map<std::string,std::string> files;
+        const bool byListing=!same.empty() && FactsOf(folder,same,sameFacts);
+        if(byListing) decide(sameFacts.digests);
+        if(!byListing || backUp || !push.empty()) {
+            std::map<std::string,std::string> files, there;
             if(!saves::Collect(ftp,t->first,files,error)) {
                 XboxLog(console,"couldn't read the saves of %s to compare: %s",title,error.c_str());
                 if(!OnlyThatGame(console,ftp,t->first,listed)) return FollowUnread;
@@ -5240,38 +5351,7 @@ FollowResult FollowConsole(Console& console) {
                 std::string mine=saves::ProfileSaves(files,on[p]);
                 if(!mine.empty()) there[on[p]]=web::Sha256Hex(mine);
             }
-        }
-        std::string game=GameOf(t->first);
-        if(game.empty()) game=title;
-        std::vector<std::string> push;
-        std::vector<SaveConflict> found;
-        // A profile's saves here that no backup has any of: backed up, there's nothing to ask.
-        bool backUp=false, asked=false;
-        for(size_t p=0;p<on.size();++p) if(!newest.count(on[p]) && there.count(on[p])) backUp=true;
-        for(std::map<std::string,Newest>::iterator n=newest.begin();n!=newest.end();++n) {
-            if(n->second.name.empty()) continue;  // Only held backups of it.
-            std::map<std::string,std::string>::const_iterator mine=there.find(n->first);
-            std::string digest=mine==there.end() ? std::string() : mine->second;
-            if(digest==n->second.digest) continue;
-            {
-                // Asked already: wait for the answer.
-                std::lock_guard<std::mutex> hold(FollowLock);
-                bool open=false;
-                for(size_t i=0;i<Conflicts2.size() && !open;++i)
-                    open=Conflicts2[i].address==console.text && Conflicts2[i].title==title && Conflicts2[i].xuid==n->first;
-                if(open) { asked=true; continue; }
-            }
-            if(digest.empty() || n->second.seen.count(digest)) { push.push_back(n->first); continue; }
-            backUp=true;
-            // The newest came from somewhere else, or from a backup that
-            // doesn't say where (made before backups said): both played
-            // since, maybe, so the dashboard asks.
-            if(n->second.from!=here) {
-                SaveConflict c;
-                c.address=console.text; c.title=title; c.xuid=n->first; c.game=config::ToUtf8(game);
-                c.gamertag=saves::IniValue(n->second.ini,"profile_"+n->first); c.newest=n->second.name; c.from=n->second.from; c.digest=digest;
-                found.push_back(c);
-            }
+            decide(there);
         }
         // The newest go on first, so the backup below has them as the
         // console does (its listing= then tells nothing changed since). They
@@ -5332,13 +5412,16 @@ FollowResult FollowConsole(Console& console) {
         if(ours) {
             if(!push.empty()) listed=ListedNow(console,ftp,o,t->first);
             else if(!backUp && !asked) SawListing(console.address,t->first,listed,t->second.back());
-            checked=t->second.back()+"|"+profiles+"|"+listed;
+            checked=key+"|"+profiles+"|"+listed;
         }
         // A backup made here changes the newest: checked again next time.
-        Followed(console.address,title,backUp ? std::string() : checked,ours && !listed.empty(),o);
+        // Kept over a start only with no question waiting: then all its
+        // saves there are in backups as listed (see KeptAsListed).
+        Followed(console.address,title,backUp ? std::string() : checked,ours && !listed.empty() && !asked,o);
     }
     ftp.Close();
     if(changed) SyncSoon();
+    if(lookAgain) FollowSoon(console.address);
     return FollowChecked;
 }
 
@@ -5374,11 +5457,12 @@ bool ResolveConflict(const web::Value& v, std::string& error) {
         if(!saves::Read(folder,c.newest,files,error)) return false;
         std::string game=GameOf(titleId);
         if(game.empty()) game=c.title;
-        // Written alone: a copy started meanwhile waits for this.
-        PushMark mark(console->address);
-        if(!mark.marked) { error=CopyingNow; return false; }
         Busy busy(console);
         std::lock_guard<std::mutex> ftpHold(FtpLockFor(console->address));
+        // Written alone: a copy started meanwhile waits for this (marked once
+        // its FTP server is this one's, as in RestoreSaves).
+        PushMark mark(console->address);
+        if(!mark.marked) { error=CopyingNow; return false; }
         FtpClient ftp(console->address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
         if(!ftp.Open()) { error=std::string("Can't reach Aurora's FTP server on ")+console->text+": "+ftp.Error(); return false; }
         // Its saves now are kept first (held for the profile, as the question
