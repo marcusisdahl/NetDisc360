@@ -418,7 +418,9 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
     Its outages: self.server.down is an HTTP status every answer is, or
     "hang" for none at all (the connection closed after self.server.hang
     seconds), or a dict of those by path (only Icon.php's: {"/Resources/Lib/
-    Icon.php": 500}), and self.server.slow the seconds every answer takes. Also
+    Icon.php": 500}) or by path and query (one game's list: {"/Resources/Lib/
+    TitleUpdateInfo.php?titleid=4D5307E6": 500}), and self.server.slow the
+    seconds every answer takes. Also
     Microsoft's icons, as --xbox-images asks for them: the tile.png on
     download.xbox.com (only for a Title ID in lower case, as there) from
     self.server.tiles, and the icon on image.xboxlive.com from
@@ -433,7 +435,7 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
         time.sleep(getattr(self.server, "slow", 0))
         down = getattr(self.server, "down", None)
         if isinstance(down, dict):
-            down = down.get(url.path)
+            down = down.get(url.path + "?" + url.query, down.get(url.path))
         if down == "hang":
             time.sleep(getattr(self.server, "hang", 5))
             self.close_connection = True
@@ -517,12 +519,13 @@ def png(size=3000):
     return b"\x89PNG\r\n\x1a\n" + os.urandom(size)
 
 
-def god_package_header(title_id, media_id, name, icon=None, signed=False):
+def god_package_header(title_id, media_id, name, icon=None, signed=False, own=False):
     """A whole Games on Demand header (0xB000 bytes) as iso2god and NetDisc360
     make them from iso2god's empty LIVE package: unsigned, version 1
-    metadata, both thumbnails said to be 0x3841 bytes but only zeros; or
-    with icon in them, or signed (bytes where Microsoft's signature is). Its
-    digest at 0x32C covers the rest."""
+    metadata, both thumbnails said to be 0x3841 bytes but only zeros (own: 0
+    bytes, as Copy to Xbox makes one without an icon); or with icon in them,
+    or signed (bytes where Microsoft's signature is). Its digest at 0x32C
+    covers the rest."""
     h = bytearray(0xB000)
     h[0:4] = b"LIVE"
     if signed:
@@ -534,7 +537,7 @@ def god_package_header(title_id, media_id, name, icon=None, signed=False):
     struct.pack_into(">I", h, 0x3A9, 1)
     encoded = name.encode("utf-16-be")
     h[0x411:0x411 + len(encoded)] = encoded
-    struct.pack_into(">II", h, 0x1712, *((len(icon), len(icon)) if icon else (0x3841, 0x3841)))
+    struct.pack_into(">II", h, 0x1712, *((len(icon), len(icon)) if icon else (0, 0) if own else (0x3841, 0x3841)))
     if icon:
         h[0x171A:0x171A + len(icon)] = icon
         h[0x571A:0x571A + len(icon)] = icon
@@ -1346,19 +1349,19 @@ class Push(ServerTest):
         self.assertLess(os.path.getsize(ssx), 0xB000)
 
     def test_keeps_a_games_on_demand_header_on_this_pc_before_putting_its_icon_in(self):
-        # The header an icon goes into is kept next to the settings first.
-        # Should writing it and putting it back both fail, the user is told
-        # how to get the game back: a package NetDisc360 made, Copy to Xbox
-        # makes again (sending only what's missing); another tool's
-        # (iso2god's), it would send whole, so its header kept here goes back.
+        # The header an icon goes into is kept next to the settings first,
+        # each console's its own. Should writing it and putting it back both
+        # fail, the user is told how to get the game back: a package
+        # NetDisc360 made of the disc here, Copy to Xbox makes again (sending
+        # only what's missing); another tool's (iso2god's), or one made of
+        # another disc of the game, it would send whole (and as another
+        # package), so its header kept here goes back.
         self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
-        iso2god = god_package_header(0x4541096D, 0x55ABAB6C, "SSX")  # Its thumbnails said to be 0x3841 bytes.
-        own = bytearray(god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3"))
-        struct.pack_into(">II", own, 0x1712, 0, 0)  # As Copy to Xbox makes one without an icon.
-        own[0x32C:0x340] = hashlib.sha1(bytes(own[0x344:0xB000])).digest()
-        headers = {("4541096D", "55ABAB6C"): iso2god, ("4D5307E6", "1A2B3C4D"): bytes(own)}
+        headers = {("4541096D", "55ABAB6C"): god_package_header(0x4541096D, 0x55ABAB6C, "SSX"),  # Its thumbnails said to be 0x3841 bytes.
+                   ("4D5307E6", "1A2B3C4D"): god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3", own=True),
+                   ("4D5307E6", "0BADD15C"): god_package_header(0x4D5307E6, 0x0BADD15C, "Halo 3", own=True)}  # Of a disc no longer here.
 
         def put_back():
             for (title, media), data in headers.items():
@@ -1376,19 +1379,133 @@ class Push(ServerTest):
                       "all of it is sent again, as another tool made the copy there.", out)
         self.assertIn("nor could the header be put back as it was. Copy Halo 3 to Xbox again if it's gone from the Xbox home: "
                       "only what's missing is sent.", out)
+        self.assertIn("nor could the header be put back as it was. Copy Halo 3 to Xbox again if it's gone from the Xbox home: "
+                      "all of it is sent again.", out)  # 0BADD15C's.
         config = os.path.join(self.tmp.name, "netdisc.ini")
         open(config, "w").close()
         put_back()
         out = self.push(extra=("--config", config, "--xbox-images", sites.base))
-        kept = {title: os.path.join(self.tmp.name, "Art", title, media + ".orig") for title, media in headers}
-        for (title, media), data in headers.items():
-            with open(kept[title], "rb") as f:
-                self.assertEqual(f.read(), data, title)
+        kept = {key: os.path.join(self.tmp.name, "Art", key[0], "127.0.0.1-%s.orig" % key[1]) for key in headers}
+        for key, data in headers.items():
+            with open(kept[key], "rb") as f:
+                self.assertEqual(f.read(), data, key)
         self.assertIn("nor could the header be put back as it was. Put SSX's old header back if it's gone from the Xbox home: copy %s "
-                      "to the console as /Hdd1/Content/0000000000000000/4541096D/00007000/55ABAB6C." % kept["4541096D"], out)
+                      "to the console as /Hdd1/Content/0000000000000000/4541096D/00007000/55ABAB6C." % kept["4541096D", "55ABAB6C"], out)
         self.assertNotIn("Copy SSX to Xbox", out)
         self.assertIn("Copy Halo 3 to Xbox again if it's gone from the Xbox home: only what's missing is sent "
-                      "(its old header is kept in %s)." % kept["4D5307E6"], out)
+                      "(its old header is kept in %s)." % kept["4D5307E6", "1A2B3C4D"], out)
+        self.assertIn("Put Halo 3's old header back if it's gone from the Xbox home: copy %s to the console as "
+                      "/Hdd1/Content/0000000000000000/4D5307E6/00007000/0BADD15C." % kept["4D5307E6", "0BADD15C"], out)
+
+    def test_leaves_another_tools_header_alone_while_it_cant_be_kept_on_this_pc(self):
+        # Writing another tool's header cut short could only be undone by
+        # sending the whole game again: while it can't be kept on this PC
+        # first (its drive is full), its icon waits, and the log says what to
+        # do. NetDisc360's own, which Copy to Xbox makes again, gets its icon.
+        self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        headers = {("4541096D", "55ABAB6C"): god_package_header(0x4541096D, 0x55ABAB6C, "SSX"),
+                   ("4D5307E6", "1A2B3C4D"): god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3", own=True)}
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        open(config, "w").close()
+        for title, media in headers:
+            path = os.path.join(content, title, "00007000", media)
+            os.makedirs(path + ".data")
+            with open(path, "wb") as f:
+                f.write(headers[title, media])
+            with open(os.path.join(path + ".data", "Data0000"), "wb") as f:
+                f.write(b"DATA")
+            # A folder where the kept header goes: it can't be written.
+            os.makedirs(os.path.join(self.tmp.name, "Art", title, "127.0.0.1-%s.orig" % media))
+        icon = png()
+        sites = fake_unity(self, tiles={"4541096D": icon, "4D5307E6": icon})
+        out = self.push(extra=("--config", config, "--xbox-images", sites.base))
+        self.assertIn("couldn't put SSX's icon in its Games on Demand header /Hdd1/Content/0000000000000000/4541096D/00007000/55ABAB6C: "
+                      "make room on this PC's drive, or let NetDisc360 write to %s: the console's header is kept there first, so it can "
+                      "be put back (it's as it was)" % os.path.join(self.tmp.name, "Art", "4541096D", "127.0.0.1-55ABAB6C.orig"), out)
+        for (title, media), data in headers.items():
+            with open(os.path.join(content, title, "00007000", media), "rb") as f:
+                there = f.read()
+            if title == "4541096D":
+                self.assertEqual(there, data)
+            else:
+                self.assertEqual(there[0x171A:0x171A + len(icon)], icon)
+
+    def read_on(self, server):
+        """Reads server's output as it comes (the lines, in a list that grows),
+        so a long log never fills its pipe: on Windows that holds 4 KB, and
+        the server's next line would wait for room, holding the log's lock."""
+        lines = []
+        threading.Thread(target=lambda: lines.extend(server.stdout), daemon=True).start()
+        return lines
+
+    def put_god(self, xbox, title_id, media_id, name):
+        """An unsigned Games on Demand package without an icon on the console
+        whose files are in xbox (as iso2god makes one); its header's path."""
+        path = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "%08X" % title_id, "00007000", "%08X" % media_id)
+        os.makedirs(path + ".data")
+        with open(os.path.join(path + ".data", "Data0000"), "wb") as f:
+            f.write(b"DATA")
+        with open(path, "wb") as f:
+            f.write(god_package_header(title_id, media_id, name))
+        return path
+
+    def test_writes_an_icon_another_console_found_first(self):
+        # Two consoles want SSX's icon: the one that asks later (after a game
+        # no site has one for) finds it known already, and still gets the
+        # push that writes it. Each console's header is kept as its own.
+        self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
+        self.add_iso("Alpha.iso", 0xAABBCCDD, 0x41560817)
+        other, _ = self.second_console()
+        icon = png()
+        first = self.put_god(self.xbox, 0x4541096D, 0x55ABAB6C, "SSX")
+        second = self.put_god(other, 0x4541096D, 0x55ABAB6C, "SSX (second)")
+        self.put_god(other, 0x41560817, 0xAABBCCDD, "Alpha")
+        headers = {}
+        for path in (first, second):
+            with open(path, "rb") as f:
+                headers[path] = f.read()
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        open(config, "w").close()
+        sites = fake_unity(self, tiles={"4541096D": icon}, slow=4)
+        server, _ = self.run_server("--xbox", "127.0.0.2", "--xbox-images", sites.base, "--config", config)
+        said = self.read_on(server)
+
+        def has_icon(path):
+            with open(path, "rb") as f:
+                return f.read()[0x171A:0x171A + len(icon)] == icon
+        try:
+            self.assertTrue(self.wait_for(lambda: has_icon(first), 45), "".join(said))
+            self.assertTrue(self.wait_for(lambda: has_icon(second), 30), "".join(said))
+            self.assertEqual(len([a for a in sites.asked if "4541096d" in a.lower()]), 1, sites.asked)  # Asked once, by the first.
+        finally:
+            server.kill()
+            server.wait()
+        for path, address in ((first, "127.0.0.1"), (second, "127.0.0.2")):
+            with open(os.path.join(self.tmp.name, "Art", "4541096D", address + "-55ABAB6C.orig"), "rb") as f:
+                self.assertEqual(f.read(), headers[path], address)
+
+    def test_pushes_a_new_game_while_the_icon_sites_are_asked(self):
+        # The icon sites are asked a game at a time once a push is done, so
+        # a game added meanwhile waits for one game's answers at most, not
+        # for all of them.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        for n in range(4):
+            self.add_iso("Game %d.iso" % n, 0x11110001 + n, 0x41560811 + n)
+            self.put_god(self.xbox, 0x41560811 + n, 0x11110001 + n, "Game %d" % n)
+        sites = fake_unity(self, slow=5)  # 10 s a game: two sites, neither has its icon.
+        server, _ = self.run_server("--xbox-images", sites.base)
+        said = self.read_on(server)
+        try:
+            self.assertTrue(self.wait_for(lambda: [a for a in sites.asked if "tile.png" in a], 40), sites.asked)
+            started = time.time()
+            self.add_iso("Gears.iso", 0x2B3C4D5E, 0x4D53082D)
+            self.assertTrue(self.wait_for(lambda: os.path.isdir(os.path.join(self.games, "Gears")), 60), "".join(said))
+            self.assertLess(time.time() - started, 25)  # Settled after 10 s; all four games' answers took 40 s.
+        finally:
+            server.kill()
+            server.wait()
 
     def test_asks_the_icon_sites_once_the_push_is_done(self):
         # The icon sites can be slow to answer (or not answer at all): a push
@@ -6645,7 +6762,7 @@ class Dashboard(DashboardTest):
         ftp.cut["1A2B3C4D"] = 2
         job = copy()
         self.assertEqual(job["state"], "failed")
-        kept = os.path.join(os.path.dirname(self.config), "Art", "4D5307E6", "1A2B3C4D.orig")  # The header as it was, kept on this PC.
+        kept = os.path.join(os.path.dirname(self.config), "Art", "4D5307E6", "127.0.0.2-1A2B3C4D.orig")  # The header as it was, kept on this PC.
         self.assertTrue(job["error"].startswith("Copy Halo 3 (USA) to Xbox again if it's gone from the Xbox home: only what's missing is sent "
                                                 "(its old header is kept in %s)" % kept), job["error"])
         with open(kept, "rb") as f:
@@ -6748,6 +6865,24 @@ class Dashboard(DashboardTest):
         time.sleep(5)
         self.assertEqual(len(lists()), 1, lists())
         self.assertEqual(json.dumps(self.json("GET", "/api/log?after=0")).count("title updates on XboxUnity"), 1)
+
+    def test_looks_up_the_other_games_title_updates_while_xboxunity_fails_for_one(self):
+        # XboxUnity answers with an error for one game alone: the look-up
+        # stops there, but its next try starts after that game, so the
+        # others still get theirs.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
+        unity = fake_unity(self, down={"/Resources/Lib/TitleUpdateInfo.php?titleid=4D5307E6": 500})  # The first game.
+        with open(self.config, "w") as f:
+            f.write("[Server]\ntu_auto_delay=0\ntu_auto_retry=2\n")  # Its next try 2 s later, not an hour.
+        self.start("--xboxunity", unity.base + "/Resources/Lib")
+        self.state_when(lambda s: s["library"]["games"] == 3)
+        asked = lambda: {a.split("titleid=")[1] for a in unity.asked if "TitleUpdateInfo.php" in a}
+        deadline = time.time() + 20
+        while len(asked()) < 3 and time.time() < deadline:
+            time.sleep(0.2)
+        self.assertEqual(asked(), {"4D5307E6", "4D5307F1", "4D530910"})
 
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash
