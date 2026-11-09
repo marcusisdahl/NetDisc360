@@ -1495,6 +1495,10 @@ bool GodHeaderIconBlank(const std::vector<unsigned char>& header) {
     return !memcmp(digest,h+0x32C,sizeof(digest));
 }
 
+bool GodHeaderMadeHere(const std::vector<unsigned char>& header) {
+    return GodHeaderIconBlank(header) && !Big32(&header[0x1712]) && !Big32(&header[0x1716]);
+}
+
 bool GodHeaderPutIcon(std::vector<unsigned char>& header, const std::vector<unsigned char>& icon) {
     if(!GodHeaderIconBlank(header) || !FitsHeader(icon)) return false;
     unsigned char* h=&header[0];

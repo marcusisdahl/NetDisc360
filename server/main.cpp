@@ -2854,11 +2854,26 @@ std::string SizeText(U64 n);
 // said. False when a source that might have given one didn't answer (it's
 // down, or left alone for now): a package on the console then keeps its own
 // (see KeepTileArt), as XboxUnity's outages took the icons off the tiles.
+// wanted: a site would have been asked, but GodArtFor was told to stay off
+// the network (a push asks later, see LookUpWantedArt). found: a site gave
+// an icon or name just now, which the art cache keeps from then on.
 struct GodArt {
     std::string name; std::vector<unsigned char> icon;
-    bool nameSure, iconSure;
-    GodArt() : nameSure(true), iconSure(true) {}
+    bool nameSure, iconSure, wanted, found;
+    GodArt() : nameSure(true), iconSure(true), wanted(false), found(false) {}
 };
+// What a push wanted from the sites for a title (by Title ID): its listed
+// name, and whether its name was wanted too (else the icon alone).
+struct WantedArt {
+    std::string listed; bool named;
+    WantedArt() : named(false) {}
+};
+typedef std::map<DWORD,WantedArt> ArtWants;
+void WantArt(ArtWants& wants, DWORD titleId, const std::string& listed, bool named) {
+    WantedArt& w=wants[titleId];
+    if(w.listed.empty()) w.listed=listed;
+    w.named=w.named || named;
+}
 // What the sites said of a title: XboxUnity's name (empty: it has none) and
 // the icon one of them had (empty: none had), each with when (time(); 0: not yet).
 struct ArtAnswer {
@@ -2998,8 +3013,11 @@ void LibraryGodArt(DWORD titleId, const std::string& listed, std::string& name, 
 }
 
 // The name and icon a package of titleId gets; listed is the game's listed
-// name. Without named, the icon alone (no site is asked for a name).
-GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed, bool named = true) {
+// name. Without named, the icon alone (no site is asked for a name). Without
+// online, no site is asked at all (a push, which holds the console's FTP
+// while it runs): the art cache, the library's own package and Aurora's
+// names only, and wanted says what a site would have been asked for.
+GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed, bool named = true, bool online = true) {
     GodArt art;
     std::string own, aurora;
     LibraryGodArt(titleId,listed,own,art.icon);
@@ -3017,11 +3035,15 @@ GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed, boo
         std::vector<std::pair<std::string,std::string> > sources=IconSources(o,titleId);
         bool asked=false;
         for(size_t i=0;i<sources.size() && art.icon.empty();++i) {
-            if(!ArtSiteUp(sources[i].first)) { art.iconSure=false; continue; }
-            IconAnswer answer=AskIcon(sources[i].first,sources[i].second,art.icon);
-            // A site that gave a page that isn't an icon is there: it isn't
-            // left alone (XboxUnity's names come from it too).
-            ArtSiteAnswered(sources[i].first,answer!=IconDown);
+            const std::string& site=sources[i].first;
+            if(!ArtSiteUp(site) || !ArtSiteUp(site+" icons")) { art.iconSure=false; continue; }
+            if(!online) { art.iconSure=false; art.wanted=true; break; }
+            IconAnswer answer=AskIcon(site,sources[i].second,art.icon);
+            // A site that gave a page that isn't an icon (an error page, a
+            // captive portal's) is there, but left alone for icons only, as
+            // XboxUnity's names come from it too.
+            ArtSiteAnswered(site,answer!=IconDown);
+            ArtSiteAnswered(site+" icons",answer!=IconUnclear && answer!=IconDown);
             if(answer==IconFound || answer==IconNone) asked=true;
             else art.iconSure=false;
         }
@@ -3035,12 +3057,14 @@ GodArt GodArtFor(const Options& o, DWORD titleId, const std::string& listed, boo
     else if(o.xboxUnity.empty() || (known.namedAt && (!known.name.empty() || now-known.namedAt<(long long)ArtNoneSeconds))) art.name=known.name;
     else {
         std::string name;
-        bool up=ArtSiteUp("XboxUnity"), answered=up && AskUnityName(o,titleId,name);
-        if(up) ArtSiteAnswered("XboxUnity",answered);
+        bool up=ArtSiteUp("XboxUnity"), answered=false;
+        if(up && !online) art.wanted=true;
+        else if(up) { answered=AskUnityName(o,titleId,name); ArtSiteAnswered("XboxUnity",answered); }
         if(answered) { known.name=name; known.namedAt=now; newName=true; }
         else art.nameSure=false;
         art.name=known.name;
     }
+    art.found=(newIcon && !known.icon.empty()) || (newName && !known.name.empty());
     if(newIcon || newName) {
         std::lock_guard<std::mutex> hold(GodArtLock);
         ArtAnswer& kept=KnownArt(o,titleId);
@@ -3110,9 +3134,11 @@ bool MakeGodTile(const std::vector<unsigned char>& xex, const std::string& folde
 // there as made here is written, its Data file first and its header last, so
 // a package cut short is never listed; NetDisc360's packages (had) of games
 // without a folder there are deleted. changed counts both; false if any
-// couldn't be, which the next push tries again.
+// couldn't be, which the next push tries again. Their icons and names come
+// from what's known here (see GodArtFor's online); those a site would have
+// to be asked for go in wants.
 bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const std::vector<std::pair<std::string,std::string> >& tiles,
-              const std::map<std::string,std::vector<unsigned char> >& launchers, const std::vector<InstalledGame>& had, int& changed) {
+              const std::map<std::string,std::vector<unsigned char> >& launchers, const std::vector<InstalledGame>& had, int& changed, ArtWants& wants) {
     changed=0;
     bool ok=true;
     std::string content=GodContent(o);
@@ -3131,7 +3157,8 @@ bool GodTiles(const Console& console, FtpClient& ftp, const Options& o, const st
         DWORD titleId=0, mediaId=0; int disc=0;
         GodArt art;
         if(xex.size()>=24 && XexIds(&xex[0],DWORD(xex.size()),titleId,mediaId,disc) && titleId) {
-            art=GodArtFor(o,titleId,tiles[i].first);
+            art=GodArtFor(o,titleId,tiles[i].first,true,false);
+            if(art.wanted) WantArt(wants,titleId,tiles[i].first,true);
             // Each disc of a set its own name, as the Xbox home lists each.
             DWORD info=ExecutionInfoOffset(&xex[0],DWORD(xex.size()));
             std::string number="disc "+std::to_string(disc);
@@ -3203,25 +3230,55 @@ void ForgetGodIcon(const std::string& address, const std::string& header) {
     GodIconsRead.erase(address+"|"+Lower(header));
 }
 
+// Keeps original, the Games on Demand header at path on the console that is
+// about to be written over, on this PC next to the art cache
+// (Art\<Title ID>\<its name>.orig), so it can be put back by hand. That
+// file, or empty if there's nowhere to keep it (no --config) or it couldn't be.
+std::string KeepGodHeader(const Options& o, const std::string& path, const std::vector<unsigned char>& original) {
+    DWORD titleId=0, mediaId=0; int disc=0;
+    std::string root=ArtFolder(o);
+    if(root.empty() || !GodIds(original.data(),DWORD(original.size()),titleId,mediaId,disc)) return std::string();
+    std::string folder=root+"/"+Hex8(titleId), file=folder+"/"+path.substr(path.find_last_of('/')+1)+".orig";
+    config::MakeFolder(root); config::MakeFolder(folder);
+    if(!config::WriteFile(file,std::string(original.begin(),original.end()),false)) {
+        Log("Couldn't keep a copy of the Games on Demand header %s in %s.",path.c_str(),file.c_str());
+        return std::string();
+    }
+#ifdef _WIN32
+    std::replace(file.begin(),file.end(),'/','\\');  // As Explorer shows it, for the user to find.
+#endif
+    return file;
+}
+
 // Writes header (with the icon put in) at path on the console over original,
-// the header there. One cut short (the connection dropped, the console was
+// the header there, once original is kept on this PC (saved: see
+// KeepGodHeader). One cut short (the connection dropped, the console was
 // switched off) takes the game off the Xbox home, so original is put back
 // then. False, with why in error, if header couldn't be written; lost too
 // when original couldn't be put back either (see GodHeaderLost).
-bool StoreGodHeader(FtpClient& ftp, const std::string& path, const std::vector<unsigned char>& header,
-                    const std::vector<unsigned char>& original, std::string& error, bool& lost) {
+bool StoreGodHeader(FtpClient& ftp, const Options& o, const std::string& path, const std::vector<unsigned char>& header,
+                    const std::vector<unsigned char>& original, std::string& error, bool& lost, std::string& saved) {
     lost=false;
+    saved=KeepGodHeader(o,path,original);
     if(ftp.Store(path.c_str(),header.data(),header.size())) return true;
     error=ftp.Error();
     lost=!ftp.Store(path.c_str(),original.data(),original.size());
     return false;
 }
-// What the user is told then: Copy to Xbox sends what isn't there whole, so the header alone.
-std::string GodHeaderLost(const std::string& game) {
-    return "If "+game+" is gone from the Xbox home, Copy to Xbox puts it back: it sends only what's missing";
+// What the user is told then, the game being gone from the Xbox home if the
+// header at path was cut short. A package NetDisc360 made, Copy to Xbox makes
+// again, and as only what's missing is sent, that's the header alone. Another
+// tool's (iso2god's) it would send whole: its original header (saved) goes back instead.
+std::string GodHeaderLost(const std::string& game, const std::vector<unsigned char>& original, const std::string& saved, const std::string& path) {
+    if(GodHeaderMadeHere(original))
+        return "Copy "+game+" to Xbox again if it's gone from the Xbox home: only what's missing is sent"+(saved.empty() ? std::string() : " (its old header is kept in "+saved+")");
+    if(!saved.empty()) return "Put "+game+"'s old header back if it's gone from the Xbox home: copy "+saved+" to the console as "+path;
+    return "Copy "+game+" to Xbox again if it's gone from the Xbox home: all of it is sent again, as another tool made the copy there";
 }
 
-int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, const std::vector<InstalledGame>& installed) {
+// The icons are those known here (see GodArtFor's online); those a site would
+// have to be asked for go in wants, and the header is read again next push.
+int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, const std::vector<InstalledGame>& installed, ArtWants& wants) {
     int repaired=0;
     for(size_t i=0;i<installed.size();++i) {
         const InstalledGame& g=installed[i];
@@ -3244,17 +3301,19 @@ int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, con
         if(!ftp.RetrieveHead(g.path.c_str(),header,0xB001)) continue;
         GodArt art;
         bool blank=GodHeaderIconBlank(header);
-        if(blank) art=GodArtFor(o,g.titleId,listed,false);
+        if(blank) art=GodArtFor(o,g.titleId,listed,false,false);
+        if(art.wanted) WantArt(wants,g.titleId,listed,false);
         if(!blank || !art.icon.empty() || art.iconSure) { std::lock_guard<std::mutex> hold(GodIconLock); GodIconsRead.insert(key); }
         if(!blank || art.icon.empty()) continue;
         original=header;
         if(!GodHeaderPutIcon(header,art.icon)) continue;
-        std::string game=WithoutIso(listed), error;
+        std::string game=WithoutIso(listed), error, saved;
         bool lost=false;
-        if(!StoreGodHeader(ftp,g.path,header,original,error,lost)) {
+        if(!StoreGodHeader(ftp,o,g.path,header,original,error,lost,saved)) {
+            std::string advice=lost ? GodHeaderLost(game,original,saved,g.path) : std::string();
             XboxLog(console,"couldn't put %s's icon in its Games on Demand header %s: %s%s",game.c_str(),g.path.c_str(),error.c_str(),
-                    lost ? "; nor could the header be put back as it was" : " (it's as it was)");
-            if(lost) XboxEvent(console,EventWarning,GodHeaderLost(game));
+                    lost ? ("; nor could the header be put back as it was. "+advice+".").c_str() : " (it's as it was)");
+            if(lost) XboxEvent(console,EventWarning,advice);
             std::lock_guard<std::mutex> hold(GodIconLock);
             GodIconsRead.erase(key);
             continue;
@@ -3267,7 +3326,7 @@ int RepairGodIcons(const Console& console, FtpClient& ftp, const Options& o, con
 }
 
 bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone, const Options& o, const std::vector<InstalledGame>& installed,
-          const std::vector<InstalledGame>& godPackages) {
+          const std::vector<InstalledGame>& godPackages, ArtWants& wants) {
     std::vector<FtpEntry> entries;
     // A level at a time: Aurora's FTP makes no parent folders (/Hdd1/NetDisc360/Games on a console without NetDisc360).
     EnsureFolders(ftp,o.xboxFolder);
@@ -3333,8 +3392,8 @@ bool Push(Console& console, FtpClient& ftp, SyncResult& result, bool removeGone,
         godTiles.swap(PushGodTiles);
     }
     int godChanged=0;
-    if(ok && godOk) godOk=GodTiles(console,ftp,o,godTiles,storage.launchers,godPackages,godChanged);
-    if(ok) RepairGodIcons(console,ftp,o,installed);
+    if(ok && godOk) godOk=GodTiles(console,ftp,o,godTiles,storage.launchers,godPackages,godChanged,wants);
+    if(ok) RepairGodIcons(console,ftp,o,installed,wants);
     if(ok && godChanged) {
         std::string reply, content=GodContent(o);
         if(o.scan && ftp.Site(("INITIATESCAN "+content).c_str(),reply) && reply.find("Unable")==std::string::npos)
@@ -3551,6 +3610,7 @@ struct PushState {
     bool moveRestart;            // Tiles were moved, and Aurora is to restart once its scripts are written.
     bool movedRestarted;         // Aurora was restarted once its rows had followed (FinishMove).
     std::string followed;        // The NetISO.xex.txt address the log said it left alone (see FollowAddress).
+    ArtWants artWants;           // What its push wanted from the icon sites (see LookUpWantedArt).
     PushState() : nextProbe(0), probedAt(0), retryAt(0), scanAt(0), downSince(0), upSince(0), installedAt(0), scanTries(0),
                   attempted(false), reachable(false), toldDown(false), toldWaiting(false), everPushed(false), finished(false),
                   toldInstalled(false), installedChanged(false), restarted(false), restartWanted(false), restartSince(0),
@@ -3983,7 +4043,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         std::vector<InstalledGame> installed, godPackages;
         LookInstalled(console,s,ftp,o,installed,godPackages);
         s.installedAt=Now();
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages)) {
+        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages,s.artWants)) {
             s.everPushed=true; s.pushed=state; s.installedChanged=false;
             console.recheck=false;  // The push looked at everything a recheck would.
             lookUpdates=true;
@@ -4019,7 +4079,8 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         else if(--s.scanTries) s.scanAt=Now()+ScanRetrySeconds;
         else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());
     }
-    if(o.pushOnce && s.attempted && !s.scanTries) s.finished=true;
+    // --push-once: done, unless the icon sites are to be asked first (see ConsoleLoop).
+    if(o.pushOnce && s.attempted && !s.scanTries && s.artWants.empty()) s.finished=true;
     ftp.Close();
     if(s.restartWanted) RestartWhenSafe(console,s,o,1);  // This session is done.
 }
@@ -4029,6 +4090,23 @@ std::mutex GamesLock;
 std::string GamesState;
 bool GamesSettled;
 
+// The icons and names of Games on Demand packages that its push wanted from
+// the sites (see GodArtFor's online), asked for once the push is done, so the
+// sites' waits never hold the console's FTP: the dashboard can start a game
+// meanwhile. When one is found, the next push comes at once and writes it.
+void LookUpWantedArt(Console& console, PushState& s) {
+    Options o=Current();
+    ArtWants wants;
+    wants.swap(s.artWants);
+    int found=0;
+    for(ArtWants::const_iterator i=wants.begin();i!=wants.end();++i)
+        if(GodArtFor(o,i->first,i->second.listed,i->second.named,true).found) ++found;
+    if(found) {
+        XboxLog(console,"its Xbox home gets the icon or name of %s, found just now; writing %s.",Count(found,"game","games").c_str(),found==1 ? "it" : "them");
+        s.retryAt=Now();
+    } else if(o.pushOnce && s.attempted && !s.scanTries) s.finished=true;
+}
+
 // One console's push thread, so a console that is off (its FTP connection
 // waits up to 15 s) doesn't hold up the others.
 void ConsoleLoop(Console* console, PushState* s, double startedAt) {
@@ -4036,7 +4114,10 @@ void ConsoleLoop(Console* console, PushState* s, double startedAt) {
         std::string state;
         bool settled;
         { std::lock_guard<std::mutex> hold(GamesLock); state=GamesState; settled=GamesSettled; }
-        if(console->push && Current().push) PushTo(*console,*s,state,settled,startedAt);
+        if(console->push && Current().push) {
+            PushTo(*console,*s,state,settled,startedAt);
+            if(!s->artWants.empty()) LookUpWantedArt(*console,*s);
+        }
         if(!s->finished) Sleep(1000);
     }
 }
@@ -8047,6 +8128,15 @@ void MarkInstalled(DWORD address, DWORD titleId, int disc, const std::string& pa
     list.push_back(game);
 }
 
+// Whether Data<part> at remote on the console, there at its full size, is
+// the one god makes: its master hash block (its first 4 KB, which hashes the
+// rest) is the same. Another package of the disc (iso2god's has the same
+// name, its parts the same sizes) is sent again, never mixed with this one.
+bool SamePartThere(FtpClient& ftp, GodPackage& god, int part, const std::string& remote) {
+    std::vector<unsigned char> there, made(4096);
+    return ftp.RetrieveHead(remote.c_str(),there,made.size()) && there.size()==made.size() && god.Part(part,0,made.data(),DWORD(made.size())) && there==made;
+}
+
 void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
     ContentCopy& c=*job;
     Options o=Current();
@@ -8092,16 +8182,16 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
         std::vector<unsigned char> there, original;
         if(!icon.empty() && ftp.Retrieve(header.c_str(),original,god.Header().size())) there=original;
         if(!there.empty() && GodHeaderPutIcon(there,icon)) {
-            std::string why;
+            std::string why, saved;
             bool lost=false;
-            if(StoreGodHeader(ftp,header,there,original,why,lost)) {
+            if(StoreGodHeader(ftp,o,header,there,original,why,lost,saved)) {
                 Log("Xbox %s: put %s's icon in %s, which had none, so the Xbox home shows it.",c.console.c_str(),c.game.c_str(),header.c_str());
                 if(console) XboxEvent(*console,EventGood,c.game+"'s icon is back on the Xbox home");
             } else {
                 Log("Xbox %s: couldn't put %s's icon in %s: %s%s",c.console.c_str(),c.game.c_str(),header.c_str(),why.c_str(),
                     lost ? "; nor could the header be put back as it was" : " (it's as it was)");
                 // Cut short: the copy isn't done, and doing it again sends the header.
-                if(lost) { ftp.Close(); EndCopy(c,console,"failed",GodHeaderLost(c.game)+" (sending its icon stopped: "+why+")."); return; }
+                if(lost) { ftp.Close(); EndCopy(c,console,"failed",GodHeaderLost(c.game,original,saved,header)+" (sending its icon stopped: "+why+")."); return; }
             }
         }
         { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; c.skipped=c.files; c.file=c.files; }
@@ -8120,7 +8210,7 @@ void CopyGame(std::shared_ptr<ContentCopy> job, IsoFile disc) {
         { std::lock_guard<std::mutex> hold(CopyLock); c.file=part+1; c.current=last ? god.Name() : name; }
         if(c.stop) { EndCopy(c,console,"stopped",""); return; }
         std::map<std::string,U64>::const_iterator old=last ? sizes.end() : sizes.find(ToLowerAscii(name));
-        if(old!=sizes.end() && old->second==size) {
+        if(old!=sizes.end() && old->second==size && SamePartThere(ftp,god,part,remote)) {
             std::lock_guard<std::mutex> hold(CopyLock);
             c.done+=size; ++c.skipped;
             continue;
@@ -8679,7 +8769,8 @@ std::string AgeText(double seconds) {
 // refresh). When XboxUnity can't be asked, the list got before (any age, as
 // kept on disk) is the answer, so its updates still install; error is only
 // for a game with no list yet. A good list is never replaced by an error.
-bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std::string& error, double fresh=TuFresh) {
+// failed, if given, says why XboxUnity couldn't be asked (tu::Fine if it was, or wasn't asked).
+bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std::string& error, double fresh=TuFresh, tu::Failure* failed=NULL) {
     Options o=Current();
     {
         std::lock_guard<std::mutex> hold(TuLock);
@@ -8696,6 +8787,7 @@ bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std:
     tu::Failure failure=tu::Fine;
     bool ok=tu::Get(tu::InfoUrl(o.xboxUnity,titleId),body,4<<20,name,error,0,"XboxUnity",&failure);
     if(ok && !tu::ParseInfo(body,offers,error)) { ok=false; failure=tu::Broken; }
+    if(failed) *failed=ok ? tu::Fine : failure;
     std::string root=TuCacheFolder(o);
     if(ok && !root.empty()) {
         config::MakeFolder(root); config::MakeFolder(root+"/"+Hex8(titleId));
@@ -9558,8 +9650,13 @@ bool TuConsoleDue(const Console& c, const ConsoleTus* t, const std::set<DWORD>& 
     return false;
 }
 
+// While XboxUnity is down (it answers with errors, or not in time), a pass
+// stops at the first game it couldn't be asked for, and the rest wait for
+// the next try an hour later: one wait and one line in the log an hour, not
+// one for each game.
 void TuAutoLoop() {
     std::set<DWORD> loaded;  // Titles whose kept answer was looked for.
+    double unityDownUntil=0;  // Now(): XboxUnity isn't asked by this loop until then.
     for(;;Sleep(1000)) {
         bool scanned;
         { std::lock_guard<std::mutex> hold(GamesListLock); scanned=GamesScanned; }
@@ -9571,7 +9668,7 @@ void TuAutoLoop() {
             for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(loaded.insert(*i).second) TuInfoFromDisk(o,*i);
         }
         if(!o.tuAuto || Now()-StartedAt<o.tuAutoDelay) continue;
-        for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) {
+        for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end() && Now()>=unityDownUntil;++i) {
             bool due;
             {
                 std::lock_guard<std::mutex> hold(TuLock);
@@ -9585,8 +9682,10 @@ void TuAutoLoop() {
             if(!Current().tuAuto) break;
             std::vector<tu::Offer> offers;
             std::string error;
-            if(!LookupTus(*i,true,offers,error)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(*i).c_str(),error.c_str());
-            Sleep(1000);  // Gently: XboxUnity is run by volunteers.
+            tu::Failure failure=tu::Fine;
+            if(!LookupTus(*i,true,offers,error,TuFresh,&failure)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(*i).c_str(),error.c_str());
+            if(failure==tu::Slow || failure==tu::ServerError) unityDownUntil=Now()+TuAutoRetry;
+            else Sleep(1000);  // Gently: XboxUnity is run by volunteers.
         }
         long long now=(long long)time(NULL);
         std::vector<Console*> consoles=AllConsoles();

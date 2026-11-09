@@ -418,9 +418,10 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
     Its outages: self.server.down is an HTTP status every answer is, or
     "hang" for none at all (the connection closed after self.server.hang
     seconds), or a dict of those by path (only Icon.php's: {"/Resources/Lib/
-    Icon.php": 500}). Also Microsoft's icons, as --xbox-images asks for them: the
-    tile.png on download.xbox.com (only for a Title ID in lower case, as there)
-    from self.server.tiles, and the icon on image.xboxlive.com from
+    Icon.php": 500}), and self.server.slow the seconds every answer takes. Also
+    Microsoft's icons, as --xbox-images asks for them: the tile.png on
+    download.xbox.com (only for a Title ID in lower case, as there) from
+    self.server.tiles, and the icon on image.xboxlive.com from
     self.server.xbox_icons ({Title ID: PNG})."""
     def log_message(self, *args):
         pass
@@ -429,6 +430,7 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(url.query)
         self.server.asked.append(self.path)
+        time.sleep(getattr(self.server, "slow", 0))
         down = getattr(self.server, "down", None)
         if isinstance(down, dict):
             down = down.get(url.path)
@@ -1342,6 +1344,99 @@ class Push(ServerTest):
         out = self.push(extra=sources)
         self.assertIn("nor could the header be put back as it was", out)
         self.assertLess(os.path.getsize(ssx), 0xB000)
+
+    def test_keeps_a_games_on_demand_header_on_this_pc_before_putting_its_icon_in(self):
+        # The header an icon goes into is kept next to the settings first.
+        # Should writing it and putting it back both fail, the user is told
+        # how to get the game back: a package NetDisc360 made, Copy to Xbox
+        # makes again (sending only what's missing); another tool's
+        # (iso2god's), it would send whole, so its header kept here goes back.
+        self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+        iso2god = god_package_header(0x4541096D, 0x55ABAB6C, "SSX")  # Its thumbnails said to be 0x3841 bytes.
+        own = bytearray(god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3"))
+        struct.pack_into(">II", own, 0x1712, 0, 0)  # As Copy to Xbox makes one without an icon.
+        own[0x32C:0x340] = hashlib.sha1(bytes(own[0x344:0xB000])).digest()
+        headers = {("4541096D", "55ABAB6C"): iso2god, ("4D5307E6", "1A2B3C4D"): bytes(own)}
+
+        def put_back():
+            for (title, media), data in headers.items():
+                os.makedirs(os.path.join(content, title, "00007000", media + ".data"), exist_ok=True)
+                with open(os.path.join(content, title, "00007000", media), "wb") as f:
+                    f.write(data)
+                with open(os.path.join(content, title, "00007000", media + ".data", "Data0000"), "wb") as f:
+                    f.write(b"DATA")
+                self.ftp.cut[media] = 2  # Cut short, and so is putting it back.
+        sites = fake_unity(self, tiles={"4541096D": png(), "4D5307E6": png()})
+        # Without a settings file, there's nowhere to keep it.
+        put_back()
+        out = self.push(extra=("--xbox-images", sites.base))
+        self.assertIn("nor could the header be put back as it was. Copy SSX to Xbox again if it's gone from the Xbox home: "
+                      "all of it is sent again, as another tool made the copy there.", out)
+        self.assertIn("nor could the header be put back as it was. Copy Halo 3 to Xbox again if it's gone from the Xbox home: "
+                      "only what's missing is sent.", out)
+        config = os.path.join(self.tmp.name, "netdisc.ini")
+        open(config, "w").close()
+        put_back()
+        out = self.push(extra=("--config", config, "--xbox-images", sites.base))
+        kept = {title: os.path.join(self.tmp.name, "Art", title, media + ".orig") for title, media in headers}
+        for (title, media), data in headers.items():
+            with open(kept[title], "rb") as f:
+                self.assertEqual(f.read(), data, title)
+        self.assertIn("nor could the header be put back as it was. Put SSX's old header back if it's gone from the Xbox home: copy %s "
+                      "to the console as /Hdd1/Content/0000000000000000/4541096D/00007000/55ABAB6C." % kept["4541096D"], out)
+        self.assertNotIn("Copy SSX to Xbox", out)
+        self.assertIn("Copy Halo 3 to Xbox again if it's gone from the Xbox home: only what's missing is sent "
+                      "(its old header is kept in %s)." % kept["4D5307E6"], out)
+
+    def test_asks_the_icon_sites_once_the_push_is_done(self):
+        # The icon sites can be slow to answer (or not answer at all): a push
+        # never waits for them while it holds the console's FTP, so a game
+        # started on the dashboard meanwhile starts at once. They're asked
+        # once it's done, only for what it wanted (a package without an icon,
+        # not a signed one), and the icon goes in on the next push.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("SSX.iso", 0x55ABAB6C, 0x4541096D)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
+        icon = png()
+        sites = fake_unity(self, tiles={"4541096D": icon, "4D5307F1": png()})
+        aurora = AuroraWeb()
+        self.addCleanup(aurora.close)
+        self.web = free_port()
+        server, _ = self.run_server("--web-port", str(self.web), "--aurora-web-port", str(aurora.port), "--installed-every", "1",
+                                    "--xbox-images", sites.base)
+        try:
+            self.assertTrue(self.wait_for(lambda: {g["name"]: g for g in self.json("GET", "/api/games")["games"]}.get("Halo 3", {}).get("tiles") == ["127.0.0.1"], 20))
+            self.assertEqual(sites.asked, [])
+            # Then SSX is copied to it without its icon (as while the sites
+            # were down), and Fable II as a signed package.
+            sites.slow = 8
+            content = os.path.join(self.xbox, "Hdd1", "Content", "0000000000000000")
+            for title, media, header in (("4D5307F1", "22223333", god_package_header(0x4D5307F1, 0x22223333, "Fable II", signed=True)),
+                                         ("4541096D", "55ABAB6C", god_package_header(0x4541096D, 0x55ABAB6C, "SSX"))):
+                path = os.path.join(content, title, "00007000", media)
+                os.makedirs(path + ".data")
+                with open(os.path.join(path + ".data", "Data0000"), "wb") as f:
+                    f.write(b"DATA")
+                with open(path + ".new", "wb") as f:
+                    f.write(header)
+                os.replace(path + ".new", path)
+            ssx = os.path.join(content, "4541096D", "00007000", "55ABAB6C")
+            self.assertTrue(self.wait_for(lambda: [a for a in sites.asked if "tile.png" in a], 30))
+            started = time.time()
+            self.assertEqual(self.json("POST", "/api/play", {"game": "Halo 3", "console": "127.0.0.1"}), {"ok": True})
+            self.assertLess(time.time() - started, 4)
+            self.assertEqual(len(aurora.launched), 1)
+
+            def has_icon():
+                with open(ssx, "rb") as f:
+                    return f.read()[0x171A:0x171A + len(icon)] == icon
+            self.assertTrue(self.wait_for(has_icon, 30))
+            self.assertEqual([a for a in sites.asked if "4d5307f1" in a.lower()], [])
+        finally:
+            server.kill()
+            server.communicate()
 
     def test_takes_the_ftp_password_from_the_environment(self):
         # The Docker image passes the password this way.
@@ -6550,13 +6645,109 @@ class Dashboard(DashboardTest):
         ftp.cut["1A2B3C4D"] = 2
         job = copy()
         self.assertEqual(job["state"], "failed")
-        self.assertTrue(job["error"].startswith("If Halo 3 (USA) is gone from the Xbox home, Copy to Xbox puts it back: it sends only what's missing"), job["error"])
+        kept = os.path.join(os.path.dirname(self.config), "Art", "4D5307E6", "1A2B3C4D.orig")  # The header as it was, kept on this PC.
+        self.assertTrue(job["error"].startswith("Copy Halo 3 (USA) to Xbox again if it's gone from the Xbox home: only what's missing is sent "
+                                                "(its old header is kept in %s)" % kept), job["error"])
+        with open(kept, "rb") as f:
+            self.assertEqual(f.read(), before)
         ftp.stored.clear()
         job = copy()
         self.assertEqual((job["state"], job["skipped"]), ("done", job["files"] - 1), job.get("error"))
         self.assertEqual(ftp.stored, ["1A2B3C4D"])
         with open(header, "rb") as f:
             self.assertEqual(f.read(), after)
+
+    def test_copy_to_xbox_sends_again_the_data_of_another_package_of_the_game(self):
+        # Another tool's package of the same disc (iso2god's) has the same
+        # name, and Data files of the same sizes but not the same bytes: with
+        # its header gone, Copy to Xbox sends them again, never mixing them
+        # with a header of its own. Its own are still left out.
+        self.add_iso("Halo 3 (USA).iso", 0x1A2B3C4D, 0x4D5307E6)
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]))
+        self.state_when(lambda s: s["library"]["games"] == 1)
+
+        def copy():
+            self.json("POST", "/api/copy", {"game": "Halo 3 (USA)", "address": "127.0.0.2"})
+            return self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+        self.assertEqual(copy()["state"], "done")
+        header = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "00007000", "1A2B3C4D")
+        data = os.path.join(header + ".data", "Data0000")
+        made = {}
+        for path in (header, data):
+            with open(path, "rb") as f:
+                made[path] = f.read()
+        with open(data, "wb") as f:
+            f.write(os.urandom(len(made[data])))
+        with open(header, "wb") as f:
+            f.write(god_package_header(0x4D5307E6, 0x1A2B3C4D, "Halo 3")[:0x5800])  # Cut short.
+        ftp.stored.clear()
+        job = copy()
+        self.assertEqual((job["state"], job["skipped"]), ("done", 0), job.get("error"))
+        self.assertEqual(ftp.stored, ["Data0000", "1A2B3C4D"])  # The FTP server hears names only.
+        for path, expected in made.items():
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), expected, path)
+        with open(header, "r+b") as f:
+            f.truncate(0x5800)
+        ftp.stored.clear()
+        job = copy()
+        self.assertEqual((job["state"], job["skipped"]), ("done", job["files"] - 1), job.get("error"))
+        self.assertEqual(ftp.stored, ["1A2B3C4D"])
+
+    def test_leaves_an_icon_site_that_answers_with_a_page_alone_for_icons(self):
+        # A site that answers with a page in place of an icon (an error page,
+        # a captive portal's) isn't asked for icons again for a while; still
+        # for names (XboxUnity's).
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
+        page = b"<html><body>Sign in to use this network</body></html>"
+        sites = fake_unity(self, tiles={"4D5307E6": page, "4D5307F1": page}, icons={"4D5307E6": page, "4D5307F1": page},
+                           names={"4D5307E6": "Halo 3", "4D5307F1": "Fable II"})
+        xbox = os.path.join(self.tmp.name, "xbox")
+        os.makedirs(os.path.join(xbox, "Hdd1"))
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        self.start("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--xbox-images", sites.base, "--xboxunity", sites.base + "/Resources/Lib")
+        self.state_when(lambda s: s["library"]["games"] == 2)
+
+        def copy(game):
+            self.json("POST", "/api/copy", {"game": game, "address": "127.0.0.2"})
+            return self.state_when(lambda s: s["installs"] and s["installs"][-1]["state"] not in ("queued", "copying"), 60)["installs"][-1]
+        self.assertEqual(copy("Halo 3")["state"], "done")
+        self.assertIn("/content/images/66acd000-77fe-1000-9115-d8024d5307e6/1033/tile.png", sites.asked)
+        self.assertIn("/Resources/Lib/Icon.php?tid=4D5307E6", sites.asked)
+        asked = len(sites.asked)
+        self.assertEqual(copy("Fable II")["state"], "done")
+        self.assertEqual([a for a in sites.asked[asked:] if "tile.png" in a or "Icon.php" in a], [])
+        self.assertTrue([a for a in sites.asked[asked:] if a.startswith("/Resources/Lib/TitleList.php") and "search=4D5307F1" in a], sites.asked[asked:])
+
+    def test_looks_up_title_updates_once_an_hour_while_xboxunity_is_down(self):
+        # XboxUnity down (it answers with errors, or not in time): the daily
+        # look-up stops at the first game, and the rest wait for its next try
+        # an hour later. Not a wait and a line in the log for each game.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
+        self.add_iso("Fable II.iso", 0x22223333, 0x4D5307F1)
+        unity = fake_unity(self, down=500)
+        with open(self.config, "w") as f:
+            f.write("[Server]\ntu_auto_delay=0\n")
+        self.start("--xboxunity", unity.base + "/Resources/Lib")
+        self.state_when(lambda s: s["library"]["games"] == 3)
+        lists = lambda: [a for a in unity.asked if "TitleUpdateInfo.php" in a]
+        deadline = time.time() + 15
+        while not lists() and time.time() < deadline:
+            time.sleep(0.2)
+        time.sleep(5)
+        self.assertEqual(len(lists()), 1, lists())
+        self.assertEqual(json.dumps(self.json("GET", "/api/log?after=0")).count("title updates on XboxUnity"), 1)
 
     def check_god(self, header_path, image, start, title_id, media_id, title):
         """Reads a GOD package back as the console does, checking each hash
