@@ -19,6 +19,7 @@ extern char** environ;
 
 namespace tu {
 const char CacheFolder[] = "/Hdd1/Cache";
+int LookupSeconds = 30;
 
 namespace {
 DWORD Big32(const unsigned char* p) { return (DWORD(p[0])<<24)|(DWORD(p[1])<<16)|(DWORD(p[2])<<8)|p[3]; }
@@ -108,19 +109,25 @@ std::string DispositionName(const std::string& value) {
 
 const char UserAgent[] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetDisc360";
 
-// Plain HTTP over a socket, for http:// addresses (the tests' fake XboxUnity).
+// Plain HTTP over a socket, for http:// addresses (Microsoft's icons, the
+// tests' fake XboxUnity). Waiting to write also ends when the connection
+// failed, which Windows tells in the except set (SO_ERROR then says why).
 bool Wait(SOCKET s, bool writing, time_t deadline) {
     while(time(NULL)<deadline) {
-        fd_set set; FD_ZERO(&set); FD_SET(s,&set);
+        fd_set set, failed; FD_ZERO(&set); FD_SET(s,&set); FD_ZERO(&failed); FD_SET(s,&failed);
         timeval interval={0,200000};
-        int rc=select(int(s)+1,writing ? NULL : &set,writing ? &set : NULL,NULL,&interval);
+        int rc=select(int(s)+1,writing ? NULL : &set,writing ? &set : NULL,writing ? &failed : NULL,&interval);
         if(rc>0) return true;
         if(rc==SOCKET_ERROR) return false;
     }
     return false;
 }
 
-bool PlainGet(const std::string& url, std::string& headers, std::string& body, size_t limit, std::string& error) {
+// What went wrong, in error and failure.
+bool Failed(Failure kind, const std::string& why, std::string& error, Failure& failure) { failure=kind; error=why; return false; }
+
+bool PlainGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
+              std::string& error, Failure& failure) {
     std::string rest=url.substr(7);
     size_t slash=rest.find('/');
     std::string host=rest.substr(0,slash), path=slash==std::string::npos ? "/" : rest.substr(slash);
@@ -130,21 +137,23 @@ bool PlainGet(const std::string& url, std::string& headers, std::string& body, s
     addrinfo hints; memset(&hints,0,sizeof(hints));
     hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
     addrinfo* found=NULL;
-    if(getaddrinfo(host.c_str(),port.c_str(),&hints,&found) || !found) { error="Can't find "+host+". Is this computer online?"; return false; }
+    if(getaddrinfo(host.c_str(),port.c_str(),&hints,&found) || !found) return Failed(Offline,"Can't find "+host+". Is this computer online?",error,failure);
     sockaddr_in to; memcpy(&to,found->ai_addr,sizeof(to));
     freeaddrinfo(found);
     SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
-    if(s==INVALID_SOCKET) { error="No socket."; return false; }
+    if(s==INVALID_SOCKET) return Failed(Broken,"No socket.",error,failure);
     u_long nonblocking=1;
     ioctlsocket(s,FIONBIO,&nonblocking);
-    time_t deadline=time(NULL)+120;
+    time_t deadline=time(NULL)+seconds;
     bool ok=!connect(s,reinterpret_cast<sockaddr*>(&to),sizeof(to)) || WSAGetLastError()==WSAEWOULDBLOCK;
     if(ok) {
         int failed=0;
         int length=sizeof(failed);
         ok=Wait(s,true,deadline) && !getsockopt(s,SOL_SOCKET,SO_ERROR,reinterpret_cast<char*>(&failed),&length) && !failed;
     }
-    if(!ok) { closesocket(s); error="Can't reach "+host+". Is this computer online?"; return false; }
+    // A connection that waited its whole time went nowhere, as WinHTTP's timeout (see SecureGet).
+    if(!ok) { closesocket(s); return time(NULL)>=deadline ? Failed(Slow,site+" didn't answer in time; it may be down.",error,failure)
+                                                          : Failed(Offline,"Can't reach "+host+". Is this computer online?",error,failure); }
     std::string request="GET "+path+" HTTP/1.1\r\nHost: "+host+(port=="80" ? "" : ":"+port)+"\r\nUser-Agent: "+UserAgent+
         "\r\nAccept: application/json, text/javascript, */*; q=0.01\r\nX-Requested-With: XMLHttpRequest\r\nReferer: http://"+host+"/\r\nConnection: close\r\n\r\n";
     for(size_t sent=0;ok && sent<request.size();) {
@@ -161,12 +170,13 @@ bool PlainGet(const std::string& url, std::string& headers, std::string& body, s
         if(n==0) break;
         if(n<0) { if(WSAGetLastError()!=WSAEWOULDBLOCK) ok=false; continue; }
         response.append(part,size_t(n));
-        if(response.size()>limit+65536) { error="The answer is larger than expected."; closesocket(s); return false; }
+        if(response.size()>limit+65536) { closesocket(s); return Failed(Broken,"The answer is larger than expected.",error,failure); }
     }
     closesocket(s);
-    if(!ok) { error="The answer from "+host+" stopped part way; try again."; return false; }
+    if(!ok && time(NULL)>=deadline) return Failed(Slow,site+" didn't answer in time; it may be down.",error,failure);
+    if(!ok) return Failed(Broken,"The answer from "+host+" stopped part way.",error,failure);
     size_t end=response.find("\r\n\r\n");
-    if(end==std::string::npos) { error=host+" sent an answer this doesn't understand."; return false; }
+    if(end==std::string::npos) return Failed(Broken,host+" sent an answer this doesn't understand.",error,failure);
     headers=response.substr(0,end+2);
     body=response.substr(end+4);
     if(Lower(HeaderValue(headers,"transfer-encoding")).find("chunked")!=std::string::npos) {
@@ -181,7 +191,7 @@ bool PlainGet(const std::string& url, std::string& headers, std::string& body, s
         }
         body.swap(joined);
     }
-    if(body.size()>limit) { error="The answer is larger than expected."; return false; }
+    if(body.size()>limit) return Failed(Broken,"The answer is larger than expected.",error,failure);
     return true;
 }
 
@@ -209,7 +219,22 @@ struct Handle {
     ~Handle() { if(h) WinHttpCloseHandle(h); }
 };
 
-bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, std::string& error) {
+// A WinHTTP error as the user is told it: only a name that didn't resolve or
+// a connection nothing took asks after this computer's network; a timeout
+// says the site may be down.
+bool WinHttpFailed(DWORD code, const std::wstring& host, const std::string& site, std::string& error, Failure& failure) {
+    char text[200];
+    if(code==ERROR_WINHTTP_NAME_NOT_RESOLVED || code==ERROR_WINHTTP_CANNOT_CONNECT) {
+        _snprintf_s(text,sizeof(text),_TRUNCATE,"Can't reach %s (error %lu). Is this computer online?",Narrow(host).c_str(),code);
+        return Failed(Offline,text,error,failure);
+    }
+    if(code==ERROR_WINHTTP_TIMEOUT) return Failed(Slow,site+" didn't answer in time; it may be down.",error,failure);
+    _snprintf_s(text,sizeof(text),_TRUNCATE,"%s's answer broke off (error %lu).",site.c_str(),code);
+    return Failed(Broken,text,error,failure);
+}
+
+bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
+               std::string& error, Failure& failure) {
     std::wstring wide=Wide(url);
     wchar_t host[256], path[2048], extra[2048];
     URL_COMPONENTS parts;
@@ -218,11 +243,14 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
     parts.lpszHostName=host; parts.dwHostNameLength=ARRAYSIZE(host);
     parts.lpszUrlPath=path; parts.dwUrlPathLength=ARRAYSIZE(path);
     parts.lpszExtraInfo=extra; parts.dwExtraInfoLength=ARRAYSIZE(extra);
-    if(!WinHttpCrackUrl(wide.c_str(),0,0,&parts)) { error="Not a web address: "+url; return false; }
+    if(!WinHttpCrackUrl(wide.c_str(),0,0,&parts)) return Failed(Broken,"Not a web address: "+url,error,failure);
     Handle session(WinHttpOpen(Wide(UserAgent).c_str(),WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0));
     if(!session.h) session.h=WinHttpOpen(Wide(UserAgent).c_str(),WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
-    if(!session.h) { error="Windows' HTTP client didn't start."; return false; }
-    WinHttpSetTimeouts(session.h,15000,15000,30000,120000);
+    if(!session.h) return Failed(Broken,"Windows' HTTP client didn't start.",error,failure);
+    // Each step's time, not the whole answer's: a look-up waits seconds for
+    // an answer, a download up to two minutes for each part of one.
+    int step=std::min(seconds,120)*1000;
+    WinHttpSetTimeouts(session.h,std::min(step,15000),std::min(step,15000),step,step);
     Handle connection(WinHttpConnect(session.h,host,parts.nPort,0));
     std::wstring target=std::wstring(path)+extra;
     Handle request(connection.h ? WinHttpOpenRequest(connection.h,L"GET",target.c_str(),NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -231,12 +259,8 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
         std::wstring extraHeaders=L"Accept: application/json, text/javascript, */*; q=0.01\r\nX-Requested-With: XMLHttpRequest\r\nReferer: https://"+std::wstring(host)+L"/";
         WinHttpAddRequestHeaders(request.h,extraHeaders.c_str(),(DWORD)-1L,WINHTTP_ADDREQ_FLAG_ADD);
     }
-    if(!request.h || !WinHttpSendRequest(request.h,WINHTTP_NO_ADDITIONAL_HEADERS,0,WINHTTP_NO_REQUEST_DATA,0,0,0) || !WinHttpReceiveResponse(request.h,NULL)) {
-        char text[160];
-        _snprintf_s(text,sizeof(text),_TRUNCATE,"Can't reach %s (error %lu). Is this computer online?",Narrow(host).c_str(),GetLastError());
-        error=text;
-        return false;
-    }
+    if(!request.h || !WinHttpSendRequest(request.h,WINHTTP_NO_ADDITIONAL_HEADERS,0,WINHTTP_NO_REQUEST_DATA,0,0,0) || !WinHttpReceiveResponse(request.h,NULL))
+        return WinHttpFailed(GetLastError(),host,site,error,failure);
     DWORD size=0;
     WinHttpQueryHeaders(request.h,WINHTTP_QUERY_RAW_HEADERS_CRLF,WINHTTP_HEADER_NAME_BY_INDEX,NULL,&size,WINHTTP_NO_HEADER_INDEX);
     if(size) {
@@ -247,27 +271,24 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
     std::vector<char> part(65536);
     for(;;) {
         DWORD got=0;
-        if(!WinHttpReadData(request.h,part.data(),DWORD(part.size()),&got)) {
-            char text[128];
-            _snprintf_s(text,sizeof(text),_TRUNCATE,"The download stopped (error %lu); try again.",GetLastError());
-            error=text;
-            return false;
-        }
+        if(!WinHttpReadData(request.h,part.data(),DWORD(part.size()),&got)) return WinHttpFailed(GetLastError(),host,site,error,failure);
         if(!got) break;
         body.append(part.data(),got);
-        if(body.size()>limit) { error="The answer is larger than expected."; return false; }
+        if(body.size()>limit) return Failed(Broken,"The answer is larger than expected.",error,failure);
     }
     return true;
 }
 #else
-// curl, which the Docker image has, run without a shell.
-bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, std::string& error) {
+// curl, which the Docker image has, run without a shell; it gives up after
+// seconds (a look-up's 30, or a download's 10 minutes).
+bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
+               std::string& error, Failure& failure) {
     char headerPath[]="/tmp/netdisc-tu-h-XXXXXX", bodyPath[]="/tmp/netdisc-tu-b-XXXXXX";
     int h=mkstemp(headerPath), b=mkstemp(bodyPath);
-    if(h<0 || b<0) { if(h>=0) { close(h); unlink(headerPath); } if(b>=0) { close(b); unlink(bodyPath); } error="No room for a download in /tmp."; return false; }
+    if(h<0 || b<0) { if(h>=0) { close(h); unlink(headerPath); } if(b>=0) { close(b); unlink(bodyPath); } return Failed(Broken,"No room for a download in /tmp.",error,failure); }
     close(h); close(b);
-    std::string most=std::to_string(limit);
-    const char* argv[]={"curl","-sS","-L","--max-time","600","--max-filesize",most.c_str(),"-A",UserAgent,
+    std::string most=std::to_string(limit), longest=std::to_string(seconds);
+    const char* argv[]={"curl","-sS","-L","--max-time",longest.c_str(),"--max-filesize",most.c_str(),"-A",UserAgent,
         "-H","Accept: application/json, text/javascript, */*; q=0.01","-H","X-Requested-With: XMLHttpRequest",
         "-e","https://xboxunity.net/","-D",headerPath,"-o",bodyPath,"--",url.c_str(),NULL};
     pid_t pid=0;
@@ -280,9 +301,14 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
     f=fopen(bodyPath,"rb");
     if(f) { char part[65536]; size_t n; while((n=fread(part,1,sizeof(part),f))>0 && body.size()<=limit) body.append(part,n); fclose(f); }
     unlink(headerPath); unlink(bodyPath);
-    if(!started) { error="This needs curl to reach XboxUnity over HTTPS, and it isn't installed."; return false; }
-    if(!WIFEXITED(status) || WEXITSTATUS(status)) { error="Couldn't reach XboxUnity (curl exited with "+std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1)+"). Is this computer online?"; return false; }
-    if(body.size()>limit) { error="The answer is larger than expected."; return false; }
+    if(!started) return Failed(Broken,"This needs curl to reach "+site+" over HTTPS, and it isn't installed.",error,failure);
+    // curl's exit codes: 6 and 7, the name didn't resolve or nothing took
+    // the connection (this computer's network, most likely); 28, no answer in time.
+    int code=WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if(code==6 || code==7) return Failed(Offline,"Can't reach "+site+" (curl error "+std::to_string(code)+"). Is this computer online?",error,failure);
+    if(code==28) return Failed(Slow,site+" didn't answer in time; it may be down.",error,failure);
+    if(code) return Failed(Broken,site+"'s answer broke off (curl error "+std::to_string(code)+").",error,failure);
+    if(body.size()>limit) return Failed(Broken,"The answer is larger than expected.",error,failure);
     // After redirects, the last block of headers is the answer's.
     size_t last=raw.rfind("\r\n\r\nHTTP/");
     headers=last==std::string::npos ? raw : raw.substr(last+4);
@@ -374,14 +400,19 @@ std::string FileUrl(const std::string& base, const std::string& id) {
     return base+"/TitleUpdate.php?tuid="+clean;
 }
 
-bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error) {
+bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error,
+         int seconds, const std::string& site, Failure* failure) {
     body.clear(); fileName.clear();
+    Failure kind=Fine;
+    if(!failure) failure=&kind;
+    *failure=Fine;
+    if(seconds<=0) seconds=LookupSeconds;
     std::string headers, at=url;
     for(int hop=0;;++hop) {
         bool ok;
-        if(!Lower(at).compare(0,7,"http://")) ok=PlainGet(at,headers,body,limit,error);
-        else if(!Lower(at).compare(0,8,"https://")) ok=SecureGet(at,headers,body,limit,error);
-        else { error="Not a web address: "+at; return false; }
+        if(!Lower(at).compare(0,7,"http://")) ok=PlainGet(at,headers,body,limit,seconds,site,error,*failure);
+        else if(!Lower(at).compare(0,8,"https://")) ok=SecureGet(at,headers,body,limit,seconds,site,error,*failure);
+        else return Failed(Broken,"Not a web address: "+at,error,*failure);
         if(!ok) return false;
         int status=Status(headers);
         std::string location=HeaderValue(headers,"location");
@@ -394,7 +425,12 @@ bool Get(const std::string& url, std::string& body, size_t limit, std::string& f
             at=location; body.clear();
             continue;
         }
-        if(status && status!=200) { error="XboxUnity answered with HTTP "+std::to_string(status)+"."; return false; }
+        // Only a 404 (or 410) says the site has no such thing. Any other
+        // error is the site in trouble (XboxUnity's 500s in 2026, a 503 or a
+        // 429 from what stands in front of it), not this computer, and what
+        // it would have said is still to be asked.
+        if(status==404 || status==410) return Failed(NotThere,site+" answered with error "+std::to_string(status)+".",error,*failure);
+        if(status && status!=200) return Failed(ServerError,site+" isn't working right now (it answered with error "+std::to_string(status)+").",error,*failure);
         break;
     }
     fileName=DispositionName(HeaderValue(headers,"content-disposition"));

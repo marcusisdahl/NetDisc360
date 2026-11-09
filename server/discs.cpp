@@ -276,13 +276,46 @@ private:
 enum { GodBlock = 0x1000, GodGroupData = 0xCC, GodPartData = 0xA1C4, GodContentType = 0x7000, GodHeaderRead = 0x600 };
 const U64 GodPartBytes = U64(GodPartData)*GodBlock;
 
-struct GodHeader { DWORD titleId, mediaId, dataStart; int disc, discs; std::string title; };
+// What the Xbox home shows of a package, from its header: the first display
+// name (UTF-16BE from 0x411) in UTF-8, and its icon, the thumbnail (its size
+// at 0x1712, the PNG from 0x171A) or else the title thumbnail (0x1716,
+// 0x571A), each at most 0x4000 bytes (0x3D00 with version 2 metadata, at the
+// same places). A thumbnail that isn't a PNG counts as none.
+const unsigned char PngSignature[8] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+bool IsPng(const unsigned char* data, size_t size) { return size>sizeof(PngSignature) && !memcmp(data,PngSignature,sizeof(PngSignature)); }
+std::string HeaderName(const unsigned char* h, size_t size) {
+    std::string name;
+    for(size_t i=0x411;i+1<size && i<0x411+0x80;i+=2) {
+        unsigned c=(unsigned(h[i])<<8)|h[i+1];
+        if(!c) break;
+        if(c<0x80) name+=char(c);
+        else if(c<0x800) { name+=char(0xC0|(c>>6)); name+=char(0x80|(c&0x3F)); }
+        else { name+=char(0xE0|(c>>12)); name+=char(0x80|((c>>6)&0x3F)); name+=char(0x80|(c&0x3F)); }
+    }
+    return name;
+}
+void HeaderIcon(const unsigned char* h, size_t size, std::vector<unsigned char>& icon) {
+    icon.clear();
+    static const DWORD at[2][2]={{0x1712,0x171A},{0x1716,0x571A}};
+    for(int k=0;k<2 && icon.empty();++k) {
+        if(size<at[k][0]+4) break;
+        DWORD bytes=Big32(h+at[k][0]);
+        if(bytes<=0x4000 && at[k][1]+bytes<=size && IsPng(h+at[k][1],bytes)) icon.assign(h+at[k][1],h+at[k][1]+bytes);
+    }
+}
 
-bool ReadGodHeader(const std::string& path, GodHeader& header) {
-    File f; unsigned char h[GodHeaderRead];
-    if(!f.Open(path) || f.Read(0,h,sizeof(h))!=(long long)sizeof(h)) return false;
+// name and icon: with art, the header's name in UTF-8 (title has _ for what
+// isn't ASCII) and its icon (see HeaderIcon), read as well.
+struct GodHeader { DWORD titleId, mediaId, dataStart; int disc, discs; std::string title, name; std::vector<unsigned char> icon; };
+
+bool ReadGodHeader(const std::string& path, GodHeader& header, bool art=false) {
+    File f; std::vector<unsigned char> bytes(art ? size_t(GodArtBytes) : size_t(GodHeaderRead));
+    long long got=0;
+    if(!f.Open(path) || (got=f.Read(0,&bytes[0],DWORD(bytes.size())))<GodHeaderRead) return false;
+    const unsigned char* h=&bytes[0];
     if(memcmp(h,"CON ",4) && memcmp(h,"LIVE",4) && memcmp(h,"PIRS",4)) return false;
     if(Big32(h+0x344)!=GodContentType) return false;
+    if(art) { header.name=HeaderName(h,size_t(got)); HeaderIcon(h,size_t(got),header.icon); }
     header.titleId=Big32(h+0x360); header.mediaId=Big32(h+0x354); header.disc=h[0x366]; header.discs=h[0x367];
     // The SVOD volume descriptor's start data block, 24 bits little-endian.
     header.dataStart=DWORD(h[0x395])|(DWORD(h[0x396])<<8)|(DWORD(h[0x397])<<16);
@@ -1273,6 +1306,16 @@ void PutBig24(unsigned char* p, DWORD v) { p[0]=BYTE(v>>16); p[1]=BYTE(v>>8); p[
 void PutBig32(unsigned char* p, DWORD v) { p[0]=BYTE(v>>24); p[1]=BYTE(v>>16); p[2]=BYTE(v>>8); p[3]=BYTE(v); }
 const U64 GodGroupBytes = U64(GodGroupData)*GodBlock;
 const DWORD GodGroups = (GodPartData+GodGroupData-1)/GodGroupData;  // 0xCB.
+
+// A header's icon, as both thumbnails (version 1 metadata: 0x4000 bytes
+// each), or none; the digest at 0x32C, which covers them, is left to the caller.
+bool FitsHeader(const std::vector<unsigned char>& icon) { return icon.size()<=0x4000 && IsPng(icon.data(),icon.size()); }
+void PutHeaderIcon(unsigned char* h, const std::vector<unsigned char>& icon) {
+    bool fits=FitsHeader(icon) && Big32(h+0x3A9)==1;
+    memset(h+0x171A,0,0x8000);
+    PutBig32(h+0x1712,fits ? DWORD(icon.size()) : 0); PutBig32(h+0x1716,fits ? DWORD(icon.size()) : 0);
+    if(fits) { memcpy(h+0x171A,&icon[0],icon.size()); memcpy(h+0x571A,&icon[0],icon.size()); }
+}
 }
 
 DWORD GodPackage::PartBlocks(int part) const {
@@ -1410,13 +1453,52 @@ bool GodPackage::Make(IsoReader& reader, const std::string& title, const std::fu
         for(int language=0;language<18;++language) PutBig16(h+0x411+language*0x80+i*2,name[i]);
         PutBig16(h+0x1691+i*2,name[i]);
     }
-    // The icon, as both thumbnails (version 1 metadata: 0x4000 bytes each).
-    static const unsigned char Png[8]={0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
-    bool icon=icon_.size()>sizeof(Png) && icon_.size()<=0x4000 && !memcmp(&icon_[0],Png,sizeof(Png)) && Big32(h+0x3A9)==1;
-    memset(h+0x171A,0,0x8000);
-    PutBig32(h+0x1712,icon ? DWORD(icon_.size()) : 0); PutBig32(h+0x1716,icon ? DWORD(icon_.size()) : 0);
-    if(icon) { memcpy(h+0x171A,&icon_[0],icon_.size()); memcpy(h+0x571A,&icon_[0],icon_.size()); }
+    PutHeaderIcon(h,icon_);
     h[0x35B]=0; h[0x35F]=0; h[0x391]=0;
+    Sha1Block(h+0x344,0xACBC,h+0x32C);
+    return true;
+}
+
+bool GodHeaderArt(const std::string& path, std::string& name, std::vector<unsigned char>& icon) {
+    GodHeader h;
+    if(!ReadGodHeader(path,h,true)) return false;
+    name=h.name; icon=h.icon;
+    return true;
+}
+
+bool GodHeaderArt(const unsigned char* header, size_t size, std::string& name, std::vector<unsigned char>& icon) {
+    DWORD titleId, mediaId; int disc;
+    if(size<0x411+0x80 || !GodIds(header,DWORD(size),titleId,mediaId,disc)) return false;
+    name=HeaderName(header,size);
+    HeaderIcon(header,size,icon);
+    return true;
+}
+
+// Unsigned (nothing from 0x4 to 0x22C, where a signed package has its
+// signature, as in iso2god's empty LIVE package), whole with the digest
+// iso2god gives it (its header size at 0x340 rounds up to these 0xB000
+// bytes, and the digest at 0x32C is right for 0x344 to their end, the range
+// GodHeaderPutIcon works it out for again: a header another tool made
+// otherwise is never left with a digest that doesn't fit it), version 1
+// metadata, and both thumbnails empty: zeros, whatever size the header gives
+// them (iso2god's empty package says 0x3841, NetDisc360's said 0 when it had
+// no icon).
+bool GodHeaderIconBlank(const std::vector<unsigned char>& header) {
+    DWORD titleId, mediaId; int disc;
+    if(header.size()!=sizeof(EmptyLive) || !GodIds(header.data(),DWORD(header.size()),titleId,mediaId,disc)) return false;
+    const unsigned char* h=header.data();
+    if(Big32(h+0x3A9)!=1 || ((Big32(h+0x340)+0xFFF)&~DWORD(0xFFF))!=sizeof(EmptyLive)) return false;
+    for(size_t i=0x4;i<0x22C;++i) if(h[i]) return false;
+    for(size_t i=0x171A;i<0x971A;++i) if(h[i]) return false;
+    unsigned char digest[20];
+    Sha1Block(h+0x344,sizeof(EmptyLive)-0x344,digest);
+    return !memcmp(digest,h+0x32C,sizeof(digest));
+}
+
+bool GodHeaderPutIcon(std::vector<unsigned char>& header, const std::vector<unsigned char>& icon) {
+    if(!GodHeaderIconBlank(header) || !FitsHeader(icon)) return false;
+    unsigned char* h=&header[0];
+    PutHeaderIcon(h,icon);
     Sha1Block(h+0x344,0xACBC,h+0x32C);
     return true;
 }

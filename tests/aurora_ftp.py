@@ -156,8 +156,16 @@ class Handler(socketserver.StreamRequestHandler):
                     chunks.append(part)
                 conn.close()
                 self.server.gate.wait(60)  # Cleared by a test: uploads take that long.
+                data = b"".join(chunks)
+                if self.server.cut.get(argument):
+                    # As a transfer cut short (the network, the console switched off): half of it there.
+                    self.server.cut[argument] -= 1
+                    with open(path, "wb") as f:
+                        f.write(data[:len(data) // 2])
+                    self.reply("426 Connection closed; transfer aborted")
+                    continue
                 with open(path, "wb") as f:
-                    f.write(b"".join(chunks))
+                    f.write(data)
                 self.server.stored.append(argument)
                 self.reply("226 File transferred")
             elif command == "MKD":
@@ -212,6 +220,7 @@ class Server(socketserver.ThreadingTCPServer):
         self.gate = threading.Event()
         self.gate.set()
         self.locked = set()  # Files the console has open (normcase'd absolute paths): RETR is refused.
+        self.cut = {}  # By the name STOR gives: how many uploads of it are cut short.
 
 
 def main():
