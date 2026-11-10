@@ -8838,20 +8838,59 @@ bool LookupTus(DWORD titleId, bool refresh, std::vector<tu::Offer>& offers, std:
     return true;
 }
 
+// Updates being downloaded now, by XboxUnity's id: one download each, which
+// every console's job that wants it waits for (it shows that one's progress),
+// so consoles getting the same update at once don't each download it.
+struct TuDownload { std::mutex running; U64 done, total; TuDownload() : done(0), total(0) {} };
+std::mutex TuDownloadsLock;
+std::map<std::string,std::shared_ptr<TuDownload> > TuDownloads;
+
 // The update's file on this PC, downloading it from XboxUnity first if it
 // isn't here; checked against XboxUnity's size and checksum when it gives them.
+// got is told the bytes downloaded so far and the whole size (XboxUnity's,
+// while the download doesn't say), also of another job's download it waits for.
 bool FetchTu(const Options& o, DWORD titleId, const tu::Offer& offer, std::string& path, std::string& name, std::string& error,
-             const std::function<void(U64)>& got) {
+             const std::function<void(U64,U64)>& got) {
+    if(TuCached(o,titleId,offer.id,path,name)) return true;
+    std::shared_ptr<TuDownload> download;
+    {
+        std::lock_guard<std::mutex> hold(TuDownloadsLock);
+        std::shared_ptr<TuDownload>& d=TuDownloads[offer.id];
+        if(!d) d.reset(new TuDownload);
+        download=d;
+    }
+    while(!download->running.try_lock()) {
+        U64 done, total;
+        { std::lock_guard<std::mutex> hold(TuDownloadsLock); done=download->done; total=download->total; }
+        if(got) got(done,total ? total : offer.size);
+        Sleep(250);
+    }
+    struct Finish {  // The download is over (or wasn't needed): the next one starts afresh.
+        std::shared_ptr<TuDownload> d; std::string id;
+        ~Finish() {
+            std::lock_guard<std::mutex> hold(TuDownloadsLock);
+            d->done=d->total=0;
+            std::map<std::string,std::shared_ptr<TuDownload> >::iterator f=TuDownloads.find(id);
+            if(f!=TuDownloads.end() && f->second==d) TuDownloads.erase(f);
+            d->running.unlock();
+        }
+    } finish={download,offer.id};
+    // Got by the job that downloaded it while this one waited.
     if(TuCached(o,titleId,offer.id,path,name)) return true;
     std::string data;
     tu::Failure failure=tu::Fine;
+    const tu::Progress progress=[&](size_t done, size_t total) {
+        U64 whole=total ? U64(total) : offer.size;
+        { std::lock_guard<std::mutex> hold(TuDownloadsLock); download->done=done; download->total=whole; }
+        if(got) got(done,whole);
+    };
     // This update isn't on this PC (else it was found above): unlike a list's
     // failure (TuTrouble), there's nothing to say of updates that are.
-    if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error,tu::DownloadSeconds,"XboxUnity",&failure)) {
+    if(!tu::Get(tu::FileUrl(o.xboxUnity,offer.id),data,size_t(1)<<30,name,error,tu::DownloadSeconds,"XboxUnity",&failure,&progress)) {
         if(failure!=tu::Offline) error+=" Try again later.";
         return false;
     }
-    if(got) got(data.size());
+    if(got) got(data.size(),data.size());
     if(offer.size && !tu::SameSize(data.size(),offer.size)) { error="XboxUnity's file isn't the size it lists ("+std::to_string(data.size())+" bytes, not "+std::to_string(offer.size)+"); try again later."; return false; }
     tu::PackageHeader header;
     bool package=tu::ReadPackageHeader(reinterpret_cast<const unsigned char*>(data.data()),data.size(),header);
@@ -9234,8 +9273,12 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
     Options o=Current();
     const Console* console=ConsoleIfKnown(c.address);
     std::string path, name, error;
-    { std::lock_guard<std::mutex> hold(CopyLock); c.phase="download"; c.total=offer.size; }
-    if(!FetchTu(o,titleId,offer,path,name,error,[&](U64 n) { std::lock_guard<std::mutex> hold(CopyLock); c.total=n; c.done=n; })) {
+    { std::lock_guard<std::mutex> hold(CopyLock); c.phase="download"; c.total=offer.size; c.done=0; c.copied=0; c.began=Now(); }
+    if(!FetchTu(o,titleId,offer,path,name,error,[&](U64 done, U64 total) {
+            std::lock_guard<std::mutex> hold(CopyLock);
+            if(total) c.total=total;
+            c.done=c.copied=std::min(done,c.total ? c.total : done);
+        })) {
         EndCopy(c,console,"failed","Couldn't download "+offer.name+": "+error); return;
     }
     if(c.stop) { EndCopy(c,console,"stopped",""); return; }
@@ -9273,6 +9316,7 @@ void PutTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, tu::O
         }
         Log("Xbox %s: put %s for %s on it, at %s.",c.console.c_str(),c.label.c_str(),c.game.c_str(),remote.c_str());
     }
+    { std::lock_guard<std::mutex> hold(CopyLock); c.phase="aurora"; c.done=c.total; }  // Switched on in Aurora's list next (it may restart).
     RefreshTus(ftp,o,c.address,titleId);
     TuFile put; put.path=remote; put.name=name; put.size=data.size(); put.titleId=titleId;
     tu::PackageHeader header;
@@ -9327,7 +9371,7 @@ void UseTu(std::shared_ptr<ContentCopy> job, DWORD titleId, DWORD mediaId, TuFil
         }
         Log("Xbox %s: copied %s from Aurora's store to %s.",c.console.c_str(),from.path.c_str(),remote.c_str());
     }
-    { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; }
+    { std::lock_guard<std::mutex> hold(CopyLock); c.done=c.total; c.phase="aurora"; }
     RefreshTus(ftp,o,c.address,titleId);
     std::string aurora=TuInAurora(ftp,o,c,console,titleId,mediaId,&from,remote,from.where=="aurora" ? &data : NULL);
     { std::lock_guard<std::mutex> hold(CopyLock); c.note=aurora; }

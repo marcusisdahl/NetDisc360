@@ -335,6 +335,13 @@ typedef char FolderNameText[FolderNameMax+1];
 struct Folder { char name[FolderNameMax+1]; char iso[IsvrNameBytes]; DWORD titleId, mediaId; bool game, keep;
                 char role[16], label[64], xefu[32], local[PathMax]; };  // disc_role, disc_label, xefu and local_copy in its netiso.ini.
 
+// See library.h: the game's IDs at a version no title update is for.
+void LauncherInfo(unsigned char* to, const unsigned char* game) {
+    memmove(to,game,ExecutionInfoSize);
+    Write32(to+4,LauncherVersion);  // Version.
+    Write32(to+8,LauncherVersion);  // Base version.
+}
+
 // Rewrites a game folder's default.xex when it was made from an older
 // launcher, keeping its game's execution info, or putting in info if given.
 // 1 if rewritten, 0 if it was current, -1 if it couldn't be read or written,
@@ -354,7 +361,7 @@ static int RefreshLauncher(Storage& storage, const char* folder, const unsigned 
         DWORD oldInfo=read ? ExecutionInfoOffset(old,size) : 0;
         if(!info && oldInfo && titleId && Read32(old+oldInfo+12)!=titleId) result=-2;
         else if(info || oldInfo) {
-            memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info ? info : old+oldInfo,ExecutionInfoSize);
+            memcpy(copy,launcher,launcherSize); LauncherInfo(copy+infoAt,info ? info : old+oldInfo);
             FixHeaderDigest(copy,launcherSize);
             if(read && size==launcherSize && !memcmp(old,copy,size)) result=0;
             else if(storage.WriteFile(path,copy,launcherSize)) result=1;
@@ -600,7 +607,7 @@ bool Sync(IsvrClient& client, Storage& storage, const char* root, const unsigned
         char folder[PathMax],path[PathMax]; Join(folder,root,f.name);
         unsigned char* copy=static_cast<unsigned char*>(malloc(launcherSize));
         if(!copy) { Say(note,"Out of memory."); return false; }
-        memcpy(copy,launcher,launcherSize); memcpy(copy+infoAt,info,ExecutionInfoSize);
+        memcpy(copy,launcher,launcherSize); LauncherInfo(copy+infoAt,info);
         FixHeaderDigest(copy,launcherSize);
         char text[IsvrNameBytes+PathMax+400];
         int length=_snprintf_s(text,sizeof(text),_TRUNCATE,"; Written by NetISO Sync. iso is the file name the NetISO server lists.\r\niso=%s\r\ntitle_id=%08X\r\nmedia_id=%08X\r\n",

@@ -19,6 +19,7 @@
 // HTTP client, or curl on Linux; a base address of http://... (the tests')
 // is asked over a plain socket.
 #include "../shared/platform.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -62,8 +63,11 @@ enum { DownloadSeconds = 600 };
 // Content-Disposition gives (empty if none). False with why in error, which
 // calls the server site; failure, if given, says what kind of failure it was
 // (Fine when it worked). seconds: the most it may take, 0 for LookupSeconds.
+// progress, if given, is told the body's bytes so far and its whole size (0
+// while it isn't known) as they come, so a download can show how far it is.
+typedef std::function<void(size_t got, size_t total)> Progress;
 bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error,
-         int seconds = 0, const std::string& site = "XboxUnity", Failure* failure = NULL);
+         int seconds = 0, const std::string& site = "XboxUnity", Failure* failure = NULL, const Progress* progress = NULL);
 
 // Where a title update file goes on the console (an FTP path), from its
 // name as XboxUnity gives it; name is first made one FATX takes (see FatxName).
