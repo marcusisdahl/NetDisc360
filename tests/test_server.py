@@ -94,6 +94,24 @@ def run_aurora_script(path, xbox, content, settings):
 from test_generator import execution_info, header_digest, write_iso, xex  # noqa: E402
 
 SERVER = os.environ.get("NETDISC_SERVER") or os.path.join(ROOT, "build", "host", "netdisc")
+# The version and base version a tile's launcher gets (shared/library.h's
+# LauncherVersion): no title update of its game is made for it.
+LAUNCHER_VERSION = 0x7FFFFFFF
+
+
+def tile_info(media_id, title_id, disc=1, discs=1):
+    """The execution info of a tile's launcher for a game with these IDs."""
+    return struct.pack(">IIIIBBBBI", media_id, LAUNCHER_VERSION, LAUNCHER_VERSION, title_id, 0, 0, disc, discs, 0)
+
+
+def xex_info(data):
+    """The execution info (header 0x40006) of an XEX: media, version, base version, title."""
+    count = struct.unpack(">I", data[0x14:0x18])[0]
+    for i in range(count):
+        key, at = struct.unpack(">II", data[0x18 + 8 * i:0x20 + 8 * i])
+        if key == 0x40006:
+            return struct.unpack(">IIII", data[at:at + 16])
+    return None
 LUA = shutil.which("lua5.2") or shutil.which("lua")
 
 # The part of Aurora 0.7b.2's Media\Scripts\Content\FilterFunctions.lua the server edits.
@@ -446,7 +464,8 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
     seconds), or a dict of those by path (only Icon.php's: {"/Resources/Lib/
     Icon.php": 500}) or by path and query (one game's list: {"/Resources/Lib/
     TitleUpdateInfo.php?titleid=4D5307E6": 500}), and self.server.slow the
-    seconds every answer takes. Also
+    seconds every answer takes (self.server.trickle: the seconds between
+    each 32 KB of an update's file). Also
     Microsoft's icons, as --xbox-images asks for them: the tile.png on
     download.xbox.com (only for a Title ID in lower case, as there) from
     self.server.tiles, and the icon on image.xboxlive.com from
@@ -520,7 +539,12 @@ class FakeUnityHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            # self.server.trickle: seconds between 32 KB parts, a download that takes a while.
+            trickle = getattr(self.server, "trickle", 0)
+            for at in range(0, len(data), 32768 if trickle else max(1, len(data))):
+                self.wfile.write(data[at:at + 32768] if trickle else data)
+                self.wfile.flush()
+                time.sleep(trickle)
             return
         self.send_response(404)
         self.end_headers()
@@ -979,7 +1003,7 @@ class Push(ServerTest):
         with open(os.path.join(folder, "default.xex"), "rb") as f:
             launcher = f.read()
         self.assertIn(b"LAUNCHER CODE", launcher)
-        self.assertIn(execution_info(0x1A2B3C4D, 0x4D5307E6), launcher)
+        self.assertIn(tile_info(0x1A2B3C4D, 0x4D5307E6), launcher)
         stored, computed = header_digest(launcher)
         self.assertEqual(stored, computed)
         with open(os.path.join(folder, "netiso.ini")) as f:
@@ -1746,6 +1770,33 @@ class Push(ServerTest):
         self.assertNotIn("NetISO Sync to this build", out)
         self.assertEqual([p for p in self.ftp.stored if "Sync" in p], [])
 
+    def test_a_tile_s_launcher_matches_no_title_update_of_its_game(self):
+        # A title update is made for its game's default.xex at the version it
+        # updates (and named by it, tu00000005_...): a launcher with the game's
+        # version got it applied too, and the console wouldn't start it
+        # ("Version Mismatch": FIFA 14's Title update 6, base version 5).
+        game = struct.pack(">IIIIBBBBI", 0x7F17A96F, 5, 5, 0x454109C3, 0, 0, 1, 1, 0)
+        write_iso(os.path.join(self.isos, "Fifa 14.iso"), {"default.xex": xex(game)})
+        self.push()
+        path = os.path.join(self.games, "Fifa 14", "default.xex")
+        with open(path, "rb") as f:
+            launcher = f.read()
+        media, version, base, title = xex_info(launcher)
+        # Still the game for Aurora (its Title ID and Media ID), at a version no update is for.
+        self.assertEqual((title, media), (0x454109C3, 0x7F17A96F))
+        self.assertNotIn(5, (version, base))
+        self.assertEqual((version, base), (LAUNCHER_VERSION, LAUNCHER_VERSION))
+        stored, computed = header_digest(launcher)
+        self.assertEqual(stored, computed)
+        # A launcher an older server wrote with the game's version gets this one.
+        at = launcher.index(tile_info(0x7F17A96F, 0x454109C3))
+        older = launcher[:at] + game + launcher[at + len(game):]
+        with open(path, "wb") as f:
+            f.write(older)
+        self.assertIn("Updated the launcher in Fifa 14.", self.push())
+        with open(path, "rb") as f:
+            self.assertEqual(xex_info(f.read()), (0x7F17A96F, LAUNCHER_VERSION, LAUNCHER_VERSION, 0x454109C3))
+
     def test_moves_game_folders_from_before_to_the_shared_helper(self):
         # A folder from before: the full launcher with the game's IDs, and its own helper.
         folder = os.path.join(self.games, "Halo 3")
@@ -1765,7 +1816,7 @@ class Push(ServerTest):
         with open(os.path.join(folder, "default.xex"), "rb") as f:
             launcher = f.read()
         self.assertIn(b"LAUNCHER CODE", launcher)
-        self.assertIn(execution_info(0x1A2B3C4D, 0x4D5307E6), launcher)
+        self.assertIn(tile_info(0x1A2B3C4D, 0x4D5307E6), launcher)
         with open(os.path.join(self.app, "boot.xex"), "rb") as f:
             self.assertEqual(f.read(), b"BOOT HELPER")
         self.assertIn("1 kept (0 updated)", self.push())
@@ -7775,6 +7826,43 @@ class Dashboard(DashboardTest):
         # An update in the list but not on this PC can't be downloaded meanwhile: try again later.
         job = install("Fable II")
         self.assertEqual((job["state"], job["error"]), ("failed", "Couldn't download Title Update 1: XboxUnity isn't working right now (it answered with error 500). Try again later."))
+
+    def test_shows_how_far_a_title_update_is_and_downloads_it_once_for_all_consoles(self):
+        # The title update box follows each console's job: how much of the
+        # download from XboxUnity is in, then the copy to the console. Two
+        # consoles that want the same update at once share one download.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        newest = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2", size=0x100000)
+        unity = fake_unity(self, titles={"4D5307E6": {"Type": 1, "MediaIDS": [{"MediaID": "1A2B3C4D", "Updates": [
+            {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str((len(newest) + 1023) // 1024), "hash": content_id(newest)}]}]}},
+            files={"111": ("tu00000002_00000000", newest)}, trickle=0.1)
+        consoles = {}
+        for host in ("127.0.0.2", "127.0.0.3"):
+            xbox = os.path.join(self.tmp.name, "xbox-" + host)
+            os.makedirs(os.path.join(xbox, "Hdd1"))
+            ftp = aurora_ftp.Server(xbox, consoles["127.0.0.2"][1].server_address[1] if consoles else 0, host=host)
+            threading.Thread(target=ftp.serve_forever, daemon=True).start()
+            self.addCleanup(ftp.server_close)
+            self.addCleanup(ftp.shutdown)
+            consoles[host] = (xbox, ftp)
+        port = consoles["127.0.0.2"][1].server_address[1]
+        self.start("--xbox", "127.0.0.2", "--xbox", "127.0.0.3", "--ftp-port", str(port), "--xboxunity", unity.base + "/Resources/Lib")
+        self.state_when(lambda s: s["library"]["games"] == 1 and len(s["consoles"]) == 2)
+        for host in consoles:
+            self.json("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": host})
+
+        def updates(s):
+            return [j for j in s["installs"] if j["kind"] == "update"]
+        # Part way: the bytes in so far of XboxUnity's whole file, for the page's "N% (x of y MB)".
+        part = self.state_when(lambda s: any(j["state"] == "copying" and j["phase"] == "download" and 0 < j["done"] < j["total"] for j in updates(s)), 30)
+        job = next(j for j in updates(part) if j["state"] == "copying" and j["phase"] == "download" and 0 < j["done"] < j["total"])
+        self.assertEqual((job["total"], job["label"], job["game"]), (len(newest), "Title update 2", "Halo 3"))
+        done = self.state_when(lambda s: len(updates(s)) == 2 and all(j["state"] not in ("queued", "copying") for j in updates(s)), 60)
+        self.assertEqual(sorted((j["address"], j["state"], j["error"]) for j in updates(done)), [("127.0.0.2", "done", ""), ("127.0.0.3", "done", "")])
+        for host, (xbox, _) in consoles.items():
+            with open(os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000", "tu00000002_00000000"), "rb") as f:
+                self.assertEqual(f.read(), newest, host)
+        self.assertEqual(len([a for a in unity.asked if "TitleUpdate.php" in a]), 1)  # Downloaded once.
 
     def test_says_why_xboxunity_couldn_t_be_asked(self):
         # Only a computer that reaches nothing is asked whether it's online: a

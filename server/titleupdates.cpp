@@ -13,7 +13,9 @@
 #else
 #include <netdb.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 extern char** environ;
 #endif
 
@@ -127,7 +129,7 @@ bool Wait(SOCKET s, bool writing, time_t deadline) {
 bool Failed(Failure kind, const std::string& why, std::string& error, Failure& failure) { failure=kind; error=why; return false; }
 
 bool PlainGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
-              std::string& error, Failure& failure) {
+              std::string& error, Failure& failure, const Progress* progress) {
     std::string rest=url.substr(7);
     size_t slash=rest.find('/');
     std::string host=rest.substr(0,slash), path=slash==std::string::npos ? "/" : rest.substr(slash);
@@ -163,6 +165,7 @@ bool PlainGet(const std::string& url, std::string& headers, std::string& body, s
         else if(n==0 || WSAGetLastError()!=WSAEWOULDBLOCK) ok=false;
     }
     std::string response;
+    size_t bodyAt=std::string::npos, whole=0;  // Where the body starts, once the headers are in, and its Content-Length.
     while(ok) {
         if(!Wait(s,false,deadline)) { ok=false; break; }
         char part[65536];
@@ -171,6 +174,14 @@ bool PlainGet(const std::string& url, std::string& headers, std::string& body, s
         if(n<0) { if(WSAGetLastError()!=WSAEWOULDBLOCK) ok=false; continue; }
         response.append(part,size_t(n));
         if(response.size()>limit+65536) { closesocket(s); return Failed(Broken,"The answer is larger than expected.",error,failure); }
+        if(!progress) continue;
+        if(bodyAt==std::string::npos) {
+            size_t end=response.find("\r\n\r\n");
+            if(end==std::string::npos) continue;
+            bodyAt=end+4;
+            whole=size_t(strtoull(HeaderValue(response.substr(0,end+2),"content-length").c_str(),NULL,10));
+        }
+        (*progress)(response.size()-bodyAt,whole);
     }
     closesocket(s);
     if(!ok && time(NULL)>=deadline) return Failed(Slow,site+" didn't answer in time; it may be down.",error,failure);
@@ -234,7 +245,7 @@ bool WinHttpFailed(DWORD code, const std::wstring& host, const std::string& site
 }
 
 bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
-               std::string& error, Failure& failure) {
+               std::string& error, Failure& failure, const Progress* progress) {
     std::wstring wide=Wide(url);
     wchar_t host[256], path[2048], extra[2048];
     URL_COMPONENTS parts;
@@ -268,6 +279,8 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
         if(WinHttpQueryHeaders(request.h,WINHTTP_QUERY_RAW_HEADERS_CRLF,WINHTTP_HEADER_NAME_BY_INDEX,&raw[0],&size,WINHTTP_NO_HEADER_INDEX))
             headers=Narrow(raw.substr(0,size/sizeof(wchar_t)));
     }
+    DWORD whole=0, wholeSize=sizeof(whole);
+    if(!WinHttpQueryHeaders(request.h,WINHTTP_QUERY_CONTENT_LENGTH|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&whole,&wholeSize,WINHTTP_NO_HEADER_INDEX)) whole=0;
     std::vector<char> part(65536);
     for(;;) {
         DWORD got=0;
@@ -275,6 +288,7 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
         if(!got) break;
         body.append(part.data(),got);
         if(body.size()>limit) return Failed(Broken,"The answer is larger than expected.",error,failure);
+        if(progress) (*progress)(body.size(),size_t(whole));
     }
     return true;
 }
@@ -282,7 +296,7 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
 // curl, which the Docker image has, run without a shell; it gives up after
 // seconds (a look-up's 30, or a download's 10 minutes).
 bool SecureGet(const std::string& url, std::string& headers, std::string& body, size_t limit, int seconds, const std::string& site,
-               std::string& error, Failure& failure) {
+               std::string& error, Failure& failure, const Progress* progress) {
     char headerPath[]="/tmp/netdisc-tu-h-XXXXXX", bodyPath[]="/tmp/netdisc-tu-b-XXXXXX";
     int h=mkstemp(headerPath), b=mkstemp(bodyPath);
     if(h<0 || b<0) { if(h>=0) { close(h); unlink(headerPath); } if(b>=0) { close(b); unlink(bodyPath); } return Failed(Broken,"No room for a download in /tmp.",error,failure); }
@@ -294,7 +308,13 @@ bool SecureGet(const std::string& url, std::string& headers, std::string& body, 
     pid_t pid=0;
     int status=-1;
     bool started=!posix_spawnp(&pid,"curl",NULL,NULL,const_cast<char* const*>(argv),environ);
-    if(started) waitpid(pid,&status,0);
+    // The download's size so far, from its file, while curl runs.
+    while(started && progress && waitpid(pid,&status,WNOHANG)==0) {
+        struct stat st;
+        if(!stat(bodyPath,&st)) (*progress)(size_t(st.st_size),0);
+        usleep(250000);
+    }
+    if(started && !progress) waitpid(pid,&status,0);
     std::string raw;
     FILE* f=fopen(headerPath,"rb");
     if(f) { char part[4096]; size_t n; while((n=fread(part,1,sizeof(part),f))>0) raw.append(part,n); fclose(f); }
@@ -401,7 +421,7 @@ std::string FileUrl(const std::string& base, const std::string& id) {
 }
 
 bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error,
-         int seconds, const std::string& site, Failure* failure) {
+         int seconds, const std::string& site, Failure* failure, const Progress* progress) {
     body.clear(); fileName.clear();
     Failure kind=Fine;
     if(!failure) failure=&kind;
@@ -410,8 +430,8 @@ bool Get(const std::string& url, std::string& body, size_t limit, std::string& f
     std::string headers, at=url;
     for(int hop=0;;++hop) {
         bool ok;
-        if(!Lower(at).compare(0,7,"http://")) ok=PlainGet(at,headers,body,limit,seconds,site,error,*failure);
-        else if(!Lower(at).compare(0,8,"https://")) ok=SecureGet(at,headers,body,limit,seconds,site,error,*failure);
+        if(!Lower(at).compare(0,7,"http://")) ok=PlainGet(at,headers,body,limit,seconds,site,error,*failure,progress);
+        else if(!Lower(at).compare(0,8,"https://")) ok=SecureGet(at,headers,body,limit,seconds,site,error,*failure,progress);
         else return Failed(Broken,"Not a web address: "+at,error,*failure);
         if(!ok) return false;
         int status=Status(headers);
