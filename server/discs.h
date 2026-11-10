@@ -165,6 +165,11 @@ bool GodHeaderArt(const unsigned char* header, size_t size, std::string& name, s
 // signature covers that digest) or an icon that doesn't fit.
 bool GodHeaderIconBlank(const std::vector<unsigned char>& header);
 bool GodHeaderPutIcon(std::vector<unsigned char>& header, const std::vector<unsigned char>& icon);
+// Whether a blank header (GodHeaderIconBlank) is one NetDisc360 made (Copy
+// to Xbox, since it puts icons in): its thumbnails said to be 0 bytes, where
+// iso2god's empty package (and so iso2god's and older NetDisc360's packages)
+// says 0x3841. Copy to Xbox makes the same package again from the game here.
+bool GodHeaderMadeHere(const std::vector<unsigned char>& header);
 // The Title ID in an original Xbox default.xbe's certificate, from the start
 // of the file (its headers, which hold the certificate); false if it isn't
 // one, or the certificate lies past size. *headers, if given, gets the size
