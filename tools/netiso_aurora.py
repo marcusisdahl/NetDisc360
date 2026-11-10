@@ -34,6 +34,11 @@ XGD_MAGIC = b"MICROSOFT*XBOX*MEDIA"
 PARTITIONS = ((0xFDA0000, 0xFD90000), (0x2090000, 0x2080000), (0x10000, 0))
 EXECUTION_INFO = 0x40006
 EXECUTION_INFO_SIZE = 24
+# A tile launcher's version and base version (shared/library.h's
+# LauncherVersion): it keeps its game's Title ID and Media ID, but at a
+# version no title update is made for, so the console doesn't apply the
+# game's update to the launcher and refuse to start it ("Version Mismatch").
+LAUNCHER_VERSION = 0x7FFFFFFF
 FATX_NAME_MAX = 42
 # Header digest in the security info, and where the part it skips ends.
 XEX_DIGEST_AT, XEX_DIGEST_END = 0x164, 0x17C
@@ -256,6 +261,7 @@ def main(argv=None):
         os.makedirs(folder, exist_ok=True)
         patched = bytearray(launcher)
         patched[info_at:info_at + EXECUTION_INFO_SIZE] = info
+        struct.pack_into(">II", patched, info_at + 4, LAUNCHER_VERSION, LAUNCHER_VERSION)
         fix_header_digest(patched)
         with open(os.path.join(folder, "default.xex"), "wb") as f:
             f.write(patched)
