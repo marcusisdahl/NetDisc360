@@ -1247,8 +1247,10 @@ function bytes(n, digits) {
 }
 const rate = n => n < 1024 ? (n ? Math.round(n) + ' B/s' : '0 MB/s') : bytes(n, 1) + '/s';
 // Where saves came from ("console@computer"): "10.10.1.44 on Laptop", or just the console when it's this computer.
+// A backup made before backups said where they came from says nothing: "an older backup".
 function placeText(from) {
-  const [where, computer] = String(from || '').split('@');
+  if (!from) return 'an older backup';
+  const [where, computer] = String(from).split('@');
   const here = S.sync && (S.sync.name || S.sync.computer);
   return computer && computer !== here ? where + ' on ' + computer : where;
 }
@@ -5963,10 +5965,10 @@ Pages.settings = root => {
       catch (e) { toast(e.message, true); }
     }
     return h('div', sc.map(c => h('div.backup-row', h('div.kindmark.k-warning', ic('triangle-alert')),
-      h('div.grow', h('div.when', (c.gamertag || c.xuid) + ' \u00b7 ' + c.game), h('div.sub', 'Played on ' + c.address + ' and on ' + placeText(c.from) + ' since they last matched. Both are kept.')),
+      h('div.grow', h('div.when', (c.gamertag || c.xuid) + ' \u00b7 ' + c.game), h('div.sub', 'Both are kept: the saves on ' + c.address + ' differ from the newest from ' + placeText(c.from) + '.')),
       h('div.actions',
         h('button.btn.small', { onclick: () => choose(c, 'console') }, 'Keep ' + c.address + '\u2019s'),
-        h('button.btn.small', { onclick: () => choose(c, 'other') }, 'Use ' + placeText(c.from).split(' on ')[0] + '\u2019s')))));
+        h('button.btn.small', { onclick: () => choose(c, 'other') }, c.from ? 'Use ' + placeText(c.from).split(' on ')[0] + '\u2019s' : 'Use the older backup')))));
   }
 
   Parts.windows = () => {
