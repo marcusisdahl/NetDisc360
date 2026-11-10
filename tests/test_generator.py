@@ -111,7 +111,9 @@ class Generator(unittest.TestCase):
         with open(self.launcher, "rb") as f:
             original = f.read()
         at = netiso_aurora.xex_headers(original)[0x40006]
-        self.assertEqual(made[at:at + 24], info)
+        # The game's IDs, at a version no title update of it is for.
+        tile = info[:4] + struct.pack(">II", netiso_aurora.LAUNCHER_VERSION, netiso_aurora.LAUNCHER_VERSION) + info[12:]
+        self.assertEqual(made[at:at + 24], tile)
         # Only the execution info and the header digest change, and the new
         # digest is valid.
         digest_at = struct.unpack_from(">I", original, 16)[0] + 0x164
