@@ -2238,9 +2238,52 @@ function tuBox(g) {
     try { await api('titleupdates/check', { address }); await refresh(); }
     catch (e) { toast(e.message, true); button.disabled = false; }
   }
+  // XboxUnity has its outages: while it's down the server goes by the list
+  // it got before, and its updates still install. Said when that list is
+  // over a day old or asking again just failed, with a way to ask again.
+  function listNote() {
+    if (!data.listChecked) return null;
+    const age = (S ? S.time : Date.now() / 1000) - data.listChecked;
+    if (!data.listError && age < 86400) return null;
+    const days = Math.floor(age / 86400);
+    const when = days >= 2 ? days + ' days ago' : age < 45 ? 'a moment ago' : ago(data.listChecked);
+    return h('p.muted', 'XboxUnity’s list from ' + when + '. ' + (data.listError || ''), ' ',
+      h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Ask again'));
+  }
+  // This game's latest job on a console (running, else waiting, else one that
+  // ended in the last 10 minutes), and what it's doing, for the line under it.
+  const mine = j => (j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name;
+  function jobOn(address) {
+    const jobs = (S.installs || []).filter(j => mine(j) && j.address === address);
+    return jobs.find(j => j.state === 'copying') || jobs.find(j => j.state === 'queued')
+      || jobs.filter(j => j.ended && S.time - j.ended < 600).pop() || null;
+  }
+  const mb = n => (n / 1048576).toFixed(n && n < 10485760 ? 1 : 0);  // As bytes() counts them.
+  function jobLine(j) {
+    if (!j) return null;
+    const label = j.label || 'The title update', share = j.total ? Math.min(100, Math.floor(100 * j.done / j.total)) : 0;
+    const amount = j.total ? ' ' + share + '% (' + mb(j.done) + ' of ' + mb(j.total) + ' MB)' : '';
+    const line = (tone, icon, text) => h('div.install-line' + tone, ic(icon, 'sm'), h('span', text));
+    if (j.state === 'queued')
+      return line('.muted', 'history', label + ' waits its turn on ' + j.address + (j.place > 1 ? ': ' + (j.place - 1) + ' before it.' : ': it’s next.'));
+    if (j.state === 'copying') {
+      const text = j.kind === 'tuoff' ? 'Turning its title updates off on ' + j.address + '…'
+        : j.phase === 'download' ? 'Downloading ' + label + ' from XboxUnity…' + amount
+        : j.phase === 'aurora' ? 'Switching ' + label + ' on in Aurora on ' + j.address + '… Aurora restarts to take it, so leave the console in Aurora.'
+        : 'Copying to ' + j.address + '…' + amount;
+      const bar = j.kind === 'tuoff' || j.phase === 'aurora' ? null : h('div.progress', h('i', { style: { width: share + '%' } }));
+      return [line('.muted', 'download', text), bar];
+    }
+    if (j.state === 'done')
+      return line('.good', 'circle-check', (j.kind === 'tuoff' ? 'Title updates are off on ' + j.address + ': the game starts as it is on the disc.'
+        : label + ' is active on ' + j.address + '.') + (j.note ? ' ' + j.note : ''));
+    if (j.state === 'stopped') return line('.muted', 'info', label + ' was stopped before it was done.');
+    return line('.bad', 'circle-alert', j.error || label + ' didn’t get there.');
+  }
   let drawn = '';
   function draw() {
-    const queueKey = (S.installs || []).filter(j => j.state === 'queued' || j.state === 'copying').map(j => [j.id, j.address, j.kind, j.game]);
+    const queueKey = (S.installs || []).filter(j => j.state === 'queued' || j.state === 'copying' || mine(j))
+      .map(j => [j.id, j.address, j.kind, j.game, j.state, j.phase, j.total ? Math.floor(100 * j.done / j.total) : 0, j.place, j.error]);
     const key = JSON.stringify([data, failed, loading, queueKey, [...picked]]);
     if (key === drawn) return;
     drawn = key;
@@ -2248,17 +2291,19 @@ function tuBox(g) {
     if (!data) { fill(box, head, h('p.muted', loading ? 'Asking XboxUnity…' : failed || '')); return; }
     const offers = data.offers || [];
     if (failed && !offers.length) {
-      fill(box, head, h('p', { style: { color: 'var(--bad)' } }, 'Couldn’t ask XboxUnity: ' + failed), h('div.install-actions', h('span.muted', 'XboxUnity is the site Aurora gets title updates from.'), h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Try again')));
+      fill(box, head, h('p', { style: { color: 'var(--bad)' } }, failed), h('div.install-actions', h('span.muted', 'XboxUnity is the site Aurora gets title updates from.'), h('button.btn.small', { onclick: () => load(true) }, ic('refresh-cw', 'sm'), 'Try again')));
       return;
     }
     if (!offers.length) {
-      fill(box, head, h('p', 'XboxUnity has no title update for this disc (Media ID ' + data.mediaId + ')' + (data.otherDiscs ? ', only for other versions of the game.' : '.')));
+      fill(box, head, h('p', 'XboxUnity has no title update for this disc (Media ID ' + data.mediaId + ')' + (data.otherDiscs ? ', only for other versions of the game.' : '.')), listNote());
       return;
     }
     const queue = S.installs || [];
     const rows = data.consoles.map(c => {
       const busy = queue.some(j => j.address === c.address && (j.state === 'queued' || j.state === 'copying') && (((j.kind === 'update' || j.kind === 'tuoff') && j.game === g.name) || j.kind === 'check'));
-      const [text, tone] = busy ? ['Working on it…', 'muted'] : tuState(c, offers);
+      // A job of this game says what it's doing in its own line below.
+      const running = (S.installs || []).some(j => mine(j) && j.address === c.address && (j.state === 'queued' || j.state === 'copying'));
+      const [text, tone] = busy ? [running ? '' : 'Checking it…', 'muted'] : tuState(c, offers);
       const active = versions(c, offers).find(l => l.file && l.file.on);
       const using = !c.checked ? null : h('span.tu-using', 'Active: ', h('b', active ? active.name : 'none'));
       // Beside the active one, only what it adds: the newest, or what's newer.
@@ -2266,8 +2311,9 @@ function tuBox(g) {
       return [h('div.install-line', h('span', h('b', c.address), ' ', using, using && hint ? ' \u00b7 ' : ' ', h('span', { style: { color: tone === 'good' ? 'var(--good)' : tone === 'warn' ? 'var(--warn)' : 'var(--muted)' } }, hint), c.hasGame ? null : h('span.muted', ' (no tile of it there)')),
         h('span', { style: { display: 'flex', gap: '6px' } },
           h('button.btn.small', { disabled: busy, title: 'Reads which updates it has, over Aurora’s FTP', onclick: e => check(e.target, c.address) }, ic('scan', 'sm'), 'Check'))),
-        managed(c, offers, busy)];
+        managed(c, offers, busy), jobLine(jobOn(c.address))];
     });
+    const anyBusy = (S.installs || []).some(j => mine(j) && (j.state === 'queued' || j.state === 'copying'));
     const withGame = data.consoles.filter(c => c.hasGame).length;
     // A redraw puts focus back on the dropdown it was on, so the arrow keys
     // keep stepping through the versions (as livePart does).
@@ -2275,9 +2321,10 @@ function tuBox(g) {
     fill(box, head,
       h('p', ['Newest for this disc on XboxUnity: ', h('b', offers[0].name), offers[0].size ? ' (' + bytes(offers[0].size, 1) + ')' : '', offers[0].onPc ? ', kept on this computer.' : '.',
         ' Pick the one each console uses from its list. The others move aside (to Hdd1:\\Apps\\NetDisc360\\Title updates), never deleted, so you can switch back.']),
+      listNote(),
       rows.length ? rows : h('p.muted', 'No console yet.'),
       h('div.install-actions', h('span.muted', 'This computer downloads each update once from XboxUnity, checks it, and sends it over Aurora’s FTP: the consoles never go online for it.'),
-        withGame > 1 ? h('button.btn.small', { onclick: e => put(e.target, { all: true, id: offers[0].id }) }, ic('download', 'sm'), 'Newest on all ' + withGame + ' consoles') : null));
+        withGame > 1 ? h('button.btn.small', { disabled: anyBusy, onclick: e => put(e.target, { all: true, id: offers[0].id }) }, ic('download', 'sm'), 'Newest on all ' + withGame + ' consoles') : null));
     const again = focus && [...box.querySelectorAll('[data-focus]')].find(x => x.getAttribute('data-focus') === focus);
     if (again) again.focus();
   }

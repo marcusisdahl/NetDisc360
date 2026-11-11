@@ -48,6 +48,14 @@ struct SyncResult { int added, kept, updated, removed, skipped, held, failed, in
 bool IniValue(const char* text, const char* key, char* value, size_t capacity);
 // Offset of the execution info (0x40006) in a XEX header, or 0.
 DWORD ExecutionInfoOffset(const unsigned char* xex, DWORD size);
+// A tile launcher's execution info, from its game's: the game's Title ID,
+// Media ID and disc, so Aurora shows the tile as the game, but version and
+// base version LauncherVersion. A title update is made for the game's own
+// default.xex at its version; with the game's version the console applied it
+// to the launcher too and refused to start it ("Version Mismatch", FIFA 14's
+// Title update 6 on COD, 2026-11-10). The game the launcher starts gets it.
+enum { LauncherVersion = 0x7FFFFFFF };
+void LauncherInfo(unsigned char* to, const unsigned char* game);
 // Recomputes the header digest after the header was edited; false if the
 // header is too short to have one.
 bool FixHeaderDigest(unsigned char* xex, DWORD size);
