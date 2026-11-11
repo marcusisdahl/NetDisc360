@@ -2383,6 +2383,35 @@ class Push(ServerTest):
         out = self.push()
         self.assertNotIn("cover art to Aurora", out)
 
+    def test_updates_the_first_netiso_rule_in_aurora(self):
+        # The very first servers ("NetISO for Aurora") counted only \NetISO\:
+        # once the tiles move to \NetDisc360\Games that rule must be replaced too.
+        first = FILTER.replace(b"   return Content.Group == ContentGroup.Xbox360\r\nend\r\n", (
+            "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\r\n"
+            "end\r\n"
+            "\r\n"
+            "-- NetISO for Aurora: the game launchers in Hdd1:\\NetISO play retail discs\r\n"
+            "-- from the NetISO server, so they count as Xbox 360 games here. Aurora files\r\n"
+            "-- them as Unsigned because they aren't retail-signed. The NetISO Sync app\r\n"
+            "-- itself stays out.\r\n"
+            "function GameListFilterNetIso(Content)\r\n"
+            "   local directory = '\\\\' .. string.lower(Content.Directory or '')\r\n"
+            "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and"
+            " string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\r\n"
+            "end\r\n").encode())
+        self.assertNotEqual(first, FILTER)
+        with open(os.path.join(self.aurora, "FilterFunctions.lua"), "wb") as f:
+            f.write(first)
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        out = self.push()
+        self.assertIn("updated NetDisc360's rule in Aurora's Xbox 360 category", out)
+        with open(os.path.join(self.aurora, "FilterFunctions.lua"), "rb") as f:
+            edited = f.read()
+        self.assertIn(b"netdisc360\\\\games", edited)
+        self.assertNotIn(b"NetISO for Aurora", edited)
+        self.assertTrue(edited.endswith(FILTER[FILTER.index(b"function GameListFilterXBLA"):]) if b"function GameListFilterXBLA" in FILTER else True)
+        self.assertFalse(os.path.exists(os.path.join(self.aurora, "FilterFunctions.lua.before-netiso")))  # No new backup.
+
     def test_hides_install_discs_in_aurora(self):
         filters = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters")
         os.makedirs(filters)

@@ -2321,6 +2321,21 @@ const char FilterNetIsoBefore[] =  // As servers before the install disc filter 
     "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
     "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
     "end";
+// As the first servers wrote it, when the project was "NetISO for Aurora".
+const char FilterNetIsoFirst[] =
+    "function GameListFilterXbox360(Content)\n"
+    "   -- Add only legit xbox 360 games\n"
+    "   return Content.Group == ContentGroup.Xbox360 or GameListFilterNetIso(Content)\n"
+    "end\n"
+    "\n"
+    "-- NetISO for Aurora: the game launchers in Hdd1:\\NetISO play retail discs\n"
+    "-- from the NetISO server, so they count as Xbox 360 games here. Aurora files\n"
+    "-- them as Unsigned because they aren't retail-signed. The NetISO Sync app\n"
+    "-- itself stays out.\n"
+    "function GameListFilterNetIso(Content)\n"
+    "   local directory = '\\\\' .. string.lower(Content.Directory or '')\n"
+    "   return string.find(directory, '\\\\netiso\\\\', 1, true) ~= nil and string.find(directory, '\\\\netiso\\\\netiso sync', 1, true) == nil\n"
+    "end";
 // As servers before the NetDisc360 folders wrote it; the server knew its own
 // edit by these exact words, so they keep the name as it was then ("NetDisc 360").
 const char FilterNetIso[] =
@@ -2388,9 +2403,9 @@ void GuardFilter(const Console& console, FtpClient& ftp, bool announce, const Op
         return;
     }
     // An earlier server's edit gets this one's, without a new backup.
-    const char* const earlier[]={FilterNetIso,FilterNetIsoBefore};
+    const char* const earlier[]={FilterNetIso,FilterNetIsoBefore,FilterNetIsoFirst};
     size_t at;
-    for(int k=0;k<2;++k) {
+    for(size_t k=0;k<sizeof(earlier)/sizeof(earlier[0]);++k) {
         std::string before=Lines(earlier[k],crlf);
         at=text.find(before);
         if(at==std::string::npos) continue;
