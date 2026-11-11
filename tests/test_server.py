@@ -2424,6 +2424,36 @@ print('lua ok')
         result = subprocess.run([LUA, check], capture_output=True, text=True)
         self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
 
+    def test_puts_on_the_title_update_aurora_has_a_copy_of(self):
+        # Aurora also lists an update in Hdd1:\\Cache it found itself, with no
+        # copy in its store; with that entry on, Aurora deletes the file as it
+        # starts the game and puts nothing back. The script that runs as
+        # Aurora starts puts on the same update's entry that has a copy.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.push()
+        online = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscOnline.lua")
+        self.assertTrue(os.path.exists(online))
+        if not lupa:
+            return
+        content, settings = os.path.join(self.tmp.name, "content.db"), os.path.join(self.tmp.name, "settings.db")
+        for name, table in ((content, AURORA_TU_TABLES[0]), (settings, AURORA_TU_TABLES[1])):
+            with contextlib.closing(sqlite3.connect(name)) as db:
+                db.execute(table)
+        with contextlib.closing(sqlite3.connect(content)) as db, db:
+            for row in ((2, "\\Content\\0000000000000000\\41560817\\000B0000\\", "ED9F", "Game:\\Data\\TitleUpdates\\x"),
+                        (3, "\\Cache\\", "ED9F", ""),
+                        (4, "\\Cache\\", "AB12", None),            # Only one entry: stays on.
+                        (5, "\\Cache\\", "CD34", "Game:\\Data\\y")):  # Has a copy: stays on.
+                db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (?, 'TU_X', 'dev', ?, ?, ?, ?, ?)",
+                           (row[0], row[1], 0x41560817 if row[0] < 4 else row[0], 0x2C8C0267, row[2], row[3]))
+        with contextlib.closing(sqlite3.connect(settings)) as db, db:
+            db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (3), (4), (5)")
+        run_aurora_script(online, self.xbox, content, settings)
+        with contextlib.closing(sqlite3.connect(settings)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT TitleUpdateId FROM ActiveTitleUpdates ORDER BY TitleUpdateId")], [2, 4, 5])
+        with contextlib.closing(sqlite3.connect(content)) as db:  # Aurora's list itself stays as it is.
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM TitleUpdates").fetchone()[0], 4)
+
     def test_updates_the_first_netiso_rule_in_aurora(self):
         # The very first servers ("NetISO for Aurora") counted only \NetISO\:
         # once the tiles move to \NetDisc360\Games that rule must be replaced too.
@@ -7596,6 +7626,19 @@ class Dashboard(DashboardTest):
                 self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
                 self.assertEqual(wait_queue()[-1]["state"], "done")
                 self.assertEqual([a[0] for a in aurora_starts()], [content_id(newest).upper()])
+                # Aurora also lists the same update in the Cache, with no copy in
+                # its store: as Aurora starts the game it would delete that file
+                # and put nothing back, so the one with the copy is put on.
+                with contextlib.closing(sqlite3.connect(content)) as db, db:
+                    db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash) VALUES (5, 'TU_HALO3', ?, '\\Cache\\', ?, ?, ?)",
+                               (device, 0x4D5307E6, 0x1A2B3C4D, content_id(newest).upper()))
+                self.json("POST", "/api/titleupdates/off", {"game": "Halo 3", "address": "127.0.0.2"})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                aurora_starts()
+                path = next(f["path"] for f in switched()[0]["files"] if f["where"] == "aside" and f["offer"] == "111")
+                self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                self.assertEqual([(a[0], a[2]) for a in aurora_starts()], [(content_id(newest).upper(), backup)])
             else:
                 print("Skipped running the Aurora script: no lupa (pip install lupa).", file=sys.stderr)
             with open(script, encoding="utf-8") as f:

@@ -720,6 +720,31 @@ pcall(NetDiscHideHelper)
 end
 pcall(NetDiscBaseVersions)
 )lua";
+    text+=
+        "\n-- Aurora lists a title update in Hdd1:\\Cache it found itself with no copy in\n"
+        "-- its store. As it starts a game it deletes the update files and puts the\n"
+        "-- one on back from its store, so with that entry on the game ends up with\n"
+        "-- no update at all. When Aurora also has the same update with a copy in its\n"
+        "-- store, that one goes on instead (from the next Aurora start).\n"
+        R"lua(local function NetDiscTuBackups()
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT t.Id, t.Hash, t.TitleId, t.MediaId FROM Config.ActiveTitleUpdates a JOIN TitleUpdates t ON t.Id = a.TitleUpdateId WHERE IFNULL(t.BackupPath, '') = ''")
+   if not read or rows == nil then return end
+   for _, row in pairs(rows) do
+      local id, titleId, mediaId = tonumber(row.Id), tonumber(row.TitleId), tonumber(row.MediaId)
+      if id ~= nil and titleId ~= nil and mediaId ~= nil and row.Hash ~= nil and row.Hash ~= "" then
+         local readCopy, copies = pcall(Sql.ExecuteFetchRows, "SELECT Id FROM TitleUpdates WHERE Hash = '" .. string.gsub(row.Hash, "'", "''") ..
+            "' AND TitleId = " .. string.format("%.0f", titleId) .. " AND MediaId = " .. string.format("%.0f", mediaId) .. " AND IFNULL(BackupPath, '') <> '' ORDER BY Id LIMIT 1")
+         local copy = readCopy and copies ~= nil and copies[1] ~= nil and tonumber(copies[1].Id) or nil
+         local added, result = false, false
+         if copy ~= nil then added, result = pcall(Sql.Execute, "INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) VALUES (" .. string.format("%.0f", copy) .. ")") end
+         if added and result ~= false then
+            pcall(Sql.Execute, "DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId = " .. string.format("%.0f", id))
+         end
+      end
+   end
+end
+pcall(NetDiscTuBackups)
+)lua";
     std::string move=from.empty() ? std::string() : MoveLua(from,tiles,folders);
     if(!move.empty()) text+=
         "\n"
@@ -813,8 +838,12 @@ std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::str
         "   end\n"
         "   if not NetDiscTuRun(\"DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. game .. \")\") then return \"error\" end\n"
         "   if want.hash == \"\" then return \"off\" end\n"
+        "   -- Aurora may list the same update twice (in Hdd1:\\Cache and in the\n"
+        "   -- game's folder). It puts the one on back from its store as it starts the\n"
+        "   -- game and deletes the rest, so an entry with no copy in its store would\n"
+        "   -- leave the game with no update at all: put on one that has a copy.\n"
         "   if not NetDiscTuRun(\"INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) SELECT Id FROM TitleUpdates WHERE \" .. mine ..\n"
-        "      \" ORDER BY LiveDeviceId = \" .. NetDiscTuText(want.device) .. \" DESC LIMIT 1\") then return \"error\" end\n"
+        "      \" ORDER BY IFNULL(BackupPath, '') <> '' DESC, LiveDeviceId = \" .. NetDiscTuText(want.device) .. \" DESC LIMIT 1\") then return \"error\" end\n"
         "   local read, rows = pcall(Sql.ExecuteFetchRows, \"SELECT TitleUpdateId FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. mine .. \")\")\n"
         "   if read and rows ~= nil and next(rows) ~= nil then return \"on\" end\n"
         "   return \"missing\"\n"
