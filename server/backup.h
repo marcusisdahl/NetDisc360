@@ -30,6 +30,11 @@ bool Unzip(const std::string& data, std::map<std::string,std::string>& files, st
 bool Unpack(const std::string& data, std::map<std::string,std::string>& files, std::string& error, size_t maxFile);
 // The same for any stored zip of Zip's: its files by their paths in it, as they are.
 bool UnzipPaths(const std::string& data, std::map<std::string,std::string>& files, std::string& error);
+// A stored zip of Zip's on disk, read without its files: their names (in
+// the zip's order), and the content of the one named wanted (at most
+// maxFile bytes); false if it isn't there. For a big save backup whose small
+// save.ini is all that's needed.
+bool Peek(const std::string& path, std::vector<std::string>& names, const std::string& wanted, std::string& content, size_t maxFile);
 
 // Makes a backup of files in folder (made if need be); name gets its file name.
 bool Make(const std::string& folder, const std::string& kind, const std::map<std::string,std::string>& files,

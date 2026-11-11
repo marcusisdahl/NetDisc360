@@ -203,8 +203,10 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
     std::string error;
     if(!List(base,key,prefix,remote,error)) { ++report.failed; report.notes.push_back(error); return; }
     for(size_t i=0;i<remote.size();++i) report.stored+=remote[i].size;
-    // This computer's files, by path below the kind ("<XUID>/<file>" at depth 1).
+    // This computer's files, by path below the kind ("<XUID>/<file>" at depth
+    // 1), with their sizes.
     std::set<std::string> here;
+    std::map<std::string,long long> sizes;
     std::vector<std::string> folders;
     if(kind.depth==0) folders.push_back("");
     else {
@@ -213,8 +215,12 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
     }
     for(size_t f=0;f<folders.size();++f) {
         std::vector<config::Entry> files=config::Files(folders[f].empty() ? kind.folder : Join(kind.folder,folders[f]));
-        for(size_t i=0;i<files.size();++i)
-            if(Syncable(files[i].name)) here.insert(folders[f].empty() ? files[i].name : folders[f]+"/"+files[i].name);
+        for(size_t i=0;i<files.size();++i) {
+            if(!Syncable(files[i].name)) continue;
+            const std::string rel=folders[f].empty() ? files[i].name : folders[f]+"/"+files[i].name;
+            here.insert(rel);
+            sizes[rel]=files[i].size;
+        }
     }
     std::set<std::string> seen=ReadSeen(seenFile), there;
     const size_t wasSeen=seen.size();
@@ -249,6 +255,17 @@ void Files(const std::string& url, const std::string& key, const Kind& kind, con
     }
     for(std::set<std::string>::const_iterator h=here.begin();h!=here.end();++h) {
         if(there.count(*h)) continue;
+        // Too large for the Worker (SSX's saves are about 100 MB): it stays on
+        // this computer, which is no failure, and is told once (seen).
+        if(sizes[*h]>(long long)FileMost) {
+            if(!seen.count(*h)) {
+                char size[32]; snprintf(size,sizeof(size),"%.0f MB",double(sizes[*h])/(1<<20));
+                report.left.push_back(kind.name+"/"+*h+" is kept on this computer only: at "+size+" it's more than the "+
+                                      std::to_string((unsigned long long)(FileMost>>20))+" MB a file can be in the sync.");
+                seen.insert(*h);
+            }
+            continue;
+        }
         std::string data, path=kind.folder;
         size_t slash=h->find('/');
         path=slash==std::string::npos ? Join(path,*h) : Join(Join(path,h->substr(0,slash)),h->substr(slash+1));
