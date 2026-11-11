@@ -2425,10 +2425,14 @@ print('lua ok')
         self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
 
     def test_puts_on_the_title_update_aurora_has_a_copy_of(self):
-        # Aurora also lists an update in Hdd1:\\Cache it found itself, with no
-        # copy in its store; with that entry on, Aurora deletes the file as it
-        # starts the game and puts nothing back. The script that runs as
-        # Aurora starts puts on the same update's entry that has a copy.
+        # Aurora may list an update twice: in the place the console reads it
+        # from (a TU_ file in Hdd1:\\Cache, a tu file in the game's 000B0000)
+        # and in another, and only one may have a copy in its store. As it
+        # starts the game it puts the one on back from its store in that
+        # entry's place and deletes the rest (MW2 on COD: on in 000B0000, where
+        # the console doesn't read a TU_ file; the Cache entry had no copy).
+        # The script that runs as Aurora starts puts on the entry in the
+        # console's place and gives it the copy.
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.push()
         online = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscOnline.lua")
@@ -2439,20 +2443,26 @@ print('lua ok')
         for name, table in ((content, AURORA_TU_TABLES[0]), (settings, AURORA_TU_TABLES[1])):
             with contextlib.closing(sqlite3.connect(name)) as db:
                 db.execute(table)
+        mw2 = "\\Content\\0000000000000000\\41560817\\000B0000\\"
+        rows = (
+            (2, "TU_10LC20N", mw2, 0x41560817, "ED9F", "Game:\\Data\\mw2"),      # On, but the console doesn't read it there.
+            (3, "TU_10LC20N", "\\Cache\\", 0x41560817, "ED9F", ""),              # Goes on, with 2's copy.
+            (4, "tu00000005_00000000", "\\Cache\\", 0x45410950, "FF01", None),    # On, no copy...
+            (5, "tu00000005_00000000", "\\Content\\0000000000000000\\45410950\\000B0000\\", 0x45410950, "FF01", "Game:\\Data\\fifa"),  # ...goes on.
+            (6, "TU_ONLY", "\\Cache\\", 0x4D5307E6, "AB12", None),              # One entry only: stays on as it is.
+            (7, "TU_GOOD", "\\Cache\\", 0x4D5307E7, "CD34", "Game:\\Data\\y"))  # Already right.
         with contextlib.closing(sqlite3.connect(content)) as db, db:
-            for row in ((2, "\\Content\\0000000000000000\\41560817\\000B0000\\", "ED9F", "Game:\\Data\\TitleUpdates\\x"),
-                        (3, "\\Cache\\", "ED9F", ""),
-                        (4, "\\Cache\\", "AB12", None),            # Only one entry: stays on.
-                        (5, "\\Cache\\", "CD34", "Game:\\Data\\y")):  # Has a copy: stays on.
-                db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (?, 'TU_X', 'dev', ?, ?, ?, ?, ?)",
-                           (row[0], row[1], 0x41560817 if row[0] < 4 else row[0], 0x2C8C0267, row[2], row[3]))
+            for row in rows:
+                db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (?, ?, 'dev', ?, ?, ?, ?, ?)",
+                           (row[0], row[1], row[2], row[3], 0x2C8C0267, row[4], row[5]))
         with contextlib.closing(sqlite3.connect(settings)) as db, db:
-            db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (3), (4), (5)")
+            db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (2), (4), (6), (7)")
         run_aurora_script(online, self.xbox, content, settings)
         with contextlib.closing(sqlite3.connect(settings)) as db:
-            self.assertEqual([r[0] for r in db.execute("SELECT TitleUpdateId FROM ActiveTitleUpdates ORDER BY TitleUpdateId")], [2, 4, 5])
-        with contextlib.closing(sqlite3.connect(content)) as db:  # Aurora's list itself stays as it is.
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM TitleUpdates").fetchone()[0], 4)
+            self.assertEqual([r[0] for r in db.execute("SELECT TitleUpdateId FROM ActiveTitleUpdates ORDER BY TitleUpdateId")], [3, 5, 6, 7])
+        with contextlib.closing(sqlite3.connect(content)) as db:  # Only the copy is added; no entry goes.
+            self.assertEqual(db.execute("SELECT Id, BackupPath FROM TitleUpdates ORDER BY Id").fetchall(),
+                             [(2, "Game:\\Data\\mw2"), (3, "Game:\\Data\\mw2"), (4, None), (5, "Game:\\Data\\fifa"), (6, None), (7, "Game:\\Data\\y")])
 
     def test_updates_the_first_netiso_rule_in_aurora(self):
         # The very first servers ("NetISO for Aurora") counted only \NetISO\:

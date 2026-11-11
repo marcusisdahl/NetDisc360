@@ -9811,7 +9811,9 @@ std::string TuInAurora(FtpClient& ftp, const Options& o, ContentCopy& c, const C
             }
             if(there) {
                 want.backupPath="Game:\\Data\\TitleUpdates\\"+want.device+"\\"+Hex8(titleId)+"\\"+want.hash+"\\"+on->name;
-                want.livePath="\\Content\\0000000000000000\\"+Hex8(titleId)+"\\000B0000\\";
+                // Where the console reads it (tu::LivePath): a TU_ file in the
+                // Cache, a tu file in the game's 000B0000; Aurora puts it there.
+                want.livePath=on->name.compare(0,3,"TU_") ? "\\Content\\0000000000000000\\"+Hex8(titleId)+"\\000B0000\\" : std::string("\\Cache\\");
             }
         }
     }

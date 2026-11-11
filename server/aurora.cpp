@@ -721,24 +721,40 @@ end
 pcall(NetDiscBaseVersions)
 )lua";
     text+=
-        "\n-- Aurora lists a title update in Hdd1:\\Cache it found itself with no copy in\n"
-        "-- its store. As it starts a game it deletes the update files and puts the\n"
-        "-- one on back from its store, so with that entry on the game ends up with\n"
-        "-- no update at all. When Aurora also has the same update with a copy in its\n"
-        "-- store, that one goes on instead (from the next Aurora start).\n"
+        "\n-- Aurora may list a title update twice: in the place the console reads it\n"
+        "-- from (a TU_ file in Hdd1:\\Cache, a tu file in the game's 000B0000) and in\n"
+        "-- another, and only one of them may have a copy in its store. As it starts a\n"
+        "-- game it deletes the update files and puts the one on back from its store,\n"
+        "-- in that entry's place: on an entry with no copy, or in a place the console\n"
+        "-- doesn't read, the game ends up with no update. So the entry in the\n"
+        "-- console's place goes on instead, with the copy (from the next Aurora start).\n"
         R"lua(local function NetDiscTuBackups()
-   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT t.Id, t.Hash, t.TitleId, t.MediaId FROM Config.ActiveTitleUpdates a JOIN TitleUpdates t ON t.Id = a.TitleUpdateId WHERE IFNULL(t.BackupPath, '') = ''")
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT t.Id, t.Hash, t.TitleId, t.MediaId, t.FileName, t.LivePath, t.BackupPath FROM Config.ActiveTitleUpdates a JOIN TitleUpdates t ON t.Id = a.TitleUpdateId")
    if not read or rows == nil then return end
+   local function quote(text) return "'" .. string.gsub(text or "", "'", "''") .. "'" end
    for _, row in pairs(rows) do
       local id, titleId, mediaId = tonumber(row.Id), tonumber(row.TitleId), tonumber(row.MediaId)
-      if id ~= nil and titleId ~= nil and mediaId ~= nil and row.Hash ~= nil and row.Hash ~= "" then
-         local readCopy, copies = pcall(Sql.ExecuteFetchRows, "SELECT Id FROM TitleUpdates WHERE Hash = '" .. string.gsub(row.Hash, "'", "''") ..
-            "' AND TitleId = " .. string.format("%.0f", titleId) .. " AND MediaId = " .. string.format("%.0f", mediaId) .. " AND IFNULL(BackupPath, '') <> '' ORDER BY Id LIMIT 1")
-         local copy = readCopy and copies ~= nil and copies[1] ~= nil and tonumber(copies[1].Id) or nil
-         local added, result = false, false
-         if copy ~= nil then added, result = pcall(Sql.Execute, "INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) VALUES (" .. string.format("%.0f", copy) .. ")") end
-         if added and result ~= false then
-            pcall(Sql.Execute, "DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId = " .. string.format("%.0f", id))
+      if id ~= nil and titleId ~= nil and mediaId ~= nil and row.Hash ~= nil and row.Hash ~= "" and row.FileName ~= nil then
+         local place = "\\Content\\0000000000000000\\" .. string.format("%08X", titleId % 4294967296) .. "\\000B0000\\"
+         if string.sub(row.FileName, 1, 3) == "TU_" then place = "\\Cache\\" end
+         local good = string.lower(row.LivePath or "") == string.lower(place) and (row.BackupPath or "") ~= ""
+         local same = "Hash = " .. quote(row.Hash) .. " AND TitleId = " .. string.format("%.0f", titleId) .. " AND MediaId = " .. string.format("%.0f", mediaId)
+         local readCopy, copies = pcall(Sql.ExecuteFetchRows, "SELECT Id, LivePath, BackupPath FROM TitleUpdates WHERE " .. same .. " ORDER BY Id")
+         if not good and readCopy and copies ~= nil then
+            local target, backup = nil, row.BackupPath
+            for _, copy in pairs(copies) do
+               if (backup == nil or backup == "") and (copy.BackupPath or "") ~= "" then backup = copy.BackupPath end
+               if target == nil and string.lower(copy.LivePath or "") == string.lower(place) then target = tonumber(copy.Id) end
+            end
+            if target ~= nil and backup ~= nil and backup ~= "" then
+               pcall(Sql.Execute, "UPDATE TitleUpdates SET BackupPath = " .. quote(backup) .. " WHERE Id = " .. string.format("%.0f", target) .. " AND IFNULL(BackupPath, '') = ''")
+               if target ~= id then
+                  local added, result = pcall(Sql.Execute, "INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) VALUES (" .. string.format("%.0f", target) .. ")")
+                  if added and result ~= false then
+                     pcall(Sql.Execute, "DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId = " .. string.format("%.0f", id))
+                  end
+               end
+            end
          end
       end
    end
@@ -838,12 +854,15 @@ std::string TitleUpdateScript(const std::vector<AuroraTu>& wants, const std::str
         "   end\n"
         "   if not NetDiscTuRun(\"DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. game .. \")\") then return \"error\" end\n"
         "   if want.hash == \"\" then return \"off\" end\n"
-        "   -- Aurora may list the same update twice (in Hdd1:\\Cache and in the\n"
-        "   -- game's folder). It puts the one on back from its store as it starts the\n"
-        "   -- game and deletes the rest, so an entry with no copy in its store would\n"
-        "   -- leave the game with no update at all: put on one that has a copy.\n"
+        "   -- Aurora may list the same update twice: in the place the console reads\n"
+        "   -- it from (a TU_ file in Hdd1:\\Cache, a tu file in the game's 000B0000) and\n"
+        "   -- in another, maybe with no copy in its store. As it starts the game it\n"
+        "   -- puts the one on back from its store, in that entry's place, and deletes\n"
+        "   -- the rest: the entry in the console's place goes on, with the copy.\n"
         "   if not NetDiscTuRun(\"INSERT OR IGNORE INTO Config.ActiveTitleUpdates (TitleUpdateId) SELECT Id FROM TitleUpdates WHERE \" .. mine ..\n"
-        "      \" ORDER BY IFNULL(BackupPath, '') <> '' DESC, LiveDeviceId = \" .. NetDiscTuText(want.device) .. \" DESC LIMIT 1\") then return \"error\" end\n"
+        "      \" ORDER BY LivePath = \" .. NetDiscTuText(want.livePath) .. \" DESC, IFNULL(BackupPath, '') <> '' DESC, LiveDeviceId = \" .. NetDiscTuText(want.device) .. \" DESC LIMIT 1\") then return \"error\" end\n"
+        "   NetDiscTuRun(\"UPDATE TitleUpdates SET BackupPath = IFNULL((SELECT BackupPath FROM TitleUpdates WHERE \" .. mine .. \" AND IFNULL(BackupPath, '') <> '' LIMIT 1), NULLIF(\" .. NetDiscTuText(want.backupPath) .. \", '')) WHERE IFNULL(BackupPath, '') = '' AND \" .. mine ..\n"
+        "      \" AND Id IN (SELECT TitleUpdateId FROM Config.ActiveTitleUpdates)\")\n"
         "   local read, rows = pcall(Sql.ExecuteFetchRows, \"SELECT TitleUpdateId FROM Config.ActiveTitleUpdates WHERE TitleUpdateId IN (SELECT Id FROM TitleUpdates WHERE \" .. mine .. \")\")\n"
         "   if read and rows ~= nil and next(rows) ~= nil then return \"on\" end\n"
         "   return \"missing\"\n"
