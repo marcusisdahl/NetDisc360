@@ -687,6 +687,39 @@ std::string OnlineScript(const std::string& tiles, const std::string& app, const
 end
 pcall(NetDiscHideHelper)
 )lua";
+    // The tiles' launchers carry version LauncherVersion (see library.h), and
+    // Aurora keeps that as the game's base version; it lists a game's title
+    // updates only for its base version, so the list stayed empty. The base
+    // version the game's own updates are for goes back in.
+    text+=
+        "\n"
+        "-- NetDisc360's tile launchers have a version no title update is for, so the\n"
+        "-- console never applies one to the launcher itself. Aurora keeps that as the\n"
+        "-- game's base version and then lists none of its title updates: the base\n"
+        "-- version of the game's own updates (same Title ID and Media ID) goes back.\n"
+        R"lua(local function NetDiscBaseVersions()
+   local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT Id, Directory, TitleId, MediaId FROM ContentItems WHERE BaseVersion = 2147483647")
+   if not read or rows == nil then return end
+   local readUpdates, updates = pcall(Sql.ExecuteFetchRows, "SELECT TitleId, MediaId, BaseVersion FROM TitleUpdates")
+   if not readUpdates or updates == nil then return end
+   local base = {}
+   for _, u in pairs(updates) do
+      local key = tostring(tonumber(u.TitleId)) .. ":" .. tostring(tonumber(u.MediaId))
+      local version = tonumber(u.BaseVersion)
+      if version ~= nil and version ~= 2147483647 and (base[key] == nil or version < base[key]) then base[key] = version end
+   end
+   for _, row in pairs(rows) do
+      local folder = string.lower((string.gsub(row.Directory or "", "^[^\\]*:", "")))
+      if string.sub(folder, 1, 1) ~= "\\" then folder = "\\" .. folder end
+      local id = tonumber(row.Id)
+      local version = base[tostring(tonumber(row.TitleId)) .. ":" .. tostring(tonumber(row.MediaId))]
+      if id ~= nil and version ~= nil and string.sub(folder, 1, string.len(NetDiscTiles)) == NetDiscTiles then
+         pcall(Sql.Execute, "UPDATE ContentItems SET BaseVersion = " .. version .. " WHERE Id = " .. id)
+      end
+   end
+end
+pcall(NetDiscBaseVersions)
+)lua";
     std::string move=from.empty() ? std::string() : MoveLua(from,tiles,folders);
     if(!move.empty()) text+=
         "\n"

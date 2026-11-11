@@ -2383,6 +2383,47 @@ class Push(ServerTest):
         out = self.push()
         self.assertNotIn("cover art to Aurora", out)
 
+    def test_gives_aurora_the_games_own_base_version(self):
+        # Aurora keeps the launcher's version (LauncherVersion) as the tile's
+        # base version and so lists none of its title updates: the script that
+        # runs as Aurora starts puts back the base version of the game's own
+        # updates, for tiles only.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.push()
+        online = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscOnline.lua")
+        self.assertTrue(os.path.exists(online))
+        if not LUA:
+            return
+        check = os.path.join(self.tmp.name, "base.lua")
+        with open(check, "w") as f:
+            f.write(r"""
+local done = {}
+FileSystem = { FileExists = function() return false end, DeleteFile = function() end, WriteFile = function() end }
+GameListFilterCategories = { User = {} }
+Sql = {
+   ExecuteFetchRows = function(query)
+      if string.find(query, 'BaseVersion = 2147483647', 1, true) then return {
+         { Id = 7, Directory = '\\netdisc360\\games\\call of duty mw2', TitleId = 1096157207, MediaId = 747373159 },
+         { Id = '8', Directory = 'Hdd1:\\NetDisc360\\Games\\FIFA 14', TitleId = 1161890200, MediaId = -100 },
+         { Id = 9, Directory = '\\netdisc360\\games\\no updates', TitleId = 1, MediaId = 2 },
+         { Id = 10, Directory = '\\games\\call of duty mw2', TitleId = 1096157207, MediaId = 747373159 } } end
+      if string.find(query, 'FROM TitleUpdates', 1, true) then return {
+         { TitleId = 1096157207, MediaId = 747373159, BaseVersion = 10 },
+         { TitleId = '1096157207', MediaId = '747373159', BaseVersion = 12 },
+         { TitleId = 1161890200, MediaId = -100, BaseVersion = 5 },
+         { TitleId = 1, MediaId = 2, BaseVersion = 2147483647 } } end
+      return {}
+   end,
+   Execute = function(query) if string.find(query, 'BaseVersion', 1, true) then table.insert(done, query) end return true end }
+dofile(%r)
+assert(#done == 2, #done)
+assert(done[1] == 'UPDATE ContentItems SET BaseVersion = 10 WHERE Id = 7', done[1])
+assert(done[2] == 'UPDATE ContentItems SET BaseVersion = 5 WHERE Id = 8', done[2])
+print('lua ok')
+""" % online)
+        result = subprocess.run([LUA, check], capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
     def test_updates_the_first_netiso_rule_in_aurora(self):
         # The very first servers ("NetISO for Aurora") counted only \NetISO\:
         # once the tiles move to \NetDisc360\Games that rule must be replaced too.
