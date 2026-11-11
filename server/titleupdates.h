@@ -19,6 +19,7 @@
 // HTTP client, or curl on Linux; a base address of http://... (the tests')
 // is asked over a plain socket.
 #include "../shared/platform.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -46,9 +47,27 @@ std::vector<Offer> ForMedia(const std::vector<Offer>& all, DWORD mediaId);
 std::string InfoUrl(const std::string& base, DWORD titleId);
 std::string FileUrl(const std::string& base, const std::string& id);
 
+// What went wrong with a Get, so what the user is told fits: Offline (the
+// name didn't resolve, or nothing took the connection: this computer's
+// network, most likely), Slow (no answer in time: the site may be down),
+// ServerError (it answered with an error such as 500: it's down), NotThere
+// (it answered 404 or 410: it has no such thing), Broken (an answer cut
+// short, too large or not understood).
+enum Failure { Fine, Offline, Slow, ServerError, NotThere, Broken };
+// How long a look-up (a list, a name, an icon) may take before it counts as
+// Slow: 30 s (--lookup-seconds for the tests); a download of an update file 10 min.
+extern int LookupSeconds;
+enum { DownloadSeconds = 600 };
+
 // GET of at most limit bytes: the body, and the file name its
-// Content-Disposition gives (empty if none). False with why in error.
-bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error);
+// Content-Disposition gives (empty if none). False with why in error, which
+// calls the server site; failure, if given, says what kind of failure it was
+// (Fine when it worked). seconds: the most it may take, 0 for LookupSeconds.
+// progress, if given, is told the body's bytes so far and its whole size (0
+// while it isn't known) as they come, so a download can show how far it is.
+typedef std::function<void(size_t got, size_t total)> Progress;
+bool Get(const std::string& url, std::string& body, size_t limit, std::string& fileName, std::string& error,
+         int seconds = 0, const std::string& site = "XboxUnity", Failure* failure = NULL, const Progress* progress = NULL);
 
 // Where a title update file goes on the console (an FTP path), from its
 // name as XboxUnity gives it; name is first made one FATX takes (see FatxName).
