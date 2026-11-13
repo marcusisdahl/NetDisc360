@@ -468,6 +468,87 @@ class Compress(ServerTest):
         self.assertTrue(c.mount("Halo 3.iso"))
         self.check_files(c, files)
 
+    def games(self, until):
+        deadline = time.time() + 10
+        while True:
+            games = self.json("GET", "/api/games")["games"]
+            if until(games) or time.time() > deadline:
+                return games
+            time.sleep(0.2)
+
+    def test_the_iso_goes_once_its_compressed_copy_holds_it(self):
+        iso, files = self.game()
+        other, _ = self.game("Other.iso")
+        self.assertEqual(compress(iso).returncode, 0)
+        # A copy that holds another disc: Other.iso must stay.
+        with open(other, "r+b") as f:
+            f.write(b"\x01" * 4096)
+        shutil.copy(os.path.join(self.isos, "Game.cso"), os.path.join(self.isos, "Other.cso"))
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        games = self.games(lambda g: len(g) == 2)
+        game = next(g for g in games if g["name"] == "Game")
+        self.assertEqual((game["kind"], game["csoCopy"]), ("iso", os.path.join(self.isos, "Game.cso")))
+        self.assertEqual(game["csoSize"], os.path.getsize(os.path.join(self.isos, "Game.cso")))
+        status, _, data = self.call("POST", "/api/compress/remove", {"path": other})
+        self.assertEqual(status, 400, data)
+        self.assertIn(b"different disc", data)
+        self.assertTrue(os.path.exists(other))
+        for name in ("Other.iso", "Other.cso"):  # The same game: it would be the copy that plays.
+            os.remove(os.path.join(self.isos, name))
+        status, _, data = self.call("POST", "/api/compress/remove", {"path": os.path.join(self.tmp.name, "Game.iso")})
+        self.assertEqual(status, 400, data)  # Not in the game folders.
+        self.assertIn("compressed copy plays now", self.json("POST", "/api/compress/remove", {"path": iso})["said"])
+        self.assertFalse(os.path.exists(iso))
+        games = self.games(lambda g: any(x["name"] == "Game" and x["kind"] == "cso" for x in g))
+        self.assertEqual([(g["name"], g["kind"]) for g in games if g["name"] == "Game"], [("Game", "cso")])
+        c = Client(self.port)
+        self.addCleanup(c.close)
+        self.assertTrue(c.mount("Game.iso"))
+        self.check_files(c, files)
+
+    def test_an_archive_next_to_its_iso(self):
+        # As Marcus had it: the ISO, and the archive it came from, side by side.
+        iso, files = self.game("Banjo.iso")
+        archive = os.path.join(self.isos, "Banjo.zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(iso, "Banjo.iso")
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        disc = self.json("GET", "/api/compress?fresh=1")["archives"][0]["discs"][0]
+        self.assertTrue(disc["iso"] and disc["room"], disc)
+        self.assertGreater(disc["need"], os.path.getsize(iso))
+        status, _, data = self.call("POST", "/api/compress/remove", {"path": archive})
+        self.assertEqual(status, 400, data)  # Not compressed yet.
+        self.assertIn(b"isn't compressed yet", data)
+        self.json("POST", "/api/compress", {"path": archive})
+        deadline = time.time() + 60
+        while True:
+            state = self.json("GET", "/api/compress")
+            if state["recent"] or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        self.assertTrue(state["recent"][0]["ok"] and state["recent"][0]["isoPlays"], state)
+        self.assertTrue(state["free"] and state["free"][0]["bytes"] > 0, state)
+        self.assertEqual([g["kind"] for g in self.games(lambda g: g)], ["iso"])  # The ISO still plays.
+        self.json("POST", "/api/compress/remove", {"path": iso})
+        self.assertFalse(self.json("GET", "/api/compress?fresh=1")["recent"][0]["isoPlays"])
+        self.json("POST", "/api/compress/remove", {"path": archive})
+        self.assertFalse(os.path.exists(iso) or os.path.exists(archive))
+        self.assertEqual([g["kind"] for g in self.games(lambda g: g and g[0]["kind"] == "cso")], ["cso"])
+
+    def test_no_room_is_said_before_it_starts(self):
+        iso = os.path.join(self.isos, "Huge.iso")
+        with open(iso, "wb") as f:  # Sparse: far more than any drive here has free.
+            f.truncate(15 << 40)
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        status, _, data = self.call("POST", "/api/compress", {"path": iso})
+        self.assertEqual(status, 400, data)
+        self.assertIn(b"isn't room", data)
+        self.assertEqual(self.json("GET", "/api/compress")["queue"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.isos, "Huge.cso.part")))
+
 
 if __name__ == "__main__":
     unittest.main()

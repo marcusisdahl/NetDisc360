@@ -38,7 +38,8 @@ struct DiscFile { std::string path; U64 at, size; };
 // or NetDisc360's list), empty for the console's own pick. imageSize: a CSO
 // file's disc as it is served, uncompressed (0 until read; size is the file's).
 struct IsoFile { std::string path, name; U64 size; long long modified; DiscKind kind; DWORD titleId, mediaId; int disc;
-                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; U64 imageSize=0; };
+                 std::vector<Package> packages; std::string installDisc, role, roleLabel; bool incomplete=false; bool xbe=false; std::string xefu, xefuWhy; U64 imageSize=0;
+                 std::string csoCopy; U64 csoSize=0; };  // An ISO's compressed copy next to it, which plays once the ISO is gone.
 
 // The discs in folder and its subfolders, sorted by name, added to out;
 // false if folder itself couldn't be read (a drive or share that isn't there).

@@ -1843,6 +1843,18 @@ async function stopCompress(output) {
   if (view && view.packs) view.packs();
 }
 const leaf = path => path.split(/[\\/]/).pop();
+// Deletes an ISO or archive whose discs all have a compressed copy (after
+// asking): the server checks each copy holds the same disc first.
+async function removeOriginal(path, button, after) {
+  const win = !S || S.platform === 'windows';
+  if (!(await confirmBox('Delete ' + leaf(path) + '?', [h('p', { style: { margin: 0 } }, 'Its compressed copy holds the same disc and plays in its place, with the same tile. NetDisc360 checks that before it deletes anything. ' +
+      (win ? 'It goes to the Recycle Bin, so you can get it back (on a network share it’s deleted for good).' : 'It’s deleted for good.'))], 'Delete it', true))) return;
+  if (button) button.disabled = true;
+  try { const r = await api('compress/remove', { path }); toast(r.said); await loadPacks(true); if (after) after(); await refresh(); }
+  catch (e) { toast(e.message, true); if (button) button.disabled = false; }
+  if (view && view.packs) view.packs();
+}
+const isoNextTo = output => output.replace(/\.cso$/i, '.iso');
 const PackSteps = { table: 'Reading its file table', compress: 'Compressing', check: 'Checking the new file' };
 function packsCard() {
   const d = Packs.data;
@@ -1859,33 +1871,49 @@ function packsCard() {
   }
   for (const q of d.queue) rows.push(h('div.pack', ic('history', 'sm'), h('div.what', h('b', q.name), h('div.muted', 'Next')),
     h('button.btn.small.ghost', { onclick: () => stopCompress(q.output) }, 'Cancel')));
+  const recentSources = new Set(d.recent.filter(r => S && S.time - r.time < 86400).map(r => r.source));
   for (const a of d.archives) {
     if (a.problem) { rows.push(h('div.pack', ic('triangle-alert', 'sm'), h('div.what', h('b', leaf(a.path)), h('div.muted', 'Can\u2019t be read: ' + a.problem + '.')))); continue; }
     a.discs.forEach((disc, i) => {
       if (disc.done || disc.planned) return;
-      rows.push(h('div.pack', ic('archive', 'sm'),
-        h('div.what', h('b', disc.name), h('div.muted', bytes(disc.size) + ' ISO in ' + leaf(a.path))),
-        h('button.btn.small.primary', { onclick: e => compress(a.path, i, disc.name, e.target) }, 'Compress to play')));
+      const why = disc.iso ? 'Plays from its ISO already. Compressed, it takes less room: then the ISO and ' + leaf(a.path) + ' can both go.'
+        : bytes(disc.size) + ' ISO in ' + leaf(a.path) + '.';
+      rows.push(h('div.pack', ic(disc.room ? 'archive' : 'hard-drive', 'sm'),
+        h('div.what', h('b', disc.name), h('div.muted', why + (disc.room ? '' : ' Not enough room: ' + disc.noRoom + '.'))),
+        h('button.btn.small' + (disc.iso ? '' : '.primary'), { disabled: !disc.room, title: disc.room ? 'Needs up to ' + bytes(disc.need) + ' free while it runs' : '', onclick: e => compress(a.path, i, disc.name, e.target) },
+          disc.iso ? 'Compress' : 'Compress to play')));
     });
+    // Every disc compressed: the archive isn't needed (once no ISO of it is left either).
+    if (a.discs.length && a.discs.every(x => x.done) && !recentSources.has(a.path))
+      rows.push(h('div.pack', ic('circle-check', 'sm'),
+        h('div.what', h('b', leaf(a.path)), h('div.muted', 'Compressed' + (a.discs.some(x => x.iso) ? ', but its ISO still plays: delete the ISO first, then this.' : ' and played from the compressed copy, so it can go (' + bytes(a.size) + ').'))),
+        h('button.btn.small', { onclick: e => removeOriginal(a.path, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete')));
   }
   for (const r of d.recent.filter(r => S && S.time - r.time < 86400).slice(0, 3)) {
     const fromIso = /\.iso$/i.test(r.source);
     // An archive with more discs: kept until each is compressed.
     const archive = !fromIso && d.archives.find(a => a.path === r.source);
     const left = archive && !archive.problem ? archive.discs.filter(x => !x.done).map(x => x.name) : [];
+    // What can go now: the ISO that still plays first, then the archive.
+    const iso = r.ok && r.isoPlays ? isoNextTo(r.output) : null;
+    const gone = r.ok && !iso && !left.length && (fromIso ? false : archive) ? r.source : null;
     rows.push(h('div.pack', ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
       h('div.what', h('b', r.name), h('div.muted', r.ok
         ? bytes(r.image) + ' \u2192 ' + bytes(r.bytes) + ' in ' + duration(r.seconds) + (r.whole ? ' (kept whole: its file table couldn\u2019t be read)' : '') + '. ' +
-          (fromIso ? 'The ISO still plays until you delete it; then the compressed copy plays, with the same tile.'
+          (iso ? 'Its ISO is still next to it, so the ISO still plays. Delete the ISO to play the compressed copy, with the same tile' + (fromIso ? '.' : ', then ' + leaf(r.source) + ' can go too.')
             : left.length ? 'It plays now. Keep ' + leaf(r.source) + ' until ' + left.join(' and ') + (left.length > 1 ? ' are' : ' is') + ' compressed too.'
-            : 'It plays now, so ' + leaf(r.source) + ' can go: delete it to get its space back.')
-        : 'Not compressed: ' + r.error + '.'))));
+            : fromIso ? 'The compressed copy plays now.'
+            : archive ? 'It plays now, so ' + leaf(r.source) + ' can go.' : 'It plays now.')
+        : 'Not compressed: ' + r.error + '.')),
+      iso ? h('button.btn.small', { onclick: e => removeOriginal(iso, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete the ISO')
+        : gone ? h('button.btn.small', { onclick: e => removeOriginal(gone, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete ' + (/\.zip$/i.test(gone) ? 'the zip' : 'the 7z')) : null));
   }
   if (!rows.length) return null;
   return h('div.card.packs', { style: { marginBottom: '20px' } },
     h('div.card-head', ic('archive', 'sm'), h('h2', 'Compressed games'), h('span.sub', 'one smaller file per disc, played like the ISO')),
     h('div.card-body', rows),
-    h('div.card-foot.muted', 'NetDisc360 writes the compressed copy (.cso) next to the original and never deletes anything. It leaves out the space on the disc that no file uses, so a game usually takes much less room.'));
+    h('div.card-foot.muted', 'NetDisc360 writes the compressed copy (.cso) next to the original, and deletes the original only when you say so, after checking the copy. It leaves out the space on the disc that no file uses, so a game usually takes much less room.' +
+      (d.free && d.free.some(f => f.bytes) ? ' Free: ' + d.free.filter(f => f.bytes).map(f => bytes(f.bytes) + ' for ' + f.folder).join(', ') + '.' : '')));
 }
 Pages.games = root => {
   let mode = store('games.view') || 'covers', kind = 'all', sort = store('games.sort') || 'name', query = '';
@@ -2429,6 +2457,8 @@ function details(g) {
           g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
           h('div.k', 'Playing'), h('div.v', on ? on.map(nameOf).join(', ') : 'Not now'),
           h('div.k', 'Played'), h('div.v', playedText(g)),
+          g.csoCopy ? [h('div.k', 'Compressed copy'), h('div.v', bytes(g.csoSize) + ' next to it. The ISO plays while it\u2019s there; delete it to play the compressed copy instead and free ' + bytes(g.size) + '.',
+            h('div', { style: { marginTop: '6px' } }, h('button.btn.small', { onclick: e => removeOriginal(g.path, e.currentTarget, close) }, ic('trash-2', 'sm'), 'Delete the ISO')))] : null,
           g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
           titleUpdateFacts(g),
           g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.map(nameOf).join(', ') + (g.tiles && g.tiles.length ? ' (its NetISO tile asks which copy to play)' : ' (no tile there: Aurora lists the installed copy)'),
@@ -2441,7 +2471,7 @@ function details(g) {
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
         ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in ' + gamesFolder() + '.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
-      g.kind === 'iso' ? h('button.btn', { title: 'Takes less room: writes a smaller copy next to the ISO that plays the same; the ISO stays', onclick: e => { compress(g.path, null, g.name, e.target); close(); if (page !== 'games') location.hash = '#games'; } }, ic('archive', 'sm'), 'Compress') : null,
+      g.kind === 'iso' && !g.csoCopy ? h('button.btn', { title: 'Takes less room: writes a smaller copy next to the ISO that plays the same; the ISO stays', onclick: e => { compress(g.path, null, g.name, e.target); close(); if (page !== 'games') location.hash = '#games'; } }, ic('archive', 'sm'), 'Compress') : null,
       h('button.btn', { onclick: close }, 'Close')),
   ], false, () => { live.delete(followCopy); live.delete(followUpdates); });
 }

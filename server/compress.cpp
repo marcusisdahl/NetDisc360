@@ -849,6 +849,51 @@ U64 FreeBytes(const std::string& folder) {
 #endif
 }
 
+U64 RoomToCompress(U64 imageBytes) {
+    U64 blocks=(imageBytes+CsoBlock-1)/CsoBlock;
+    return imageBytes+(blocks+1)*4+(U64(64)<<20);
+}
+
+U64 FileBytes(const std::string& path) {
+    RawFile f; U64 size=0;
+    return f.Open(path,false) && f.Size(size) ? size : 0;
+}
+
+bool CsoHolds(const std::string& cso, U64 imageBytes, const std::string& iso, std::string& error) {
+    std::unique_ptr<DiscImage> image(OpenCsoImage(cso,error));
+    if(!image) return false;
+    if(!imageBytes || image->Size()!=imageBytes) { error="its compressed copy is a different size"; return false; }
+    if(iso.empty()) return true;
+    RawFile original;
+    if(!original.Open(iso,false)) { error="the ISO can't be read"; return false; }
+    static const U64 Places[]={ 0, 0x10000, 0x2090000, 0xFDA0000, 0x18310000 };
+    std::vector<unsigned char> a(0x10000), b(0x10000);
+    for(size_t i=0;i<sizeof(Places)/sizeof(Places[0]);++i) {
+        U64 at=Places[i];
+        if(at>=imageBytes) break;
+        DWORD length=DWORD(std::min<U64>(i ? Sector : 0x10000,imageBytes-at));
+        if(original.Read(at,b.data(),length)!=(long long)length) { error="the ISO can't be read"; return false; }
+        // Past the start, only where the ISO's file table begins: elsewhere
+        // the ISO has filler that its compressed copy leaves out.
+        if(i && memcmp(b.data(),"MICROSOFT*XBOX*MEDIA",20)) continue;
+        if(!image->Read(at,a.data(),length)) { error="its compressed copy can't be read"; return false; }
+        if(memcmp(a.data(),b.data(),length)) { error="its compressed copy holds a different disc"; return false; }
+    }
+    return true;
+}
+
+bool RoomFor(const std::string& output, U64 imageBytes, U64 reserved, std::string& error) {
+    U64 room=FreeBytes(Parent(output)), need=RoomToCompress(imageBytes);
+    if(!room) return true;  // Not known: the check after its file table is read still runs.
+    U64 left=room>reserved ? room-reserved : 0;
+    if(left>=need) return true;
+    char text[200];
+    if(reserved) _snprintf_s(text,sizeof(text),_TRUNCATE,"it needs up to %.1f GB, and only %.1f GB are free once the ones before it are done",double(need)/1e9,double(left)/1e9);
+    else _snprintf_s(text,sizeof(text),_TRUNCATE,"it needs up to %.1f GB, and only %.1f GB are free",double(need)/1e9,double(room)/1e9);
+    error=text;
+    return false;
+}
+
 bool CompressDisc(const std::string& source, int entry, const std::string& output, bool keepWhole,
                   CompressProgress& progress, const std::atomic<bool>* cancel, CompressResult& result, std::string& error) {
     result=CompressResult();

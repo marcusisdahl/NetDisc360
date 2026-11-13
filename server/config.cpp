@@ -6,9 +6,12 @@
 #include <string.h>
 #ifdef _WIN32
 #include <wincrypt.h>
+#include <shellapi.h>
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "shell32.lib")
 #else
 #include <dirent.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -211,6 +214,19 @@ std::string FolderOf(const std::string& path) {
 #ifdef _WIN32
 bool RemoveFile(const std::string& utf8Path) { return DeleteFileW(Wide(utf8Path,CP_UTF8).c_str())!=0; }
 
+bool Recycle(const std::string& utf8Path, std::string& error) {
+    std::wstring from=Wide(utf8Path,CP_UTF8);
+    from.push_back(L'\0');  // A list of names, ended by an empty one.
+    SHFILEOPSTRUCTW op; memset(&op,0,sizeof(op));
+    op.wFunc=FO_DELETE; op.pFrom=from.c_str();
+    op.fFlags=FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT|FOF_NOERRORUI;
+    int code=SHFileOperationW(&op);
+    if(!code && !op.fAnyOperationsAborted) return true;
+    char text[96]; _snprintf_s(text,sizeof(text),_TRUNCATE,"Windows couldn't move it to the Recycle Bin (error %d; is a game playing from it?)",code);
+    error=text;
+    return false;
+}
+
 bool Stamp(const std::string& utf8Path, long long& size, long long& time) {
     WIN32_FILE_ATTRIBUTE_DATA data;
     if(!GetFileAttributesExW(Wide(utf8Path,CP_UTF8).c_str(),GetFileExInfoStandard,&data) || (data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) return false;
@@ -248,6 +264,12 @@ std::vector<Entry> Files(const std::string& utf8Folder) { return Entries(utf8Fol
 std::vector<Entry> Folders(const std::string& utf8Folder) { return Entries(utf8Folder,true); }
 #else
 bool RemoveFile(const std::string& utf8Path) { return !unlink(utf8Path.c_str()); }
+
+bool Recycle(const std::string& utf8Path, std::string& error) {
+    if(!unlink(utf8Path.c_str())) return true;
+    error=std::string("it couldn't be deleted: ")+strerror(errno);
+    return false;
+}
 
 bool Stamp(const std::string& utf8Path, long long& size, long long& time) {
     struct stat st;
