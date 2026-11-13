@@ -61,4 +61,20 @@ bool CompressDisc(const std::string& source, int entry, const std::string& outpu
 
 // Free bytes on the drive that holds folder; 0 if not known.
 U64 FreeBytes(const std::string& folder);
+// The most room the CSO of a disc image of imageBytes can take while it is
+// made: every byte of the disc, its block table, and some to spare. Checked
+// before a disc is queued; once its file table is read, the real need (only
+// the space its files use) is checked again.
+U64 RoomToCompress(U64 imageBytes);
+// Whether the CSO at output, of a disc image of imageBytes, fits on its
+// drive with reserved bytes already promised to the ones before it; if not,
+// why, in error ("it needs up to 7.9 GB, and only 3.1 GB are free").
+bool RoomFor(const std::string& output, U64 imageBytes, U64 reserved, std::string& error);
+// A file's size; 0 if it can't be read.
+U64 FileBytes(const std::string& path);
+// Whether the CSO at cso holds a whole disc of imageBytes and, if iso isn't
+// empty, the same disc as that ISO (the start of the disc and each place its
+// file table may be, which a compressed copy always keeps). Why not, in error.
+// Checked before its original is deleted.
+bool CsoHolds(const std::string& cso, U64 imageBytes, const std::string& iso, std::string& error);
 }

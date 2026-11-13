@@ -977,6 +977,8 @@ bool Scan(const std::string& folder, int depth, std::vector<IsoFile>& out) {
         if(IsIsoName(e.name)) {
             IsoFile iso; iso.path=Join(folder,e.name); iso.name=e.name; iso.size=e.size; iso.modified=e.modified; iso.kind=DiscIso;
             iso.titleId=0; iso.mediaId=0; iso.disc=0; iso.xbe=false;
+            const Entry* copy=Find(entries,e.name.substr(0,e.name.size()-4)+".cso",false);
+            if(copy) { iso.csoCopy=Join(folder,copy->name); iso.csoSize=copy->size; }
             out.push_back(iso);
         } else if(IsCsoName(e.name)) {
             // Listed as the ISO it was made from, so its tile on the Xbox

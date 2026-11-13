@@ -464,6 +464,7 @@ More on [github.com/marcusisdahl](https://github.com/marcusisdahl).
 - **"Choose which copy to play" on the Games page.** The same game is in your folders more than once. Pick the copy to play there; NetDisc360 remembers it. To free up space, delete the copies you don't play.
 - **The dashboard doesn't open.** Another program may be using port 8360; the log says so. Start the server with `--web-port` and another port. Opened from another device by a name rather than an address, it says to use the address until it has a password.
 - **"NetDisc360: this game asks for a disc it has no tile for".** The game's other disc isn't in your game folders. Add it; the server gives it a tile, and the swap works the next time you start the game.
+- **Something seems stuck, or didn't happen.** The **Tasks** page lists what the server does by itself: what runs now and how far it is, what waits, what ran since it started (with why it failed; **Failed** shows only those, **Copy** copies them for an issue), and what runs on a schedule (title update look-ups, sync, backups...) with its last and next run. The sidebar flags **Tasks** when something failed since you last looked.
 - **Something else.** Each game writes `netiso.log` in its folder on the console (`Hdd1:\NetDisc360\Games\<game>`), with each step and why it stopped; the dashboard's **Log** page shows what the server did. [How it works](docs/how-it-works.md#logs) explains both.
 
 ## Updating
@@ -584,7 +585,8 @@ An ISO, or an ISO inside a `.7z` or `.zip` archive, can be compressed once into 
 
 - Retail Xbox 360 discs fill the space no file uses with random bytes, which don't compress. The compressed copy keeps every file of the disc and writes that space as zeros, as an extracted game or a Games on Demand package also leaves it out. A disc whose file table can't be read is kept whole (`--whole` keeps it whole anyway).
 - The file is a standard CSO (CISO version 1: the disc in 32 KB blocks, each deflated on its own, with a table of where each starts), so the server unpacks only the blocks a read touches. CSO files made by other tools, such as `maxcso --format=cso1`, play too.
-- The new file is written as `<name>.cso.part`, read back and checked, then renamed. Nothing is ever deleted: while the ISO is still next to its `.cso`, the ISO plays, and once you delete the ISO the `.cso` takes over with the same tile in Aurora. An archive's discs are checked against the archive's own CRCs.
+- The new file is written as `<name>.cso.part`, read back and checked, then renamed. An archive's discs are checked against the archive's own CRCs. Before a disc is queued, the server checks its drive has room for every byte of the disc (with the ones queued before it); the Games page shows the free space.
+- While the ISO is still next to its `.cso`, the ISO plays; the dashboard says so, and once you delete the ISO the `.cso` takes over with the same tile in Aurora. Nothing is deleted by itself: a **Delete** button (in the game's details, and on the Games page once a disc or archive is compressed) moves the ISO or archive to the Recycle Bin, after checking that its compressed copy holds the same disc whole.
 - `.7z` archives packed with LZMA, LZMA2 or no compression are read as they stream, so a disc never has to fit in memory; ones with filters (BCJ, Delta) or encryption need extracting with 7-Zip first. `.zip` archives can be stored or deflated, Zip64 included.
 - The `.cso` is written next to the original, so in Docker the games folder must be mounted writable to compress.
 

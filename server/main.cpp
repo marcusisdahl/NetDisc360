@@ -15,6 +15,7 @@
 #include "auroradb.h"
 #include "backup.h"
 #include "compress.h"
+#include "tasks.h"
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
@@ -3992,6 +3993,8 @@ void FinishMove(Console& console, PushState& s, FtpClient& ftp, const Options& o
 
 void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o);
 
+std::string TaskWhere(DWORD address);
+
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
     PushMark mark(console.address);
@@ -4072,6 +4075,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         std::string before=s.installedSeen;
         std::vector<InstalledGame> found, godPackages;
         LookInstalled(console,s,ftp,o,found,godPackages);
+        std::string key=std::string("installed:")+console.text;
+        tasks::Every(key,"Look at what's installed on it",o.installedEvery,TaskWhere(console.address));
+        tasks::Ran(key,true);
         if(s.installedSeen!=before) {
             XboxLog(console,"what's installed on it changed; its game folders are written again.");
             s.installedChanged=true;
@@ -4087,6 +4093,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     if(pushDue && online) {
         SyncResult result;
+        tasks::Run task("push","Write its game folders (tiles)",TaskWhere(console.address));
         s.attempted=true; s.toldWaiting=false;
         double holdFrom=std::max(startedAt,FoldersChangedAt.load()/1000.0);
         bool missing=FoldersMissing;
@@ -4102,7 +4109,14 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         LookInstalled(console,s,ftp,o,installed,godPackages);
         s.installedAt=Now();
         s.artFound=0;  // This push writes what was found so far.
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages,s.artWants)) {
+        bool pushed=Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages,s.artWants);
+        if(!pushed) task.Fail("Writing them stopped (its FTP server); the log says why. It tries again in 30 s.");
+        else if(result.failed) task.Fail(std::to_string(result.failed)+(result.failed==1 ? " folder" : " folders")+" couldn't be written; the log says which. It tries again soon.");
+        else {
+            char said[160]; _snprintf_s(said,sizeof(said),_TRUNCATE,"%d added, %d updated, %d removed, %d kept",result.added,result.updated,result.removed,result.kept);
+            task.Step(said);
+        }
+        if(pushed) {
             s.everPushed=true; s.pushed=state; s.installedChanged=false;
             console.recheck=false;  // The push looked at everything a recheck would.
             lookUpdates=true;
@@ -4134,7 +4148,10 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     if(lookUpdates) LookTitleUpdates(console,ftp,o);
     if(scanDue) {
-        if(StartScan(console,ftp,o)) s.scanTries=0;
+        tasks::Run task("scan","Start Aurora's scan of the game folders",TaskWhere(console.address));
+        bool started=StartScan(console,ftp,o);
+        if(!started) task.Fail("Aurora didn't start it; the log says why");
+        if(started) s.scanTries=0;
         else if(--s.scanTries) s.scanAt=Now()+ScanRetrySeconds;
         else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());
     }
@@ -4269,6 +4286,12 @@ void WatchLoop() {
             double began=Now();
             std::vector<IsoFile> isos=Isos();
             nextScan=Now()+std::max(1.0,std::min(ScanMostSeconds,(Now()-began)*ScanEffort))-0.05;
+            if(!tick) tasks::Every("library","Look through the game folders",0);
+            {
+                std::string missing;
+                if(FoldersMissing) { std::lock_guard<std::mutex> hold(MissingLock); missing="Not there: "+MissingFolders; }
+                tasks::Ran("library",missing.empty(),missing,(long long)time(NULL)+(long long)(nextScan-Now()+0.99));
+            }
             state=Fingerprint(isos);
             if(state!=previous || !tick) {
                 if(state!=previous && (!previous.empty() || changedAt>-1e9)) changedAt=Now();
@@ -4991,7 +5014,9 @@ void SaveLoop() {
                 Busy busy(console);
                 FtpClient ftp(job.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
                 saves::Result r; std::string error;
+                tasks::Run task("saves","Back up "+WithoutIso(job.game)+"'s saves",TaskWhere(job.address));
                 ok=SaveGame(*console,ftp,titleId,WithoutIso(job.game),o,r,error);
+                if(!ok) task.Fail(error);
                 ftp.Close();
             }
         }
@@ -6658,6 +6683,7 @@ void State(web::Reply& out) {
     HealthJson(j);
     CopiesJson(j);
     { std::lock_guard<std::mutex> hold(LogLock); j.Set("logId",LogCount); }
+    { int running; long long failed; tasks::Counts(running,failed); j.Key("tasks").Open('{').Set("running",running).Set("lastFailed",failed).Close('}'); }
     j.Close('}');
     out.body=j.Text();
 }
@@ -6677,6 +6703,7 @@ void GameJson(web::Json& j, const IsoFile& g, const std::vector<std::string>& fo
     j.Set("name",config::ToUtf8(WithoutIso(g.name))).Set("path",config::ToUtf8(g.path)).Set("kind",KindName(g.kind));
     j.Set("size",(unsigned long long)size).Set("sizeKnown",known).Set("titleId",g.titleId ? std::string(title) : std::string());
     if(g.imageSize) j.Set("imageSize",(unsigned long long)g.imageSize);  // A CSO's disc, uncompressed.
+    if(!g.csoCopy.empty()) j.Set("csoCopy",config::ToUtf8(g.csoCopy)).Set("csoSize",(unsigned long long)g.csoSize);
     j.Set("disc",g.disc).Set("mediaId",g.mediaId ? Hex8(g.mediaId) : std::string()).Set("folder",folder).Set("installDisc",config::ToUtf8(WithoutIso(g.installDisc)));
     j.Set("role",g.role).Set("roleLabel",g.roleLabel).Set("incomplete",g.incomplete);
     // System Link (see systemlink.h): players on one console and in all, null where it isn't known.
@@ -6780,7 +6807,7 @@ void Games(web::Reply& out) {
 // folders, or one in a .7z or .zip archive there, into a CSO file next to it
 // (compress.h). The new file is found by the next look at the folders.
 
-struct CompressJob { std::string source, output; int entry; std::string name; };
+struct CompressJob { std::string source, output; int entry; std::string name; U64 image=0; };  // image: its disc's bytes.
 struct CompressDone { std::string name, source, output, error; bool ok; CompressResult result; double seconds; long long time; };
 std::mutex CompressLock;
 std::condition_variable CompressWake;
@@ -6812,7 +6839,13 @@ void CompressLoop() {
         Event(EventInfo,"Compressing %s",job.name.c_str());
         CompressDone done;
         done.name=job.name; done.source=job.source; done.output=job.output;
+        tasks::Run task("compress","Compress "+job.name,job.output.substr(0,job.output.find_last_of("/\\")));
+        task.Follow([](std::string& detail, double& at, double& total) {
+            static const char* const Steps[]={ "Reading its file table", "Compressing", "Checking the new file" };
+            detail=Steps[std::min(2,std::max(0,CompressAt.step.load()))]; at=double(CompressAt.done.load()); total=double(CompressAt.total.load());
+        });
         done.ok=CompressDisc(job.source,job.entry,job.output,false,CompressAt,&CompressStop,done.result,done.error);
+        if(!done.ok) { if(CompressStop) task.Stop(); else task.Fail(done.error); }
         done.seconds=Now()-CompressStarted; done.time=(long long)time(NULL);
         if(done.ok) {
             const CompressResult& r=done.result;
@@ -6832,6 +6865,23 @@ void CompressLoop() {
     }
 }
 
+// The most room the ones being made and waiting may still take (all on one
+// drive, to be safe): what each may need, less what the one being made has
+// already written... which isn't known, so all of it.
+U64 CompressReserved() {
+    U64 reserved=Compressing ? RoomToCompress(CompressNow.image) : 0;
+    for(size_t i=0;i<CompressQueue.size();++i) reserved+=RoomToCompress(CompressQueue[i].image);
+    return reserved;
+}
+
+// Whether output's own ISO is next to it, so that ISO plays instead (see Scan).
+bool IsoNextTo(const std::string& output) {
+    std::string iso=output.substr(0,output.size()-4)+".iso";
+    FILE* f=fopen(iso.c_str(),"rb");
+    if(f) fclose(f);
+    return f!=NULL;
+}
+
 // Whether output is being made or waits to be.
 bool CompressPlanned(const std::string& output) {
     if(Compressing && CompressNow.output==output) return true;
@@ -6839,35 +6889,86 @@ bool CompressPlanned(const std::string& output) {
     return false;
 }
 
-bool StartCompress(const web::Value& body, std::string& error) {
+// body's path, if it is a file in the game folders (native); else empty.
+std::string GameFolderFile(const web::Value& body) {
     const web::Value* p=body.Get("path");
-    const web::Value* e=body.Get("entry");
     std::string path=p && p->type==web::Value::String ? config::FromUtf8(p->text) : std::string();
-    int entry=e && e->type==web::Value::Number ? int(e->number) : -1;
     std::vector<std::string> folders=Current().folders;
     bool inside=false;
     for(size_t i=0;i<folders.size() && !inside;++i) inside=Within(path,CleanFolder(folders[i]));
     bool up=path.find("/../")!=std::string::npos || path.find("\\..\\")!=std::string::npos || path.find("\\../")!=std::string::npos || path.find("/..\\")!=std::string::npos;
-    if(path.empty() || !inside || up) { error="That file isn't in your game folders."; return false; }
+    return path.empty() || !inside || up ? std::string() : path;
+}
+
+bool StartCompress(const web::Value& body, std::string& error) {
+    const web::Value* e=body.Get("entry");
+    std::string path=GameFolderFile(body);
+    int entry=e && e->type==web::Value::Number ? int(e->number) : -1;
+    if(path.empty()) { error="That file isn't in your game folders."; return false; }
     CompressJob job; job.source=path; job.entry=-1;
     std::string leaf=path.substr(path.find_last_of("/\\")+1);
     if(path.size()>4 && !_stricmp(path.c_str()+path.size()-4,".iso")) {
-        job.output=CsoPathFor(path); job.name=WithoutIso(leaf);
+        job.output=CsoPathFor(path); job.name=WithoutIso(leaf); job.image=FileBytes(path);
     } else if(IsArchiveName(path)) {
         std::vector<ArchiveDisc> discs;
         if(!ListArchive(path,discs,error)) { error="Can't read "+leaf+": "+error+"."; return false; }
         if(entry<0 && discs.size()==1) entry=0;
         if(entry<0 || size_t(entry)>=discs.size()) { error="That disc isn't in "+leaf+"."; return false; }
         job.entry=entry; job.output=CsoPathFor(path,discs,size_t(entry));
-        job.name=WithoutIso(config::FromUtf8(discs[entry].name));
+        job.name=WithoutIso(config::FromUtf8(discs[entry].name)); job.image=discs[entry].size;
     } else { error="Only ISOs and .7z or .zip archives can be compressed."; return false; }
     FILE* there=fopen(job.output.c_str(),"rb");
     if(there) { fclose(there); error=job.output+" is there already."; return false; }
     std::call_once(CompressStarter,[] { std::thread(CompressLoop).detach(); });
     std::lock_guard<std::mutex> hold(CompressLock);
     if(CompressPlanned(job.output)) { error=job.name+" is being compressed already."; return false; }
+    // Checked before it starts, with the room the ones before it may take.
+    std::string why;
+    if(!RoomFor(job.output,job.image,CompressReserved(),why)) { error="There isn't room on the drive for "+job.name+": "+why+"."; return false; }
     CompressQueue.push_back(job);
     CompressWake.notify_one();
+    return true;
+}
+
+// Deletes (to the Recycle Bin on Windows) an ISO or archive in the game
+// folders once every disc in it has a compressed copy next to it that holds
+// that disc whole: the copy then plays in its place, with the same tile.
+bool RemoveOriginal(const web::Value& body, std::string& said, std::string& error) {
+    std::string path=GameFolderFile(body);
+    if(path.empty()) { error="That file isn't in your game folders."; return false; }
+    std::string leaf=path.substr(path.find_last_of("/\\")+1);
+    std::vector<std::string> outputs;
+    std::vector<U64> sizes;
+    bool iso=path.size()>4 && !_stricmp(path.c_str()+path.size()-4,".iso");
+    if(iso) { outputs.push_back(CsoPathFor(path)); sizes.push_back(FileBytes(path)); }
+    else if(IsArchiveName(path)) {
+        std::vector<ArchiveDisc> discs;
+        if(!ListArchive(path,discs,error)) { error="Can't read "+leaf+": "+error+"."; return false; }
+        for(size_t i=0;i<discs.size();++i) { outputs.push_back(CsoPathFor(path,discs,i)); sizes.push_back(discs[i].size); }
+    } else { error="Only an ISO or archive with a compressed copy can be deleted here."; return false; }
+    {
+        std::lock_guard<std::mutex> hold(CompressLock);
+        for(size_t i=0;i<outputs.size();++i)
+            if(CompressPlanned(outputs[i]) || (Compressing && CompressNow.source==path)) { error=leaf+" is being compressed: wait until it's done."; return false; }
+    }
+    for(size_t i=0;i<outputs.size();++i) {
+        std::string why, name=outputs[i].substr(outputs[i].find_last_of("/\\")+1);
+        FILE* there=fopen(outputs[i].c_str(),"rb");
+        if(there) fclose(there);
+        else { error=leaf+" isn't compressed yet ("+name+" isn't there), so it stays."; return false; }
+        if(!CsoHolds(outputs[i],sizes[i],iso ? path : std::string(),why)) { error=leaf+" stays: "+why+"."; return false; }
+    }
+    std::string why;
+    if(!config::Recycle(config::ToUtf8(path),why)) { error=leaf+" stays: "+why+"."; return false; }
+#ifdef _WIN32
+    said=leaf+" is in the Recycle Bin; its compressed copy plays now.";
+#else
+    said=leaf+" is deleted; its compressed copy plays now.";
+#endif
+    Log("Deleted %s: its compressed copy (%s) holds the same disc.",path.c_str(),outputs[0].c_str());
+    Event(EventGood,"%s deleted; its compressed copy plays now",leaf.c_str());
+    ScanSoon=true;
+    { std::lock_guard<std::mutex> hold(CompressLock); ArchivesAt=-1e9; }
     return true;
 }
 
@@ -6913,9 +7014,16 @@ void CompressState(bool fresh, web::Reply& out) {
         j.Open('{').Set("name",config::ToUtf8(d.name)).Set("source",config::ToUtf8(d.source)).Set("output",config::ToUtf8(d.output));
         j.Set("ok",d.ok).Set("error",config::ToUtf8(d.error)).Set("seconds",d.seconds).Set("time",d.time);
         j.Set("image",(unsigned long long)d.result.imageBytes).Set("kept",(unsigned long long)d.result.keptBytes);
-        j.Set("bytes",(unsigned long long)d.result.outputBytes).Set("whole",d.result.whole).Close('}');
+        j.Set("bytes",(unsigned long long)d.result.outputBytes).Set("whole",d.result.whole).Set("isoPlays",d.ok && IsoNextTo(d.output)).Close('}');
     }
-    j.Close(']').Key("archives").Open('[');
+    j.Close(']');
+    // Free space on each game folder's drive, and room each archive's disc needs.
+    j.Key("free").Open('[');
+    for(size_t i=0;i<folders.size();++i)
+        j.Open('{').Set("folder",config::ToUtf8(folders[i])).Set("bytes",(unsigned long long)FreeBytes(CleanFolder(folders[i]))).Close('}');
+    j.Close(']');
+    const U64 reserved=CompressReserved();
+    j.Key("archives").Open('[');
     for(size_t i=0;i<ArchivesFound.size();++i) {
         const ArchiveFile& a=ArchivesFound[i];
         j.Open('{').Set("path",config::ToUtf8(a.path)).Set("size",(unsigned long long)a.size).Set("problem",config::ToUtf8(a.problem)).Key("discs").Open('[');
@@ -6923,7 +7031,11 @@ void CompressState(bool fresh, web::Reply& out) {
             FILE* there=fopen(a.outputs[d].c_str(),"rb");
             if(there) fclose(there);
             j.Open('{').Set("name",WithoutIso(a.discs[d].name)).Set("size",(unsigned long long)a.discs[d].size);
-            j.Set("output",config::ToUtf8(a.outputs[d])).Set("done",there!=NULL).Set("planned",CompressPlanned(a.outputs[d])).Close('}');
+            std::string why;
+            bool room=there || RoomFor(a.outputs[d],a.discs[d].size,reserved,why);
+            j.Set("output",config::ToUtf8(a.outputs[d])).Set("done",there!=NULL).Set("planned",CompressPlanned(a.outputs[d]));
+            // iso: its ISO is next to it already, and plays.
+            j.Set("iso",IsoNextTo(a.outputs[d])).Set("need",(unsigned long long)RoomToCompress(a.discs[d].size)).Set("room",room).Set("noRoom",why).Close('}');
         }
         j.Close(']').Close('}');
     }
@@ -8089,8 +8201,16 @@ void SyncLoop() {
         SyncAsked=false;
         next=Now()+SyncEvery;
         Options o=Current();
-        if(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty()) continue;
+        tasks::Every("sync","Sync with your other computers",SyncEvery);
+        bool on=!(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty());
+        tasks::Off("sync",on ? "" : "Not set up (Settings, Sync between computers)");
+        if(!on) continue;
+        tasks::Run task("sync","Sync with your other computers");
         SyncPass(o);
+        bool ok; std::string error;
+        { std::lock_guard<std::mutex> hold(SyncStateLock); ok=SyncNow.last && SyncNow.lastOk==SyncNow.last; error=SyncNow.error; }
+        if(!ok) task.Fail(error);
+        tasks::Ran("sync",ok,error);
     }
 }
 
@@ -8332,6 +8452,8 @@ void BackupLoop() {
     for(;;) {
         Options o=Current();
         std::string folder=BackupFolder(o), name, error;
+        tasks::Every("backup","Back up NetDisc360's settings",o.backupEvery*86400.0);
+        tasks::Off("backup",o.backupEvery<=0 ? "Off in Settings, Backups" : folder.empty() ? "The settings aren't kept in a file" : "");
         if(o.backupEvery>0 && !folder.empty()) {
             long long newest=0;
             {
@@ -8339,7 +8461,12 @@ void BackupLoop() {
                 std::vector<backup::Info> list=backup::List(folder);
                 for(size_t i=0;i<list.size();++i) if(list[i].kind=="scheduled") newest=std::max(newest,list[i].time);
             }
-            if((long long)time(NULL)-newest>=o.backupEvery*86400LL-60) MakeBackup("scheduled",name,error);
+            if((long long)time(NULL)-newest>=o.backupEvery*86400LL-60) {
+                tasks::Run task("backup","Back up NetDisc360's settings");
+                bool made=MakeBackup("scheduled",name,error);
+                if(!made) task.Fail(error);
+                tasks::Ran("backup",made,error);
+            } else if(newest) tasks::Ran("backup",true,"",newest+o.backupEvery*86400LL);
         }
         Sleep(600000);
     }
@@ -8503,7 +8630,10 @@ void UpdateLoop() {
         if(Now()<next && !CheckSoon) continue;
         CheckSoon=false;
         std::string error;
-        next=Now()+(CheckForUpdate(error) ? 12*3600 : 3600);
+        tasks::Every("update","Look for a newer NetDisc360",12*3600);
+        bool checked=CheckForUpdate(error);
+        next=Now()+(checked ? 12*3600 : 3600);
+        tasks::Ran("update",checked,error,(long long)time(NULL)+(checked ? 12*3600 : 3600));
         if(!o.updateAuto || !UpdateNewer() || strcmp(UpdateHow(),"app")) continue;
         std::string skip;
         { std::lock_guard<std::mutex> hold(SettingsLock); skip=UpdateSkip; }
@@ -8620,6 +8750,26 @@ void EndCopy(ContentCopy& c, const Console* console, const char* state, const st
     else Event(kind,"%s on %s",text.c_str(),where);
 }
 
+// What the Tasks page calls a console job (native text).
+std::string CopyTaskName(const ContentCopy& c) {
+    std::string game=config::FromUtf8(c.game), label=config::FromUtf8(c.label);
+    if(c.kind=="game" || c.kind=="files") return "Copy "+game+" to the hard drive";
+    if(c.kind=="update") return "Put "+label+" for "+game+" on the console";
+    if(c.kind=="package") return "Copy "+game;
+    if(c.kind=="tuoff") return "Turn "+game+"'s title updates off";
+    if(c.kind=="check") return "Check its title updates";
+    if(c.kind=="remove") return "Remove "+game+" from the hard drive";
+    return "Install "+game+"'s content";
+}
+
+// The console a task works on, as the Tasks page names it.
+std::string TaskWhere(DWORD address) {
+    char where[16]; AddressText(address,where,sizeof(where));
+    const Console* c=ConsoleIfKnown(address);
+    std::string name=c ? NameOf(*c) : std::string();
+    return name.empty() ? std::string(where) : name+" ("+where+")";
+}
+
 // Runs a console's queue, oldest first, until it's empty.
 void CopyWorker(DWORD at) {
     for(;;) {
@@ -8630,10 +8780,44 @@ void CopyWorker(DWORD at) {
             if(!job) { CopyWorkers.erase(at); return; }
             job->state="copying"; job->startedAt=(long long)time(NULL); job->began=Now();
         }
+        long long task=tasks::Begin("console",CopyTaskName(*job),TaskWhere(at),job->id);
+        ContentCopy* followed=job.get();
+        tasks::Follow(task,[followed](std::string& detail, double& done, double& total) {
+            std::lock_guard<std::mutex> hold(CopyLock);
+            detail=followed->current.empty() ? followed->phase : "Sending "+followed->current;
+            done=double(followed->done); total=double(followed->total);
+        });
         job->run(job);
         // A job that returned without ending (it shouldn't) mustn't hold the queue.
         EndCopy(*job,ConsoleIfKnown(at),"failed","It stopped without saying why.");
+        std::string state, error;
+        { std::lock_guard<std::mutex> hold(CopyLock); state=job->state; error=job->error; }
+        tasks::End(task,state=="done",error,state=="stopped");
     }
+}
+
+// GET /api/tasks: what runs, waits, ran and runs by itself (see tasks.h).
+void TasksState(web::Reply& out) {
+    web::Json j;
+    long long now=(long long)time(NULL);
+    j.Open('{').Set("now",now);
+    tasks::Write(j,now);
+    j.Key("queued").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(CompressLock);
+        for(size_t i=0;i<CompressQueue.size();++i)
+            j.Open('{').Set("kind","compress").Set("name",config::ToUtf8("Compress "+CompressQueue[i].name)).Set("where",config::ToUtf8(CompressQueue[i].output.substr(0,CompressQueue[i].output.find_last_of("/\\")))).Close('}');
+    }
+    std::vector<std::shared_ptr<ContentCopy> > waiting;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        for(size_t i=0;i<Copies.size();++i) if(Copies[i]->state=="queued") waiting.push_back(Copies[i]);
+    }
+    for(size_t i=0;i<waiting.size();++i)
+        j.Open('{').Set("kind","console").Set("name",config::ToUtf8(CopyTaskName(*waiting[i]))).Set("where",config::ToUtf8(TaskWhere(waiting[i]->address)))
+         .Set("ref",(long long)waiting[i]->id).Set("since",waiting[i]->queuedAt).Close('}');
+    j.Close(']').Close('}');
+    out.body=j.Text();
 }
 
 // Makes the folders of an FTP path (a file's), from below root, a level at a time.
@@ -10391,6 +10575,8 @@ void TuAutoLoop() {
             std::lock_guard<std::mutex> hold(TuLock);
             for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(loaded.insert(*i).second) TuInfoFromDisk(o,*i);
         }
+        tasks::Every("tu-lookup","Look up each game's title updates on XboxUnity (each a day)",TuAutoEvery);
+        tasks::Off("tu-lookup",o.tuAuto ? "" : "Off on the Title updates page");
         if(!o.tuAuto || Now()-StartedAt<o.tuAutoDelay) continue;
         // From the game after the one the last pass stopped at, round to it.
         std::vector<DWORD> order(titles.upper_bound(stoppedAt),titles.end());
@@ -10411,7 +10597,9 @@ void TuAutoLoop() {
             std::vector<tu::Offer> offers;
             std::string error;
             tu::Failure failure=tu::Fine;
-            if(!LookupTus(titleId,true,offers,error,TuFresh,&failure)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(titleId).c_str(),error.c_str());
+            bool found=LookupTus(titleId,true,offers,error,TuFresh,&failure);
+            if(!found) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(titleId).c_str(),error.c_str());
+            tasks::Ran("tu-lookup",found,found ? std::string() : Hex8(titleId)+": "+error);
             if(failure==tu::Slow || failure==tu::ServerError) { unityDownUntil=Now()+o.tuAutoRetry; stoppedAt=titleId; }
             else Sleep(1000);  // Gently: XboxUnity is run by volunteers.
         }
@@ -14943,10 +15131,16 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/games") Games(out);
     else if(r.method=="GET" && r.path=="/api/log") LogSince(atoll(r.Param("after").c_str()),out);
     else if(r.method=="GET" && r.path=="/api/compress") CompressState(r.Param("fresh")=="1",out);
+    else if(r.method=="GET" && r.path=="/api/tasks") TasksState(out);
     else if(r.method=="POST" && r.path=="/api/compress") {
         if(!StartCompress(body,error)) out.Error(400,error);
         else CompressState(false,out);
     } else if(r.method=="POST" && r.path=="/api/compress/stop") { StopCompress(body); CompressState(false,out); }
+    else if(r.method=="POST" && r.path=="/api/compress/remove") {
+        std::string said, error;
+        if(!RemoveOriginal(body,said,error)) out.Error(400,error);
+        else { web::Json j; j.Open('{').Set("ok",true).Set("said",config::ToUtf8(said)).Close('}'); out.body=j.Text(); }
+    }
     else if(r.method=="GET" && r.path=="/api/browse") Browse(r.Param("path"),out);
     else if(r.method=="POST" && r.path=="/api/consoles/find") FindConsoles(body,out);
     else if(r.method=="POST" && r.path=="/api/consoles/check") CheckConsole(body,out);

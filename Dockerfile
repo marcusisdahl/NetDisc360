@@ -32,7 +32,7 @@ RUN g++ -std=c++17 -O2 -Wall -pthread -include tests/posix_compat.h -o /netdisc 
         server/main.cpp server/discs.cpp server/discmap.cpp server/xefu.cpp server/ftp.cpp server/web.cpp server/config.cpp \
         server/backup.cpp server/update.cpp server/installed.cpp server/aurora.cpp server/auroradb.cpp server/titleupdates.cpp server/system.cpp server/saves.cpp server/wake.cpp \
         server/party.cpp server/guests.cpp server/picture.cpp server/systemlink.cpp server/relay.cpp server/users.cpp server/http.cpp server/sync.cpp server/health.cpp \
-        server/compress.cpp server/codecs.cpp \
+        server/compress.cpp server/tasks.cpp server/codecs.cpp \
         shared/library.cpp shared/isvr.cpp
 
 ARG LAUNCHER_URL=https://github.com/marcusisdahl/NetDisc360/releases/latest/download/NetDisc360.exe

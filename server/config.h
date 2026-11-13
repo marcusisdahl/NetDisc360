@@ -46,6 +46,9 @@ bool ReadFile(const std::string& utf8Path, std::string& data, size_t limit);  //
 // Replaces the file whole, through path.new; secret: readable by its owner only (not on Windows).
 bool WriteFile(const std::string& utf8Path, const std::string& data, bool secret);
 bool RemoveFile(const std::string& utf8Path);
+// Moves the file to the Recycle Bin (on Windows; a drive without one, such as
+// a network share, deletes it), or deletes it elsewhere. Why not, in error.
+bool Recycle(const std::string& utf8Path, std::string& error);
 // The file's size and last change, finer than seconds where the system keeps
 // that, to tell whether it changed without reading it. False if missing.
 bool Stamp(const std::string& utf8Path, long long& size, long long& time);

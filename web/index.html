@@ -301,6 +301,18 @@ button.pill.tu:disabled { opacity: .6; cursor: default; }
 .table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .table td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .table tr:last-child td { border-bottom: 0; }
+/* The Tasks page */
+.tasks .card-body { display: grid; gap: 10px; }
+.tasks .empty { color: var(--muted); padding: 4px 0; }
+.task { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; }
+.task .progress { grid-column: 1 / -1; }
+.task .what { min-width: 0; }
+.task .what b { overflow-wrap: anywhere; }
+.tasks .table td { vertical-align: top; }
+.tasks .table td.when { white-space: nowrap; color: var(--muted); }
+.tasks .table .bad { color: var(--warn); }
+.tasks .table-wrap { overflow-x: auto; }
+.tasks .filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .table tbody tr.click { cursor: pointer; }
 .table tbody tr.click:hover td { background: var(--hover); }
 .table .path { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
@@ -1369,6 +1381,7 @@ const Nav = [
   ['users', 'Users', 'users'],
   ['health', 'Health', 'activity'],
   ['folders', 'Game folders', 'folder'],
+  ['tasks', 'Tasks', 'list'],
   ['log', 'Log', 'scroll-text'],
   ['settings', 'Settings', 'settings'],
 ];
@@ -1455,6 +1468,8 @@ function updateFrame(problem) {
     else if (a.dataset.page === 'games' && tus) fill($('.count', a), h('span.flag', { title: plural(tus, 'game') + ' with different title updates on the consoles' }, tus));
     else if (a.dataset.page === 'party' && S.party && S.party.active) fill($('.count', a), h('span.flag.new', { title: 'The LAN party is on' }, 'On'));
     else if (a.dataset.page === 'health' && S.health && S.health.problems) fill($('.count', a), h('span.flag', { title: plural(S.health.problems, 'console has a problem', 'consoles have problems') }, S.health.problems));
+    else if (a.dataset.page === 'tasks' && S.tasks && S.tasks.lastFailed > (+store('tasksSeen') || 0) && page !== 'tasks') fill($('.count', a), h('span.flag', { title: 'A task failed ' + ago(S.tasks.lastFailed) }, '!'));
+    else if (a.dataset.page === 'tasks' && S.tasks && S.tasks.running) fill($('.count', a), String(S.tasks.running));
     else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else if (a.dataset.page === 'updates' && tuGamesBehind().length) {
       const n = tuGamesBehind().length;
@@ -1843,6 +1858,18 @@ async function stopCompress(output) {
   if (view && view.packs) view.packs();
 }
 const leaf = path => path.split(/[\\/]/).pop();
+// Deletes an ISO or archive whose discs all have a compressed copy (after
+// asking): the server checks each copy holds the same disc first.
+async function removeOriginal(path, button, after) {
+  const win = !S || S.platform === 'windows';
+  if (!(await confirmBox('Delete ' + leaf(path) + '?', [h('p', { style: { margin: 0 } }, 'Its compressed copy holds the same disc and plays in its place, with the same tile. NetDisc360 checks that before it deletes anything. ' +
+      (win ? 'It goes to the Recycle Bin, so you can get it back (on a network share it’s deleted for good).' : 'It’s deleted for good.'))], 'Delete it', true))) return;
+  if (button) button.disabled = true;
+  try { const r = await api('compress/remove', { path }); toast(r.said); await loadPacks(true); if (after) after(); await refresh(); }
+  catch (e) { toast(e.message, true); if (button) button.disabled = false; }
+  if (view && view.packs) view.packs();
+}
+const isoNextTo = output => output.replace(/\.cso$/i, '.iso');
 const PackSteps = { table: 'Reading its file table', compress: 'Compressing', check: 'Checking the new file' };
 function packsCard() {
   const d = Packs.data;
@@ -1859,33 +1886,49 @@ function packsCard() {
   }
   for (const q of d.queue) rows.push(h('div.pack', ic('history', 'sm'), h('div.what', h('b', q.name), h('div.muted', 'Next')),
     h('button.btn.small.ghost', { onclick: () => stopCompress(q.output) }, 'Cancel')));
+  const recentSources = new Set(d.recent.filter(r => S && S.time - r.time < 86400).map(r => r.source));
   for (const a of d.archives) {
     if (a.problem) { rows.push(h('div.pack', ic('triangle-alert', 'sm'), h('div.what', h('b', leaf(a.path)), h('div.muted', 'Can\u2019t be read: ' + a.problem + '.')))); continue; }
     a.discs.forEach((disc, i) => {
       if (disc.done || disc.planned) return;
-      rows.push(h('div.pack', ic('archive', 'sm'),
-        h('div.what', h('b', disc.name), h('div.muted', bytes(disc.size) + ' ISO in ' + leaf(a.path))),
-        h('button.btn.small.primary', { onclick: e => compress(a.path, i, disc.name, e.target) }, 'Compress to play')));
+      const why = disc.iso ? 'Plays from its ISO already. Compressed, it takes less room: then the ISO and ' + leaf(a.path) + ' can both go.'
+        : bytes(disc.size) + ' ISO in ' + leaf(a.path) + '.';
+      rows.push(h('div.pack', ic(disc.room ? 'archive' : 'hard-drive', 'sm'),
+        h('div.what', h('b', disc.name), h('div.muted', why + (disc.room ? '' : ' Not enough room: ' + disc.noRoom + '.'))),
+        h('button.btn.small' + (disc.iso ? '' : '.primary'), { disabled: !disc.room, title: disc.room ? 'Needs up to ' + bytes(disc.need) + ' free while it runs' : '', onclick: e => compress(a.path, i, disc.name, e.target) },
+          disc.iso ? 'Compress' : 'Compress to play')));
     });
+    // Every disc compressed: the archive isn't needed (once no ISO of it is left either).
+    if (a.discs.length && a.discs.every(x => x.done) && !recentSources.has(a.path))
+      rows.push(h('div.pack', ic('circle-check', 'sm'),
+        h('div.what', h('b', leaf(a.path)), h('div.muted', 'Compressed' + (a.discs.some(x => x.iso) ? ', but its ISO still plays: delete the ISO first, then this.' : ' and played from the compressed copy, so it can go (' + bytes(a.size) + ').'))),
+        h('button.btn.small', { onclick: e => removeOriginal(a.path, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete')));
   }
   for (const r of d.recent.filter(r => S && S.time - r.time < 86400).slice(0, 3)) {
     const fromIso = /\.iso$/i.test(r.source);
     // An archive with more discs: kept until each is compressed.
     const archive = !fromIso && d.archives.find(a => a.path === r.source);
     const left = archive && !archive.problem ? archive.discs.filter(x => !x.done).map(x => x.name) : [];
+    // What can go now: the ISO that still plays first, then the archive.
+    const iso = r.ok && r.isoPlays ? isoNextTo(r.output) : null;
+    const gone = r.ok && !iso && !left.length && (fromIso ? false : archive) ? r.source : null;
     rows.push(h('div.pack', ic(r.ok ? 'circle-check' : 'circle-alert', 'sm'),
       h('div.what', h('b', r.name), h('div.muted', r.ok
         ? bytes(r.image) + ' \u2192 ' + bytes(r.bytes) + ' in ' + duration(r.seconds) + (r.whole ? ' (kept whole: its file table couldn\u2019t be read)' : '') + '. ' +
-          (fromIso ? 'The ISO still plays until you delete it; then the compressed copy plays, with the same tile.'
+          (iso ? 'Its ISO is still next to it, so the ISO still plays. Delete the ISO to play the compressed copy, with the same tile' + (fromIso ? '.' : ', then ' + leaf(r.source) + ' can go too.')
             : left.length ? 'It plays now. Keep ' + leaf(r.source) + ' until ' + left.join(' and ') + (left.length > 1 ? ' are' : ' is') + ' compressed too.'
-            : 'It plays now, so ' + leaf(r.source) + ' can go: delete it to get its space back.')
-        : 'Not compressed: ' + r.error + '.'))));
+            : fromIso ? 'The compressed copy plays now.'
+            : archive ? 'It plays now, so ' + leaf(r.source) + ' can go.' : 'It plays now.')
+        : 'Not compressed: ' + r.error + '.')),
+      iso ? h('button.btn.small', { onclick: e => removeOriginal(iso, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete the ISO')
+        : gone ? h('button.btn.small', { onclick: e => removeOriginal(gone, e.currentTarget) }, ic('trash-2', 'sm'), 'Delete ' + (/\.zip$/i.test(gone) ? 'the zip' : 'the 7z')) : null));
   }
   if (!rows.length) return null;
   return h('div.card.packs', { style: { marginBottom: '20px' } },
     h('div.card-head', ic('archive', 'sm'), h('h2', 'Compressed games'), h('span.sub', 'one smaller file per disc, played like the ISO')),
     h('div.card-body', rows),
-    h('div.card-foot.muted', 'NetDisc360 writes the compressed copy (.cso) next to the original and never deletes anything. It leaves out the space on the disc that no file uses, so a game usually takes much less room.'));
+    h('div.card-foot.muted', 'NetDisc360 writes the compressed copy (.cso) next to the original, and deletes the original only when you say so, after checking the copy. It leaves out the space on the disc that no file uses, so a game usually takes much less room.' +
+      (d.free && d.free.some(f => f.bytes) ? ' Free: ' + d.free.filter(f => f.bytes).map(f => bytes(f.bytes) + ' for ' + f.folder).join(', ') + '.' : '')));
 }
 Pages.games = root => {
   let mode = store('games.view') || 'covers', kind = 'all', sort = store('games.sort') || 'name', query = '';
@@ -2429,6 +2472,8 @@ function details(g) {
           g.disc ? [h('div.k', 'Disc'), h('div.v', String(g.disc))] : null,
           h('div.k', 'Playing'), h('div.v', on ? on.map(nameOf).join(', ') : 'Not now'),
           h('div.k', 'Played'), h('div.v', playedText(g)),
+          g.csoCopy ? [h('div.k', 'Compressed copy'), h('div.v', bytes(g.csoSize) + ' next to it. The ISO plays while it\u2019s there; delete it to play the compressed copy instead and free ' + bytes(g.size) + '.',
+            h('div', { style: { marginTop: '6px' } }, h('button.btn.small', { onclick: e => removeOriginal(g.path, e.currentTarget, close) }, ic('trash-2', 'sm'), 'Delete the ISO')))] : null,
           g.incomplete ? [h('div.k', 'Incomplete'), h('div.v', { style: { color: 'var(--warn)' } }, 'This ISO is shorter than the files on it say: a download or copy that stopped. The game crashes where it reads the missing part; copy it again.')] : null,
           titleUpdateFacts(g),
           g.installedOn && g.installedOn.length ? [h('div.k', 'Installed on'), h('div.v', g.installedOn.map(nameOf).join(', ') + (g.tiles && g.tiles.length ? ' (its NetISO tile asks which copy to play)' : ' (no tile there: Aurora lists the installed copy)'),
@@ -2441,7 +2486,7 @@ function details(g) {
     h('div.modal-foot', h('span.note', ic('info', 'sm'), g.installedOn && g.installedOn.length && !(g.tiles && g.tiles.length)
         ? 'Aurora lists the copy installed on the console.' : 'Aurora lists it as \u201c' + g.name + '\u201d in ' + gamesFolder() + '.'),
       navigator.clipboard ? h('button.btn', { onclick: () => navigator.clipboard.writeText(g.path).then(() => toast('Path copied')) }, ic('copy', 'sm'), 'Copy path') : null,
-      g.kind === 'iso' ? h('button.btn', { title: 'Takes less room: writes a smaller copy next to the ISO that plays the same; the ISO stays', onclick: e => { compress(g.path, null, g.name, e.target); close(); if (page !== 'games') location.hash = '#games'; } }, ic('archive', 'sm'), 'Compress') : null,
+      g.kind === 'iso' && !g.csoCopy ? h('button.btn', { title: 'Takes less room: writes a smaller copy next to the ISO that plays the same; the ISO stays', onclick: e => { compress(g.path, null, g.name, e.target); close(); if (page !== 'games') location.hash = '#games'; } }, ic('archive', 'sm'), 'Compress') : null,
       h('button.btn', { onclick: close }, 'Close')),
   ], false, () => { live.delete(followCopy); live.delete(followUpdates); });
 }
@@ -5357,6 +5402,64 @@ function addFolder(pick) {
 }
 
 // Log ------------------------------------------------------------------------------
+
+// Tasks: what the server does by itself, now and lately (/api/tasks), as Sonarr shows it.
+const TaskIcons = { compress: 'archive', console: 'upload', push: 'folder-sync', scan: 'scan', saves: 'history', sync: 'refresh-cw', backup: 'hard-drive' };
+function taskText(t) {
+  return [clock(t.started) + ' ' + t.name + (t.where ? ' (' + t.where + ')' : ''), t.state + ' after ' + duration(t.seconds) + (t.error ? ': ' + t.error : t.detail ? ': ' + t.detail : '')].join(' – ');
+}
+Pages.tasks = root => {
+  let data = null, only = store('tasksOnly') || 'all', busy = false, at = 0;
+  const running = h('div.card-body'), queued = h('div.card-body'), scheduled = h('div.table-wrap'), history = h('div.table-wrap'), filters = h('div.filters');
+  const copy = navigator.clipboard ? h('button.btn', { onclick: () => data && navigator.clipboard.writeText(data.history.filter(t => only === 'all' || t.state === 'failed').map(taskText).join('\n')).then(() => toast('Tasks copied')) }, ic('copy', 'sm'), 'Copy') : null;
+  root.append(header('Tasks', 'What NetDisc360 does by itself: what runs now, what waits, what ran and how it went, and what runs on a schedule.', copy),
+    h('div.stack.tasks',
+      h('div.card', h('div.card-head', ic('loader-circle', 'sm'), h('h2', 'Running')), running),
+      h('div.card', h('div.card-head', ic('clock', 'sm'), h('h2', 'Waiting')), queued),
+      h('div.card', h('div.card-head', ic('calendar-clock', 'sm'), h('h2', 'Scheduled')), scheduled),
+      h('div.card', h('div.card-head', ic('history', 'sm'), h('h2', 'History'), h('span.sub', 'since NetDisc360 started'), filters), history)));
+  const where = t => t.where ? h('div.muted', t.where) : null;
+  function draw() {
+    if (!data) return;
+    fill(running, data.running.length ? data.running.map(t => {
+      const part = t.total ? t.done / t.total : 0;
+      return h('div.task', ic(TaskIcons[t.kind] || 'loader-circle', 'sm'),
+        h('div.what', h('b', t.name), h('div.muted', [t.where, t.detail, t.total ? Math.floor(part * 100) + '%' : null].filter(Boolean).join(' · '))),
+        h('span.muted', duration(t.seconds)),
+        t.total ? h('div.progress', h('i', { style: { width: (part * 100).toFixed(1) + '%' } })) : null);
+    }) : h('div.empty', 'Nothing runs right now.'));
+    fill(queued, data.queued.length ? data.queued.map(t => h('div.task', ic(TaskIcons[t.kind] || 'clock', 'sm'),
+      h('div.what', h('b', t.name), where(t)), h('span.muted', t.since ? 'since ' + clock(t.since) : 'next'))) : h('div.empty', 'Nothing waits.'));
+    const next = j => j.off ? 'Off: ' + j.off : j.next ? (j.next <= data.now ? 'Now' : 'In ' + duration(j.next - data.now)) : j.every ? 'Soon' : 'When it’s needed';
+    fill(scheduled, h('table.table', h('thead', h('tr', h('th', 'Task'), h('th', 'Every'), h('th', 'Last run'), h('th', 'Next'))),
+      h('tbody', data.scheduled.map(j => h('tr',
+        h('td', h('b', j.name), where(j)),
+        h('td.when', j.every ? duration(j.every) : 'Always'),
+        h('td', j.last ? [h('span' + (j.ok ? '' : '.bad'), (j.ok ? 'OK' : 'Failed') + ', ' + ago(j.last)), j.error ? h('div.muted.bad', j.error) : null, j.failures ? h('div.muted', plural(j.failures, 'failure') + ' in ' + plural(j.runs, 'run')) : null] : h('span.muted', 'Not yet')),
+        h('td.when', next(j)))))));
+    const failed = data.history.filter(t => t.state === 'failed').length;
+    fill(filters, [['all', 'All ' + data.history.length], ['failed', 'Failed ' + failed]].map(([key, label]) =>
+      h('button.btn.small' + (only === key ? '.primary' : ''), { onclick: () => { only = key; store('tasksOnly', key); draw(); } }, label)));
+    const shown = data.history.filter(t => only === 'all' || t.state === 'failed');
+    fill(history, shown.length ? h('table.table', h('thead', h('tr', h('th', 'Task'), h('th', 'Result'), h('th', 'Started'), h('th', 'Took'))),
+      h('tbody', shown.map(t => h('tr',
+        h('td', h('span', { style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, ic(TaskIcons[t.kind] || 'circle', 'sm'), h('b', t.name)), where(t)),
+        h('td', h('span' + (t.state === 'failed' ? '.bad' : ''), { style: { display: 'inline-flex', gap: '6px', alignItems: 'center' } },
+          ic(t.state === 'done' ? 'circle-check' : t.state === 'failed' ? 'circle-alert' : 'x', 'sm'), t.state === 'done' ? 'Done' : t.state === 'failed' ? 'Failed' : 'Stopped'),
+          t.error ? h('div.muted.bad', t.error) : t.detail ? h('div.muted', t.detail) : null),
+        h('td.when', clock(t.started) + ', ' + ago(t.started)),
+        h('td.when', duration(t.seconds)))))) : h('div.card-body', h('div.empty', only === 'failed' ? 'Nothing failed.' : 'Nothing ran yet.')));
+  }
+  async function load() {
+    if (busy || Date.now() - at < 900) return;
+    busy = true;
+    try { data = await api('tasks'); at = Date.now(); store('tasksSeen', String(data.now)); draw(); }
+    catch (e) { /* refresh() reports it */ }
+    busy = false;
+  }
+  load();
+  return { update: load };
+};
 
 Pages.log = root => {
   const box = h('div.log.mono'), filter = h('input.input', { type: 'search', placeholder: 'Filter', oninput: () => { for (const d of box.children) d.hidden = !matches(d.textContent); } });
