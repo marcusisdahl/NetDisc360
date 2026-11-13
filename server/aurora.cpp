@@ -727,7 +727,9 @@ pcall(NetDiscBaseVersions)
         "-- game it deletes the update files and puts the one on back from its store,\n"
         "-- in that entry's place: on an entry with no copy, or in a place the console\n"
         "-- doesn't read, the game ends up with no update. So the entry in the\n"
-        "-- console's place goes on instead, with the copy (from the next Aurora start).\n"
+        "-- console's place goes on instead, with the copy (from the next Aurora start),\n"
+        "-- and an entry that is off and in the wrong place, with a twin in the right\n"
+        "-- one, goes from the list.\n"
         R"lua(local function NetDiscTuBackups()
    local read, rows = pcall(Sql.ExecuteFetchRows, "SELECT t.Id, t.Hash, t.TitleId, t.MediaId, t.FileName, t.LivePath, t.BackupPath FROM Config.ActiveTitleUpdates a JOIN TitleUpdates t ON t.Id = a.TitleUpdateId")
    if not read or rows == nil then return end
@@ -754,6 +756,25 @@ pcall(NetDiscBaseVersions)
                      pcall(Sql.Execute, "DELETE FROM Config.ActiveTitleUpdates WHERE TitleUpdateId = " .. string.format("%.0f", id))
                   end
                end
+            end
+         end
+      end
+   end
+   -- An entry that is off, in a place the console doesn't read, while the same
+   -- update has an entry in the console's place on the same drive, can never
+   -- work: it goes from Aurora's list (only the entry, never a file).
+   local readOff, off = pcall(Sql.ExecuteFetchRows, "SELECT Id, Hash, TitleId, MediaId, FileName, LivePath, LiveDeviceId FROM TitleUpdates WHERE Id NOT IN (SELECT TitleUpdateId FROM Config.ActiveTitleUpdates)")
+   if not readOff or off == nil then return end
+   for _, row in pairs(off) do
+      local id, titleId, mediaId = tonumber(row.Id), tonumber(row.TitleId), tonumber(row.MediaId)
+      if id ~= nil and titleId ~= nil and mediaId ~= nil and row.Hash ~= nil and row.Hash ~= "" and row.FileName ~= nil then
+         local place = "\\Content\\0000000000000000\\" .. string.format("%08X", titleId % 4294967296) .. "\\000B0000\\"
+         if string.sub(row.FileName, 1, 3) == "TU_" then place = "\\Cache\\" end
+         if string.lower(row.LivePath or "") ~= string.lower(place) then
+            local readTwin, twins = pcall(Sql.ExecuteFetchRows, "SELECT Id FROM TitleUpdates WHERE Hash = " .. quote(row.Hash) .. " AND TitleId = " .. string.format("%.0f", titleId) ..
+               " AND MediaId = " .. string.format("%.0f", mediaId) .. " AND IFNULL(LiveDeviceId, '') = " .. quote(row.LiveDeviceId) .. " AND LOWER(IFNULL(LivePath, '')) = " .. quote(string.lower(place)) .. " AND Id <> " .. string.format("%.0f", id) .. " LIMIT 1")
+            if readTwin and twins ~= nil and twins[1] ~= nil then
+               pcall(Sql.Execute, "DELETE FROM TitleUpdates WHERE Id = " .. string.format("%.0f", id) .. " AND Id NOT IN (SELECT TitleUpdateId FROM Config.ActiveTitleUpdates)")
             end
          end
       end

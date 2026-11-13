@@ -2460,9 +2460,17 @@ print('lua ok')
         run_aurora_script(online, self.xbox, content, settings)
         with contextlib.closing(sqlite3.connect(settings)) as db:
             self.assertEqual([r[0] for r in db.execute("SELECT TitleUpdateId FROM ActiveTitleUpdates ORDER BY TitleUpdateId")], [3, 5, 6, 7])
-        with contextlib.closing(sqlite3.connect(content)) as db:  # Only the copy is added; no entry goes.
+        # 3 gets 2's copy; 2 and 4, now off and in a place the console doesn't
+        # read, with a twin in the right one, go from the list.
+        with contextlib.closing(sqlite3.connect(content)) as db:
             self.assertEqual(db.execute("SELECT Id, BackupPath FROM TitleUpdates ORDER BY Id").fetchall(),
-                             [(2, "Game:\\Data\\mw2"), (3, "Game:\\Data\\mw2"), (4, None), (5, "Game:\\Data\\fifa"), (6, None), (7, "Game:\\Data\\y")])
+                             [(3, "Game:\\Data\\mw2"), (5, "Game:\\Data\\fifa"), (6, None), (7, "Game:\\Data\\y")])
+        # One in the wrong place with no twin in the right one stays.
+        with contextlib.closing(sqlite3.connect(content)) as db, db:
+            db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (8, 'TU_LONE', 'dev', ?, 1, 2, 'EE', 'x')", (mw2,))
+        run_aurora_script(online, self.xbox, content, settings)
+        with contextlib.closing(sqlite3.connect(content)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT Id FROM TitleUpdates ORDER BY Id")], [3, 5, 6, 7, 8])
 
     def test_updates_the_first_netiso_rule_in_aurora(self):
         # The very first servers ("NetISO for Aurora") counted only \NetISO\:
