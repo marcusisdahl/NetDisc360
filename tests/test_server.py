@@ -2383,6 +2383,87 @@ class Push(ServerTest):
         out = self.push()
         self.assertNotIn("cover art to Aurora", out)
 
+    def test_gives_aurora_the_games_own_base_version(self):
+        # Aurora keeps the launcher's version (LauncherVersion) as the tile's
+        # base version and so lists none of its title updates: the script that
+        # runs as Aurora starts puts back the base version of the game's own
+        # updates, for tiles only.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.push()
+        online = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscOnline.lua")
+        self.assertTrue(os.path.exists(online))
+        if not LUA:
+            return
+        check = os.path.join(self.tmp.name, "base.lua")
+        with open(check, "w") as f:
+            f.write(r"""
+local done = {}
+FileSystem = { FileExists = function() return false end, DeleteFile = function() end, WriteFile = function() end }
+GameListFilterCategories = { User = {} }
+Sql = {
+   ExecuteFetchRows = function(query)
+      if string.find(query, 'BaseVersion = 2147483647', 1, true) then return {
+         { Id = 7, Directory = '\\netdisc360\\games\\call of duty mw2', TitleId = 1096157207, MediaId = 747373159 },
+         { Id = '8', Directory = 'Hdd1:\\NetDisc360\\Games\\FIFA 14', TitleId = 1161890200, MediaId = -100 },
+         { Id = 9, Directory = '\\netdisc360\\games\\no updates', TitleId = 1, MediaId = 2 },
+         { Id = 10, Directory = '\\games\\call of duty mw2', TitleId = 1096157207, MediaId = 747373159 } } end
+      if string.find(query, 'FROM TitleUpdates', 1, true) then return {
+         { TitleId = 1096157207, MediaId = 747373159, BaseVersion = 10 },
+         { TitleId = '1096157207', MediaId = '747373159', BaseVersion = 12 },
+         { TitleId = 1161890200, MediaId = -100, BaseVersion = 5 },
+         { TitleId = 1, MediaId = 2, BaseVersion = 2147483647 } } end
+      return {}
+   end,
+   Execute = function(query) if string.find(query, 'BaseVersion', 1, true) then table.insert(done, query) end return true end }
+dofile(%r)
+assert(#done == 2, #done)
+assert(done[1] == 'UPDATE ContentItems SET BaseVersion = 10 WHERE Id = 7', done[1])
+assert(done[2] == 'UPDATE ContentItems SET BaseVersion = 5 WHERE Id = 8', done[2])
+print('lua ok')
+""" % online)
+        result = subprocess.run([LUA, check], capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), "lua ok", result.stderr)
+
+    def test_puts_on_the_title_update_aurora_has_a_copy_of(self):
+        # Aurora may list an update twice: in the place the console reads it
+        # from (a TU_ file in Hdd1:\\Cache, a tu file in the game's 000B0000)
+        # and in another, and only one may have a copy in its store. As it
+        # starts the game it puts the one on back from its store in that
+        # entry's place and deletes the rest (MW2 on COD: on in 000B0000, where
+        # the console doesn't read a TU_ file; the Cache entry had no copy).
+        # The script that runs as Aurora starts puts on the entry in the
+        # console's place and gives it the copy.
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        self.push()
+        online = os.path.join(self.xbox, "Hdd1", "Apps", "Aurora", "User", "Scripts", "Content", "Filters", "NetDiscOnline.lua")
+        self.assertTrue(os.path.exists(online))
+        if not lupa:
+            return
+        content, settings = os.path.join(self.tmp.name, "content.db"), os.path.join(self.tmp.name, "settings.db")
+        for name, table in ((content, AURORA_TU_TABLES[0]), (settings, AURORA_TU_TABLES[1])):
+            with contextlib.closing(sqlite3.connect(name)) as db:
+                db.execute(table)
+        mw2 = "\\Content\\0000000000000000\\41560817\\000B0000\\"
+        rows = (
+            (2, "TU_10LC20N", mw2, 0x41560817, "ED9F", "Game:\\Data\\mw2"),      # On, but the console doesn't read it there.
+            (3, "TU_10LC20N", "\\Cache\\", 0x41560817, "ED9F", ""),              # Goes on, with 2's copy.
+            (4, "tu00000005_00000000", "\\Cache\\", 0x45410950, "FF01", None),    # On, no copy...
+            (5, "tu00000005_00000000", "\\Content\\0000000000000000\\45410950\\000B0000\\", 0x45410950, "FF01", "Game:\\Data\\fifa"),  # ...goes on.
+            (6, "TU_ONLY", "\\Cache\\", 0x4D5307E6, "AB12", None),              # One entry only: stays on as it is.
+            (7, "TU_GOOD", "\\Cache\\", 0x4D5307E7, "CD34", "Game:\\Data\\y"))  # Already right.
+        with contextlib.closing(sqlite3.connect(content)) as db, db:
+            for row in rows:
+                db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash, BackupPath) VALUES (?, ?, 'dev', ?, ?, ?, ?, ?)",
+                           (row[0], row[1], row[2], row[3], 0x2C8C0267, row[4], row[5]))
+        with contextlib.closing(sqlite3.connect(settings)) as db, db:
+            db.execute("INSERT INTO ActiveTitleUpdates (TitleUpdateId) VALUES (2), (4), (6), (7)")
+        run_aurora_script(online, self.xbox, content, settings)
+        with contextlib.closing(sqlite3.connect(settings)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT TitleUpdateId FROM ActiveTitleUpdates ORDER BY TitleUpdateId")], [3, 5, 6, 7])
+        with contextlib.closing(sqlite3.connect(content)) as db:  # Only the copy is added; no entry goes.
+            self.assertEqual(db.execute("SELECT Id, BackupPath FROM TitleUpdates ORDER BY Id").fetchall(),
+                             [(2, "Game:\\Data\\mw2"), (3, "Game:\\Data\\mw2"), (4, None), (5, "Game:\\Data\\fifa"), (6, None), (7, "Game:\\Data\\y")])
+
     def test_updates_the_first_netiso_rule_in_aurora(self):
         # The very first servers ("NetISO for Aurora") counted only \NetISO\:
         # once the tiles move to \NetDisc360\Games that rule must be replaced too.
@@ -7555,6 +7636,19 @@ class Dashboard(DashboardTest):
                 self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
                 self.assertEqual(wait_queue()[-1]["state"], "done")
                 self.assertEqual([a[0] for a in aurora_starts()], [content_id(newest).upper()])
+                # Aurora also lists the same update in the Cache, with no copy in
+                # its store: as Aurora starts the game it would delete that file
+                # and put nothing back, so the one with the copy is put on.
+                with contextlib.closing(sqlite3.connect(content)) as db, db:
+                    db.execute("INSERT INTO TitleUpdates (Id, FileName, LiveDeviceId, LivePath, TitleId, MediaId, Hash) VALUES (5, 'TU_HALO3', ?, '\\Cache\\', ?, ?, ?)",
+                               (device, 0x4D5307E6, 0x1A2B3C4D, content_id(newest).upper()))
+                self.json("POST", "/api/titleupdates/off", {"game": "Halo 3", "address": "127.0.0.2"})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                aurora_starts()
+                path = next(f["path"] for f in switched()[0]["files"] if f["where"] == "aside" and f["offer"] == "111")
+                self.json("POST", "/api/titleupdates/use", {"game": "Halo 3", "address": "127.0.0.2", "path": path})
+                self.assertEqual(wait_queue()[-1]["state"], "done")
+                self.assertEqual([(a[0], a[2]) for a in aurora_starts()], [(content_id(newest).upper(), backup)])
             else:
                 print("Skipped running the Aurora script: no lupa (pip install lupa).", file=sys.stderr)
             with open(script, encoding="utf-8") as f:
