@@ -467,6 +467,37 @@ class Compress(ServerTest):
             time.sleep(0.2)
         self.assertTrue(c.mount("Halo 3.iso"))
         self.check_files(c, files)
+        # The Tasks page lists it, and the look through the game folders.
+        tasks = self.json("GET", "/api/tasks")
+        done = [t for t in tasks["history"] if t["kind"] == "compress"]
+        self.assertEqual([(t["name"], t["state"]) for t in done], [("Compress Halo 3", "done")], tasks)
+        self.assertEqual(tasks["running"], [])
+        self.assertIn("library", [j["key"] for j in tasks["scheduled"]])
+        self.assertEqual(self.json("GET", "/api/state")["tasks"]["lastFailed"], 0)
+
+    def test_a_failed_compression_is_on_the_tasks_page(self):
+        archive = os.path.join(self.isos, "Broken.zip")
+        iso, _ = self.game("Broken.iso")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
+            z.write(iso, "Broken.iso")
+        os.remove(iso)
+        with open(archive, "r+b") as f:  # Damaged inside the ISO's data: its CRC fails at the end.
+            f.seek(os.path.getsize(archive) // 2)
+            f.write(b"\xff" * 64)
+        self.web = free_port()
+        self.start_on(self.isos, "--web-port", str(self.web))
+        self.json("GET", "/api/compress?fresh=1")
+        self.json("POST", "/api/compress", {"path": archive})
+        deadline = time.time() + 60
+        while True:
+            tasks = self.json("GET", "/api/tasks")
+            if [t for t in tasks["history"] if t["kind"] == "compress"] or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        failed = [t for t in tasks["history"] if t["kind"] == "compress"][0]
+        self.assertEqual(failed["state"], "failed", tasks)
+        self.assertTrue(failed["error"], failed)
+        self.assertGreater(self.json("GET", "/api/state")["tasks"]["lastFailed"], 0)
 
     def games(self, until):
         deadline = time.time() + 10

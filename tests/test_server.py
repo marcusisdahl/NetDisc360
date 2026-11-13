@@ -136,7 +136,7 @@ def build_server():
                                                "server/web.cpp", "server/config.cpp", "server/backup.cpp", "server/update.cpp",
                                                "server/installed.cpp", "server/aurora.cpp", "server/auroradb.cpp", "server/titleupdates.cpp", "server/system.cpp", "server/saves.cpp", "server/wake.cpp",
                                                "server/party.cpp", "server/guests.cpp", "server/picture.cpp", "server/systemlink.cpp", "server/relay.cpp", "server/users.cpp", "server/http.cpp", "server/sync.cpp", "server/health.cpp",
-                                               "server/compress.cpp", "server/codecs.cpp", "shared/library.cpp", "shared/isvr.cpp")]
+                                               "server/compress.cpp", "server/tasks.cpp", "server/codecs.cpp", "shared/library.cpp", "shared/isvr.cpp")]
     subprocess.run(["g++", "-std=c++11", "-O1", "-Wall", "-pthread", "-include", os.path.join(HERE, "posix_compat.h"),
                     "-o", SERVER] + sources, check=True)
 

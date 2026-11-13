@@ -301,6 +301,18 @@ button.pill.tu:disabled { opacity: .6; cursor: default; }
 .table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .table td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .table tr:last-child td { border-bottom: 0; }
+/* The Tasks page */
+.tasks .card-body { display: grid; gap: 10px; }
+.tasks .empty { color: var(--muted); padding: 4px 0; }
+.task { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; }
+.task .progress { grid-column: 1 / -1; }
+.task .what { min-width: 0; }
+.task .what b { overflow-wrap: anywhere; }
+.tasks .table td { vertical-align: top; }
+.tasks .table td.when { white-space: nowrap; color: var(--muted); }
+.tasks .table .bad { color: var(--warn); }
+.tasks .table-wrap { overflow-x: auto; }
+.tasks .filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .table tbody tr.click { cursor: pointer; }
 .table tbody tr.click:hover td { background: var(--hover); }
 .table .path { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
@@ -1369,6 +1381,7 @@ const Nav = [
   ['users', 'Users', 'users'],
   ['health', 'Health', 'activity'],
   ['folders', 'Game folders', 'folder'],
+  ['tasks', 'Tasks', 'list'],
   ['log', 'Log', 'scroll-text'],
   ['settings', 'Settings', 'settings'],
 ];
@@ -1455,6 +1468,8 @@ function updateFrame(problem) {
     else if (a.dataset.page === 'games' && tus) fill($('.count', a), h('span.flag', { title: plural(tus, 'game') + ' with different title updates on the consoles' }, tus));
     else if (a.dataset.page === 'party' && S.party && S.party.active) fill($('.count', a), h('span.flag.new', { title: 'The LAN party is on' }, 'On'));
     else if (a.dataset.page === 'health' && S.health && S.health.problems) fill($('.count', a), h('span.flag', { title: plural(S.health.problems, 'console has a problem', 'consoles have problems') }, S.health.problems));
+    else if (a.dataset.page === 'tasks' && S.tasks && S.tasks.lastFailed > (+store('tasksSeen') || 0) && page !== 'tasks') fill($('.count', a), h('span.flag', { title: 'A task failed ' + ago(S.tasks.lastFailed) }, '!'));
+    else if (a.dataset.page === 'tasks' && S.tasks && S.tasks.running) fill($('.count', a), String(S.tasks.running));
     else if (a.dataset.page === 'settings' && updateOut()) fill($('.count', a), h('span.flag.new', { title: 'NetDisc360 ' + updateOut() + ' is out' }, 'New'));
     else if (a.dataset.page === 'updates' && tuGamesBehind().length) {
       const n = tuGamesBehind().length;
@@ -5387,6 +5402,64 @@ function addFolder(pick) {
 }
 
 // Log ------------------------------------------------------------------------------
+
+// Tasks: what the server does by itself, now and lately (/api/tasks), as Sonarr shows it.
+const TaskIcons = { compress: 'archive', console: 'upload', push: 'folder-sync', scan: 'scan', saves: 'history', sync: 'refresh-cw', backup: 'hard-drive' };
+function taskText(t) {
+  return [clock(t.started) + ' ' + t.name + (t.where ? ' (' + t.where + ')' : ''), t.state + ' after ' + duration(t.seconds) + (t.error ? ': ' + t.error : t.detail ? ': ' + t.detail : '')].join(' – ');
+}
+Pages.tasks = root => {
+  let data = null, only = store('tasksOnly') || 'all', busy = false, at = 0;
+  const running = h('div.card-body'), queued = h('div.card-body'), scheduled = h('div.table-wrap'), history = h('div.table-wrap'), filters = h('div.filters');
+  const copy = navigator.clipboard ? h('button.btn', { onclick: () => data && navigator.clipboard.writeText(data.history.filter(t => only === 'all' || t.state === 'failed').map(taskText).join('\n')).then(() => toast('Tasks copied')) }, ic('copy', 'sm'), 'Copy') : null;
+  root.append(header('Tasks', 'What NetDisc360 does by itself: what runs now, what waits, what ran and how it went, and what runs on a schedule.', copy),
+    h('div.stack.tasks',
+      h('div.card', h('div.card-head', ic('loader-circle', 'sm'), h('h2', 'Running')), running),
+      h('div.card', h('div.card-head', ic('clock', 'sm'), h('h2', 'Waiting')), queued),
+      h('div.card', h('div.card-head', ic('calendar-clock', 'sm'), h('h2', 'Scheduled')), scheduled),
+      h('div.card', h('div.card-head', ic('history', 'sm'), h('h2', 'History'), h('span.sub', 'since NetDisc360 started'), filters), history)));
+  const where = t => t.where ? h('div.muted', t.where) : null;
+  function draw() {
+    if (!data) return;
+    fill(running, data.running.length ? data.running.map(t => {
+      const part = t.total ? t.done / t.total : 0;
+      return h('div.task', ic(TaskIcons[t.kind] || 'loader-circle', 'sm'),
+        h('div.what', h('b', t.name), h('div.muted', [t.where, t.detail, t.total ? Math.floor(part * 100) + '%' : null].filter(Boolean).join(' · '))),
+        h('span.muted', duration(t.seconds)),
+        t.total ? h('div.progress', h('i', { style: { width: (part * 100).toFixed(1) + '%' } })) : null);
+    }) : h('div.empty', 'Nothing runs right now.'));
+    fill(queued, data.queued.length ? data.queued.map(t => h('div.task', ic(TaskIcons[t.kind] || 'clock', 'sm'),
+      h('div.what', h('b', t.name), where(t)), h('span.muted', t.since ? 'since ' + clock(t.since) : 'next'))) : h('div.empty', 'Nothing waits.'));
+    const next = j => j.off ? 'Off: ' + j.off : j.next ? (j.next <= data.now ? 'Now' : 'In ' + duration(j.next - data.now)) : j.every ? 'Soon' : 'When it’s needed';
+    fill(scheduled, h('table.table', h('thead', h('tr', h('th', 'Task'), h('th', 'Every'), h('th', 'Last run'), h('th', 'Next'))),
+      h('tbody', data.scheduled.map(j => h('tr',
+        h('td', h('b', j.name), where(j)),
+        h('td.when', j.every ? duration(j.every) : 'Always'),
+        h('td', j.last ? [h('span' + (j.ok ? '' : '.bad'), (j.ok ? 'OK' : 'Failed') + ', ' + ago(j.last)), j.error ? h('div.muted.bad', j.error) : null, j.failures ? h('div.muted', plural(j.failures, 'failure') + ' in ' + plural(j.runs, 'run')) : null] : h('span.muted', 'Not yet')),
+        h('td.when', next(j)))))));
+    const failed = data.history.filter(t => t.state === 'failed').length;
+    fill(filters, [['all', 'All ' + data.history.length], ['failed', 'Failed ' + failed]].map(([key, label]) =>
+      h('button.btn.small' + (only === key ? '.primary' : ''), { onclick: () => { only = key; store('tasksOnly', key); draw(); } }, label)));
+    const shown = data.history.filter(t => only === 'all' || t.state === 'failed');
+    fill(history, shown.length ? h('table.table', h('thead', h('tr', h('th', 'Task'), h('th', 'Result'), h('th', 'Started'), h('th', 'Took'))),
+      h('tbody', shown.map(t => h('tr',
+        h('td', h('span', { style: { display: 'inline-flex', gap: '8px', alignItems: 'center' } }, ic(TaskIcons[t.kind] || 'circle', 'sm'), h('b', t.name)), where(t)),
+        h('td', h('span' + (t.state === 'failed' ? '.bad' : ''), { style: { display: 'inline-flex', gap: '6px', alignItems: 'center' } },
+          ic(t.state === 'done' ? 'circle-check' : t.state === 'failed' ? 'circle-alert' : 'x', 'sm'), t.state === 'done' ? 'Done' : t.state === 'failed' ? 'Failed' : 'Stopped'),
+          t.error ? h('div.muted.bad', t.error) : t.detail ? h('div.muted', t.detail) : null),
+        h('td.when', clock(t.started) + ', ' + ago(t.started)),
+        h('td.when', duration(t.seconds)))))) : h('div.card-body', h('div.empty', only === 'failed' ? 'Nothing failed.' : 'Nothing ran yet.')));
+  }
+  async function load() {
+    if (busy || Date.now() - at < 900) return;
+    busy = true;
+    try { data = await api('tasks'); at = Date.now(); store('tasksSeen', String(data.now)); draw(); }
+    catch (e) { /* refresh() reports it */ }
+    busy = false;
+  }
+  load();
+  return { update: load };
+};
 
 Pages.log = root => {
   const box = h('div.log.mono'), filter = h('input.input', { type: 'search', placeholder: 'Filter', oninput: () => { for (const d of box.children) d.hidden = !matches(d.textContent); } });

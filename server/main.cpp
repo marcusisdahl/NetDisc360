@@ -15,6 +15,7 @@
 #include "auroradb.h"
 #include "backup.h"
 #include "compress.h"
+#include "tasks.h"
 #include "config.h"
 #include "discmap.h"
 #include "discs.h"
@@ -3992,6 +3993,8 @@ void FinishMove(Console& console, PushState& s, FtpClient& ftp, const Options& o
 
 void FollowAddress(Console& console, PushState& s, FtpClient& ftp, const Options& o);
 
+std::string TaskWhere(DWORD address);
+
 void PushTo(Console& console, PushState& s, const std::string& state, bool settled, double startedAt) {
     if(s.finished) return;
     PushMark mark(console.address);
@@ -4072,6 +4075,9 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         std::string before=s.installedSeen;
         std::vector<InstalledGame> found, godPackages;
         LookInstalled(console,s,ftp,o,found,godPackages);
+        std::string key=std::string("installed:")+console.text;
+        tasks::Every(key,"Look at what's installed on it",o.installedEvery,TaskWhere(console.address));
+        tasks::Ran(key,true);
         if(s.installedSeen!=before) {
             XboxLog(console,"what's installed on it changed; its game folders are written again.");
             s.installedChanged=true;
@@ -4087,6 +4093,7 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     if(pushDue && online) {
         SyncResult result;
+        tasks::Run task("push","Write its game folders (tiles)",TaskWhere(console.address));
         s.attempted=true; s.toldWaiting=false;
         double holdFrom=std::max(startedAt,FoldersChangedAt.load()/1000.0);
         bool missing=FoldersMissing;
@@ -4102,7 +4109,14 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
         LookInstalled(console,s,ftp,o,installed,godPackages);
         s.installedAt=Now();
         s.artFound=0;  // This push writes what was found so far.
-        if(Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages,s.artWants)) {
+        bool pushed=Push(console,ftp,result,(o.pushOnce || Now()-holdFrom>=o.removeWait) && !missing,o,installed,godPackages,s.artWants);
+        if(!pushed) task.Fail("Writing them stopped (its FTP server); the log says why. It tries again in 30 s.");
+        else if(result.failed) task.Fail(std::to_string(result.failed)+(result.failed==1 ? " folder" : " folders")+" couldn't be written; the log says which. It tries again soon.");
+        else {
+            char said[160]; _snprintf_s(said,sizeof(said),_TRUNCATE,"%d added, %d updated, %d removed, %d kept",result.added,result.updated,result.removed,result.kept);
+            task.Step(said);
+        }
+        if(pushed) {
             s.everPushed=true; s.pushed=state; s.installedChanged=false;
             console.recheck=false;  // The push looked at everything a recheck would.
             lookUpdates=true;
@@ -4134,7 +4148,10 @@ void PushTo(Console& console, PushState& s, const std::string& state, bool settl
     }
     if(lookUpdates) LookTitleUpdates(console,ftp,o);
     if(scanDue) {
-        if(StartScan(console,ftp,o)) s.scanTries=0;
+        tasks::Run task("scan","Start Aurora's scan of the game folders",TaskWhere(console.address));
+        bool started=StartScan(console,ftp,o);
+        if(!started) task.Fail("Aurora didn't start it; the log says why");
+        if(started) s.scanTries=0;
         else if(--s.scanTries) s.scanAt=Now()+ScanRetrySeconds;
         else XboxLog(console,"Aurora shows the changes after its next scan of %s.",o.xboxFolder.c_str());
     }
@@ -4269,6 +4286,12 @@ void WatchLoop() {
             double began=Now();
             std::vector<IsoFile> isos=Isos();
             nextScan=Now()+std::max(1.0,std::min(ScanMostSeconds,(Now()-began)*ScanEffort))-0.05;
+            if(!tick) tasks::Every("library","Look through the game folders",0);
+            {
+                std::string missing;
+                if(FoldersMissing) { std::lock_guard<std::mutex> hold(MissingLock); missing="Not there: "+MissingFolders; }
+                tasks::Ran("library",missing.empty(),missing,(long long)time(NULL)+(long long)(nextScan-Now()+0.99));
+            }
             state=Fingerprint(isos);
             if(state!=previous || !tick) {
                 if(state!=previous && (!previous.empty() || changedAt>-1e9)) changedAt=Now();
@@ -4991,7 +5014,9 @@ void SaveLoop() {
                 Busy busy(console);
                 FtpClient ftp(job.address,o.ftpPort,o.ftpUser.c_str(),o.ftpPassword.c_str(),15);
                 saves::Result r; std::string error;
+                tasks::Run task("saves","Back up "+WithoutIso(job.game)+"'s saves",TaskWhere(job.address));
                 ok=SaveGame(*console,ftp,titleId,WithoutIso(job.game),o,r,error);
+                if(!ok) task.Fail(error);
                 ftp.Close();
             }
         }
@@ -6658,6 +6683,7 @@ void State(web::Reply& out) {
     HealthJson(j);
     CopiesJson(j);
     { std::lock_guard<std::mutex> hold(LogLock); j.Set("logId",LogCount); }
+    { int running; long long failed; tasks::Counts(running,failed); j.Key("tasks").Open('{').Set("running",running).Set("lastFailed",failed).Close('}'); }
     j.Close('}');
     out.body=j.Text();
 }
@@ -6813,7 +6839,13 @@ void CompressLoop() {
         Event(EventInfo,"Compressing %s",job.name.c_str());
         CompressDone done;
         done.name=job.name; done.source=job.source; done.output=job.output;
+        tasks::Run task("compress","Compress "+job.name,job.output.substr(0,job.output.find_last_of("/\\")));
+        task.Follow([](std::string& detail, double& at, double& total) {
+            static const char* const Steps[]={ "Reading its file table", "Compressing", "Checking the new file" };
+            detail=Steps[std::min(2,std::max(0,CompressAt.step.load()))]; at=double(CompressAt.done.load()); total=double(CompressAt.total.load());
+        });
         done.ok=CompressDisc(job.source,job.entry,job.output,false,CompressAt,&CompressStop,done.result,done.error);
+        if(!done.ok) { if(CompressStop) task.Stop(); else task.Fail(done.error); }
         done.seconds=Now()-CompressStarted; done.time=(long long)time(NULL);
         if(done.ok) {
             const CompressResult& r=done.result;
@@ -8169,8 +8201,16 @@ void SyncLoop() {
         SyncAsked=false;
         next=Now()+SyncEvery;
         Options o=Current();
-        if(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty()) continue;
+        tasks::Every("sync","Sync with your other computers",SyncEvery);
+        bool on=!(o.syncKey.empty() || o.syncUrl.empty() || o.syncId.empty() || o.configPath.empty());
+        tasks::Off("sync",on ? "" : "Not set up (Settings, Sync between computers)");
+        if(!on) continue;
+        tasks::Run task("sync","Sync with your other computers");
         SyncPass(o);
+        bool ok; std::string error;
+        { std::lock_guard<std::mutex> hold(SyncStateLock); ok=SyncNow.last && SyncNow.lastOk==SyncNow.last; error=SyncNow.error; }
+        if(!ok) task.Fail(error);
+        tasks::Ran("sync",ok,error);
     }
 }
 
@@ -8412,6 +8452,8 @@ void BackupLoop() {
     for(;;) {
         Options o=Current();
         std::string folder=BackupFolder(o), name, error;
+        tasks::Every("backup","Back up NetDisc360's settings",o.backupEvery*86400.0);
+        tasks::Off("backup",o.backupEvery<=0 ? "Off in Settings, Backups" : folder.empty() ? "The settings aren't kept in a file" : "");
         if(o.backupEvery>0 && !folder.empty()) {
             long long newest=0;
             {
@@ -8419,7 +8461,12 @@ void BackupLoop() {
                 std::vector<backup::Info> list=backup::List(folder);
                 for(size_t i=0;i<list.size();++i) if(list[i].kind=="scheduled") newest=std::max(newest,list[i].time);
             }
-            if((long long)time(NULL)-newest>=o.backupEvery*86400LL-60) MakeBackup("scheduled",name,error);
+            if((long long)time(NULL)-newest>=o.backupEvery*86400LL-60) {
+                tasks::Run task("backup","Back up NetDisc360's settings");
+                bool made=MakeBackup("scheduled",name,error);
+                if(!made) task.Fail(error);
+                tasks::Ran("backup",made,error);
+            } else if(newest) tasks::Ran("backup",true,"",newest+o.backupEvery*86400LL);
         }
         Sleep(600000);
     }
@@ -8583,7 +8630,10 @@ void UpdateLoop() {
         if(Now()<next && !CheckSoon) continue;
         CheckSoon=false;
         std::string error;
-        next=Now()+(CheckForUpdate(error) ? 12*3600 : 3600);
+        tasks::Every("update","Look for a newer NetDisc360",12*3600);
+        bool checked=CheckForUpdate(error);
+        next=Now()+(checked ? 12*3600 : 3600);
+        tasks::Ran("update",checked,error,(long long)time(NULL)+(checked ? 12*3600 : 3600));
         if(!o.updateAuto || !UpdateNewer() || strcmp(UpdateHow(),"app")) continue;
         std::string skip;
         { std::lock_guard<std::mutex> hold(SettingsLock); skip=UpdateSkip; }
@@ -8700,6 +8750,26 @@ void EndCopy(ContentCopy& c, const Console* console, const char* state, const st
     else Event(kind,"%s on %s",text.c_str(),where);
 }
 
+// What the Tasks page calls a console job (native text).
+std::string CopyTaskName(const ContentCopy& c) {
+    std::string game=config::FromUtf8(c.game), label=config::FromUtf8(c.label);
+    if(c.kind=="game" || c.kind=="files") return "Copy "+game+" to the hard drive";
+    if(c.kind=="update") return "Put "+label+" for "+game+" on the console";
+    if(c.kind=="package") return "Copy "+game;
+    if(c.kind=="tuoff") return "Turn "+game+"'s title updates off";
+    if(c.kind=="check") return "Check its title updates";
+    if(c.kind=="remove") return "Remove "+game+" from the hard drive";
+    return "Install "+game+"'s content";
+}
+
+// The console a task works on, as the Tasks page names it.
+std::string TaskWhere(DWORD address) {
+    char where[16]; AddressText(address,where,sizeof(where));
+    const Console* c=ConsoleIfKnown(address);
+    std::string name=c ? NameOf(*c) : std::string();
+    return name.empty() ? std::string(where) : name+" ("+where+")";
+}
+
 // Runs a console's queue, oldest first, until it's empty.
 void CopyWorker(DWORD at) {
     for(;;) {
@@ -8710,10 +8780,44 @@ void CopyWorker(DWORD at) {
             if(!job) { CopyWorkers.erase(at); return; }
             job->state="copying"; job->startedAt=(long long)time(NULL); job->began=Now();
         }
+        long long task=tasks::Begin("console",CopyTaskName(*job),TaskWhere(at),job->id);
+        ContentCopy* followed=job.get();
+        tasks::Follow(task,[followed](std::string& detail, double& done, double& total) {
+            std::lock_guard<std::mutex> hold(CopyLock);
+            detail=followed->current.empty() ? followed->phase : "Sending "+followed->current;
+            done=double(followed->done); total=double(followed->total);
+        });
         job->run(job);
         // A job that returned without ending (it shouldn't) mustn't hold the queue.
         EndCopy(*job,ConsoleIfKnown(at),"failed","It stopped without saying why.");
+        std::string state, error;
+        { std::lock_guard<std::mutex> hold(CopyLock); state=job->state; error=job->error; }
+        tasks::End(task,state=="done",error,state=="stopped");
     }
+}
+
+// GET /api/tasks: what runs, waits, ran and runs by itself (see tasks.h).
+void TasksState(web::Reply& out) {
+    web::Json j;
+    long long now=(long long)time(NULL);
+    j.Open('{').Set("now",now);
+    tasks::Write(j,now);
+    j.Key("queued").Open('[');
+    {
+        std::lock_guard<std::mutex> hold(CompressLock);
+        for(size_t i=0;i<CompressQueue.size();++i)
+            j.Open('{').Set("kind","compress").Set("name",config::ToUtf8("Compress "+CompressQueue[i].name)).Set("where",config::ToUtf8(CompressQueue[i].output.substr(0,CompressQueue[i].output.find_last_of("/\\")))).Close('}');
+    }
+    std::vector<std::shared_ptr<ContentCopy> > waiting;
+    {
+        std::lock_guard<std::mutex> hold(CopyLock);
+        for(size_t i=0;i<Copies.size();++i) if(Copies[i]->state=="queued") waiting.push_back(Copies[i]);
+    }
+    for(size_t i=0;i<waiting.size();++i)
+        j.Open('{').Set("kind","console").Set("name",config::ToUtf8(CopyTaskName(*waiting[i]))).Set("where",config::ToUtf8(TaskWhere(waiting[i]->address)))
+         .Set("ref",(long long)waiting[i]->id).Set("since",waiting[i]->queuedAt).Close('}');
+    j.Close(']').Close('}');
+    out.body=j.Text();
 }
 
 // Makes the folders of an FTP path (a file's), from below root, a level at a time.
@@ -10471,6 +10575,8 @@ void TuAutoLoop() {
             std::lock_guard<std::mutex> hold(TuLock);
             for(std::set<DWORD>::const_iterator i=titles.begin();i!=titles.end();++i) if(loaded.insert(*i).second) TuInfoFromDisk(o,*i);
         }
+        tasks::Every("tu-lookup","Look up each game's title updates on XboxUnity (each a day)",TuAutoEvery);
+        tasks::Off("tu-lookup",o.tuAuto ? "" : "Off on the Title updates page");
         if(!o.tuAuto || Now()-StartedAt<o.tuAutoDelay) continue;
         // From the game after the one the last pass stopped at, round to it.
         std::vector<DWORD> order(titles.upper_bound(stoppedAt),titles.end());
@@ -10491,7 +10597,9 @@ void TuAutoLoop() {
             std::vector<tu::Offer> offers;
             std::string error;
             tu::Failure failure=tu::Fine;
-            if(!LookupTus(titleId,true,offers,error,TuFresh,&failure)) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(titleId).c_str(),error.c_str());
+            bool found=LookupTus(titleId,true,offers,error,TuFresh,&failure);
+            if(!found) Log("Couldn't look up %s's title updates on XboxUnity: %s",Hex8(titleId).c_str(),error.c_str());
+            tasks::Ran("tu-lookup",found,found ? std::string() : Hex8(titleId)+": "+error);
             if(failure==tu::Slow || failure==tu::ServerError) { unityDownUntil=Now()+o.tuAutoRetry; stoppedAt=titleId; }
             else Sleep(1000);  // Gently: XboxUnity is run by volunteers.
         }
@@ -15023,6 +15131,7 @@ void Api(const web::Request& r, web::Reply& out) {
     else if(r.method=="GET" && r.path=="/api/games") Games(out);
     else if(r.method=="GET" && r.path=="/api/log") LogSince(atoll(r.Param("after").c_str()),out);
     else if(r.method=="GET" && r.path=="/api/compress") CompressState(r.Param("fresh")=="1",out);
+    else if(r.method=="GET" && r.path=="/api/tasks") TasksState(out);
     else if(r.method=="POST" && r.path=="/api/compress") {
         if(!StartCompress(body,error)) out.Error(400,error);
         else CompressState(false,out);
