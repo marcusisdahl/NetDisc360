@@ -10,7 +10,7 @@
 # The base image by digest, so a rebuild of a tag gives the same image;
 # Dependabot (.github/dependabot.yml) proposes the new digest when Debian
 # updates it.
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS build
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends g++ ca-certificates curl python3 \
  && rm -rf /var/lib/apt/lists/*
@@ -59,7 +59,7 @@ RUN fetch() { [ -n "$1" ] && curl -fsSL "$1" -o /tmp/NetDisc360.exe \
     fi; \
     rm -f /tmp/NetDisc360.exe
 
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tini tzdata curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
