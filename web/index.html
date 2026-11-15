@@ -420,6 +420,23 @@ button.pill.tu:disabled { opacity: .6; cursor: default; }
 .section-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 .subnav-group { padding: 14px 10px 4px; font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
 .subnav-group:first-child { padding-top: 0; }
+details.advanced > summary { display: flex; align-items: center; gap: 8px; padding: 10px 4px; cursor: pointer; list-style: none; color: var(--muted); border-radius: 8px; }
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary:hover { color: var(--text); }
+details.advanced > summary b { color: var(--text); font-weight: 600; }
+details.advanced > summary .i { transition: transform .15s; }
+details.advanced[open] > summary .i { transform: rotate(90deg); }
+details.advanced[open] > summary { margin-bottom: 8px; }
+.settings-search { position: relative; width: 300px; max-width: 100%; }
+.settings-search .results { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; right: 0; max-height: 360px; overflow: auto; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; }
+.settings-search .results:empty { display: none; }
+.settings-search .results a { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; border-radius: 7px; text-decoration: none; color: var(--text); }
+.settings-search .results a.on, .settings-search .results a:hover { background: var(--hover); }
+.settings-search .results small { color: var(--muted); font-size: 12px; }
+.settings-search .results .none { padding: 10px; color: var(--muted); }
+.search-hit { animation: search-hit 2.2s ease-out; border-radius: 6px; }
+@keyframes search-hit { 0%, 35% { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } 100% { background: transparent; box-shadow: 0 0 0 6px transparent; } }
+@media (prefers-reduced-motion: reduce) { .search-hit { animation-duration: .01s; } }
 .section-head h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
 .section-head p { margin: 3px 0 0; color: var(--muted); }
 .hero { display: flex; gap: 16px; align-items: center; padding: 20px; }
@@ -1194,6 +1211,7 @@ a.console:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   .settings { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .subnav { position: static; flex-direction: row; overflow-x: auto; margin: 0 -16px; padding: 0 16px 2px; }
   .subnav-group { display: none; }
+  .head .actions:has(.settings-search), .settings-search { width: 100%; }
   .hero { flex-wrap: wrap; }
   .hero .actions { width: 100%; justify-content: flex-start; }
   .backup-row { flex-wrap: wrap; }
@@ -5609,6 +5627,51 @@ const Sections = [
   ['log', 'Log', 'scroll-text', 'NetDisc360'],
   ['about', 'About', 'info', 'NetDisc360'],
 ];
+// Every setting by the words on it, for the search box: [section, title on the page, more words to find it by,
+// 'windows' when only the Windows tray app has it].
+const SettingIndex = [
+  ['folders', 'Game folders', 'add remove folder iso games path drive nas'],
+  ['aurora', 'Add games to Aurora', 'push tiles game list'],
+  ['aurora', 'Show them in Aurora\u2019s Xbox 360 category', 'filter category'],
+  ['aurora', 'Ask Aurora to scan right away', 'scan cover art'],
+  ['aurora', 'Leave out installed games', 'duplicates twice installed hdd'],
+  ['aurora', 'Aurora\u2019s FTP login', 'ftp user password xboxftp'],
+  ['aurora', 'Aurora\u2019s web server', 'http user password port xboxhttp'],
+  ['aurora', 'Aurora scripts', 'cleanup utilities filter hide'],
+  ['aurora', 'Tidy Aurora\u2019s game list as it starts', 'cleanup remove stale rows'],
+  ['aurora', 'Restart Aurora when the PC games come or go', 'restart filter'],
+  ['aurora/advanced', 'Game folder', 'xbox folder path hdd1 netdisc360 games advanced'],
+  ['aurora/advanced', 'Aurora\u2019s folder', 'path apps advanced'],
+  ['aurora/advanced', 'Folders with installed games', 'installed hdd1 games path advanced'],
+  ['consoles', 'Consoles that get your games', 'which consoles xbox address ip'],
+  ['consoles', 'Show each console\u2019s name when Aurora starts', 'identify name note jrpc'],
+  ['consoles', 'Follow this PC\u2019s address', 'ip address changes router netdisc360.ini'],
+  ['consoles', 'Turn a console off after its last game', 'auto off power shutdown idle'],
+  ['consoles', 'Plugin set', 'dashlaunch plugins launch.ini xbdm jrpc'],
+  ['consoles', 'Kit folder', 'plugin files folder'],
+  ['saves', 'Back up saves after each game', 'save backup'],
+  ['saves', 'Saves follow the profile', 'save sync profile gamertag'],
+  ['saves', 'Keep the newest', 'how many save backups'],
+  ['saves', 'Back up every game\u2019s saves now', 'save backup now restore'],
+  ['backups', 'Back up your settings', 'backup now restore file zip'],
+  ['backups', 'Back up by itself', 'automatic backup daily weekly schedule'],
+  ['backups', 'Your backups', 'restore download delete'],
+  ['sync', 'Sync between computers', 'laptop other computer cloud owner key connect'],
+  ['dashboard', 'Theme', 'dark light mode look colors'],
+  ['dashboard', 'Cover art', 'covers images'],
+  ['dashboard', 'Other devices can open it', 'phone lan network remote open'],
+  ['dashboard', 'Password', 'login lock security log out'],
+  ['pc', 'Wake it when a game starts', 'wake on lan wol sleep'],
+  ['pc', 'MAC address to wake', 'wake on lan wol adapter'],
+  ['pc', 'Start with Windows', 'autostart startup boot tray', 'windows'],
+  ['pc', 'Keep this PC awake while a console plays', 'sleep awake power', 'windows'],
+  ['pc', 'Restart NetDisc360', 'restart server', 'windows'],
+  ['updates', 'Updates', 'new version release install automatic update history'],
+  ['log', 'Log', 'logging errors what happened download copy file'],
+  ['about', 'This computer', 'system info windows version memory cpu address ports'],
+  ['about', 'This copy', 'version build settings file disc map license'],
+  ['about', 'Run the setup again', 'wizard first run setup'],
+];
 // Earlier section names, so old links still open the right one.
 const SectionMoves = { xbox: 'aurora', windows: 'pc' };
 const BackupKinds = {
@@ -5621,7 +5684,41 @@ const fullDate = t => new Date(t * 1000).toLocaleString(undefined, { day: 'numer
 
 Pages.settings = root => {
   const nav = h('nav.subnav'), body = h('div.stack');
-  root.append(header('Settings', null), h('div.settings', nav, body));
+  // Find a setting by a word on it: Enter or a click opens its section and shows where it is.
+  const results = h('div.results', { role: 'listbox' });
+  const find = h('input.input', { type: 'search', placeholder: 'Find a setting', 'aria-label': 'Find a setting',
+    oninput: () => drawResults(), onfocus: () => drawResults(),
+    onkeydown: e => {
+      const links = [...results.querySelectorAll('a')], at = links.findIndex(a => a.classList.contains('on'));
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (links.length) { const to = (at + (e.key === 'ArrowDown' ? 1 : links.length - 1)) % links.length; links.forEach((a, i) => a.classList.toggle('on', i === to)); links[to].scrollIntoView({ block: 'nearest' }); } }
+      else if (e.key === 'Enter' && links.length) links[Math.max(at, 0)].click();
+      else if (e.key === 'Escape') { find.value = ''; drawResults(); }
+    } });
+  const sectionName = id => (Sections.find(([s]) => s === id.split('/')[0]) || [])[1] || '';
+  function drawResults() {
+    const words = find.value.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) { fill(results); return; }
+    const hits = SettingIndex.filter(([s, title, more, only]) => { if (only === 'windows' && S.settings.startWithWindows === undefined) return false; const text = (title + ' ' + more + ' ' + sectionName(s)).toLowerCase().replace(/\u2019/g, "'"); return words.every(w => text.includes(w.replace(/\u2019/g, "'"))); }).slice(0, 8);
+    fill(results, hits.length ? hits.map(([s, title], i) => h('a', { href: '#settings/' + s, class: i ? '' : 'on', role: 'option', onclick: e => { e.preventDefault(); open(s, title); } }, h('span', title), h('small', sectionName(s))))
+      : h('div.none', 'No setting has that on it.'));
+  }
+  function open(where, title) {
+    find.value = ''; fill(results); find.blur();
+    if (location.hash !== '#settings/' + where) location.hash = '#settings/' + where;
+    // Once its section is drawn: scroll to it and light it up for a moment.
+    setTimeout(() => {
+      const hit = [...body.querySelectorAll('.setting .title, .card-head h2, .field > span, .hero h3, .section-head h2, .btn')].find(e => e.textContent.trim() === title);
+      if (!hit) return;
+      const fold = hit.closest('details');
+      if (fold) fold.open = true;
+      const box = hit.closest('.setting, .field, .hero') || hit.closest('.card-head, .section-head') || hit;
+      box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      box.classList.remove('search-hit'); void box.offsetWidth; box.classList.add('search-hit');
+    }, 250);
+  }
+  document.addEventListener('click', away);
+  function away(e) { if (!e.target.closest('.settings-search')) fill(results); }
+  root.append(header('Settings', null, h('div.settings-search.input-icon', ic('search', 'sm'), find, results)), h('div.settings', nav, body));
   let section = null, part = null, key = '';
   function toggle(checked, onchange, disabled) {
     return h('label.switch', h('input', { type: 'checkbox', checked, disabled, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
@@ -5633,6 +5730,11 @@ Pages.settings = root => {
   const card = (icon, title, sub, ...content) => h('div.card', h('div.card-head', ic(icon), h('h2', title), sub && h('span.sub', sub)), h('div.card-body', content));
   const head = (title, lead, ...actions) => h('div.section-head', h('div', h('h2', title), lead && h('p', lead)), actions.length ? h('div.actions', actions) : null);
   const shown = () => Sections;
+  // Settings few people change, folded away until asked for; stays open once opened (kept in this browser).
+  function advanced(id, hint, ...content) {
+    return h('details.advanced', { open: store('advanced-' + id) === 'open' || location.hash.endsWith('/advanced'), ontoggle: e => store('advanced-' + id, e.target.open ? 'open' : 'closed') },
+      h('summary', ic('chevron-right', 'sm'), h('b', 'Advanced'), h('span', hint)), h('div.stack', content));
+  }
 
   // Each section: build() makes it from S; update() keeps its live parts current.
   const Parts = {};
@@ -5673,27 +5775,26 @@ Pages.settings = root => {
           h('label.field', h('span', 'Password'), password),
           h('div.field', { style: { gridColumn: '1 / -1' } }, h('span.help', 'The same login as in Aurora\u2019s settings (Aurora\u2019s default is xboxftp / xboxftp; changing it is a good idea). It\u2019s kept ', S.platform === 'windows' ? 'encrypted for your Windows user.' : 'in the settings file, readable only by NetDisc360\u2019s user.')),
           h('div.form-actions', h('button.btn.primary', { onclick: async () => { const c = { ftpUser: user.value }; if (password.value) c.ftpPassword = password.value; if (await save(c, 'FTP login saved')) password.value = ''; } }, 'Save login'))));
-    const xboxFoldersCard = card('folder', 'Folders on the Xbox', null,
+    const xboxFoldersCard = card('folder', 'Folders on the Xbox', 'right as they are for most setups',
         h('div.form.cols',
           h('label.field', h('span', 'Game folder'), xboxFolder, h('span.help', 'As an FTP path, like /Hdd1/NetDisc360/Games. Add it to Aurora\u2019s scan paths (depth 1). NetDisc360\u2019s own files go in Hdd1:\\Apps\\NetDisc360.')),
           h('label.field', h('span', 'Aurora\u2019s folder'), aurora, h('span.help', 'Where Aurora is, for its Xbox 360 category.')),
-          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value }, 'Folders saved') }, 'Save folders'))));
+          h('label.field', { style: { gridColumn: '1 / -1' } }, h('span', 'Folders with installed games'), installedFolders, h('span.help', 'Where NetDisc360 looks for games installed on the console. FTP paths with semicolons between, like /Hdd1/Games. A game one folder further down counts too (Halo 3\\Disc 1), and Games on Demand on those drives are found by themselves.')),
+          h('div.form-actions', h('button.btn', { onclick: () => save({ xboxFolder: xboxFolder.value, aurora: aurora.value, installedFolders: installedFolders.value }, 'Folders saved') }, 'Save folders'))));
     fill(body,
       head('Aurora', 'How your games get into Aurora\u2019s game list on each console, and the logins NetDisc360 uses for it.'),
       card('gamepad-2', 'Your games in Aurora', null,
         row('Add games to Aurora', st.canPush ? 'Keeps a folder for every game in each console\u2019s ' + gamesFolder() + ', so the games are in Aurora\u2019s game list.' : 'This build has no launcher built in, so it only serves games.', toggle(st.push, (v, i) => flip('push', v, i), !st.canPush)),
         row('Show them in Aurora\u2019s Xbox 360 category', 'Adds one rule to Aurora\u2019s game filter. Without it they show under All.', toggle(st.category, (v, i) => flip('category', v, i))),
         row('Ask Aurora to scan right away', 'After games are added or removed, so they show up at once with their cover art.', toggle(st.scan, (v, i) => flip('scan', v, i)))),
-      ftpCard, webCard, xboxFoldersCard,
       card('hard-drive', 'Games installed on the console', null,
-        row('Leave out installed games', 'A game that is installed on the console already, extracted or as Games on Demand, gets no tile, so Aurora doesn\u2019t list it twice. Off: it gets one too, which asks whether to play the copy on the Xbox or the one on the PC.', toggle(st.skipInstalled, (v, i) => flip('skipInstalled', v, i))),
-        h('div.form', { style: { marginTop: '12px' } },
-          h('label.field', h('span', 'Folders with installed games'), installedFolders, h('span.help', 'FTP paths with semicolons between, like /Hdd1/Games. A game one folder further down counts too (Halo 3\\Disc 1), and Games on Demand on those drives are found by themselves.')),
-          h('div.form-actions', h('button.btn', { onclick: () => save({ installedFolders: installedFolders.value }, 'Folders saved') }, 'Save folders')))),
+        row('Leave out installed games', 'A game that is installed on the console already, extracted or as Games on Demand, gets no tile, so Aurora doesn\u2019t list it twice. Off: it gets one too, which asks whether to play the copy on the Xbox or the one on the PC.', toggle(st.skipInstalled, (v, i) => flip('skipInstalled', v, i)))),
+      ftpCard, webCard,
       card('scroll-text', 'Keeping Aurora\u2019s list tidy', null,
         row('Aurora scripts', ['Puts ', h('b', 'NetDisc360 Cleanup'), ' under Aurora\u2019s Utilities, which takes games whose tile is gone off Aurora\u2019s list, and the filter ', h('b', 'Hide PC games while NetDisc360 is off'), ' under Filters, User.'], toggle(st.auroraScripts, (v, i) => flip('auroraScripts', v, i))),
         row('Tidy Aurora\u2019s game list as it starts', 'Takes the games whose NetDisc360 tile is gone off Aurora\u2019s list each time Aurora starts, as NetDisc360 Cleanup does but without asking. Only rows in Aurora\u2019s list change; no file is deleted. Needs Aurora scripts on.', toggle(st.tidyAurora, (v, i) => flip('tidyAurora', v, i), !st.auroraScripts)),
-        row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i)))));
+        row('Restart Aurora when the PC games come or go', 'When that filter is on and NetDisc360 starts or quits, so Aurora\u2019s list follows. Only while Aurora is on screen, never during a game.', toggle(st.restartAurora, (v, i) => flip('restartAurora', v, i)))),
+      advanced('aurora', 'The folders NetDisc360 uses on the Xbox', xboxFoldersCard));
   };
 
   Parts.consoles = () => {
@@ -5753,6 +5854,7 @@ Pages.settings = root => {
               try { await api('password', { password: newPassword.value }); newPassword.value = ''; await refresh(); toast('Password saved'); key = ''; } catch (e) { toast(e.message, true); }
             } }, st.password ? 'Change' : 'Set'),
             st.password ? h('button.btn.ghost', { title: 'Remove the password', onclick: async () => {
+              if ((st.webLan || st.webAddress === '0.0.0.0') && !(await confirmBox('Remove the password?', 'Other devices can open this dashboard. Without a password, anyone on your network can open it and change its settings.', 'Remove', true))) return;
               try { await api('password', { password: '' }); await refresh(); toast('Password removed'); key = ''; } catch (e) { toast(e.message, true); }
             } }, 'Remove') : null)),
         st.password && !st.passwordFixed ? row('Log out', 'On this browser.', h('button.btn', { onclick: async () => { await api('logout', {}); location.reload(); } }, ic('log-out', 'sm'), 'Log out')) : null));
@@ -5933,7 +6035,7 @@ Pages.settings = root => {
           row('This computer', 'Listed as ' + y.name + ' on your other computers.', state),
           row('Last sync', y.last ? (ago(y.last) + (y.last ? ': sent ' + plural(y.sent, 'file') + ', fetched ' + plural(y.got, 'file') : '') + (y.failed ? '. ' + y.error : '.')) : 'When NetDisc360 starts, every 5 minutes, and after each save backup.', now),
           y.stored ? row('In the cloud', bytes(y.stored) + ' in your R2 bucket. Cloudflare\u2019s free tier holds 10 GB.', null) : null,
-          row('What syncs', 'Game save backups, profile backups and play history. With \u201cSaves follow the profile\u201d on (Backups, Game saves), a profile\u2019s newest saves go onto whichever console it\u2019s on. Not your games, game folders, consoles or passwords.', null),
+          row('What syncs', 'Game save backups, profile backups and play history. With \u201cSaves follow the profile\u201d on (Settings, Game saves), a profile\u2019s newest saves go onto whichever console it\u2019s on. Not your games, game folders, consoles or passwords.', null),
           row('Turn off on this computer', 'Its backups stay here and in the cloud.', off)),
         card('monitor', 'Your computers', plural(y.devices.length, 'computer'),
           y.devices.length ? y.devices.map(d => h('div.backup-row', h('div.kindmark.k-xbox', ic('monitor')),
@@ -6174,7 +6276,7 @@ Pages.settings = root => {
         if (part && part.update) part.update();
       } else if (part && part.update) part.update();
     },
-    leave() { if (part && part.leave) part.leave(); },
+    leave() { document.removeEventListener('click', away); if (part && part.leave) part.leave(); },
   };
 };
 
