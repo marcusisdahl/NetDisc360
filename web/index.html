@@ -5318,7 +5318,7 @@ function removeFolder(path) {
   modal('Remove this folder?', close => [
     h('div.modal-body', h('p', { style: { margin: 0 } }, 'NetDisc360 stops serving ', h('b', path), '. Nothing is deleted, but its games leave Aurora on your consoles until you add it again.')),
     h('div.modal-foot', h('span.note'), h('button.btn', { onclick: close }, 'Cancel'),
-      h('button.btn.primary', { onclick: async () => { if (await save({ folders: S.folders.map(f => f.path).filter(p => p !== path) }, 'Folder removed')) close(); } }, 'Remove')),
+      h('button.btn.danger', { onclick: async () => { if (await save({ folders: S.folders.map(f => f.path).filter(p => p !== path) }, 'Folder removed')) close(); } }, ic('trash-2', 'sm'), 'Remove')),
   ], true);
 }
 

@@ -6326,6 +6326,23 @@ class Dashboard(DashboardTest):
         self.assertEqual(state["settings"]["xboxes"], ["192.168.1.30"])
         self.assertEqual([f["path"] for f in state["folders"]], [self.isos, more])
 
+    def test_a_folder_that_went_away_can_still_be_removed(self):
+        # A listed folder whose drive is gone neither blocks removing it nor adding another.
+        gone, other, more = (os.path.join(self.tmp.name, n) for n in ("gone", "other", "more"))
+        os.makedirs(gone); os.makedirs(other); os.makedirs(more)
+        self.start()
+        self.json("POST", "/api/settings", {"folders": [self.isos, gone, other]})
+        os.rmdir(gone)
+        self.json("POST", "/api/settings", {"folders": [self.isos, gone, other, more]})
+        self.json("POST", "/api/settings", {"folders": [gone, other, more]})
+        self.json("POST", "/api/settings", {"folders": [gone, more]})
+        self.assertEqual([f["path"] for f in self.json("GET", "/api/state")["folders"]], [gone, more])
+        self.json("POST", "/api/settings", {"folders": [more]})
+        self.assertEqual([f["path"] for f in self.json("GET", "/api/state")["folders"]], [more])
+        # A new folder still has to open.
+        status, _, _ = self.call("POST", "/api/settings", {"folders": [more, os.path.join(self.tmp.name, "none")]})
+        self.assertEqual(status, 400)
+
     def test_the_setup_wizard_shows_once(self):
         # A first start (no settings file) opens the wizard; finishing it is kept.
         self.start()

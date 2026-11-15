@@ -7755,7 +7755,11 @@ bool ChangeSettings(const web::Value& v, std::string& error) {
             bool listed=false;
             for(size_t k=0;k<next.folders.size() && !listed;++k) listed=SameFolder(next.folders[k],folder);
             if(listed) continue;
-            if(!config::IsFolder(folder)) { error=list->items[i].text+" isn't a folder this computer can open."; return false; }
+            // Only a newly added folder has to open now. One already in the list stays even while its
+            // drive is away, so removing or adding another folder never fails because of it.
+            bool kept=false;
+            for(size_t k=0;k<was.folders.size() && !kept;++k) kept=SameFolder(was.folders[k],folder);
+            if(!kept && !config::IsFolder(folder)) { error=list->items[i].text+" isn't a folder this computer can open."; return false; }
             next.folders.push_back(folder);
         }
     }
