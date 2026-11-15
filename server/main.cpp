@@ -287,6 +287,29 @@ struct LogLine { long long id; std::string text; };
 std::mutex LogLock;
 std::deque<LogLine> LogLines;  // The latest, for the dashboard.
 long long LogCount;
+// The log is kept on disk too, a file a day in the logs folder beside the
+// settings file (see StartLogFile), so what happened before a restart or with
+// the window closed can still be read. LogDays files are kept.
+const int LogDays = 14;
+std::string LogFolder;  // UTF-8; empty: no file.
+FILE* LogFile;
+int LogFileDay = -1;
+
+// Under LogLock: the file for the day of local, opened when the day changes.
+void LogToFile(const struct tm& local, const std::string& line) {
+    if(LogFolder.empty()) return;
+    int day=(local.tm_year+1900)*10000+(local.tm_mon+1)*100+local.tm_mday;
+    if(day!=LogFileDay || !LogFile) {
+        if(LogFile) fclose(LogFile);
+        char name[40]; _snprintf_s(name,sizeof(name),_TRUNCATE,"netdisc-%04d-%02d-%02d.log",local.tm_year+1900,local.tm_mon+1,local.tm_mday);
+        LogFile=config::Open(LogFolder+name,"ab");
+        LogFileDay=day;
+        if(!LogFile) { LogFolder.clear(); return; }  // Not writable: the dashboard still has it.
+    }
+    fwrite(line.data(),1,line.size(),LogFile);
+    fputc('\n',LogFile);
+    fflush(LogFile);
+}
 
 void Log(const char* format, ...) {
     char text[2048];
@@ -302,8 +325,32 @@ void Log(const char* format, ...) {
     printf("%s %s\n",stamp,text);
     fflush(stdout);
     LogLine line = {++LogCount, std::string(stamp)+" "+text};
+    LogToFile(local,config::ToUtf8(line.text));
     LogLines.push_back(line);
     if(LogLines.size()>LogKeep) LogLines.pop_front();
+}
+
+// Starts keeping the log in folder (UTF-8, with its separator), with what was
+// logged before this; deletes the files older than LogDays days.
+void StartLogFile(const std::string& folder) {
+    if(folder.empty() || !config::MakeFolder(folder)) return;
+    std::vector<config::Entry> files=config::Files(folder);
+    std::vector<std::string> logs;
+    for(size_t i=0;i<files.size();++i)
+        if(files[i].name.size()==22 && files[i].name.compare(0,8,"netdisc-")==0 && files[i].name.compare(18,4,".log")==0) logs.push_back(files[i].name);
+    std::sort(logs.begin(),logs.end());
+    for(size_t i=0;i+LogDays<logs.size();++i) config::RemoveFile(folder+logs[i]);
+    time_t now=time(NULL); struct tm local;
+#ifdef _WIN32
+    localtime_s(&local,&now);
+#else
+    localtime_r(&now,&local);
+#endif
+    std::lock_guard<std::mutex> hold(LogLock);
+    LogFolder=folder;
+    char stamp[64]; _snprintf_s(stamp,sizeof(stamp),_TRUNCATE,"----- %04d-%02d-%02d, NetDisc360 started -----",local.tm_year+1900,local.tm_mon+1,local.tm_mday);
+    LogToFile(local,stamp);
+    for(size_t i=0;i<LogLines.size();++i) LogToFile(local,config::ToUtf8(LogLines[i].text));
 }
 
 // What happened, in a few words, for the dashboard's activity list.
@@ -547,7 +594,10 @@ std::vector<IsoFile> Isos() {
         std::string folder=folders[i];
         if(folder.size()==3 && folder[1]==':') folder+='.';  // "D:\." for the top of D:.
         std::vector<IsoFile> found;
-        if(!FindIsos(folder,found)) missing+="  "+folders[i]+"\n";
+        if(!FindIsos(folder,found)) {
+            std::string why=nia::FolderProblem(folders[i]);
+            missing+="  "+folders[i]+(why.empty() ? std::string() : " ("+why+")")+"\n";
+        }
         else if(Emptied(folders[i],found.size())) { missing+="  "+folders[i]+" (it had games, and has none now)\n"; emptied.insert(folders[i]); }
         // A folder inside another one listed finds the same discs again.
         for(size_t k=0;k<found.size();++k) if(paths.insert(found[k].path).second) isos.push_back(found[k]);
@@ -6396,7 +6446,7 @@ void CopiesJson(web::Json& j);
 std::mutex StateCacheLock;
 std::vector<std::string> CachedAddresses;
 double AddressesAt=-1;
-std::map<std::string,std::pair<bool,double> > CachedFolders;  // Folder: found, when looked.
+std::map<std::string,std::pair<std::string,double> > CachedFolders;  // Folder: why it can't be opened ("" if it can), when looked.
 std::vector<std::string> RecentPcAddresses() {
     {
         std::lock_guard<std::mutex> hold(StateCacheLock);
@@ -6407,17 +6457,18 @@ std::vector<std::string> RecentPcAddresses() {
     CachedAddresses=fresh; AddressesAt=Now();
     return fresh;
 }
-bool RecentlyFolder(const std::string& folder) {
+// Why a game folder can't be opened, looked at most every 5 seconds; "" if it can.
+std::string RecentFolderProblem(const std::string& folder) {
     {
         std::lock_guard<std::mutex> hold(StateCacheLock);
-        std::map<std::string,std::pair<bool,double> >::iterator i=CachedFolders.find(folder);
+        std::map<std::string,std::pair<std::string,double> >::iterator i=CachedFolders.find(folder);
         if(i!=CachedFolders.end() && Now()-i->second.second<5) return i->second.first;
     }
-    bool found=config::IsFolder(folder);
+    std::string problem=nia::FolderProblem(folder);
     std::lock_guard<std::mutex> hold(StateCacheLock);
     if(CachedFolders.size()>64) CachedFolders.clear();
-    CachedFolders[folder]=std::make_pair(found,Now());
-    return found;
+    CachedFolders[folder]=std::make_pair(problem,Now());
+    return problem;
 }
 
 void HealthJson(web::Json& j);
@@ -6559,7 +6610,10 @@ void State(web::Reply& out) {
         for(size_t g=0;g<games.size();++g) if(Within(games[g].path,o.folders[i])) ++count;
         bool emptied;
         { std::lock_guard<std::mutex> hold(MissingLock); emptied=EmptiedFolders.count(o.folders[i])!=0; }
-        j.Open('{').Set("path",config::ToUtf8(o.folders[i])).Set("games",count).Set("found",RecentlyFolder(o.folders[i])).Set("emptied",emptied).Close('}');
+        std::string problem=RecentFolderProblem(o.folders[i]);
+        j.Open('{').Set("path",config::ToUtf8(o.folders[i])).Set("games",count).Set("found",problem.empty()).Set("emptied",emptied);
+        if(!problem.empty()) j.Set("problem",config::ToUtf8(problem));
+        j.Close('}');
     }
     j.Close(']');
 
@@ -6940,6 +6994,56 @@ void LogSince(long long after, web::Reply& out) {
     if(LogLines.size()-first>1000) first=LogLines.size()-1000;
     for(size_t i=first;i<LogLines.size();++i) j.Open('{').Set("id",LogLines[i].id).Set("text",config::ToUtf8(LogLines[i].text)).Close('}');
     j.Close(']').Set("last",LogCount).Close('}');
+    out.body=j.Text();
+}
+
+// This computer and how NetDisc360 runs on it: for the log at start, the Log
+// page's download and the About page.
+std::vector<std::pair<std::string,std::string> > AppFacts() {
+    Options o=Current();
+    std::vector<std::pair<std::string,std::string> > f=nia::SystemFacts();
+    std::string how;
+#ifdef _WIN32
+    how=InTray ? "Windows, in the notification area" : "Windows, in a console window";
+#else
+    how=InDocker ? "Docker" : "Linux";
+#endif
+    f.push_back(std::make_pair(std::string("NetDisc360"),std::string(NETDISC_VERSION)+(NETDISC_COMMIT[0] ? std::string(" (")+NETDISC_COMMIT+")" : std::string())+", built "+__DATE__+" "+__TIME__+", "+how));
+    f.push_back(std::make_pair(std::string("Settings file"),o.configPath.empty() ? std::string("none (changes last until it stops)") : config::FromUtf8(o.configPath)));
+    std::string logs;
+    { std::lock_guard<std::mutex> hold(LogLock); logs=LogFolder; }
+    f.push_back(std::make_pair(std::string("Log files"),logs.empty() ? std::string("none (on the dashboard only)") : config::FromUtf8(logs)));
+    std::vector<std::string> addresses=PcAddresses();
+    std::string list;
+    for(size_t i=0;i<addresses.size();++i) list+=(i ? ", " : "")+addresses[i];
+    f.push_back(std::make_pair(std::string("Addresses"),list.empty() ? std::string("none found") : list));
+    f.push_back(std::make_pair(std::string("Ports"),"NetISO "+Number(o.port)+", dashboard "+Number(o.webPort)+(o.webLan || o.webAddress=="0.0.0.0" ? " (open to the network)" : " (this computer only)")));
+    list.clear();
+    for(size_t i=0;i<o.xboxes.size();++i) { char text[16]; AddressText(o.xboxes[i],text,sizeof(text)); list+=(i ? ", " : "")+std::string(text); }
+    f.push_back(std::make_pair(std::string("Consoles"),list.empty() ? std::string("every console that connects") : list));
+    for(size_t i=0;i<o.folders.size();++i) {
+        std::string problem=nia::FolderProblem(o.folders[i]);
+        char free[48] = "";
+        if(problem.empty()) _snprintf_s(free,sizeof(free),_TRUNCATE,"%.1f GB free",FreeBytes(o.folders[i])/1073741824.0);
+        f.push_back(std::make_pair(std::string("Game folder"),o.folders[i]+(problem.empty() ? std::string(": opens, ")+free : ": can't be opened, "+problem)));
+    }
+    if(o.folders.empty()) f.push_back(std::make_pair(std::string("Game folders"),std::string("none yet")));
+    return f;
+}
+
+void LogFacts() {
+    std::vector<std::pair<std::string,std::string> > f=AppFacts();
+    std::string text="This computer:";
+    for(size_t i=0;i<f.size();++i) text+="\n  "+f[i].first+": "+f[i].second;
+    Log("%s",text.c_str());
+}
+
+void FactsJson(web::Reply& out) {
+    std::vector<std::pair<std::string,std::string> > f=AppFacts();
+    web::Json j;
+    j.Open('{').Key("facts").Open('[');
+    for(size_t i=0;i<f.size();++i) j.Open('{').Set("name",config::ToUtf8(f[i].first)).Set("value",config::ToUtf8(f[i].second)).Close('}');
+    j.Close(']').Close('}');
     out.body=j.Text();
 }
 
@@ -14946,6 +15050,7 @@ void Api(const web::Request& r, web::Reply& out) {
     if(r.method=="GET" && r.path=="/api/state") State(out);
     else if(r.method=="GET" && r.path=="/api/games") Games(out);
     else if(r.method=="GET" && r.path=="/api/log") LogSince(atoll(r.Param("after").c_str()),out);
+    else if(r.method=="GET" && r.path=="/api/system") FactsJson(out);
     else if(r.method=="GET" && r.path=="/api/compress") CompressState(r.Param("fresh")=="1",out);
     else if(r.method=="POST" && r.path=="/api/compress") {
         if(!StartCompress(body,error)) out.Error(400,error);
@@ -15412,6 +15517,11 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     Log("NetDisc360 %s%s%s, built %s %s.",NETDISC_VERSION,NETDISC_COMMIT[0] ? " " : "",NETDISC_COMMIT,__DATE__,__TIME__);
     if(!o.configPath.empty()) Log("Settings: %s",config::FromUtf8(o.configPath).c_str());
     if(!o.configPath.empty()) Log("Disc map: %s",config::FromUtf8(DiscMapPath(o.configPath)).c_str());
+#ifdef _WIN32
+    if(!o.configPath.empty()) StartLogFile(config::FolderOf(o.configPath)+"logs\\");
+#else
+    if(!o.configPath.empty()) StartLogFile(config::FolderOf(o.configPath)+"logs/");
+#endif
 
     if(o.push || !o.launcherPath.empty()) {
         CanPush=o.launcherPath.empty() ? BuiltIn(IDR_LAUNCHER,Launcher) : LoadFile(o.launcherPath,Launcher);
@@ -15488,6 +15598,7 @@ int RunServer(const std::vector<std::string>& args, const std::string& configPat
     }
     (void)on;
     Log("Listening on port %d.",o.port);
+    LogFacts();
 #ifdef _WIN32
     if(!InTray) SetConsoleCtrlHandler(ConsoleClosing,TRUE);
 #else

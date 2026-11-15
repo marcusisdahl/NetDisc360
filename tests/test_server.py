@@ -6343,6 +6343,45 @@ class Dashboard(DashboardTest):
         status, _, _ = self.call("POST", "/api/settings", {"folders": [more, os.path.join(self.tmp.name, "none")]})
         self.assertEqual(status, 400)
 
+    def test_the_log_is_kept_with_this_computer_s_details(self):
+        gone = os.path.join(self.tmp.name, "gone")
+        os.makedirs(gone)
+        self.start()
+        self.json("POST", "/api/settings", {"folders": [self.isos, gone]})
+        os.rmdir(gone)
+        listed = self.json("GET", "/api/system")["facts"]
+        facts = {f["name"]: f["value"] for f in listed}
+        for name in ("System", "Computer", "Runs as", "Memory", "Settings file", "Log files", "Ports", "Consoles"):
+            self.assertIn(name, facts)
+        folders = [f["value"] for f in listed if f["name"] == "Game folder"]
+        self.assertTrue(folders[0].startswith(self.isos + ": opens, "))
+        self.assertEqual(folders[1], gone + ": can't be opened, no such folder")
+        folders = {f["path"]: f for f in self.json("GET", "/api/state")["folders"]}
+        self.assertEqual(folders[gone]["problem"], "no such folder")
+        self.assertNotIn("problem", folders[self.isos])
+        logs = os.path.join(self.tmp.name, "logs")
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            names = os.listdir(logs) if os.path.isdir(logs) else []
+            text = ""
+            for n in names:
+                with open(os.path.join(logs, n), encoding="utf-8", errors="replace") as f:
+                    text += f.read()
+            if "This computer:" in text:
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(names), 1)
+        self.assertRegex(names[0], r"^netdisc-\d{4}-\d{2}-\d{2}\.log$")
+        self.assertIn("NetDisc360 started", text)
+        self.assertIn("  Memory: ", text)
+        # 14 days of files are kept: today's and the 13 newest before it.
+        for day in range(1, 20):
+            open(os.path.join(logs, "netdisc-2000-01-%02d.log" % day), "w").close()
+        self.restart()
+        self.json("GET", "/api/state")
+        self.assertEqual(len(os.listdir(logs)), 14)
+        self.assertNotIn("netdisc-2000-01-01.log", os.listdir(logs))
+
     def test_the_setup_wizard_shows_once(self):
         # A first start (no settings file) opens the wizard; finishing it is kept.
         self.start()
