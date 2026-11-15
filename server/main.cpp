@@ -8536,7 +8536,7 @@ bool CheckForUpdate(std::string& error) {
     if(!ok) Log("Update check: %s",error.c_str());
     if(!tell.empty()) {
         Log("NetDisc360 %s is out (this is %s): %s",tell.c_str(),NETDISC_VERSION,r.page.c_str());
-        Event(EventInfo,"NetDisc360 %s is out; see what's new under Settings, Updates",tell.c_str());
+        Event(EventInfo,"NetDisc360 %s is out; see what's new under Settings, App updates",tell.c_str());
 #ifdef _WIN32
         if(InTray && !o.updateAuto) Notify("NetDisc360 "+tell+" is out","Click here to see what's new and install it.","#settings/updates",false);
 #endif
@@ -8658,7 +8658,7 @@ void UpdateLoop() {
         { std::lock_guard<std::mutex> hold(SettingsLock); skip=UpdateSkip; }
         { std::lock_guard<std::mutex> hold(UpdateLock); if(!skip.empty() && Updates.latest.version==skip) continue; }
         if(ConsolesBusy()) { next=Now()+1800; continue; }
-        Log("Installing the update by itself (Settings, Updates).");
+        Log("Installing the update by itself (Settings, App updates).");
         StartInstall(error,true);
     }
 }

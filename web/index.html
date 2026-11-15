@@ -1942,7 +1942,7 @@ Pages.dashboard = root => {
       const steps = [
         { done: S.folders.length > 0, t: 'Add the folder with your games', d: S.folders.length ? plural(S.folders.length, 'folder') + ', ' + plural(S.library.games, 'game') : 'ISOs, extracted games and Games on Demand packages, in subfolders too.', a: !S.folders.length && h('button.btn.primary.small', { onclick: addFolder }, ic('folder-plus', 'sm'), 'Add a folder') },
         { done: S.consoles.some(c => c.seen > 0), t: 'Tell the Xbox where this computer is', d: S.consoles.some(c => c.seen > 0) ? 'A console connected.' : ['Make ', h('code', 'NetDisc360.ini'), ' next to NetDisc360.xex on your USB drive, with the line ', h('code', 'server=' + (S.addresses[0] || 'this computer\u2019s address')), '. Then restart the Xbox.'] },
-        { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', gamesFolder()), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings/aurora' }, 'Settings'), ').'] },
+        { done: S.consoles.some(c => c.ftp === 2), t: 'Turn on Aurora\u2019s FTP server', d: S.consoles.some(c => c.ftp === 2) ? 'Aurora answers; your games are added to it.' : ['In Aurora\u2019s settings, turn the FTP server on and add ', h('code', gamesFolder()), ' as a scan path (depth 1). Login: ', h('code', st.ftpUser), ' (change it under ', h('a', { href: '#settings/logins' }, 'Settings'), ').'] },
       ];
       const all = steps.every(s => s.done);
       if (st.setupDone) setup.replaceChildren();
@@ -3368,7 +3368,7 @@ ConsoleParts.plugins = (body, address) => {
       [h('button.btn.small.ghost', { title: 'The plugin set from Settings', onclick: () => choose(standard()) }, 'Standard set'), h('button.btn.small.ghost', { onclick: () => choose(current()) }, 'As it is')],
       h('div.plug-list', slots),
       more.length ? h('div.more-plugins', h('span.muted', 'Add:'), more.map(n => h('button.btn.small', { disabled: chosen.length >= 5 || !usable(n), title: source(n).text, onclick: () => choose(chosen.concat(n)) }, ic('plus', 'sm'), n))) : null,
-      h('p.hint', 'Plugins it lacks come from your kit folder', info.kit ? [': ', h('span.mono', info.kit)] : ', which isn’t set yet', ' (', h('a', { href: '#settings/consoles' }, 'Settings'), '). Each plugin’s settings file goes to the top of the drive and beside the plugin; none is overwritten, and a plugin left out isn’t deleted.'),
+      h('p.hint', 'Plugins it lacks come from your kit folder', info.kit ? [': ', h('span.mono', info.kit)] : ', which isn’t set yet', ' (', h('a', { href: '#settings/plugins' }, 'Settings'), '). Each plugin’s settings file goes to the top of the drive and beside the plugin; none is overwritten, and a plugin left out isn’t deleted.'),
       plan ? h('div.plan',
         h('h3', 'launch.ini after'),
         h('pre.ini-text', lines.map(l => h('span.' + l.t, (l.t === 'add' ? '+ ' : l.t === 'del' ? '− ' : '  ') + l.s))),
@@ -3431,7 +3431,7 @@ ConsoleParts.settings = (body, address) => {
         card('gamepad-2', 'Your games on it',
           row('Add your games to its Aurora', !st.push ? 'Adding games to Aurora is off for every console, in Settings.' : 'A folder for every game in its ' + gamesFolder() + ', so they’re in its Aurora. Off: it can still play, but its Aurora is left alone.',
             toggle(c.push, (v, input) => pushTo(c, v, input), !st.push)),
-          row('Settings for every console', 'The plugin set and kit folder, turning consoles off after their last game, and more. Aurora\u2019s logins are under Settings, Aurora.', h('a.btn', { href: '#settings/consoles' }, 'Settings', ic('chevron-right', 'sm')))),
+          row('Settings for every console', 'The plugin set and kit folder, turning consoles off after their last game, and more. Aurora\u2019s logins are under Settings, Logins and folders.', h('a.btn', { href: '#settings/consoles' }, 'Settings', ic('chevron-right', 'sm')))),
         card('party-popper', 'LAN party',
           row('In the party', gm ? 'It’s the Gamemaster console, so it’s always in the party.' : 'Its seats, Start on all and Turn off all include it.',
             toggle(inParty || gm, v => partyEdit({ consoles: v ? p.consoles.concat(address) : p.consoles.filter(a => a !== address) }, v ? cName(c) + ' is in the party' : cName(c) + ' left the party'), gm)),
@@ -3579,7 +3579,7 @@ function serverChecks(r) {
     out.push(wzCheck('bad', 'Windows treats this network as Public', [h('div', 'Its firewall keeps the consoles out. Make it Private if it\u2019s your home network (Windows Settings, Network, your connection, Network profile type).'), fix]));
   } else if (r.networks.length) out.push(wzCheck('good', 'Windows treats this network as ' + (r.networks.includes('domain') ? 'a domain network' : 'Private')));
   if (!r.canPush) out.push(wzCheck('info', 'This build has no launcher built in', 'It serves games, but doesn\u2019t add them to Aurora.'));
-  else if (!r.push) out.push(wzCheck('info', 'Adding games to Aurora is off', 'Turn it on under Settings, Xbox & Aurora.'));
+  else if (!r.push) out.push(wzCheck('info', 'Adding games to Aurora is off', 'Turn it on under Settings, Games in Aurora.'));
   for (const w of r.warnings) out.push(wzCheck('warn', 'Lately: ' + w));
   return out;
 }
@@ -5451,7 +5451,7 @@ function healthLines(r) {
     'no-aurora': ['Aurora isn’t answering', 'The console is on (its debug monitor answers), but Aurora’s FTP server isn’t. Start Aurora, with its FTP server on (Aurora’s settings, Network).'],
     offline: ['Nothing answers at ' + r.address, 'It’s off, or not on this network.'],
     busy: ['It’s busy', 'NetDisc360 is updating its games right now. Check again in a minute.'],
-    login: ['The FTP login didn’t work', 'Set Aurora’s FTP user name and password under Settings, Xbox & Aurora. (' + (r.loginError || '') + ')'],
+    login: ['The FTP login didn’t work', 'Set Aurora’s FTP user name and password under Settings, Logins and folders. (' + (r.loginError || '') + ')'],
     'no-launch-ini': ['No launch.ini found', 'DashLaunch reads it from the root of the USB stick or the hard drive. Without it, no plugin loads.'],
     'no-plugin': ['launch.ini doesn’t load NetDisc360.xex', r.pluginThere ? ['It’s on the console at ', h('code', r.pluginThere), '; add it as plugin ' + r.freeSlot + ' of ', ini, '.']
       : !r.freeSlot ? ['It’s the disc drive the games come from. ', ini, ' has 5 plugins, the most DashLaunch loads: take one out to make room.']
@@ -6623,7 +6623,7 @@ const wzCheck = (tone, title, detail) => h('li.wz-check.' + tone, h('span.badge'
 const isDocker = () => S.update.how === 'docker';
 // An FTP path on the Xbox as Aurora shows it (/Hdd1/NetDisc360/Games -> Hdd1:\NetDisc360\Games).
 const xboxPath = p => (p || '').replace(/^\/(\w+)/, '$1:').replace(/\//g, '\\');
-// Where the game folders go on each console (Settings, Xbox & Aurora).
+// Where the game folders go on each console (Settings, Games in Aurora).
 const gamesFolder = () => xboxPath((S.settings && S.settings.xboxFolder) || '/Hdd1/NetDisc360/Games');
 function wzToggle(checked, onchange) {
   return h('label.switch', h('input', { type: 'checkbox', checked, onchange: e => onchange(e.target.checked, e.target) }), h('span'));
@@ -6695,7 +6695,7 @@ WizardParts.password = body => {
       const wantLan = st.lanSwitch && lan.checked;
       if (wantLan && !password.value && !st.password) { fill(problem, 'Other devices need a password. Type one, or choose Only this computer.'); password.focus(); return false; }
       if (open && !password.value && !st.password &&
-          !(await confirmBox('Continue without a password?', 'Anyone on your network can open the dashboard and change its settings, until you set one under Settings, Dashboard.', 'Continue without'))) return false;
+          !(await confirmBox('Continue without a password?', 'Anyone on your network can open the dashboard and change its settings, until you set one under Settings, Look and access.', 'Continue without'))) return false;
       if (password.value) await api('password', { password: password.value });
       if (st.lanSwitch && wantLan !== st.webLan) await api('settings', { webLan: wantLan });
       await refresh();
@@ -6832,7 +6832,7 @@ function consoleChecks(r) {
   if (!r.login) return [wzCheck('good', 'Aurora\u2019s FTP server answers'), wzCheck('bad', 'The login didn\u2019t work', 'Use the user name and password from Aurora\u2019s FTP settings. (' + r.error + ')')];
   out.push(wzCheck('good', 'Logged in to Aurora\u2019s FTP server'));
   out.push(r.aurora ? wzCheck('good', 'Aurora is in ' + xboxPath(st.aurora))
-    : wzCheck('warn', 'Aurora isn\u2019t in ' + st.aurora, 'NetDisc360 can\u2019t add the Xbox 360 category rule there. Set Aurora\u2019s folder under Settings, Xbox & Aurora.'));
+    : wzCheck('warn', 'Aurora isn\u2019t in ' + st.aurora, 'NetDisc360 can\u2019t add the Xbox 360 category rule there. Set Aurora\u2019s folder under Settings, Games in Aurora.'));
   const games = xboxPath(st.xboxFolder);
   out.push(r.gameFolder ? wzCheck('good', games + ' is there') : wzCheck('info', games + ' isn\u2019t there yet', 'NetDisc360 makes it. Add it to Aurora\u2019s scan paths with depth 1.'));
   if (r.scanPaths) {
@@ -6952,7 +6952,7 @@ WizardParts.done = body => {
     update() {
       const st = S.settings, c = S.consoles.find(x => x.address === Wizard.console) || S.consoles.find(x => x.seen > 0);
       fill(list,
-        st.password ? wzCheck('good', 'The dashboard has a password') : wzCheck(st.webAddress === '0.0.0.0' ? 'warn' : 'info', 'No password', st.webAddress === '0.0.0.0' ? 'Anyone on your network can change the settings. Set one under Settings, Dashboard.' : 'Only this computer can open the dashboard.'),
+        st.password ? wzCheck('good', 'The dashboard has a password') : wzCheck(st.webAddress === '0.0.0.0' ? 'warn' : 'info', 'No password', st.webAddress === '0.0.0.0' ? 'Anyone on your network can change the settings. Set one under Settings, Look and access.' : 'Only this computer can open the dashboard.'),
         S.folders.length ? wzCheck('good', plural(S.library.games, 'game') + ' in ' + plural(S.folders.length, 'folder')) : wzCheck('warn', 'No game folders yet', 'Add one on the Game folders page.'),
         !c ? wzCheck('info', 'No Xbox yet', 'It shows up on the Consoles page when NetISO connects.')
           : c.seen > 0 ? wzCheck('good', 'NetISO on ' + c.address + ' is connected') : wzCheck('info', 'Waiting for NetISO on ' + c.address, 'Restart the Xbox once NetISO.xex.txt is in place.'),
