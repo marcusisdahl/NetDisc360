@@ -4760,7 +4760,10 @@ class DashboardTest(ServerTest):
         return ["--web-port", str(self.web)]
 
     def start(self, *extra):
-        super().start("--config", self.config, *extra)
+        # Title updates need their folder chosen first: where they were kept
+        # before it was a setting, unless a test says otherwise.
+        chosen = [] if "--tu-folder" in extra or getattr(self, "no_tu_folder", False) else ["--tu-folder", os.path.join(os.path.dirname(self.config), "TitleUpdates")]
+        super().start("--config", self.config, *(chosen + list(extra)))
 
     def restart(self, *extra, between=None):
         """between: called while the server is stopped (what changes meanwhile)."""
@@ -7872,7 +7875,7 @@ class Dashboard(DashboardTest):
             with open(path, "wb") as f:
                 f.write(xex(execution_info(0, 0)) + b"LAUNCHER CODE")
         with open(self.config, "w") as f:
-            f.write("[Server]\ntu_auto_delay=0\n")
+            f.write("[Server]\ntu_auto_delay=0\ntu_ahead=0\n")
         args = ("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--launcher", launcher, "--boot", boot, "--push",
                 "--xboxunity", "http://127.0.0.1:%d/Resources/Lib" % unity.server_port)
         self.start(*args)
@@ -7926,7 +7929,9 @@ class Dashboard(DashboardTest):
         self.restart(*args)
         found = when(lambda r: len(r) == 2, 20)
         self.assertEqual(found["Halo 3"]["newest"]["name"], "Title Update 2")
-        self.assertFalse(found["Halo 3"]["consoles"][0]["checked"])  # Off: not checked by itself.
+        halo = found["Halo 3"]["consoles"][0]  # What the console had at its last check is kept too; off: not checked again.
+        self.assertEqual((halo["checked"], halo["newest"]), (True, True))
+        self.assertEqual(len([j for j in self.json("GET", "/api/state")["installs"] if j["kind"] == "check"]), 0)
         self.assertEqual(len(unity.asked), asked)
         self.assertFalse(self.json("GET", "/api/titleupdates/all")["auto"])
 
@@ -7993,10 +7998,9 @@ class Dashboard(DashboardTest):
         self.assertEqual((job["state"], job["label"]), ("done", "Title update 2"), job["error"])
         with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
             self.assertEqual(f.read(), newest)
-        self.assertTrue([a for a in unity.asked[asked:] if "TitleUpdateInfo.php" in a])  # Asked for the list: it's over a week old.
-        self.assertEqual([a for a in unity.asked[asked:] if "TitleUpdate.php" in a], [])  # The copy on this PC.
-        # The page says it's going by the list from eight days ago, and why.
-        found = self.json("GET", "/api/titleupdates?game=Halo%203")
+        self.assertEqual(unity.asked[asked:], [])  # The kept list and the copy on this PC: XboxUnity isn't asked at all.
+        # Asked to look again, the page says it's going by the list from eight days ago, and why.
+        found = self.json("GET", "/api/titleupdates?game=Halo%203&refresh=1")
         self.assertEqual(([o["id"] for o in found["offers"]], found["error"]), (["111"], ""))
         self.assertEqual(found["listError"], "XboxUnity isn't working right now (it answered with error 500). Updates already on this PC still install; try again later.")
         self.assertAlmostEqual(time.time() - found["listChecked"], 8 * 86400, delta=600)
