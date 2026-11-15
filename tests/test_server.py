@@ -7839,6 +7839,104 @@ class Dashboard(DashboardTest):
             unity.shutdown()
             unity.server_close()
 
+    def test_title_updates_wait_for_their_folder_then_download_ahead_and_update_consoles(self):
+        # Nothing about title updates runs until the folder they're kept in on
+        # this computer is chosen. Then: the newest of each game is downloaded
+        # ahead of time, a console behind gets it by itself (when that's on),
+        # and what was looked up and checked is kept in the folder, also when
+        # the folder is changed.
+        self.no_tu_folder = True
+        self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
+        older, newest = tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 1", 0x2000), tu_package(0x4D5307E6, 0x1A2B3C4D, "Title Update 2")
+        kb = lambda data: (len(data) + 1023) // 1024
+        unity = fake_unity(self, titles={"4D5307E6": {"Type": 1, "MediaIDS": [{"MediaID": "1A2B3C4D", "Updates": [
+            {"TitleUpdateID": "110", "Version": "1", "Name": "Title Update 1", "Size": str(kb(older)), "hash": content_id(older)},
+            {"TitleUpdateID": "111", "Version": "2", "Name": "Title Update 2", "Size": str(kb(newest)), "hash": content_id(newest)}]}]}},
+            files={"111": ("tu00000002_00000000", newest)})
+        xbox = os.path.join(self.tmp.name, "xbox")
+        updates = os.path.join(xbox, "Hdd1", "Content", "0000000000000000", "4D5307E6", "000B0000")
+        os.makedirs(updates)
+        with open(os.path.join(updates, "tu00000001_00000000"), "wb") as f:
+            f.write(older)
+        ftp = aurora_ftp.Server(xbox, 0, host="127.0.0.2")
+        threading.Thread(target=ftp.serve_forever, daemon=True).start()
+        self.addCleanup(ftp.server_close)
+        self.addCleanup(ftp.shutdown)
+        launcher, boot = os.path.join(self.tmp.name, "launcher.xex"), os.path.join(self.tmp.name, "boot.xex")
+        for path in (launcher, boot):
+            with open(path, "wb") as f:
+                f.write(xex(execution_info(0, 0)) + b"LAUNCHER CODE")
+        with open(self.config, "w") as f:
+            f.write("[Server]\ntu_auto_delay=0\n")
+        args = ("--xbox", "127.0.0.2", "--ftp-port", str(ftp.server_address[1]), "--launcher", launcher, "--boot", boot, "--push",
+                "--xboxunity", unity.base + "/Resources/Lib")
+        self.start(*args)
+        self.state_when(lambda s: s["library"]["games"] == 1 and s["consoles"])
+        state = self.json("GET", "/api/state")
+        self.assertEqual((state["titleUpdates"]["ready"], state["settings"]["tuFolder"], state["settings"]["tuAhead"], state["settings"]["tuPush"], state["settings"]["tuAutoHour"]), (False, "", True, False, 4))
+        self.assertTrue(state["settings"]["tuFolderSuggested"].endswith("Title updates"))
+        # Not chosen yet: every title update call says what to do first, and XboxUnity isn't asked.
+        for method, path, body in (("GET", "/api/titleupdates?game=Halo%203", None), ("POST", "/api/titleupdates/scan", {}),
+                                   ("POST", "/api/titleupdates/install", {"game": "Halo 3", "address": "127.0.0.2"}), ("POST", "/api/titleupdates/check", {"address": "127.0.0.2"})):
+            status, _, data = self.call(method, path, body)
+            self.assertEqual((status, json.loads(data)["error"]), (409, "Choose where title updates are kept on this computer first: Settings, Title updates."), path)
+        time.sleep(2)
+        everything = self.json("GET", "/api/titleupdates/all")
+        self.assertEqual((everything["ready"], everything["games"], unity.asked), (False, [], []))
+        # A folder that can't be made is refused, and says so.
+        blocked = os.path.join(self.tmp.name, "a file")
+        with open(blocked, "w") as f:
+            f.write("x")
+        status, _, data = self.call("POST", "/api/settings", {"tuFolder": os.path.join(blocked, "inside")})
+        self.assertEqual(status, 400)
+        self.assertIn("can't make or open", json.loads(data)["error"])
+        self.assertEqual(self.call("POST", "/api/settings", {"tuFolder": "  "})[0], 400)
+        # Chosen, with consoles updated by themselves: looked up, downloaded ahead, and put on the console behind.
+        first = os.path.join(self.tmp.name, "updates here")
+        self.json("POST", "/api/settings", {"tuFolder": first, "tuPush": True})
+        self.assertTrue(self.json("GET", "/api/state")["titleUpdates"]["ready"])
+
+        def rows():
+            return {g["game"]: g for g in self.json("GET", "/api/titleupdates/all")["games"]}
+
+        def when(condition, seconds=60):
+            deadline = time.time() + seconds
+            while True:
+                found = rows()
+                if condition(found) or time.time() > deadline:
+                    return found
+                time.sleep(0.3)
+        found = when(lambda r: "Halo 3" in r and r["Halo 3"]["consoles"][0]["newest"])
+        self.assertTrue(found["Halo 3"]["consoles"][0]["newest"], found)
+        self.assertEqual(found["Halo 3"]["consoles"][0]["hasVersion"], 2)
+        with open(os.path.join(updates, "tu00000002_00000000"), "rb") as f:
+            self.assertEqual(f.read(), newest)
+        self.assertEqual(len([a for a in unity.asked if "TitleUpdate.php" in a]), 1)  # Downloaded once.
+        self.assertNotIn("title update", json.dumps([e for e in self.json("GET", "/api/state")["events"] if e.get("kind") == "error"]).lower())
+        everything = self.json("GET", "/api/titleupdates/all")
+        self.assertEqual((everything["folder"], everything["kept"]["count"], everything["kept"]["bytes"], everything["pending"]), (first, 1, len(newest), 0))
+        self.assertGreater(everything["lookedAt"], time.time() - 120)
+        self.assertGreater(everything["nextAt"], time.time())
+        self.assertTrue(os.path.isfile(os.path.join(first, "4D5307E6", "xboxunity.json")))
+        self.assertTrue(os.path.isfile(os.path.join(first, "Consoles", "127.0.0.2.json")))
+        # Another folder: what's kept is brought over, and nothing is asked or downloaded again, also after a restart.
+        second = os.path.join(self.tmp.name, "moved")
+        self.json("POST", "/api/settings", {"tuFolder": second, "tuPush": False})
+        self.assertTrue(os.path.isfile(os.path.join(second, "4D5307E6", "xboxunity.json")))
+        asked = len(unity.asked)
+        self.restart(*args)
+        found = when(lambda r: "Halo 3" in r, 20)
+        halo = found["Halo 3"]["consoles"][0]
+        self.assertEqual((halo["checked"], halo["newest"], found["Halo 3"]["newest"]["onPc"]), (True, True, True), found)
+        time.sleep(3)
+        self.assertEqual(len(unity.asked), asked)
+        # Look up now, forgetting what's kept: XboxUnity is asked again.
+        self.json("POST", "/api/titleupdates/scan", {"force": True})
+        deadline = time.time() + 30
+        while len(unity.asked) == asked and time.time() < deadline:
+            time.sleep(0.3)
+        self.assertTrue([a for a in unity.asked[asked:] if "TitleUpdateInfo.php" in a])
+
     def test_marks_newer_title_updates_by_itself_and_puts_them_on(self):
         self.add_iso("Halo 3.iso", 0x1A2B3C4D, 0x4D5307E6)
         self.add_iso("Forza 4.iso", 0x11112222, 0x4D530910)
