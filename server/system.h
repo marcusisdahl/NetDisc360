@@ -4,6 +4,7 @@
 // plays, and how Windows sees the network the consoles are on. Elsewhere
 // (Linux, Docker) there's nothing to do, and nothing to report.
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nia {
@@ -18,4 +19,11 @@ std::vector<std::string> NetworkCategories();
 // connected networks that are Public Private; returns once the prompt is
 // answered. False with why if it was turned down or couldn't be shown.
 bool MakeNetworksPrivate(std::string& error);
+
+// This computer, for the log and the About page: name and value pairs such as
+// ("Windows", "Windows 11 Pro 24H2, build 26100"), ("Memory", "7.9 GB free of 31.9 GB").
+std::vector<std::pair<std::string, std::string> > SystemFacts();
+// Why a folder (a native path) can't be opened, in a few words, like "no such
+// folder" or "access denied for Windows user marcu"; empty when it opens.
+std::string FolderProblem(const std::string& native);
 }
