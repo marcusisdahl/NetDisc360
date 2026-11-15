@@ -6000,7 +6000,7 @@ class Dashboard(DashboardTest):
         self.start()
         page = gzip.decompress(self.call("GET", "/")[2]).decode("utf-8")
         self.assertNotIn("since they last matched", page)
-        self.assertIn("'Both are kept: the saves on ' + c.address + ' differ from the newest from ' + placeText(c.from) + '.'", page)
+        self.assertIn("'Both are kept: the saves on ' + nameOf(c.address) + ' differ from the newest from ' + placeText(c.from) + '.'", page)
         if NODE:
             place = re.search(r"\nfunction placeText\(from\) \{.*?\n\}", page, re.S).group(0)
             script = "const S = {sync: {name: 'Desk'}};" + place + \
